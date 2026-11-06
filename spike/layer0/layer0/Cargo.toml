@@ -1,0 +1,11 @@
+[package]
+name = "layer0"
+description = "Layer 0 of the Qwen3-TTS talker, built in Rust through ggml-sys, for a bit-for-bit check against qwen3-tts.cpp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ggml-sys = { path = "../ggml-sys" }

@@ -1,2 +1,4 @@
 /target
 **/*.rs.bk
+spike/layer0/target
+spike/layer0/work

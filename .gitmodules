@@ -1,0 +1,3 @@
+[submodule "spike/layer0/ggml-sys/ggml"]
+	path = spike/layer0/ggml-sys/ggml
+	url = https://github.com/ggml-org/ggml.git

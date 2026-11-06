@@ -12,6 +12,18 @@ publish = false
 name = "ggtts-kitten-convert"
 path = "src/bin/ggtts-kitten-convert.rs"
 
+[[bin]]
+name = "ggtts-kitten"
+path = "src/bin/ggtts-kitten.rs"
+required-features = ["ggml"]
+
+[features]
+default = []
+# The ggml graph (the model, the session, the parity check and rendering). Off by default, like ggtts-ggml-sys's
+# own feature, so the default workspace build needs neither the ggml submodule nor a C toolchain.
+ggml = ["dep:ggtts-ggml-sys", "ggtts-ggml-sys/ggml"]
+
 [dependencies]
 ggtts-core.workspace = true
+ggtts-ggml-sys = { path = "../ggtts-ggml-sys", optional = true }
 serde_json.workspace = true

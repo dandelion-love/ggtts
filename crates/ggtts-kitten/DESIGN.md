@@ -36,7 +36,7 @@ the path is not set.
 | Prompt | `cpp/tools/kitten-tts/sampling.h:22-35`, `kittenml/prompt.py:10-56` | `prompt.rs`, the same order: `[start]`, the reference transcript and S3 tokens between the reference-role markers, the optional emotion control, `text_start`, the target text, `final_seg`, `speech_start` |
 | Speaker injection | `cpp/tools/kitten-tts/main.cpp:181-182` (a 2048-float embedding at position 0), `kittenml/speaker.py:54-104` (`spk_proj` = Linear 512->2048 + LayerNorm, written over position 0 at prefill only) | `spk_proj` is carried in the GGUF and run in the graph; its output replaces position 0's token embedding |
 | LM | Qwen3, `lm/config.json`: 28 layers, hidden 2048, 16 query heads and 8 KV heads of 128, FFN 6144, RMSNorm eps 1e-6 with per-head q/k norms, NeoX RoPE theta 1e6, tied embedding of 158,241 rows | one ggml graph with a KV cache, prefill and single-token steps |
-| Sampler | `kittenml/logits.py:24-117` (the PyTorch order), `cpp/tools/kitten-tts/sampling.h:41-90` | `sampler.rs`: token-run penalty, windowed repetition penalty exempting `speech_end` and `stop`, temperature, top-k, top-p, min-p, then a draw. One deliberate difference from the C++: it also exempts the silence token 4299 (`sampling.h:53`); `kittenml/logits.py:30-33` says silence is *not* exempt on purpose, and this engine follows the PyTorch path |
+| Sampler | `kittenml/logits.py:24-117` (the PyTorch order), `cpp/tools/kitten-tts/sampling.h:41-90` | `sampler.rs`: token-run penalty, windowed repetition penalty exempting `speech_end` and `stop`, temperature, top-k, top-p, min-p, then a draw. One deliberate difference from the C++, which also exempts the silence token 4299 from the repetition penalty (`sampling.h:53`): `kittenml/logits.py:30-33` says silence is *not* exempt, on purpose, and this engine follows the PyTorch path |
 | Stop | `cpp/tools/kitten-tts/main.cpp:198` | `speech_end` or `stop`; anything outside the audio range is dropped from the codes, as `kittenml/model.py` `_generate_tokens` does |
 | Tokenizer | the model's `lm/tokenizer.json` (Qwen2 byte-level BPE) | a byte-level BPE in Rust over `vocab.json`, `merges.txt` and the added tokens, checked against the Hugging Face tokenizer's ids |
 | Decoder (S3Gen) | `kittenml/vocoder.py:65-170`, `kittenml/s3gen.py`; `cpp/tools/kitten-tts/decoder.cpp:12-27` | **not ported yet**, see below |
@@ -148,6 +148,37 @@ tolerances fixed here, before any measurement:
    `exact` against itself: the same GGUF, text, seed, thread count and build give the same tokens, checked by a
    golden fixture of token ids on text written for the purpose.
 
+## Measured (2026-11-06, CPU, 4 threads, WSL Ubuntu on x86-64)
+
+The bars above were written before these numbers and are not moved by them.
+
+* **Level 1, converter: PASS.** Kitten `c93cb7c` `lm/model.safetensors` and a QAT smoke export each give
+  `READBACK PASS: 196 ternary matrices, 11010048 groups of 128 equal to the source trit for trit and scale bit for
+  bit; 118 other tensors equal`. Every scale had an exact fp16. Planted on the real weights, `--plant group256`
+  reads `READBACK FAIL: model.layers.0.mlp.down_proj.weight row 0: group 0: scale 0.20800781 read back, source
+  absmax 0.15429688`, and `--plant absmean` reads the same row with scale `0.12902832`.
+* **Level 2, f32 arm: PASS.** On 328 teacher-forced positions (a built-in voice's prefix, one fixed sentence, 24
+  forced audio tokens), the worst hidden-state relative L2 over the 27 layers and the final norm is `1.755e-6`.
+  The logits RMSE prints as `0.0000`, every one of 32 argmaxes is equal, and the speaker projection's relative L2
+  is `3.05e-7`.
+* **Level 2, ternary arm: FAIL on one of its three bars.** RMSE `0.0505` (bar 0.06, pass); argmax `32/32` (bar 30,
+  pass); minimum cosine `0.9995754` (bar 0.9999, **fail**). The cause was measured, not guessed. The same body with
+  an f32 head gives cosine `0.9995511` and RMSE `0.0452`, so the error is the body's `Q8_K` activation
+  quantization and not the bf16 head. Per-layer hidden error grows from `6.9e-3` (layer 1) to `1.2e-2` (layer 27).
+  kitten-tts-2-cpp's `TQ2_1` path quantizes activations per 32 (`Q8_0`). This one quantizes per 128 real values,
+  through `Q8_K` on a padded block. The planted group of 256 through this arm reads RMSE `1.2213`, cosine
+  `0.8298` and argmax `25/32`: far outside the bar, as level 2 requires.
+* **Tokenizer:** 7 of 7 texts give the Hugging Face tokenizer's ids. The texts include contractions, digits, a
+  blank line, emphasis and event markup, accents and the emotion control.
+
+* **End to end, ternary LM on ggml plus the PyTorch S3Gen bridge (CPU, 4 threads).** On a QAT smoke checkpoint,
+  with a built-in voice as the reference and three sentences written for the purpose, every line stopped on
+  `speech_end`. The lines gave 116, 116 and 100 codes and 4.74 s, 4.74 s and 4.10 s of audio. The LM ran at
+  15.8-16.3 tokens/s (25 are needed for real time), with a prefill of about 300 tokens in 3.2-3.3 s. That is an
+  LM real-time factor of 2.22-2.28. The bridge's decode took 15.4-17.0 s per line, most of it loading S3Gen in a
+  new process each time, for a total real-time factor of 5.5-6.1. Nobody has listened to these renders and no
+  ASR has scored them.
+
 ## Layout
 
 | Path | What |
@@ -156,7 +187,12 @@ tolerances fixed here, before any measurement:
 | `src/gguf.rs` | a GGUF v3 writer and reader for the types used here |
 | `src/ternary.rs` | Kitten's rule, `TQ2_0` padded packing and unpacking |
 | `src/convert.rs` | Kitten's LM directory or a QAT export to a ggtts GGUF, and the readback check |
+| `src/model.rs` | the ggml graph and KV-cache session (feature `ggml`) |
+| `src/prompt.rs`, `src/sampler.rs`, `src/tokenizer.rs` | the prompt, the sampler in PyTorch's order, the BPE |
+| `src/engine.rs` | `KittenEngine`, the `Engine` trait, and the PyTorch S3Gen bridge (feature `ggml`) |
+| `src/parity.rs` | the parity measures and the bars above |
 | `src/bin/ggtts-kitten-convert.rs` | the converter's command line |
+| `src/bin/ggtts-kitten.rs` | `parity`, `tokcheck` and `render` (feature `ggml`) |
 | `tools/kitten_ref.py` | the PyTorch side: reference dumps, reference-clip preparation, the S3Gen bridge |
 
 The QAT export (`ternary_bf16.safetensors`, the whole LM in Kitten's key layout with every ternary-born linear as

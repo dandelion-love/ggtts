@@ -189,6 +189,7 @@ name = "ggtts-kitten"
 version = "0.0.1"
 dependencies = [
  "ggtts-core",
+ "ggtts-ggml-sys",
  "serde_json",
 ]
 

@@ -3,7 +3,12 @@
 # ci.yml on every pull request (Linux and Windows) and by release.yml on every real archive before upload.
 #
 #   scripts/package_and_smoke.sh pack BINARY DIR    # DIR gets the binaries, LICENSE, README.md and instruments/
+#   scripts/package_and_smoke.sh archive DIR zip|tar.gz   # DIR.zip or DIR.tar.gz beside DIR, as released
 #   scripts/package_and_smoke.sh smoke PATH         # PATH: a packed DIR, or a .tar.gz or .zip of one
+#
+# `archive` is the one way an archive is made, by release.yml and by ci.yml's package-smoke alike, so a PR smokes
+# the same kind of file a release ships: 7z for a .zip where it exists (windows-latest), else zip, else Python's
+# zipfile; tar for a .tar.gz. Run it from DIR's parent.
 #
 # `pack` takes BINARY (ggtts-render, with .exe on Windows) and the ggtts-measure built beside it, and refuses when
 # either is missing. It puts the script instruments where the runner looks first: instruments/ beside ggtts-render
@@ -40,18 +45,43 @@ pack() {
     echo "[$list]"
 }
 
+archive() {
+    local dir=$1 kind=$2
+    [ -d "$dir" ] || { say "no directory $dir to archive"; return 1; }
+    case "$kind" in
+        zip)
+            rm -f "$dir.zip"
+            if command -v 7z >/dev/null; then 7z a -tzip "$dir.zip" "$dir" >/dev/null
+            elif command -v zip >/dev/null; then zip -qr "$dir.zip" "$dir"
+            else python3 -c 'import shutil, sys; shutil.make_archive(sys.argv[1], "zip", ".", sys.argv[1])' "$dir"
+            fi ;;
+        tar.gz) tar -czf "$dir.tar.gz" "$dir" ;;
+        *) say "archive kind must be zip or tar.gz, not $kind"; return 1 ;;
+    esac
+    say "archived $dir.$kind"
+}
+
 smoke() {
-    local path=$1 work dir exe code
+    local path=$1 work dir exe code abs
     work=$(mktemp -d)
     trap 'rm -rf "$work"' RETURN
     case "$path" in
-        *.tar.gz) tar -xzf "$path" -C "$work"; dir=$(find "$work" -mindepth 1 -maxdepth 1 -type d | head -1) ;;
-        *.zip) (cd "$work" && { 7z x "$(realpath "$path")" >/dev/null 2>&1 || unzip -q "$(realpath "$path")"; })
+        *.tar.gz|*.zip)
+            [ -f "$path" ] || { say "no such archive: $path"; return 1; }
+            # Absolute before any cd: the extraction runs inside $work, where a relative path names nothing. That
+            # was v0.1.0-rc.3's Windows failure (realpath ran after the cd).
+            abs="$(cd "$(dirname "$path")" && pwd)/$(basename "$path")" ;;
+    esac
+    case "$path" in
+        *.tar.gz) tar -xzf "$abs" -C "$work"; dir=$(find "$work" -mindepth 1 -maxdepth 1 -type d | head -1) ;;
+        *.zip) (cd "$work" && { 7z x "$abs" >/dev/null 2>&1 || unzip -q "$abs"; }) \
+                   || { say "could not extract $path"; return 1; }
                dir=$(find "$work" -mindepth 1 -maxdepth 1 -type d | head -1) ;;
         # A directory is copied out first: inside a checkout, the runner's search upward from the binary would find
         # the repository's own instruments/ and hide a directory packed without one.
         *) cp -r "$path" "$work/packed"; dir="$work/packed" ;;
     esac
+    [ -n "${dir:-}" ] || { say "$path holds no directory"; return 1; }
     exe="$dir/ggtts-render"
     [ -f "$exe" ] || exe="$exe.exe"
     [ -f "$exe" ] || { say "no ggtts-render in $path"; return 1; }
@@ -97,6 +127,7 @@ smoke() {
 
 case "${1:-}" in
     pack) pack "$2" "$3" ;;
+    archive) archive "$2" "$3" ;;
     smoke) smoke "$2" ;;
-    *) echo "usage: $0 pack BINARY DIR | smoke PATH" >&2; exit 2 ;;
+    *) echo "usage: $0 pack BINARY DIR | archive DIR zip|tar.gz | smoke PATH" >&2; exit 2 ;;
 esac

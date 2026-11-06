@@ -229,8 +229,10 @@ jobs:
         include:
           - os: ubuntu-latest
             exe: ""
+            archive: tar.gz
           - os: windows-latest
             exe: ".exe"
+            archive: zip
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     defaults:
@@ -251,6 +253,21 @@ jobs:
           test "$list" = '["ggtts-render${{ matrix.exe }}","ggtts-measure${{ matrix.exe }}"]'
       - name: Smoke the packed directory (a shipped Python instrument runs from it)
         run: scripts/package_and_smoke.sh smoke dist/ggtts-ci
+      - name: Archive it as release.yml does (a .zip on windows) and smoke the archive by its relative path
+        run: |
+          set -eu
+          (cd dist && ../scripts/package_and_smoke.sh archive ggtts-ci ${{ matrix.archive }})
+          scripts/package_and_smoke.sh smoke dist/ggtts-ci.${{ matrix.archive }}
+      - name: Planted, a missing archive must fail, naming it
+        run: |
+          set -u
+          if scripts/package_and_smoke.sh smoke dist/absent.${{ matrix.archive }} 2> absent.err; then
+            cat absent.err
+            echo "::error::the smoke passed on a missing archive"
+            exit 1
+          fi
+          cat absent.err
+          grep -F "no such archive: dist/absent.${{ matrix.archive }}" absent.err
       - name: Planted, the same directory without instruments/ must fail, naming the missing directory
         run: |
           set -u

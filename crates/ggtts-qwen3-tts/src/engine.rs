@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm};
 use ggtts_core::profile::Profile;
 
-use crate::codec::{Decoder, Plant as DecoderPlant};
+use crate::codec::Decoder;
 use crate::cpu::Device;
-use crate::talker::{language_id, FrameStop, Plant as TalkerPlant, Sampling, Talker};
+use crate::talker::{language_id, FrameStop, Sampling, Talker};
 use crate::PROFILE;
 
 /// What a request is rendered with besides its text and seed. The defaults are the reference CLI's, with the
@@ -23,6 +23,7 @@ pub struct Voice {
     pub language: String,
     /// The frame cap (`--max-tokens`).
     pub max_frames: i32,
+    /// Checked at [`Qwen3Tts::load`]: a temperature at or below zero (greedy decoding) is refused.
     pub sampling: Sampling,
     pub device: Device,
     /// Write the stop-probability trace here, one JSON object per talker step. The trace is read-only: the
@@ -53,11 +54,13 @@ pub struct Qwen3Tts {
 }
 
 impl Qwen3Tts {
-    /// Loads the talker GGUF and the codec GGUF on `voice.device` with `threads` CPU threads.
+    /// Loads the talker GGUF and the codec GGUF on `voice.device` with `threads` CPU threads. Refuses
+    /// `voice.sampling` before reading either file if it would decode greedily ([`Sampling::check`]).
     pub fn load(talker: &Path, codec: &Path, threads: i32, voice: Voice) -> Result<Self, EngineError> {
+        voice.sampling.check()?;
         let language_id =
             language_id(&voice.language).ok_or_else(|| EngineError(format!("unknown language: {}", voice.language)))?;
-        let talker = Talker::load_on(talker, threads, voice.device, TalkerPlant::None)?;
+        let talker = Talker::load_on(talker, threads, voice.device)?;
         if talker.speaker_id(&voice.speaker).is_none() {
             return Err(EngineError(format!("the talker has no speaker {}", voice.speaker)));
         }
@@ -76,10 +79,12 @@ impl Qwen3Tts {
                     "ggml-cpu"
                 }
                 .into(),
-                parity: "exact".into(),
+                // Exact parity is measured on CPU only (the golden fixtures). CUDA stays `unmeasured` until fixtures
+                // recorded with the reference on CUDA pass both identity checks.
+                parity: if voice.device.is_cuda() { "unmeasured" } else { "exact" }.into(),
             },
             talker,
-            decoder: Decoder::load_on(codec, threads, voice.device, DecoderPlant::None)?,
+            decoder: Decoder::load_on(codec, threads, voice.device)?,
             voice,
             language_id,
             trace,
@@ -144,5 +149,33 @@ impl Engine for Qwen3Tts {
         }
         let c: Vec<i32> = codes.frames.iter().map(|&x| i32::from(x)).collect();
         self.decoder.decode(&c)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn greedy_sampling_is_refused_at_load() {
+        for temperature in [0.0, -1.0, f32::NAN] {
+            let voice = Voice {
+                sampling: Sampling {
+                    temperature,
+                    ..Sampling::default()
+                },
+                ..Voice::default()
+            };
+            // The files do not exist: the refusal comes first, before either is read.
+            let e = Qwen3Tts::load(Path::new("no-talker.gguf"), Path::new("no-codec.gguf"), 1, voice)
+                .err()
+                .expect("greedy sampling must be refused");
+            assert!(e.0.contains("greedy decoding"), "{temperature}: {}", e.0);
+        }
+    }
+
+    #[test]
+    fn the_default_sampling_passes() {
+        assert!(Sampling::default().check().is_ok());
     }
 }

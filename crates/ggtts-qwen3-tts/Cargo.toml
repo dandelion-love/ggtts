@@ -15,6 +15,9 @@ default = []
 ggml = ["ggtts-ggml-sys/ggml"]
 # The CUDA backend as well (Device::Cuda).
 cuda = ["ggml", "ggtts-ggml-sys/cuda"]
+# Test-only: the planted defects (`codec::Plant`, `talker::Plant`, `load_planted`) the identity tests use to show
+# that each check can fail. A build without it has no way to plant one.
+plant = ["ggml"]
 
 [dependencies]
 ggtts-core.workspace = true

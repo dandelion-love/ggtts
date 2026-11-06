@@ -9,10 +9,11 @@
 # GPU_WAIT_FILE (wait while this file exists, before any GPU work).
 #
 # Steps: (1) record CUDA fixtures with the reference CLI, each text twice, and the reference decoder's samples
-# (scripts/record_fixtures.sh, REPEAT_DRIFT=report); (2) build the tests with the cuda feature against the same
-# archives; (3) decoder and token identity on CUDA; (4) the same with each planted defect, which must not be
-# identical; (5) for information, how many CUDA fixtures have the CPU fixtures' tokens. Exit status 0 only when every
-# recorded fixture is identical on both checks and every plant is seen.
+# (scripts/record_fixtures.sh, REPEAT_DRIFT=report); (2) build the tests with the cuda and plant features against
+# the same archives; (3) decoder and token identity on CUDA; (4) each planted defect's expected-failure test
+# (`planted::*`), which passes only when its plant leaves fixtures differing; (5) for information, how many CUDA
+# fixtures have the CPU fixtures' tokens. Exit status 0 only when every recorded fixture is identical on both checks
+# and every plant is seen.
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -28,8 +29,8 @@ fixtures=$WORK/fixtures-cuda
 status=0
 
 # Build first, so the GPU wait covers only GPU work.
-echo "== build (cuda feature, ggml archives from $GGML_LIB_DIR)"
-(cd "$root" && $nice cargo test -j 4 --release --locked -p ggtts-qwen3-tts --features cuda --no-run) > "$WORK/build.log" 2>&1 \
+echo "== build (cuda and plant features, ggml archives from $GGML_LIB_DIR)"
+(cd "$root" && $nice cargo test -j 4 --release --locked -p ggtts-qwen3-tts --features cuda,plant --no-run) > "$WORK/build.log" 2>&1 \
   || { echo "build failed: $WORK/build.log" >&2; exit 2; }
 
 if [ -n "${GPU_WAIT_FILE:-}" ]; then
@@ -46,31 +47,29 @@ echo "reference: $n of 8 fixtures recorded (a case is left out if its two record
 [ "$n" -gt 0 ] || { echo "no CUDA fixtures recorded" >&2; exit 1; }
 [ "$n" -eq 8 ] || status=1
 
-run() { # check plant
-  (cd "$root" && GGTTS_DEVICE=cuda GGTTS_FIXTURES=$fixtures GGTTS_TALKER=$TALKER GGTTS_CODEC=$CODEC GGTTS_PLANT=$2 \
-    $nice cargo test -j 4 --release --locked -p ggtts-qwen3-tts --features cuda --test "$1" -- --ignored --nocapture) \
-    > "$WORK/$1.$2.log" 2>&1
+run() { # test-file test-name log-name; returns the test's exit status
+  (cd "$root" && GGTTS_DEVICE=cuda GGTTS_FIXTURES=$fixtures GGTTS_TALKER=$TALKER GGTTS_CODEC=$CODEC \
+    $nice cargo test -j 4 --release --locked -p ggtts-qwen3-tts --features cuda,plant --test "$1" \
+      -- --ignored --exact "$2" --nocapture) > "$WORK/$1.$3.log" 2>&1
 }
 
-for check in decoder_identity token_identity; do
+for t in decoder_identity:decoder_samples_are_bit_identical_to_the_reference \
+         token_identity:codec_tokens_are_identical_to_the_reference; do
+  check=${t%%:*} name=${t#*:}
   echo "== $check on CUDA"
-  run "$check" none
-  grep -E '^(IDENTICAL|DIFFERS) |identity:' "$WORK/$check.none.log" || { echo "no result: $WORK/$check.none.log"; tail -5 "$WORK/$check.none.log"; }
+  run "$check" "$name" none
+  grep -E '^(IDENTICAL|DIFFERS) |identity \(' "$WORK/$check.none.log" || { echo "no result: $WORK/$check.none.log"; tail -5 "$WORK/$check.none.log"; }
   grep -q ', 0 differ' "$WORK/$check.none.log" || status=1
 done
 
-echo "== planted defects on CUDA (each must leave fixtures differing)"
-for p in decoder_identity:rope-normal decoder_identity:snake-no-epsilon decoder_identity:window-off-by-one \
-         token_identity:rope-normal token_identity:sampler-off-by-one; do
-  check=${p%%:*} plant=${p#*:}
-  run "$check" "$plant"
-  line=$(grep -E 'identity:' "$WORK/$check.$plant.log" || echo "no result line (see $WORK/$check.$plant.log)")
-  if grep -qE ' [1-9][0-9]* differ' "$WORK/$check.$plant.log"; then
-    echo "red as required: $check $plant: $line"
-  else
-    echo "NOT SEEN: $check $plant: $line"
-    status=1
-  fi
+echo "== planted defects on CUDA (each expected-failure test passes only when its plant is seen)"
+for p in decoder_identity:rope_normal_is_seen decoder_identity:snake_no_epsilon_is_seen \
+         decoder_identity:window_off_by_one_is_seen token_identity:rope_normal_is_seen \
+         token_identity:sampler_off_by_one_is_seen; do
+  check=${p%%:*} name=${p#*:}
+  if run "$check" "planted::$name" "$name"; then verdict="red as required"; else verdict="NOT SEEN"; status=1; fi
+  line=$(grep -E 'identity \(' "$WORK/$check.$name.log" || echo "no result line (see $WORK/$check.$name.log)")
+  echo "$verdict: $check $name: $line"
 done
 
 echo "== CUDA tokens against the CPU fixtures (information only)"

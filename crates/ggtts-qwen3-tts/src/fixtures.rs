@@ -23,6 +23,9 @@ pub struct Golden {
     pub codes: Vec<i32>,
     pub sample_count: usize,
     pub samples_sha256: String,
+    /// The CPU thread count the reference ran with (`reference.threads`). The checks run with the same count, since
+    /// a different count can change how ggml splits a reduction, and so the bits.
+    pub threads: u32,
 }
 
 impl Golden {
@@ -66,6 +69,7 @@ impl Golden {
             codes,
             sample_count: n("/samples/count")? as usize,
             samples_sha256: s("/samples/sha256_f32le")?,
+            threads: n("/reference/threads")? as u32,
         })
     }
 
@@ -85,6 +89,18 @@ impl Golden {
             })
             .collect()
     }
+}
+
+/// The one thread count a set of fixtures was recorded with. Refuses an empty set, or one that mixes counts.
+pub fn recorded_threads(goldens: &[Golden]) -> Result<i32, String> {
+    let first = goldens.first().ok_or("no fixtures")?.threads;
+    if let Some(g) = goldens.iter().find(|g| g.threads != first) {
+        return Err(format!(
+            "{} was recorded with {} threads and {} with {first}: re-record the set at one count",
+            g.name, g.threads, goldens[0].name
+        ));
+    }
+    i32::try_from(first).map_err(|_| format!("{first} threads"))
 }
 
 /// Returns `(codebooks, codes)`, checking that the count is `frames * codebooks`.

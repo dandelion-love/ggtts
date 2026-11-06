@@ -257,3 +257,17 @@ jobs:
           fi
           cat planted.err
           grep -F "instruments/ directory was not found" planted.err
+
+  binding:
+    name: binding (the C-ABI with the planted panic, and the Kotlin binding on the host JVM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: The C-ABI on the host, with the planted panic caught at the boundary
+        run: cargo test --locked -p ggtts-ffi --features plant -- --nocapture
+      - name: The Kotlin binding on the host JVM (the runner's JDK and kotlinc)
+        run: scripts/kotlin_binding_test.sh

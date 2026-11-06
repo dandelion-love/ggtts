@@ -535,6 +535,78 @@ is not moved. The ternary arm still misses it on the CPU, and the pinned expecte
 (`cpu_one_column_ternary_product_differs_pinned`) stays. The f32 arm stays as the parity tool that shows the paths
 agree when nothing is rounded.
 
+## Streaming: chunk level only, and why (2026-11-06, ggtts#25)
+
+Kitten-TTS 2 streams at **chunk level**: `--stream` hands out each chunk as soon as the pipeline keeps it
+(`pipeline::render_story_streamed`). It does not stream frame by frame through S3Gen. This section gives the reason
+from the code, then the measurement, made against a bar stated on the issue before any number existed.
+
+### What S3Gen's stages see (from the code)
+- **The flow encoder sees the whole sequence.** `Flow::encode` (`src/flow.rs:257-317`):
+  - a `PreLookaheadLayer` with a 3-token right look-ahead (`flow.rs:283-287`);
+  - 6 conformer layers, then 4 more after the ×2 upsample (`flow.rs:288-306`).
+
+  Their attention has **no mask** (`ggml_soft_max_ext` with a null mask, `flow.rs:171`). The masks in the PyTorch
+  source are all ones at batch 1 (`flow.rs:5`).
+- **The flow decoder does too.** The meanflow estimator (`Flow::estimate`, `flow.rs:321-366`) has causal
+  convolutions, but also 56 transformer blocks whose self-attention is unmasked (`flow.rs:192`). `Flow::mel` runs it
+  twice over the prompt and the target together (`flow.rs:372-408`).
+- **The vocoder's context is bounded.** HiFT is convolutional with symmetric padding (`src/hift.rs:323-325`, `364`,
+  `388`), then an inverse STFT. Its receptive field is a fixed number of frames on each side.
+
+So every mel frame depends on every token, the prompt's and the target's. **No bounded context reproduces the batch
+decode's mel**, and an identical block decode is ruled out before measuring. The question left is how far a block
+decode is from the batch decode, and the bar for that was stated first: the same bar the batch port meets, mel
+relative L2 at most `1e-3` and waveform SNR at least 40 dB.
+
+### Measured
+**The method.** `ggtts-kitten block-parity` (CPU, 4 threads) works on the recorded S3Gen case: 103 target tokens,
+248 prompt tokens, 4.10 s of audio.
+- Each block of B tokens is decoded from its tokens plus C tokens of left context and a right look-ahead, with the
+  prompt.
+- The noise each frame has in the batch decode is reused, so only the context differs.
+- The kept frames are stitched, vocoded with the recorded source, and compared with the batch decode of the same
+  tokens.
+
+The full log is `records/block-parity-cpu.log`.
+
+**Every configuration fails the bar by orders of magnitude.** Waveform SNR in dB, mel relative L2 in brackets:
+
+| Block (tokens) | Left context | Look-ahead 3 | Look-ahead 25 | Look-ahead 50 |
+|---|---|---|---|---|
+| 25 (1 s) | 1 token | −0.8 (6.0e-2) | −0.4 (5.3e-2) | 0.2 (5.1e-2) |
+| 25 | 25 | 2.1 (3.3e-2) | 2.8 (2.4e-2) | 3.8 (2.3e-2) |
+| 25 | 50 | 1.2 (3.2e-2) | 3.0 (2.0e-2) | 4.3 (1.8e-2) |
+| 25 | all before | 2.4 (2.8e-2) | 5.1 (1.3e-2) | 7.4 (9.5e-3) |
+| 50 (2 s) | 1 token | 0.1 (4.3e-2) | 1.2 (4.1e-2) | 1.6 (4.1e-2) |
+| 50 | 25 | 1.3 (2.4e-2) | 2.9 (2.0e-2) | 3.5 (2.0e-2) |
+| 50 | 50 | 3.4 (1.7e-2) | 6.3 (1.1e-2) | 7.8 (9.8e-3) |
+| 50 | all before | 3.4 (1.6e-2) | 6.3 (1.0e-2) | 7.8 (9.5e-3) |
+
+**The measure itself is checked both ways.** One block holding every token reads identical: relative L2 0, SNR
+infinite. Each block's frames shifted by one (`--plant seam-shift`) is seen: SNR −2.9 dB.
+
+**What the numbers say.** More context helps, and right context helps as much as left. That is what unmasked,
+bidirectional attention predicts. But the best configuration measured is a 2 s block with all prior context and 2 s
+of look-ahead, at 7.8 dB. That is 32 dB short of the bar, and its look-ahead already costs the latency streaming
+was for. The stitched decode is also slower than the batch: the flow's time over the blocks is 5.4-14.6 s for 4.10 s
+of audio (RTF 1.55-3.9 with the vocoder), against 2.5 s for the batch decode (RTF 0.85). A block decoder would run
+behind real time on this CPU, so it is not offered as the CLI's stream.
+
+**Chunk-level streaming today** (`crates/ggtts-qwen3-tts/scripts/stream_probe.sh`, `ENGINE=kitten-tts-2`, CPU,
+4 threads, the `lighthouse` story; `records/stream-probe-kitten-cpu.log`):
+- the first audio arrives at **28.90 s**;
+- the whole read takes 74.93 s for 21.76 s of audio (RTF 3.44);
+- the streamed and batch FLACs are byte-identical.
+
+The first chunk's wait is the LM's generation of that chunk plus one S3Gen decode. A block decoder could only shorten
+the decode part, and only at the parity loss above.
+
+**What would change this.** S3Gen's attention masks. The upstream training code's chunk masks, if the weights were
+trained with them, would give a bounded context by construction. That would be a new decoder mode with its own
+parity cases against a PyTorch reference run with the same masks. It is not a stitching of the full-context model.
+`block-parity` stays in the CLI to measure such a mode, or any other block decoder, against this bar.
+
 ## Layout
 
 | Path | What |
@@ -558,6 +630,7 @@ agree when nothing is rounded.
 | `tools/kitten_ref.py` | the PyTorch side: reference dumps, reference-clip preparation, the S3Gen bridge |
 | `tools/kitten_packed_check.py` | the converter's ternary matrices against Kitten's own packers (`TQ2_1` and `pack_ternary_q4`), numpy only |
 | `tests/step_identity.rs` | the single-token path against the batched one, and the pinned CPU ternary gap |
+| `records/` | measurement logs this document cites: `block-parity-cpu.log` and `stream-probe-kitten-cpu.log` (ggtts#25) |
 
 The QAT export (`ternary_bf16.safetensors`, the whole LM in Kitten's key layout with every ternary-born linear as
 `quantize(master)` in bf16) is the same layout as Kitten's `lm/model.safetensors`, so one converter takes both; the

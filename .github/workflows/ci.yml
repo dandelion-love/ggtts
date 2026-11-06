@@ -80,6 +80,8 @@ jobs:
           echo "ggml submodule at $pin"
       - name: cargo clippy with the engines (ggml built by cargo with CMake)
         run: cargo clippy --workspace --all-targets --features ggtts-cli/ggml --locked -- -D warnings
+      - name: cargo clippy with the test-only plant feature (the planted defects and their expected-failure tests)
+        run: cargo clippy --workspace --all-targets --features ggtts-cli/ggml,ggtts-qwen3-tts/plant --locked -- -D warnings
       - name: Test with the engines (the identity checks need model files and stay opt-in, so they report ignored)
         run: cargo test --workspace --features ggtts-cli/ggml --locked -- --nocapture
       - name: ggml links and computes (one ggml_add through the bindings)

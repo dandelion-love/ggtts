@@ -153,6 +153,7 @@ name = "ggtts-cli"
 version = "0.0.1"
 dependencies = [
  "ggtts-core",
+ "ggtts-kitten",
  "ggtts-qwen3-tts",
 ]
 

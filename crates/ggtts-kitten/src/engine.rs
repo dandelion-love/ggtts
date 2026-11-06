@@ -246,6 +246,28 @@ impl PyDecoder {
     }
 }
 
+impl KittenEngine {
+    /// Everything from files, for `ggtts-render`: the LM GGUF (with its tokenizer embedded by the converter), the
+    /// S3Gen GGUF, and a reference JSON (`ggtts-kitten prepare`). Ternary weights, the ggml decoder.
+    pub fn open(lm: &Path, s3gen: &Path, reference: &Path, threads: usize) -> Result<Self, String> {
+        let g = crate::gguf::Gguf::open(lm)?;
+        let json =
+            g.kv.get("kitten.tokenizer.json")
+                .and_then(Value::as_str)
+                .ok_or("this GGUF has no embedded tokenizer: re-convert it with ggtts-kitten-convert")?;
+        let tok = Tokenizer::from_json(json)?;
+        let model = Model::load(&g, crate::model::Weights::Ternary)?;
+        drop(g);
+        let s3 = crate::gguf::Gguf::open(s3gen)?;
+        let decoder = Decoder::Ggml(Box::new(GgmlDecoder {
+            flow: Flow::load(&s3, threads)?,
+            hift: Hift::load(&s3, threads)?,
+        }));
+        let reference = Reference::open(reference)?;
+        KittenEngine::new(model, tok, reference, decoder, threads)
+    }
+}
+
 /// Timings of the last `generate`, for the render report.
 #[derive(Debug, Default, Clone)]
 pub struct GenStats {

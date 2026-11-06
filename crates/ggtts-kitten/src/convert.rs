@@ -55,6 +55,7 @@ pub fn metadata(
     lm: &serde_json::Value,
     source: &str,
     layout: Layout,
+    tokenizer_json: Option<&str>,
 ) -> Result<BTreeMap<String, Value>, String> {
     let mut kv = BTreeMap::new();
     let mut put = |k: &str, v: Value| {
@@ -112,6 +113,9 @@ pub fn metadata(
         put("kitten.emotion_control", Value::Str(e.into()));
     }
     put("kitten.ternary.group_size", Value::U32(GROUP as u32));
+    if let Some(t) = tokenizer_json {
+        put("kitten.tokenizer.json", Value::Str(t.to_string()));
+    }
     put("kitten.ternary.layout", Value::Str(layout.name().into()));
     Ok(kv)
 }
@@ -128,7 +132,7 @@ pub struct Summary {
 
 /// Convert. `strict` refuses a source that `rule` does not reproduce exactly; a planted fault passes
 /// `strict = false` so that the fault reaches the file and the readback check has to find it.
-#[allow(clippy::too_many_arguments)] // the source, two configs, a name, a path and three choices of rule and layout
+#[allow(clippy::too_many_arguments)] // the source, two configs, a name, a path, three choices of rule and layout, and the tokenizer
 pub fn convert(
     st: &SafeTensors,
     model: &serde_json::Value,
@@ -138,8 +142,9 @@ pub fn convert(
     rule: Rule,
     strict: bool,
     layout: Layout,
+    tokenizer_json: Option<&str>,
 ) -> Result<Summary, String> {
-    let kv = metadata(model, lm, source, layout)?;
+    let kv = metadata(model, lm, source, layout, tokenizer_json)?;
     let mut tensors = Vec::new();
     let mut sum = Summary::default();
     for (name, info) in &st.tensors {
@@ -403,7 +408,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ggtts-kitten-conv-{}-{tag}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("m.gguf");
-        convert(&st, &model, &lm, "tiny", &out, rule, strict, layout)?;
+        convert(&st, &model, &lm, "tiny", &out, rule, strict, layout, None)?;
         let g = Gguf::open(&out).unwrap();
         let r = verify(&st, &g);
         std::fs::remove_dir_all(&dir).unwrap();

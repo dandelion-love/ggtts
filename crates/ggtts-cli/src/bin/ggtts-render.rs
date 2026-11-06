@@ -82,8 +82,21 @@ fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, St
                 .map(|e| Box::new(e) as Box<dyn Engine>)
                 .map_err(|e| e.to_string())
         }
+        // Kitten-TTS 2: --model is the LM GGUF, --codec the S3Gen GGUF, and the reference voice comes from
+        // GGTTS_ARG_VOICE (a `ggtts-kitten prepare` JSON) until ggtts-render has a --voice flag.
+        #[cfg(feature = "ggml")]
+        "kitten-tts-2" => {
+            let codec = a
+                .codec
+                .as_ref()
+                .ok_or("the kitten-tts-2 engine needs --codec (the S3Gen GGUF)")?;
+            let voice = std::env::var_os("GGTTS_ARG_VOICE")
+                .ok_or("the kitten-tts-2 engine needs GGTTS_ARG_VOICE, a reference JSON from ggtts-kitten prepare")?;
+            ggtts_kitten::engine::KittenEngine::open(model, codec, Path::new(&voice), threads as usize)
+                .map(|e| Box::new(e) as Box<dyn Engine>)
+        }
         #[cfg(not(feature = "ggml"))]
-        "qwen3-tts" => {
+        "qwen3-tts" | "kitten-tts-2" => {
             let _ = (threads, model);
             Err("this build has no engines: rebuild with --features ggml".into())
         }

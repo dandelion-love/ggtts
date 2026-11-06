@@ -15,9 +15,10 @@ path = "src/bin/ggtts-render.rs"
 [dependencies]
 ggtts-core.workspace = true
 ggtts-qwen3-tts.workspace = true
+ggtts-kitten = { path = "../ggtts-kitten" }
 
 [features]
 default = []
 # The engines over ggml. Off by default, so the workspace builds without the ggml submodule; ggtts-render then
 # only reports its version.
-ggml = ["ggtts-qwen3-tts/ggml"]
+ggml = ["ggtts-qwen3-tts/ggml", "ggtts-kitten/ggml"]

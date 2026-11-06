@@ -107,7 +107,8 @@ fn run() -> Result<bool, String> {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let t1 = Instant::now();
-            let s = convert::convert(&st, &model, &lm, &source, &out, rule, strict, layout)?;
+            let tok = std::fs::read_to_string(repo.join("lm").join("tokenizer.json")).ok();
+            let s = convert::convert(&st, &model, &lm, &source, &out, rule, strict, layout, tok.as_deref())?;
             eprintln!(
                 "wrote {}: {} ternary matrices ({} weights) as {}, {} bf16, {} f32, {} bytes of tensors, in {:.1}s",
                 out.display(),

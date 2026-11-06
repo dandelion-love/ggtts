@@ -127,7 +127,12 @@ pub fn pre_split(s: &str) -> Vec<&str> {
 impl Tokenizer {
     pub fn open(path: &Path) -> Result<Self, String> {
         let s = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let j: serde_json::Value = serde_json::from_str(&s).map_err(|e| format!("{}: {e}", path.display()))?;
+        Self::from_json(&s).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// From the text of a `tokenizer.json` (the converter embeds it in the GGUF as `kitten.tokenizer.json`).
+    pub fn from_json(s: &str) -> Result<Self, String> {
+        let j: serde_json::Value = serde_json::from_str(s).map_err(|e| e.to_string())?;
         let model = &j["model"];
         if model["type"] != "BPE" {
             return Err("tokenizer.json: not a BPE model".into());

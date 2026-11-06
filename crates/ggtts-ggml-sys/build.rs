@@ -108,6 +108,9 @@ mod with_ggml {
             println!("cargo:rustc-link-lib=dylib=stdc++");
             println!("cargo:rustc-link-lib=dylib=gomp");
             println!("cargo:rustc-link-lib=dylib=m");
+        } else if target.contains("windows") {
+            // ggml-cpu reads the CPU's name from the registry (RegOpenKeyExA and friends).
+            println!("cargo:rustc-link-lib=dylib=advapi32");
         } else if target.contains("apple") {
             println!("cargo:rustc-link-lib=dylib=c++");
         }

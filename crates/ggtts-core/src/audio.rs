@@ -10,10 +10,7 @@ const RMS_EPS: f64 = 1e-12;
 
 /// Two channels to one, by mean, in float32 (render spec section 6, step 1).
 pub fn downmix_stereo(frames: &[[f32; 2]]) -> Vec<f32> {
-    frames
-        .iter()
-        .map(|[l, r]| ((l + r) as f64 / 2.0) as f32)
-        .collect()
+    frames.iter().map(|[l, r]| ((l + r) as f64 / 2.0) as f32).collect()
 }
 
 /// What [`trim_edges`] found and kept. Seconds are unrounded; the sample bounds are exact.
@@ -65,14 +62,8 @@ pub fn trim_edges(y: &[f64], sr: u32, max_edge_s: f64) -> TrimInfo {
         })
         .collect();
     let loudest = rms.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let loud: Vec<bool> = rms
-        .iter()
-        .map(|&r| 20.0 * log10(r / loudest) > -TOP_DB)
-        .collect();
-    let (Some(first), Some(last)) = (
-        loud.iter().position(|&b| b),
-        loud.iter().rposition(|&b| b),
-    ) else {
+    let loud: Vec<bool> = rms.iter().map(|&r| 20.0 * log10(r / loudest) > -TOP_DB).collect();
+    let (Some(first), Some(last)) = (loud.iter().position(|&b| b), loud.iter().rposition(|&b| b)) else {
         return TrimInfo {
             raw_s,
             trimmed_s: raw_s,

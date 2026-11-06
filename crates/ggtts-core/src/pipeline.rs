@@ -103,16 +103,10 @@ impl Read {
         self.samples.len() as f64 / f64::from(self.sample_rate)
     }
     pub fn first_draw_defects(&self) -> usize {
-        self.chunks
-            .iter()
-            .filter(|c| c.first_draw_defect.is_some())
-            .count()
+        self.chunks.iter().filter(|c| c.first_draw_defect.is_some()).count()
     }
     pub fn final_defects(&self) -> usize {
-        self.chunks
-            .iter()
-            .filter(|c| c.final_defect.is_some())
-            .count()
+        self.chunks.iter().filter(|c| c.final_defect.is_some()).count()
     }
 }
 
@@ -181,10 +175,7 @@ pub fn render_story(
         let (pcm, j, seed, k) = kept.expect("at least one draw");
         let first = first.expect("draw 0 ran");
         let t = trim_edges_f32(&pcm.samples, pcm.sample_rate, opts.edge_s);
-        clips.push((
-            pcm.samples[t.start_sample..t.end_sample].to_vec(),
-            pcm.sample_rate,
-        ));
+        clips.push((pcm.samples[t.start_sample..t.end_sample].to_vec(), pcm.sample_rate));
         records.push(ChunkRecord {
             i,
             text: c.text.clone(),
@@ -223,11 +214,7 @@ pub fn render_story(
 /// ±[`CLIP`], rounded to float32. Returns the gain, or `None` (and leaves the read alone) when no sample is above
 /// the floor.
 pub fn level(read: &mut [f32]) -> Option<f64> {
-    let squares: Vec<f32> = read
-        .iter()
-        .filter(|x| x.abs() > LEVEL_FLOOR)
-        .map(|x| x * x)
-        .collect();
+    let squares: Vec<f32> = read.iter().filter(|x| x.abs() > LEVEL_FLOOR).map(|x| x * x).collect();
     if squares.is_empty() {
         return None;
     }

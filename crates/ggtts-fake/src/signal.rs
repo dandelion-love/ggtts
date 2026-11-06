@@ -42,10 +42,7 @@ pub fn stereo_cancel() -> Vec<[f32; 2]> {
         *r = -l;
     }
     right[d..e].copy_from_slice(&sine_f64(e - d, sr));
-    left.iter()
-        .zip(&right)
-        .map(|(&l, &r)| [l as f32, r as f32])
-        .collect()
+    left.iter().zip(&right).map(|(&l, &r)| [l as f32, r as f32]).collect()
 }
 
 /// `edge_n` samples of DC `edge`, `middle_n` of DC `middle`, `edge_n` of DC `edge`, in float64.

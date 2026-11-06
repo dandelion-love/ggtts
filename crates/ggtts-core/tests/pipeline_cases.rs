@@ -14,9 +14,7 @@ use std::path::{Path, PathBuf};
 use ggtts_core::audio::{downmix_stereo, judge, judge_f32, trim_edges, TrimInfo, Verdict};
 use ggtts_core::flac::{to_i16, write_flac};
 use ggtts_core::numeric::{log10, mean_f64};
-use ggtts_core::pipeline::{
-    render_story, RenderOptions, DEFAULT_REDRAW, EDGE_S, PASSAGE_CEILING, STORY_CEILING,
-};
+use ggtts_core::pipeline::{render_story, RenderOptions, DEFAULT_REDRAW, EDGE_S, PASSAGE_CEILING, STORY_CEILING};
 use ggtts_core::seed::{hex, seed_key, seed_of, sha256};
 use ggtts_core::text::{chunk, cjk_len, plan, read_text};
 use ggtts_fake::{signal, FakeEngine, Shape};
@@ -95,7 +93,11 @@ fn run_defaults(r: &mut Report, story_ceiling: usize) {
     x.eq("story ceiling", story_ceiling as u64, u(&d["story_ceiling"]));
     x.eq("passage ceiling", PASSAGE_CEILING as u64, u(&d["passage_ceiling"]));
     x.eq("redraw", u64::from(DEFAULT_REDRAW), u(&d["redraw"]));
-    x.eq("seed salt", RenderOptions::default().seed_salt.as_str(), s(&d["seed_salt"]));
+    x.eq(
+        "seed salt",
+        RenderOptions::default().seed_salt.as_str(),
+        s(&d["seed_salt"]),
+    );
     x.eq("edge cap", EDGE_S, f(&d["edge_s"]));
     r.record("defaults".into(), x.0);
 }
@@ -110,11 +112,23 @@ fn check_plan(x: &mut Diffs, label: &str, story_id: &str, paras: &[String], ceil
         x.eq(&format!("{p}.para"), g.para as u64, u(&w["para"]));
         x.eq(&format!("{p}.text"), g.text.as_str(), s(&w["text"]));
         x.eq(&format!("{p}.punct"), g.punct.as_str(), s(&w["punct"]));
-        x.eq(&format!("{p}.last_in_para"), Some(g.last_in_para), w["last_in_para"].as_bool());
+        x.eq(
+            &format!("{p}.last_in_para"),
+            Some(g.last_in_para),
+            w["last_in_para"].as_bool(),
+        );
         let body_len = (g.text.chars().count() - g.punct.chars().count()) as u64;
         x.eq(&format!("{p}.body_len"), body_len, u(&w["body_len"]));
-        x.eq(&format!("{p}.seed_k0"), u64::from(seed_of(story_id, i, &g.text, 0, "")), u(&w["seed_k0"]));
-        x.eq(&format!("{p}.seed_k1"), u64::from(seed_of(story_id, i, &g.text, 1, "")), u(&w["seed_k1"]));
+        x.eq(
+            &format!("{p}.seed_k0"),
+            u64::from(seed_of(story_id, i, &g.text, 0, "")),
+            u(&w["seed_k0"]),
+        );
+        x.eq(
+            &format!("{p}.seed_k1"),
+            u64::from(seed_of(story_id, i, &g.text, 1, "")),
+            u(&w["seed_k1"]),
+        );
     }
 }
 
@@ -159,8 +173,13 @@ fn run_chunks(r: &mut Report, story_ceiling: usize) {
 fn run_seeds(r: &mut Report) {
     let v = load("seeds.json");
     for (n, row) in v["rows"].as_array().unwrap().iter().enumerate() {
-        let (story, i, text, k, salt) =
-            (s(&row["story"]), u(&row["i"]) as usize, s(&row["text"]), u(&row["k"]) as u32, s(&row["salt"]));
+        let (story, i, text, k, salt) = (
+            s(&row["story"]),
+            u(&row["i"]) as usize,
+            s(&row["text"]),
+            u(&row["k"]) as u32,
+            s(&row["salt"]),
+        );
         let mut x = Diffs::default();
         x.eq("key", seed_key(story, i, text, k, salt).as_str(), s(&row["sha256_key"]));
         x.eq("seed", u64::from(seed_of(story, i, text, k, salt)), u(&row["seed"]));
@@ -191,7 +210,12 @@ fn build_signal(spec: &Value) -> (Vec<f64>, u32) {
         "stereo-cancel" => (wide(downmix_stereo(&signal::stereo_cancel())), 24_000),
         "empty" => (Vec::new(), 24_000),
         "dc" => (
-            signal::dc(f(&spec["edge"]), u(&spec["edge_n"]) as usize, f(&spec["middle"]), u(&spec["middle_n"]) as usize),
+            signal::dc(
+                f(&spec["edge"]),
+                u(&spec["edge_n"]) as usize,
+                f(&spec["middle"]),
+                u(&spec["middle_n"]) as usize,
+            ),
             u(&spec["sample_rate"]) as u32,
         ),
         other => panic!("unknown signal kind {other}"),
@@ -275,18 +299,31 @@ fn check_level(x: &mut Diffs, read: &[f32], kept: &[f32], spans: &[(usize, usize
     x.rounded("level.read_peak", f64::from(peak), &want["read_peak"], 6);
     let q: Vec<i16> = read.iter().map(|&v| to_i16(v)).collect();
     let bytes: Vec<u8> = q.iter().flat_map(|v| v.to_le_bytes()).collect();
-    x.eq("level.int16_sha256", hex(&sha256(&bytes)).as_str(), s(&want["int16_sha256"]));
+    x.eq(
+        "level.int16_sha256",
+        hex(&sha256(&bytes)).as_str(),
+        s(&want["int16_sha256"]),
+    );
     let peaks: Vec<Value> = spans
         .iter()
         .map(|&(a, b)| {
-            q.get(a..b)
-                .filter(|s| !s.is_empty())
-                .map_or(Value::Null, |s| Value::from(s.iter().map(|v| i32::from(*v).abs()).max().unwrap()))
+            q.get(a..b).filter(|s| !s.is_empty()).map_or(Value::Null, |s| {
+                Value::from(s.iter().map(|v| i32::from(*v).abs()).max().unwrap())
+            })
         })
         .collect();
-    x.eq("level.int16_peak_per_span", Value::from(peaks), want["int16_peak_per_span"].clone());
+    x.eq(
+        "level.int16_peak_per_span",
+        Value::from(peaks),
+        want["int16_peak_per_span"].clone(),
+    );
     let first: Vec<i64> = q.iter().filter(|&&v| v != 0).take(6).map(|&v| i64::from(v)).collect();
-    let want_first: Vec<i64> = want["int16_first_nonzero"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
+    let want_first: Vec<i64> = want["int16_first_nonzero"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap())
+        .collect();
     x.eq("level.int16_first_nonzero", first, want_first);
 }
 
@@ -338,7 +375,11 @@ fn run_render(r: &mut Report, story_ceiling: usize) {
             x.eq(&format!("call[{n}].text"), g.text.as_str(), s(&w["text"]));
             x.eq(&format!("call[{n}].seed"), g.seed, u(&w["seed"]));
             x.eq(&format!("call[{n}].speech_s"), g.speech_s, f(&w["speech_s"]));
-            x.eq(&format!("call[{n}].amplitude_scale"), g.amplitude_scale, f(&w["amplitude_scale"]));
+            x.eq(
+                &format!("call[{n}].amplitude_scale"),
+                g.amplitude_scale,
+                f(&w["amplitude_scale"]),
+            );
         }
 
         let res = &c["result"];
@@ -350,16 +391,33 @@ fn run_render(r: &mut Report, story_ceiling: usize) {
             x.eq(&format!("{p}.text"), g.text.as_str(), s(&w["text"]));
             x.eq(&format!("{p}.seed"), u64::from(g.seed), u(&w["seed"]));
             x.eq(&format!("{p}.redraws"), u64::from(g.redraws), u(&w["redraws"]));
-            x.eq(&format!("{p}.first_draw_defect"), verdict(g.first_draw_defect), w["first_draw_defect"].clone());
-            x.eq(&format!("{p}.final_defect"), verdict(g.final_defect), w["final_defect"].clone());
+            x.eq(
+                &format!("{p}.first_draw_defect"),
+                verdict(g.first_draw_defect),
+                w["first_draw_defect"].clone(),
+            );
+            x.eq(
+                &format!("{p}.final_defect"),
+                verdict(g.final_defect),
+                w["final_defect"].clone(),
+            );
             x.rounded(&format!("{p}.s_per_char"), g.s_per_char, &w["s_per_char"], 3);
-            x.rounded(&format!("{p}.first_s_per_char"), g.first_s_per_char, &w["first_s_per_char"], 3);
+            x.rounded(
+                &format!("{p}.first_s_per_char"),
+                g.first_s_per_char,
+                &w["first_s_per_char"],
+                3,
+            );
             let span = (u(&w["span"][0]) as usize, u(&w["span"][1]) as usize);
             x.eq(&format!("{p}.span"), g.span, span);
         }
         x.rounded("seconds", read.seconds(), &res["seconds"], 2);
         x.eq("sr", u64::from(read.sample_rate), u(&res["sr"]));
-        x.eq("first_draw_defects", read.first_draw_defects() as u64, u(&res["first_draw_defects"]));
+        x.eq(
+            "first_draw_defects",
+            read.first_draw_defects() as u64,
+            u(&res["first_draw_defects"]),
+        );
         x.eq("final_defects", read.final_defects() as u64, u(&res["final_defects"]));
         x.eq("read_samples", read.samples.len() as u64, u(&res["read_samples"]));
 
@@ -380,12 +438,20 @@ fn run_render(r: &mut Report, story_ceiling: usize) {
     let dir = std::env::temp_dir().join(format!("ggtts-flac-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let written = write_flac(&dir.join(s(&w["asked_for"])), &y, sr).unwrap();
-    x.eq("written name", written.file_name().unwrap().to_string_lossy().to_string(), s(&w["written"]).to_string());
+    x.eq(
+        "written name",
+        written.file_name().unwrap().to_string_lossy().to_string(),
+        s(&w["written"]).to_string(),
+    );
     match claxon::FlacReader::open(&written) {
         Ok(mut reader) => {
             let info = reader.streaminfo();
             x.eq("format", "FLAC", s(&w["format"]));
-            x.eq("subtype (bits)", info.bits_per_sample, if s(&w["subtype"]) == "PCM_16" { 16 } else { 0 });
+            x.eq(
+                "subtype (bits)",
+                info.bits_per_sample,
+                if s(&w["subtype"]) == "PCM_16" { 16 } else { 0 },
+            );
             x.eq("sample rate", u64::from(info.sample_rate), u(&w["sample_rate"]));
             x.eq("channels", u64::from(info.channels), u(&w["channels"]));
             x.eq("frames (streaminfo)", info.samples, Some(u(&w["frames"])));
@@ -468,10 +534,16 @@ fn pipeline_cases() {
 fn planted_ceiling_44_turns_red() {
     let r = run_all(44);
     println!("{}", summary(&r, &[]));
-    assert!(!r.failed.is_empty(), "a ceiling of 44 passed every case: the suite cannot see the ceiling");
+    assert!(
+        !r.failed.is_empty(),
+        "a ceiling of 44 passed every case: the suite cannot see the ceiling"
+    );
     let names: Vec<&str> = r.failed.iter().map(|(n, _)| n.as_str()).collect();
     for must in ["defaults", "chunks/ceiling-exact/story", "render/arm-join-every-mark"] {
-        assert!(names.contains(&must), "{must} did not fail at ceiling 44; failed: {names:?}");
+        assert!(
+            names.contains(&must),
+            "{must} did not fail at ceiling 44; failed: {names:?}"
+        );
     }
 }
 

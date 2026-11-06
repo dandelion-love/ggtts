@@ -37,7 +37,9 @@ jobs:
             cat Cargo.lock
           fi
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: cargo clippy (runs even when fmt fails, so one run reports both)
+        if: success() || failure()
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Fail if Cargo.lock was missing
         if: always()
         run: test -z "${LOCK_MISSING:-}"

@@ -53,7 +53,9 @@ mod tests {
     #[test]
     fn ggml_pin_is_a_full_commit_sha() {
         assert_eq!(ggml::COMMIT.len(), 40);
-        assert!(ggml::COMMIT.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+        assert!(ggml::COMMIT
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
         assert_eq!(ggml::short(), "af97976");
     }
 

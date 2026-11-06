@@ -42,6 +42,16 @@ instrument never draws from the sampler's random stream.
 Only `ggtts-render` exists so far, and it prints its version and the ggml pin. Every flag will have a `GGTTS_ARG_*`
 environment variable, after llama.cpp's `LLAMA_ARG_*` convention.
 
+### Streaming: which stream
+
+- **To listen: `ggtts-render --stream FILE|-`.** The audio leaves chunk by chunk while the render runs, levelled with
+  the first chunk's gain, so it adds no latency. Its loudness is close to the FLAC's but not equal, because the FLAC's
+  gain is computed over the whole read. On the committed stories on CPU it was within 0.2 dB. A story whose first
+  chunk is much louder or quieter than the rest can land further off.
+- **For parity checks: `--stream FILE --stream-raw`.** The pieces before the level step, bit-exact to the batch read
+  before its level step. The FLAC is this stream times the gain printed at the end. Tests and `stream_probe.sh` ask
+  for it by name.
+
 ## How parity is tested
 
 The tests compare outputs, not impressions. They form a ladder:

@@ -5,6 +5,9 @@
 #   TALKER=<model.gguf> CODEC=<codec.gguf> WORK=<scratch dir> [DEVICE=cuda] scripts/stream_probe.sh
 #   ENGINE=kitten-tts-2 TALKER=<lm.gguf> CODEC=<s3gen.gguf> VOICE=<voice.json> WORK=<dir> scripts/stream_probe.sh
 #
+# Three story renders: batch, --stream --stream-raw (the parity stream: the FLAC must be identical), and --stream
+# (the listener's levelled stream: its loudness against the FLAC's, declared within 3 dB).
+#
 # ENGINE is qwen3-tts (the default) or kitten-tts-2. For Kitten, VOICE (a prepared reference voice) is required, the
 # story defaults to ../ggtts-kitten/fixtures/story/lighthouse.txt, and the frame-level step is skipped: Kitten
 # streams at chunk level only.
@@ -75,7 +78,9 @@ render() { # name extra-args...
 
 echo "== $engine on $device: story, chunk-level stream ($story)"
 render batch || { echo "batch render failed: $WORK/batch.log"; exit 1; }
-render stream --stream "$WORK/stream.wav" || { echo "stream render failed: $WORK/stream.log"; exit 1; }
+# The parity run asks for the raw stream by name; the listener's levelled stream is a third run.
+render stream --stream "$WORK/stream.wav" --stream-raw || { echo "stream render failed: $WORK/stream.log"; exit 1; }
+render level --stream "$WORK/level.wav" || { echo "levelled stream render failed: $WORK/level.log"; exit 1; }
 python3 - "$WORK" <<'PY' || status=1
 import re, sys
 work = sys.argv[1]
@@ -99,7 +104,26 @@ else
   echo "  FLAC DIFFERS with --stream"
   status=1
 fi
-grep -h "level gain" "$WORK/stream.log" | sed 's/^/  /'
+grep -h "level gain" "$WORK/stream.log" "$WORK/level.log" | sed 's/^/  /'
+# The listener's stream against the FLAC: loudness (RMS over samples above the level floor, 1e-3) and peak. The
+# bound declared for it is 3 dB; ffmpeg decodes the FLAC, the WAV is read directly.
+python3 - "$WORK" <<'PY' || status=1
+import math, struct, subprocess, sys
+work = sys.argv[1]
+def pcm16(b):
+    return struct.unpack(f"<{len(b) // 2}h", b[: len(b) // 2 * 2])
+wav = open(f"{work}/level.wav", "rb").read()[44:]
+flac = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", f"{work}/batch.flac", "-f", "s16le", "-"],
+                      capture_output=True, check=True).stdout
+def loud_db(x):
+    v = [s / 32767 for s in x if abs(s / 32767) > 1e-3]
+    return 10 * math.log10(sum(a * a for a in v) / len(v))
+s, f = pcm16(wav), pcm16(flac)
+d = loud_db(s) - loud_db(f)
+print(f"  levelled stream {loud_db(s):.2f} dB vs FLAC {loud_db(f):.2f} dB: {d:+.2f} dB "
+      f"({'within' if abs(d) <= 3 else 'OVER'} the declared 3 dB), peak {max(abs(v) for v in s) / 32767:.4f}")
+sys.exit(0 if abs(d) <= 3 else 1)
+PY
 
 if [ "$engine" != qwen3-tts ]; then
   echo "stream probe ($engine, $device): exit $status (logs in $WORK)"

@@ -48,6 +48,16 @@ const USAGE: &str = "usage: ggtts-render --model M.gguf [--codec C.gguf] --out x
 [--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N] [--device cpu|cuda] [--trace FILE] [--voice REF] \
 [--stream FILE|- [--stream-raw] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE)\n       ggtts-render --version";
 
+/// Which stream to ask for, printed by `--help`.
+const STREAMS: &str = concat!(
+    "streams:\n",
+    "  --stream FILE|-             to listen: levelled as it is produced, with the first chunk's gain\n",
+    "                              (no added latency)\n",
+    "  --stream FILE --stream-raw  for parity checks: before the level step, bit-exact to the batch read;\n",
+    "                              the FLAC is it times the gain printed at the end\n",
+    "  --stream-format wav|s16le   wav (default: plays as it arrives) or raw s16le after a one-line header",
+);
+
 #[derive(Default)]
 struct Args {
     model: Option<PathBuf>,
@@ -283,7 +293,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("-h") | Some("--help") => {
-            println!("{USAGE}");
+            println!("{USAGE}\n\n{STREAMS}");
             ExitCode::SUCCESS
         }
         Some(_) => match parse(&args).and_then(render) {

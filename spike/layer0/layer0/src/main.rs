@@ -9,6 +9,11 @@
 //! `reference/layer0_ref.cpp` is the C++ side of the comparison and carries the same citations.
 //!
 //! Usage: layer0 MODEL.gguf OUT.bin [--threads N] [--tokens T] [--seed S] [--iters N] [--warmup N] [--plant NAME]
+//!               [--device cpu|cuda]
+//!
+//! `--device cuda` needs ggml built with GGML_CUDA=ON (`GGML_CUDA=1` for build.rs). As on the C++ side, it mirrors
+//! the reference on a GPU (transformer_loader.cpp:244-266): the GPU backend first, a CPU backend after it, one
+//! scheduler over both, and the weights and KV cache in the GPU backend's buffers.
 //!
 //! `--plant` builds a deliberately wrong graph, so the comparison can be shown to turn red:
 //!   rope-neox     ggml_rope_ext with GGML_ROPE_TYPE_NEOX in place of ggml_rope_multi with GGML_ROPE_TYPE_MROPE
@@ -325,10 +330,18 @@ fn main() {
     let (model_path, out_path) = (&args[1], &args[2]);
     let (mut n_threads, mut n_tokens, mut iters, mut warmup, mut seed) = (4i32, 16i64, 0usize, 10usize, 20261106u64);
     let mut plant = Plant::None;
+    let mut gpu = false;
     let mut i = 3;
     while i + 1 < args.len() {
         let v = &args[i + 1];
         match args[i].as_str() {
+            "--device" => {
+                gpu = match v.as_str() {
+                    "cuda" => true,
+                    "cpu" => false,
+                    _ => die("--device must be cpu or cuda"),
+                }
+            }
             "--threads" => n_threads = v.parse().unwrap(),
             "--tokens" => n_tokens = v.parse().unwrap(),
             "--seed" => seed = v.parse().unwrap(),
@@ -421,11 +434,24 @@ fn main() {
             ffn_down: t[10],
         };
 
-        let mut backend = g::ggml_backend_init_by_type(g::GGML_BACKEND_DEVICE_TYPE_CPU, ptr::null());
-        if backend.is_null() {
+        let cpu = g::ggml_backend_init_by_type(g::GGML_BACKEND_DEVICE_TYPE_CPU, ptr::null());
+        if cpu.is_null() {
             die("no CPU backend");
         }
-        g::ggml_backend_cpu_set_n_threads(backend, n_threads);
+        g::ggml_backend_cpu_set_n_threads(cpu, n_threads);
+        let mut backend = cpu;
+        if gpu {
+            backend = g::ggml_backend_init_by_type(g::GGML_BACKEND_DEVICE_TYPE_GPU, ptr::null());
+            if backend.is_null() {
+                die("no GPU backend; is ggml built with GGML_CUDA=ON?");
+            }
+            let name = CStr::from_ptr(g::ggml_backend_dev_name(g::ggml_backend_get_device(backend)));
+            eprintln!("layer0: device {}", name.to_string_lossy());
+        }
+        let mut backends = vec![backend];
+        if gpu {
+            backends.push(cpu);
+        }
 
         let wbuf = g::ggml_backend_alloc_ctx_tensors(wctx, backend);
         g::ggml_backend_buffer_set_usage(wbuf, g::GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
@@ -464,7 +490,14 @@ fn main() {
         let cbuf = g::ggml_backend_alloc_ctx_tensors(cctx, backend);
         g::ggml_backend_buffer_clear(cbuf, 0);
 
-        let sched = g::ggml_backend_sched_new(&mut backend, ptr::null_mut(), 1, MAX_NODES, false, true); // transformer_loader.cpp:266
+        let sched = g::ggml_backend_sched_new(
+            backends.as_mut_ptr(),
+            ptr::null_mut(),
+            backends.len() as i32,
+            MAX_NODES,
+            false,
+            true,
+        ); // transformer_loader.cpp:266
 
         let mut compute_meta =
             vec![0u8; g::ggml_tensor_overhead() * MAX_NODES + g::ggml_graph_overhead_custom(MAX_NODES, false)];
@@ -568,7 +601,8 @@ fn main() {
             let mean = ms.iter().sum::<f64>() / iters as f64;
             ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
             println!(
-                "timing lang=rust threads={} tokens={} iters={} mean_ms={:.4} median_ms={:.4} min_ms={:.4}",
+                "timing lang=rust device={} threads={} tokens={} iters={} mean_ms={:.4} median_ms={:.4} min_ms={:.4}",
+                if gpu { "cuda" } else { "cpu" },
                 n_threads,
                 n_tokens,
                 iters,
@@ -583,7 +617,10 @@ fn main() {
         g::ggml_backend_buffer_free(wbuf);
         g::ggml_free(cctx);
         g::ggml_free(wctx);
-        g::ggml_backend_free(backend);
+        if gpu {
+            g::ggml_backend_free(backend);
+        }
+        g::ggml_backend_free(cpu);
         g::gguf_free(gg);
         g::ggml_free(meta);
     }

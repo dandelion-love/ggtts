@@ -19,10 +19,12 @@
 //! default) or raw s16le after a one-line header. A story streams chunk by chunk, each piece as soon as its chunk
 //! is kept. Which stream:
 //!
-//! * **To listen: `--stream`.** Levelled with the level step's own rule, one gain set from the first 5 s of audio
-//!   (`--stream-level-seconds`, held back until then; 0 takes the first chunk alone) and held
-//!   for the read (`stream::FirstChunkLevel`), so it adds no latency. Its loudness is close to the FLAC's but not
-//!   equal: the FLAC's gain is computed over the whole read, known only after the last chunk.
+//! * **To listen: `--stream`.** Levelled with the level step's own rule: one gain, set from at least the first
+//!   `--stream-level-seconds` of audio (default `stream::DEFAULT_HOLD_S`, 5 s; 0 takes the first chunk alone), and
+//!   kept for the rest of the read (`stream::StreamLevel`). Audio is held back until that much is in hand, so a hold
+//!   longer than the first chunk delays first audio; one no longer than the first chunk costs nothing. Its loudness
+//!   is close to the FLAC's but not equal: the FLAC's gain is computed over the whole read, known only after the last
+//!   chunk.
 //! * **To check parity: `--stream --stream-raw`.** The pieces before the level step, bit-exact to the batch read
 //!   before its level step; applying the FLAC's gain (printed on stderr at the end) gives the FLAC's samples.
 //!

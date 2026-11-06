@@ -7,6 +7,8 @@ members = [
     "crates/ggtts-qwen3-tts",
     "crates/ggtts-cli",
 ]
+# A spike with its own workspace; it builds ggml and needs libclang, so the main CI jobs leave it out.
+exclude = ["spike/layer0"]
 
 [workspace.package]
 version = "0.0.1"

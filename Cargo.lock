@@ -189,6 +189,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "ggtts-instrument-event-template"
+version = "0.0.1"
+dependencies = [
+ "ggtts-core",
+ "ggtts-fake",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "ggtts-instrument-tensor-template"
+version = "0.0.1"
+dependencies = [
+ "ggtts-core",
+ "ggtts-fake",
+ "ggtts-instrument-tensor-template",
+]
+
+[[package]]
 name = "ggtts-kitten"
 version = "0.0.1"
 dependencies = [

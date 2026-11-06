@@ -1,0 +1,21 @@
+[package]
+name = "ggtts-instrument-event-template"
+description = "Template: an out-of-process ggtts event instrument in Rust, reading ggtts-trace/1 and writing ggtts-report/1"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "ggtts-event-template"
+path = "src/main.rs"
+
+[dependencies]
+ggtts-core.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+
+[dev-dependencies]
+ggtts-fake.workspace = true

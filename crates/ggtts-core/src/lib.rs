@@ -2,7 +2,8 @@
 //!
 //! The parts every engine shares: the engine interface ([`engine`]), the long-text story path ([`text`] for
 //! reading and chunking, [`seed`] for the seed per chunk, [`audio`] for the judge and the trim, [`pipeline`] for
-//! the redraw, the joins and the level), FLAC output ([`flac`]), and the instrument events with the trace format,
+//! the redraw, the joins and the level), FLAC output ([`flac`]), in-process tensor hooks ([`hooks`]), and the
+//! instrument events with the trace format,
 //! replay and the trace-identity check ([`trace`]), and streaming output ([`stream`], fed by
 //! [`pipeline::render_story_streamed`]). The provenance manifest comes next.
 //!
@@ -15,6 +16,7 @@
 pub mod audio;
 pub mod engine;
 pub mod flac;
+pub mod hooks;
 pub mod numeric;
 pub mod pipeline;
 pub mod profile;

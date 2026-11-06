@@ -17,6 +17,7 @@
 //! the host as the same f32 bits. Its replay graphs and dedicated schedulers are execution strategies over the same
 //! graphs and are not reproduced.
 
+use ggtts_core::hooks::Wants;
 use std::collections::HashMap;
 use std::path::Path;
 use std::ptr;
@@ -216,14 +217,10 @@ pub struct Generation {
     pub stop: Stop,
 }
 
-/// One talker step as the instrument sees it: the frame, the token drawn for codebook 0, and the probability the
-/// sampler gave the end-of-speech token at that step.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FrameStop {
-    pub frame: i32,
-    pub token: i32,
-    pub p_stop: f64,
-}
+/// Called once per talker step, after the codebook-0 token is drawn: the frame, the token, and what the caller's
+/// [`Wants`] asked for: the end-of-speech probability under the sampler's distribution, and the logits as the sampler
+/// saw them (after suppression and the repetition penalty, before temperature). Nothing unasked is computed.
+pub type StepHook<'a> = dyn FnMut(i32, i32, Option<f64>, Option<&[f32]>) + 'a;
 
 /// The end-of-speech probability under the distribution the sampler draws from: the logits after suppression and
 /// repetition penalty, scaled by the temperature, cut to the top k (and top p), softmaxed. Computed in f64 on a copy,
@@ -688,29 +685,17 @@ impl Talker {
         max_len: i32,
         sampling: Sampling,
     ) -> Result<Generation, EngineError> {
-        self.generate_traced(text, speaker, language_id, seed, max_len, sampling, None)
+        self.generate_streamed(text, speaker, language_id, seed, max_len, sampling, None, None)
     }
 
-    /// [`generate`](Self::generate), and with `trace` one [`FrameStop`] per talker step, the step that drew
-    /// end-of-speech included. The trace reads values the loop already has; the output is the same with or without
-    /// it.
-    #[allow(clippy::too_many_arguments)]
-    pub fn generate_traced(
-        &mut self,
-        text: &str,
-        speaker: &str,
-        language_id: i32,
-        seed: u64,
-        max_len: i32,
-        sampling: Sampling,
-        trace: Option<&mut Vec<FrameStop>>,
-    ) -> Result<Generation, EngineError> {
-        self.generate_streamed(text, speaker, language_id, seed, max_len, sampling, trace, None)
-    }
-
-    /// [`generate_traced`](Self::generate_traced), and with `on_frame` a call per kept frame, with its 16 codes, as
-    /// soon as they are final and before the next talker step: the frames the returned codes hold, in order. Like
-    /// the trace, the hook only reads; the tokens are the same with or without it.
+    /// [`generate`](Self::generate), with two read-only callbacks.
+    /// - `on_step`, with its [`Wants`], is called once per talker step, the step that drew end-of-speech included
+    ///   ([`StepHook`]).
+    /// - `on_frame` is called once per kept frame, with its 16 codes, as soon as they are final and before the next
+    ///   talker step: the frames the returned codes hold, in order.
+    ///
+    /// Both read values the loop already has, plus what `on_step` asked for, computed on copies; the tokens are the
+    /// same with or without them.
     #[allow(clippy::too_many_arguments)]
     pub fn generate_streamed(
         &mut self,
@@ -720,7 +705,7 @@ impl Talker {
         seed: u64,
         max_len: i32,
         sampling: Sampling,
-        mut trace: Option<&mut Vec<FrameStop>>,
+        mut on_step: Option<(Wants, &mut StepHook<'_>)>,
         mut on_frame: Option<&mut FrameHook<'_>>,
     ) -> Result<Generation, EngineError> {
         sampling.check()?;
@@ -828,20 +813,18 @@ impl Talker {
                 }
             }
             repetition_penalty(&mut logits, &history, sampling.repetition_penalty);
-            let p_stop = trace
-                .as_ref()
-                .map(|_| stop_probability(&logits, c.codec_eos_id, sampling));
+            let wants = on_step.as_ref().map_or(Wants::NONE, |(w, _)| *w);
+            let p_stop = wants
+                .p_stop
+                .then(|| stop_probability(&logits, c.codec_eos_id, sampling));
+            let seen = wants.logits.then(|| logits.clone());
             let next = if sampling.temperature <= 0.0 {
                 argmax(&logits)
             } else {
                 sample_top_k_p(&mut logits, sampling, &mut rng)
             };
-            if let (Some(t), Some(p_stop)) = (trace.as_mut(), p_stop) {
-                t.push(FrameStop {
-                    frame,
-                    token: next,
-                    p_stop,
-                });
+            if let Some((_, f)) = on_step.as_mut() {
+                f(frame, next, p_stop, seen.as_deref());
             }
             if next == c.codec_eos_id {
                 stop = Stop::Eos;

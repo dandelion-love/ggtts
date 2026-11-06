@@ -5,6 +5,7 @@
 
 use crate::audio::{judge_f32, trim_edges_f32, Verdict};
 use crate::engine::{ChunkRequest, Engine, EngineError};
+use crate::hooks::Hooks;
 use crate::numeric::{log10, mean_f32, pow};
 use crate::profile::Profile;
 use crate::seed::seed_of;
@@ -137,7 +138,21 @@ pub fn render_story_traced(
     opts: &RenderOptions,
     events: &mut dyn Events,
 ) -> Result<Read, RenderError> {
-    render_story_streamed(engine, story_id, chunks, opts, events, &mut |_| Ok(()))
+    render_story_hooked(engine, story_id, chunks, opts, events, &mut Hooks::new())
+}
+
+/// [`render_story_traced`], handing every generated frame to `hooks` as well (see [`crate::hooks`]). The read is
+/// the same with or without hooks. The caller calls [`Hooks::finish`] and reads [`Hooks::failures`] when the run is
+/// done.
+pub fn render_story_hooked(
+    engine: &mut dyn Engine,
+    story_id: &str,
+    chunks: &[PlannedChunk],
+    opts: &RenderOptions,
+    events: &mut dyn Events,
+    hooks: &mut Hooks,
+) -> Result<Read, RenderError> {
+    render(engine, story_id, chunks, opts, events, &mut |_| Ok(()), hooks)
 }
 
 /// One piece of a streamed read: a kept chunk, trimmed, followed by the gap after it (none after the last).
@@ -167,6 +182,19 @@ pub fn render_story_streamed(
     opts: &RenderOptions,
     events: &mut dyn Events,
     sink: &mut dyn FnMut(StreamPiece<'_>) -> Result<(), String>,
+) -> Result<Read, RenderError> {
+    render(engine, story_id, chunks, opts, events, sink, &mut Hooks::new())
+}
+
+/// The story path every public render shares: events, a sink, and tensor hooks.
+fn render(
+    engine: &mut dyn Engine,
+    story_id: &str,
+    chunks: &[PlannedChunk],
+    opts: &RenderOptions,
+    events: &mut dyn Events,
+    sink: &mut dyn FnMut(StreamPiece<'_>) -> Result<(), String>,
+    hooks: &mut Hooks,
 ) -> Result<Read, RenderError> {
     let tracing = events.level() > 0;
     let mut total_frames: u64 = 0;
@@ -199,7 +227,7 @@ pub fn render_story_streamed(
                     n_text_tokens: None,
                 });
             }
-            let generated = engine.generate_traced(&req, events)?;
+            let generated = engine.generate_hooked(&req, events, hooks)?;
             let pcm = engine.decode(&generated.codes)?;
             let j = judge_f32(&profile, &pcm.samples, pcm.sample_rate, &c.text);
             let frames = generated.codes.n_frames();

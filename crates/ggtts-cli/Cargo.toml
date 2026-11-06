@@ -26,3 +26,5 @@ default = []
 # The engines over ggml. Off by default, so the workspace builds without the ggml submodule; ggtts-render then
 # only reports its version.
 ggml = ["ggtts-qwen3-tts/ggml"]
+# The CUDA backend as well, for --device cuda.
+cuda = ["ggml", "ggtts-qwen3-tts/cuda"]

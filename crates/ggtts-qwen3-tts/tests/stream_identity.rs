@@ -13,6 +13,10 @@
 //! `every = 1` re-decodes the prefix once per frame and took 36 minutes over the fixtures; it runs only with
 //! `GGTTS_STREAM_EVERY_1=1`.
 //!
+//! `GGTTS_DEVICE=cuda` (with the `cuda` feature) runs the same streams on CUDA and **reports only**: the parity above
+//! was declared and measured on CPU, and on CUDA the decoder projects the rest codebooks differently below 64 frames
+//! (`codec.rs`, `summed`), so a prefix shorter than 64 frames takes another path than the batch decode.
+//!
 //! Needs the published codec GGUF: `GGTTS_CODEC=<qwen-tokenizer-12hz-q8_0.gguf> cargo test -p ggtts-qwen3-tts
 //! --features ggml --release --test stream_identity -- --ignored --nocapture`.
 #![cfg(feature = "ggml")]
@@ -22,7 +26,8 @@ use std::time::Instant;
 
 use ggtts_core::flac::to_i16;
 use ggtts_core::stream::first_sample_diff;
-use ggtts_qwen3_tts::codec::Decoder;
+use ggtts_qwen3_tts::codec::{Decoder, Plant};
+use ggtts_qwen3_tts::cpu::Device;
 use ggtts_qwen3_tts::fixtures::Golden;
 use ggtts_qwen3_tts::stream::{stream_codes, Context};
 
@@ -40,7 +45,10 @@ fn the_stream_matches_the_batch_decode_as_declared() {
     let codec = PathBuf::from(std::env::var("GGTTS_CODEC").expect("set GGTTS_CODEC to the codec GGUF"));
     let goldens = Golden::load_all(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/cpu")).unwrap();
     assert!(!goldens.is_empty());
-    let mut dec = Decoder::load(&codec, 4).unwrap();
+    let d = std::env::var("GGTTS_DEVICE").unwrap_or_else(|_| "cpu".into());
+    let device = Device::parse(&d).unwrap_or_else(|| panic!("GGTTS_DEVICE must be cpu or cuda, not {d}"));
+    let gate = !device.is_cuda();
+    let mut dec = Decoder::load_on(&codec, 4, device, Plant::None).unwrap();
     let mut failures = Vec::new();
     for gold in &goldens {
         let n = gold.frames();
@@ -96,7 +104,7 @@ fn the_stream_matches_the_batch_decode_as_declared() {
                 // hold 0: measured and reported only (see the header).
                 _ => true,
             };
-            if !ok {
+            if gate && !ok {
                 failures.push(format!(
                     "{} every={every} hold={hold} {context:?}: diff {diff:?}, {lsb} LSB",
                     gold.name

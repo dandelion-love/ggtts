@@ -46,13 +46,40 @@ fn disable_tf32() {
     }
 }
 
-/// One line for a log: what this process asks of cuBLAS's TF32 math.
-pub fn tf32_note() -> String {
-    match std::env::var(TF32_OVERRIDE).as_deref() {
+/// ggml's CUDA switch for its graph fusions: `1` turns them off (`ggml/src/ggml-cuda/ggml-cuda.cu:3041`).
+pub const DISABLE_FUSION: &str = "GGML_CUDA_DISABLE_FUSION";
+
+/// Turn off ggml's CUDA fusions, unless the caller set the switch.
+///
+/// The one that matters: a one-column matrix product followed by an add is fused into one mat-vec call whose
+/// destination is the add node (`ggml-cuda.cu:3657-3703`), and the mat-vec kernel reads its precision from that
+/// destination's `op_params[0]` (`ggml-cuda/mmvf.cu:650`). An add's parameters are zero, which is
+/// `GGML_PREC_DEFAULT`, so the `GGML_PREC_F32` set on the product is lost and an f16 matrix is multiplied in half
+/// precision, the activations rounded to f16 and the sum accumulated in `half2` (`ggml-cuda/mmvf.cu:193-219`, chosen
+/// at `:615`). Every generated token's output and down projections feed a residual add, and an f16 accumulation of
+/// 6144 products can overflow. That is the likely cause, read from the code and not yet measured, of the first
+/// CUDA render's failure, where no logit was finite. The batched forward is never fused this way (the fusion needs
+/// one column), which fits the 328-position parity check passing. ggml reads the switch once, at the first graph it
+/// computes. `GGML_CUDA_DISABLE_FUSION=0` keeps the fusions, to reproduce the failure.
+fn disable_fusion() {
+    if std::env::var_os(DISABLE_FUSION).is_none() {
+        std::env::set_var(DISABLE_FUSION, "1");
+    }
+}
+
+/// One line for a log: what this process asks of cuBLAS's TF32 math and of ggml's CUDA fusions.
+pub fn cuda_note() -> String {
+    let tf32 = match std::env::var(TF32_OVERRIDE).as_deref() {
         Ok("0") => format!("{TF32_OVERRIDE}=0: cuBLAS asked for full f32 products"),
         Ok(v) => format!("{TF32_OVERRIDE}={v}: cuBLAS may use TF32"),
         Err(_) => format!("{TF32_OVERRIDE} unset: cuBLAS uses TF32 (ggml's default)"),
-    }
+    };
+    let fusion = match std::env::var(DISABLE_FUSION).as_deref() {
+        Ok(v) if v.trim().parse::<i32>().unwrap_or(0) != 0 => format!("{DISABLE_FUSION}={v}: fusions off"),
+        Ok(v) => format!("{DISABLE_FUSION}={v}: fusions on"),
+        Err(_) => format!("{DISABLE_FUSION} unset: fusions on (ggml's default)"),
+    };
+    format!("{tf32}; {fusion}")
 }
 
 /// The largest graph any Kitten graph builds, in nodes.
@@ -81,6 +108,7 @@ impl Backend {
                 Device::Cpu => cpu(),
                 Device::Cuda => {
                     disable_tf32();
+                    disable_fusion();
                     g::ggml_backend_init_by_type(g::GGML_BACKEND_DEVICE_TYPE_GPU, ptr::null())
                 }
             };

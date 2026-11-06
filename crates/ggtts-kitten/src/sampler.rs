@@ -64,7 +64,18 @@ impl Rng {
 }
 
 /// Apply the processors to `scores` in place. `history` is the prompt and everything generated so far.
-pub fn process(scores: &mut [f32], history: &[u32], prompt_len: usize, ids: Ids, s: &Settings) {
+///
+/// Refuses logits that are not all finite: a NaN or an infinity means the forward pass failed, and drawing from
+/// what is left would hide it (and leave nothing finite to draw from when every logit is NaN).
+pub fn process(scores: &mut [f32], history: &[u32], prompt_len: usize, ids: Ids, s: &Settings) -> Result<(), String> {
+    if let Some(i) = scores.iter().position(|v| !v.is_finite()) {
+        let bad = scores.iter().filter(|v| !v.is_finite()).count();
+        return Err(format!(
+            "non-finite logits: {bad} of {} (the first, id {i}, is {}); the sampler refuses them",
+            scores.len(),
+            scores[i]
+        ));
+    }
     // TokenRunPenalty.
     if let Some(&last) = history.last() {
         if s.run_penalty != 0.0 {
@@ -118,7 +129,10 @@ pub fn process(scores: &mut [f32], history: &[u32], prompt_len: usize, ids: Ids,
     if s.top_p < 1.0 {
         let mut order: Vec<usize> = (0..scores.len()).filter(|&i| scores[i].is_finite()).collect();
         order.sort_by(|&a, &b| scores[a].total_cmp(&scores[b]).then(a.cmp(&b)));
-        let peak = scores[*order.last().unwrap()];
+        let Some(&last) = order.last() else {
+            return Err("no finite score is left for top-p".into());
+        };
+        let peak = scores[last];
         let sum: f64 = order.iter().map(|&i| f64::from(scores[i] - peak).exp()).sum();
         let mut acc = 0f64;
         for &i in &order[..order.len() - 1] {
@@ -137,6 +151,7 @@ pub fn process(scores: &mut [f32], history: &[u32], prompt_len: usize, ids: Ids,
             }
         }
     }
+    Ok(())
 }
 
 /// Draw from the softmax of the finite scores, by inverse CDF in id order.
@@ -190,8 +205,22 @@ mod tests {
             top_k: 1,
             ..Settings::default()
         };
-        process(&mut scores, &[1, 2, 12], 1, IDS, &s);
+        process(&mut scores, &[1, 2, 12], 1, IDS, &s).unwrap();
         assert_eq!(sample(&scores, &mut Rng::new(1)), 2);
+    }
+
+    #[test]
+    fn non_finite_logits_are_refused_not_sampled() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut scores = vec![0.5f32; 30];
+            scores[7] = bad;
+            let e = process(&mut scores, &[1], 1, IDS, &Settings::default()).unwrap_err();
+            assert!(e.contains("non-finite logits: 1 of 30") && e.contains("id 7"), "{e}");
+        }
+        // Every logit NaN: the case that panicked in top-p before this check.
+        let mut scores = vec![f32::NAN; 30];
+        let e = process(&mut scores, &[1], 1, IDS, &Settings::default()).unwrap_err();
+        assert!(e.contains("30 of 30"), "{e}");
     }
 
     #[test]
@@ -210,7 +239,8 @@ mod tests {
                 top_p: 1.0,
                 ..Settings::default()
             },
-        );
+        )
+        .unwrap();
         assert!((a[15] - (1.0 - 3.0 * 1.3)).abs() < 1e-6);
     }
 }

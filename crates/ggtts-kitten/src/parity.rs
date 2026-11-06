@@ -40,6 +40,21 @@ pub fn argmax(a: &[f32]) -> usize {
     best
 }
 
+/// The single-token path against the batched path on the same model and device (DESIGN.md, level 2): the logits'
+/// cosine at every compared position, at least. Every argmax must also be equal.
+pub const STEP_MIN_COSINE: f64 = 0.99999;
+
+/// Fixed pseudo-random token ids in `0..n_vocab` (a 64-bit LCG), for a check that needs inputs and has no recording.
+pub fn pseudo_ids(n: usize, n_vocab: usize, seed: u64) -> Vec<u32> {
+    let mut s = seed;
+    (0..n)
+        .map(|_| {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((s >> 33) % n_vocab as u64) as u32
+        })
+        .collect()
+}
+
 /// A bar, as DESIGN.md states it for one arm.
 #[derive(Debug, Clone, Copy)]
 pub struct Bar {

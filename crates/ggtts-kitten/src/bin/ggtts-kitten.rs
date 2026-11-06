@@ -4,6 +4,7 @@
 //!
 //! ```text
 //! ggtts-kitten parity --gguf FILE --ref DIR [--weights f32|ternary|ternary-f32head] [--threads N]
+//! ggtts-kitten step-parity --gguf FILE [--ref DIR] [--steps N] [--weights f32|ternary] [--threads N]
 //! ggtts-kitten tokcheck --tokenizer tokenizer.json --expect FILE
 //! ggtts-kitten render --gguf FILE --tokenizer tokenizer.json --reference REF.json --lines FILE --out-dir DIR
 //!                     --python PYTHON --script tools/kitten_ref.py [--seed N] [--threads N] [--max-tokens N]
@@ -17,6 +18,8 @@
 //!
 //! `parity` runs the teacher-forced forward pass on the inputs `tools/kitten_ref.py logits` recorded in `DIR`
 //! and compares the hidden state after every layer and the logits with PyTorch's, against the arm's bar.
+//! `step-parity` runs the same positions batched and one token at a time, as generation does, and compares the
+//! logits (the prompt recorded in `--ref DIR`, or fixed pseudo-random ids; the last `--steps`, default 16, one by one).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -642,13 +645,60 @@ fn bench_cmd(a: &Args) -> Result<bool, String> {
     Ok(true)
 }
 
+/// The single-token forward against the batched forward on the same positions; exit 1 below the bar.
+fn step_cmd(a: &Args) -> Result<bool, String> {
+    let weights = match a.or("weights", "ternary") {
+        "f32" => Weights::F32,
+        "ternary" => Weights::Ternary,
+        "ternary-f32head" => Weights::TernaryF32Head,
+        w => return Err(format!("unknown --weights {w}")),
+    };
+    let threads: usize = a.or("threads", "4").parse().map_err(|_| "bad --threads")?;
+    let steps: usize = a.or("steps", "16").parse().map_err(|_| "bad --steps")?;
+    let be = backend(a, threads)?;
+    let gguf = Gguf::open(Path::new(a.get("gguf")?))?;
+    let model = Model::load(&gguf, weights, be.clone())?;
+    drop(gguf);
+    let ids: Vec<u32> = match a.map.get("ref") {
+        Some(dir) => {
+            let p = PathBuf::from(dir).join("meta.json");
+            let meta: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?)
+                    .map_err(|e| e.to_string())?;
+            meta["ids"]
+                .as_array()
+                .ok_or("meta.ids")?
+                .iter()
+                .map(|v| v.as_u64().unwrap() as u32)
+                .collect()
+        }
+        None => ggtts_kitten::parity::pseudo_ids(64, model.hp.n_vocab, 1234),
+    };
+    if steps == 0 || steps >= ids.len() {
+        return Err(format!("--steps must be between 1 and {}", ids.len() - 1));
+    }
+    let prefill = ids.len() - steps;
+    let r = Session::step_check(&model, &ids, prefill)?;
+    println!(
+        "single-token against batched ({weights:?}, {:?}): {} positions after a prefill of {prefill}; min cosine {:.7}, worst rel L2 {:.3e}, argmax equal {}/{}",
+        be.device, r.positions, r.min_cosine, r.max_rel_l2, r.argmax_equal, r.positions
+    );
+    let ok = r.passes();
+    println!(
+        "STEP PARITY {} (bar: cosine >= {}, every argmax equal)",
+        if ok { "PASS" } else { "FAIL" },
+        ggtts_kitten::parity::STEP_MIN_COSINE
+    );
+    Ok(ok)
+}
+
 /// `--device cpu|cuda` (default cpu): one backend for every graph of the command.
 fn backend(a: &Args, threads: usize) -> Result<std::rc::Rc<ggtts_kitten::backend::Backend>, String> {
     let d = a.or("device", "cpu");
     let device = ggtts_kitten::backend::Device::parse(d).ok_or(format!("unknown --device {d}"))?;
     let be = ggtts_kitten::backend::Backend::new(device, threads)?;
     if device == ggtts_kitten::backend::Device::Cuda {
-        println!("{}", ggtts_kitten::backend::tf32_note());
+        println!("{}", ggtts_kitten::backend::cuda_note());
     }
     Ok(be)
 }
@@ -662,6 +712,7 @@ fn main() -> ExitCode {
     let cmd = it.next().unwrap_or_default();
     let res = Args::parse(it).and_then(|a| match cmd.as_str() {
         "parity" => parity_cmd(&a),
+        "step-parity" => step_cmd(&a),
         "tokcheck" => tokcheck_cmd(&a),
         "render" => render_cmd(&a),
         "hift-parity" => hift_cmd(&a),

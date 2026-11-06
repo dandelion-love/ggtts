@@ -317,6 +317,23 @@ impl Model {
     }
 }
 
+/// What [`Session::step_check`] measured.
+#[derive(Debug, Clone, Copy)]
+pub struct StepCheck {
+    pub positions: usize,
+    pub min_cosine: f64,
+    pub max_rel_l2: f64,
+    pub argmax_equal: usize,
+}
+
+impl StepCheck {
+    /// The bar written in DESIGN.md before the check was first run: cosine at least
+    /// [`crate::parity::STEP_MIN_COSINE`] at every position and every argmax equal.
+    pub fn passes(&self) -> bool {
+        self.min_cosine >= crate::parity::STEP_MIN_COSINE && self.argmax_equal == self.positions
+    }
+}
+
 /// One generation's state: the KV cache, the backend and the graph allocator.
 pub struct Session<'m> {
     model: &'m Model,
@@ -573,8 +590,95 @@ impl<'m> Session<'m> {
             };
             g::ggml_backend_sched_reset(sched);
             g::ggml_free(ctx);
+            if out.logits.iter().any(|v| !v.is_finite()) {
+                return Err(self.locate_non_finite(embd, n_logits, &out, hidden));
+            }
             self.n_past += t;
             Ok(out)
+        }
+    }
+
+    /// The batched forward against the single-token forward on the same positions (DESIGN.md, level 2,
+    /// "single-token path"). `ids[..prefill]` is one forward in both sessions; the rest is one more forward in the
+    /// batched session and one forward per token in the other, as generation runs. Returns the logits compared at
+    /// each of those positions: the minimum cosine, the worst relative L2 and how many argmaxes agree.
+    pub fn step_check(model: &Model, ids: &[u32], prefill: usize) -> Result<StepCheck, String> {
+        let n = model.hp.n_embd;
+        let v = model.hp.n_vocab;
+        if prefill == 0 || prefill >= ids.len() {
+            return Err("step_check needs 0 < prefill < ids.len()".into());
+        }
+        let mut embd = Vec::with_capacity(ids.len() * n);
+        model.embed_tokens(ids, &mut embd);
+        let steps = ids.len() - prefill;
+        let mut batched = Session::new(model, ids.len())?;
+        batched
+            .forward(&embd[..prefill * n], 1, false)
+            .map_err(|e| format!("batched prefill: {e}"))?;
+        let all = batched
+            .forward(&embd[prefill * n..], steps, false)
+            .map_err(|e| format!("batched forward of {steps} tokens: {e}"))?
+            .logits;
+        let mut single = Session::new(model, ids.len())?;
+        single
+            .forward(&embd[..prefill * n], 1, false)
+            .map_err(|e| format!("single-token session's prefill: {e}"))?;
+        let mut r = StepCheck {
+            positions: steps,
+            min_cosine: f64::INFINITY,
+            max_rel_l2: 0.0,
+            argmax_equal: 0,
+        };
+        for k in 0..steps {
+            let p = prefill + k;
+            let one = single
+                .forward(&embd[p * n..(p + 1) * n], 1, false)
+                .map_err(|e| format!("single-token forward at position {p}: {e}"))?
+                .logits;
+            let b = &all[k * v..(k + 1) * v];
+            r.min_cosine = r.min_cosine.min(crate::parity::cosine(&one, b));
+            r.max_rel_l2 = r.max_rel_l2.max(crate::parity::rel_l2(&one, b));
+            r.argmax_equal += usize::from(crate::parity::argmax(&one) == crate::parity::argmax(b));
+        }
+        Ok(r)
+    }
+
+    /// Name where a forward pass first went non-finite, for an error. The cache has not advanced. Without hidden
+    /// states the same positions are run again with every layer's output read back, which rewrites the same cache
+    /// slots from the same inputs.
+    fn locate_non_finite(&mut self, embd: &[f32], n_logits: usize, out: &Output, hidden: bool) -> String {
+        let t = embd.len() / self.model.hp.n_embd;
+        let n_layer = self.model.hp.n_layer;
+        let bad = out.logits.iter().filter(|v| !v.is_finite()).count();
+        let at = format!(
+            "{bad} of {} logits non-finite at positions {}..{} ({t} token(s) in this forward)",
+            out.logits.len(),
+            self.n_past,
+            self.n_past + t
+        );
+        let first = |h: &[Vec<f32>]| {
+            h.iter().position(|x| x.iter().any(|v| !v.is_finite())).map(|i| {
+                if i < n_layer {
+                    format!(
+                        "the first non-finite hidden state is after layer {} of {n_layer}",
+                        i + 1
+                    )
+                } else {
+                    "every layer is finite and the final norm is not".to_string()
+                }
+            })
+        };
+        if hidden {
+            let where_ = first(&out.hidden).unwrap_or_else(|| "every layer and the final norm are finite".into());
+            return format!("{at}; {where_}");
+        }
+        let pos0 = self.n_past;
+        match self.forward(embd, n_logits, true) {
+            Err(e) => e,
+            Ok(_) => {
+                self.n_past = pos0;
+                format!("{at}; run again with every layer read back, it came out finite, so no layer is named")
+            }
         }
     }
 }

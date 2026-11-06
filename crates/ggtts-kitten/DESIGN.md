@@ -144,6 +144,14 @@ tolerances fixed here, before any measurement:
      0.999998 for its `TQ2_1` path against float32 Python (`cpp/tools/kitten-tts/README.md:174`); these bars leave
      room for `Q8_K` versus `Q8_0` activations and a bf16 head, and no more.
    * The planted wrong group size must fail the ternary arm's bar, not merely the converter.
+   * **Single-token path** (bar written 2026-11-06, after a CUDA render failed on it and before this check was
+     first run). Both arms above run one batched forward, which never takes the path every generated token takes:
+     one column at a time against the KV cache. So the same positions are also run both ways on the same model and
+     device: a prefill, then the remaining positions as one batched forward in one session and one token at a time in
+     another. Bar: every logit finite, and at each compared position the two logit vectors' cosine at least
+     `0.99999` with the argmax equal. The paths share weights and inputs, so this is a check on the kernels and the
+     cache, not on the model, and it is held tighter than the arms against PyTorch. `ggtts-kitten step-parity` and
+     `tests/step_identity.rs` run it.
 3. **Decoder, deterministic, on fixed tokens.** For the PyTorch bridge this is identity by construction (it is the
    reference). For a ggml S3Gen, when it exists: fixed tokens, fixed reference conditioning and a fixed noise draw,
    mel within relative L2 `1e-3` and waveform within SNR 40 dB of `S3Codec.decode`. Stated now so the port is held
@@ -377,6 +385,59 @@ Citations are `ggml/src/` at `af97976`. These were read, not measured op by op o
   exported, the same as the in-process run. If the in-process run fails and the exported one passes, cuBLAS read the
   variable before the process set it, and the override moves to the process's start.
 * Render: two CUDA renders byte-identical.
+
+### The re-probe, and the render it broke (2026-11-06)
+
+On `e732657` every parity check passed on CUDA. The LM f32 arm's worst hidden rel L2 was `2.7e-6`. The ternary arm
+passed, and so did the vocoder and the flow-then-vocoder check, with all of level 5 and every plant red. Both TF32
+diagnostics read as predicted. With TF32 allowed, flow then vocoder failed; with `=0` exported, it passed like the
+in-process run. The ternary arm with TF32 allowed read cosine `0.9999987`, RMSE `0.019`.
+
+**Both renders panicked in the sampler**: `sampler.rs:121`, an `unwrap()` on an empty list, because no logit was
+finite. That is the single-token path, which no parity check took. What changes (written before the next probe):
+
+* **The forward refuses non-finite logits.** It re-runs the same positions with every layer read back and names the
+  first layer whose output is non-finite, and the engine adds the generation step and position. The sampler refuses
+  non-finite logits too, rather than panicking.
+* **The likely cause, read from ggml and not yet measured: a fusion drops `GGML_PREC_F32`.** For a one-column
+  product followed by an add, ggml fuses the two into one mat-vec call whose destination is the add node
+  (`ggml-cuda/ggml-cuda.cu:3657-3703`). The mat-vec kernel reads its precision from that destination
+  (`ggml-cuda/mmvf.cu:650`). An add's parameters are zero, `GGML_PREC_DEFAULT`, so an f16 matrix is multiplied with
+  f16 activations and a `half2` accumulator (`ggml-cuda/mmvf.cu:193-219`, selected at `:615`). The output and down
+  projections both feed residual adds. The down projection sums 6144 products of inputs that can be
+  large, so an f16 overflow to infinity is plausible. The next probe will show whether it happens. The batched forward is never fused this way.
+  `Backend::new` therefore sets `GGML_CUDA_DISABLE_FUSION=1` on CUDA (`ggml-cuda/ggml-cuda.cu:3041`), unless the
+  caller set it. This was not an issue before f16 weights: the `Q4_0` path fuses into MMVQ, which has no half
+  accumulator.
+* **The single-token check above** runs on the CPU in `tests/step_identity.rs` and on the card in the probe.
+
+**Measured on the CPU (2026-11-06, after the bar was written).** The recorded prompt (328 positions) has a 312-position
+prefill and 16 single-token steps. The bar does not move:
+
+| Arm | Min cosine | Worst rel L2 | Argmax | Verdict |
+|---|---|---|---|---|
+| f32 | `1.0000000` | `1.3e-7` | 16/16 | PASS |
+| ternary (`Q4_0`, bf16 head) | `0.9999995` | `1.4e-3` | **15/16** | **FAIL** (one argmax) |
+| ternary, f32 head (diagnostic) | `0.9999998` | `5.9e-4` | 15/16 | FAIL |
+
+`tests/step_identity.rs` runs 48 fixed pseudo-random ids, with 8 single-token steps. It passed for both arms: ternary
+cosine `0.9999991`, rel L2 `1.3e-3`, argmax 8/8; f32 rel L2 `1.5e-7`.
+
+So on the CPU the graph and the cache agree to f32 rounding, and the one-column quantized products do not match the
+many-column ones. The quantized body differs at `5.9e-4` and the bf16 head adds the rest. ggml's CPU hands a
+many-column product to a different kernel than a one-column one (`ggml-cpu/ggml-cpu.c:1305`, `:1373`, llamafile's
+sgemm). Which kernel step introduces the `5.9e-4` is not yet found. Two notes on size:
+* The gap is a fraction of the ternary arm's own distance from PyTorch: RMSE 0.047 on the batched path.
+* One near-tie argmax in 16 flipped.
+
+What a generated token on the CPU gets is therefore within cosine `0.9999995` of what the parity check measured.
+It is not identical. This is recorded as a failed bar on the CPU ternary arm, not explained away.
+
+Predictions for the next probe:
+* The single-token check passes on CUDA for both arms. On CUDA both paths now multiply f16 matrices at f32
+  precision, so they should agree as closely as the CPU's f32 arm does.
+* With `GGML_CUDA_DISABLE_FUSION=0` (a diagnostic), it fails or errors, naming a layer.
+* Two renders run, stop on their own and are byte-identical.
 
 ## Layout
 

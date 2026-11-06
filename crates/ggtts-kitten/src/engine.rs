@@ -380,7 +380,9 @@ impl KittenEngine {
         embd[..n].copy_from_slice(&self.speaker);
         let mut sess = Session::new(&self.model, prompt.len() + self.max_new_tokens + 1)?;
         let t0 = std::time::Instant::now();
-        let mut out = sess.forward(&embd, 1, false)?;
+        let mut out = sess
+            .forward(&embd, 1, false)
+            .map_err(|e| format!("prefill of {} tokens: {e}", prompt.len()))?;
         let prefill_s = t0.elapsed().as_secs_f64();
         let ids = Ids {
             audio_lo: self.tm.audio_base,
@@ -395,7 +397,9 @@ impl KittenEngine {
         let t1 = std::time::Instant::now();
         for step in 0..self.max_new_tokens {
             let mut scores = out.logits;
-            sampler::process(&mut scores, &history, prompt.len(), ids, &self.settings);
+            // Step 0 samples the prefill's logits; step k > 0 those of the k-th single-token forward.
+            sampler::process(&mut scores, &history, prompt.len(), ids, &self.settings)
+                .map_err(|e| format!("generation step {step} (position {}): {e}", history.len() - 1))?;
             let tok = sampler::sample(&scores, &mut rng);
             history.push(tok);
             if tok == self.tm.speech_end || tok == self.tm.stop {
@@ -408,7 +412,9 @@ impl KittenEngine {
             }
             let mut e = Vec::with_capacity(n);
             self.model.embed_tokens(&[tok], &mut e);
-            out = sess.forward(&e, 1, false)?;
+            out = sess
+                .forward(&e, 1, false)
+                .map_err(|e| format!("generation step {} (single-token forward): {e}", step + 1))?;
         }
         self.last = GenStats {
             prompt_tokens: prompt.len(),

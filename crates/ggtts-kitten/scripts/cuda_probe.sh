@@ -98,7 +98,7 @@ check() { # name expect(pass|fail) log command...
 diag() { # name log command...
   local name=$1 log=$WORK/$2; shift 2
   "$@" > "$log" 2>&1
-  echo "INFO  $name: $(grep -hE 'SNR|min cosine' "$log" | tail -1)"
+  echo "INFO  $name: $(grep -hE 'SNR|min cosine|error' "$log" | tail -1)"
 }
 
 if [ "$steps" = all ]; then
@@ -108,6 +108,13 @@ if [ "$steps" = all ]; then
   check "LM ternary arm, group 256" fail lm-planted.log $nice "$K" parity --device cuda --threads "$threads" --gguf "$WORK/planted-g256.gguf" --ref "$REF_LM" --weights ternary
   rm -f "$WORK/planted-g256.gguf"
   grep -h '^ternary matrices\|NVIDIA_TF32' "$WORK/lm-ternary.log" | sed 's/^/  /'
+
+  echo "== single-token forward against the batched forward on CUDA (the path generation takes)"
+  check "single-token, ternary" pass step-ternary.log $nice "$K" step-parity --device cuda --threads "$threads" --gguf "$LM_GGUF" --ref "$REF_LM" --weights ternary
+  check "single-token, f32" pass step-f32.log $nice "$K" step-parity --device cuda --threads "$threads" --gguf "$LM_GGUF" --ref "$REF_LM" --weights f32
+  # The control: ggml's fusions back on, which the engine turns off. Expected to fail, or to error naming a layer.
+  diag "single-token, ternary, fusions on (GGML_CUDA_DISABLE_FUSION=0, control)" step-fused.log \
+    env GGML_CUDA_DISABLE_FUSION=0 $nice "$K" step-parity --device cuda --threads "$threads" --gguf "$LM_GGUF" --ref "$REF_LM" --weights ternary
 
   echo "== S3Gen decoder on CUDA against PyTorch (recorded noise and source)"
   check "vocoder" pass hift.log $nice "$K" hift-parity --device cuda --threads "$threads" --s3gguf "$S3_GGUF" --ref "$REF_S3"
@@ -137,7 +144,7 @@ rm -f "$WORK/$device"-[12].flac
 for i in 1 2; do
   $nice "$R" --device "$device" --threads "$threads" --model "$LM_GGUF" --codec "$S3_GGUF" --voice "$VOICE" --seed 1234 \
     --text "$text" --out "$WORK/$device-$i.flac" > "$WORK/render-$i.log" 2>&1 \
-    || fail "render $i: $(grep -h 'error' "$WORK/render-$i.log" | head -1)"
+    || fail "render $i: $(grep -hE 'error|panicked' "$WORK/render-$i.log" | head -1)"
   grep -h 'frames, stop\|wrote' "$WORK/render-$i.log" | sed 's/^/  /'
 done
 a=; b=

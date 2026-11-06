@@ -14,6 +14,7 @@ path = "src/bin/ggtts-render.rs"
 
 [dependencies]
 ggtts-core.workspace = true
+ggtts-instruments.workspace = true
 ggtts-qwen3-tts.workspace = true
 ggtts-kitten = { path = "../ggtts-kitten" }
 ggtts-fake.workspace = true

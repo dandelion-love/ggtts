@@ -1,0 +1,12 @@
+# ggtts instruments: copy this file, uncomment what you want, and pass it with --instruments FILE.
+# Every key has a flag (--instrument NAME,KEY=VALUE, --on-instrument-error, --instrument-timeout), and a flag
+# overrides the file. Schema: docs/instruments/instruments.schema.json.
+format: ggtts-instruments/1
+on_error: continue   # or abort: the render's output is kept either way
+timeout_s: 60        # per instrument, unless its entry sets timeout_s
+require: []          # instruments the measurement depends on: any not ok makes it INCOMPLETE (exit 3)
+instruments:
+  # selftest: the runner's own check: counts the run's events and audio bytes; arg mode=crash|hang|bad-envelope|tamper plants a failure
+  # - {name: selftest, args: {mode: ok}}
+  # An instrument of your own: a program that takes --events, --audio, --envelope, --name and its args.
+  # - {name: mine, command: /path/to/mine, version: '0.1', timeout_s: 30}

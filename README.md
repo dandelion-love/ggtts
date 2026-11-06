@@ -28,7 +28,9 @@ ceilings, the pause table, the judge bars and the level target are a profile the
 
 **Instruments, opt in.** `--trace` writes per-step events (the sampled token, the stop probability, entropy and
 more) as JSON Lines. With tracing off nothing is computed for it. With it on, the output must not change: an
-instrument never draws from the sampler's random stream.
+instrument never draws from the sampler's random stream. The hook points, the event order and the two instrument
+tiers are in [docs/instruments/hooks.md](docs/instruments/hooks.md), and the stream's JSON schema is
+[schemas/ggtts-trace-1.schema.json](schemas/ggtts-trace-1.schema.json).
 
 ## Binaries
 

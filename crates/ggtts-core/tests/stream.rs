@@ -8,6 +8,7 @@
 mod common;
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use common::{cases, Case};
@@ -15,12 +16,13 @@ use ggtts_core::audio::trim_edges_f32;
 use ggtts_core::engine::Engine;
 use ggtts_core::flac::to_i16;
 use ggtts_core::pipeline::{
-    apply_gain, gap_samples, level, level_gain, render_story, render_story_streamed, Read, RenderError,
+    apply_gain, gap_samples, level, level_gain, plan_story, render_story, render_story_streamed, Read, RenderError,
+    RenderOptions,
 };
 use ggtts_core::profile::Profile;
 use ggtts_core::stream::{first_sample_diff, raw_header, Container, FirstChunkLevel, StreamWriter, UNKNOWN_LENGTH};
 use ggtts_core::trace::{NullEvents, Recorder};
-use ggtts_fake::FakeEngine;
+use ggtts_fake::{FakeEngine, Shape};
 
 struct Streamed {
     pieces: Vec<(usize, usize, Vec<f32>, u32)>,
@@ -335,6 +337,16 @@ fn loud_rms_db(profile: &Profile, y: &[f32]) -> f64 {
     10.0 * (loud.iter().sum::<f64>() / loud.len().max(1) as f64).log10()
 }
 
+/// Samples the level step clamped: `|x| >= clip`, in f32 as the samples are.
+fn clamped(profile: &Profile, y: &[f32]) -> usize {
+    y.iter().filter(|x| x.abs() >= profile.clip as f32).count()
+}
+
+/// Declared before measuring (#20): the stream may clamp at most this many samples more than the batch read.
+fn clamp_allowance(len: usize) -> usize {
+    (len / 10_000).max(16)
+}
+
 /// The listener's stream as `ggtts-render --stream` writes it: each piece through one FirstChunkLevel.
 fn listener_stream(profile: &Profile, s: &Streamed) -> (Vec<f32>, Option<f64>) {
     let mut lv = FirstChunkLevel::new(profile);
@@ -377,9 +389,93 @@ fn the_listeners_stream_is_the_raw_stream_times_one_gain_and_near_the_flac() {
             println!("  OVER THE DECLARED 3 dB: {}", case.id);
         }
         let peak = lv.iter().fold(0f32, |m, x| m.max(x.abs()));
-        // In f32, as the samples are: the level step clamps in f64 and rounds, so 0.999 is 0.999000013.
+        // In f32, as the samples are: the level step clamps in f64 and rounds, so 0.999 is 0.999000013. This
+        // cannot fail (apply_gain clamps), so it guards the rounding only; the clamp COUNT below is the check.
         assert!(peak <= profile.clip as f32, "{}: {peak} past the clip", case.id);
+        let (cs, cb) = (clamped(&profile, &lv), clamped(&profile, &s.read.samples));
+        println!(
+            "{:<24} clamped: stream {cs}, batch {cb}, allowance {}",
+            "",
+            clamp_allowance(lv.len())
+        );
+        assert!(
+            cs <= cb + clamp_allowance(lv.len()),
+            "{}: the stream clamps {cs} samples against the batch's {cb}",
+            case.id
+        );
     }
+}
+
+#[test]
+fn the_clamp_check_sees_a_quiet_first_chunk() {
+    // Declared on #20: a +6 dB first-chunk plant must exceed the allowance on the fake engine's loud cases. It does
+    // NOT: the fake tones peak near 0.47 after the level gain, so +6 dB lifts them to about 0.94, under the clip
+    // (arm-clip's clamps are a two-sample click). That declaration failed, and each case's result is printed.
+    for case in cases() {
+        let s = stream(&case);
+        let profile = *s.engine.profile();
+        let Some(g) = level_gain(&profile, &s.pieces[0].2) else {
+            continue;
+        };
+        let mut planted = concat(&s.pieces);
+        apply_gain(&profile, &mut planted, g * 2.0);
+        let (cs, cb) = (clamped(&profile, &planted), clamped(&profile, &s.read.samples));
+        let over = cs > cb + clamp_allowance(planted.len());
+        println!(
+            "{:<24} +6 dB plant: clamped {cs} vs batch {cb}: {}",
+            case.id,
+            if over { "red" } else { "green" }
+        );
+    }
+
+    // The failure the check exists for, built rather than planted: a first chunk 26 dB quieter than the rest
+    // gives a first-chunk gain far above the read's, and the loud chunks that follow are clamped.
+    let paragraphs = vec![
+        "一二三四五六七八。".to_string(),
+        "九十一二三四五六。".to_string(),
+        "七八九十一二三四。".to_string(),
+    ];
+    let probe = FakeEngine::default();
+    let chunks = plan_story(probe.profile(), &paragraphs);
+    let quiet = Shape {
+        amplitude_scale: Some(0.05),
+        ..Default::default()
+    };
+    let loud = Shape {
+        amplitude_scale: Some(1.0),
+        ..Default::default()
+    };
+    let shape: HashMap<String, Shape> = chunks
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.text.clone(), if i == 0 { quiet.clone() } else { loud.clone() }))
+        .collect();
+    let mut engine = FakeEngine::new(HashMap::new(), shape);
+    let profile = *engine.profile();
+    let mut pieces = Vec::new();
+    let read = render_story_streamed(
+        &mut engine,
+        "quiet-first",
+        &chunks,
+        &RenderOptions::for_profile(&profile),
+        &mut NullEvents,
+        &mut |p| {
+            pieces.push(p.samples.to_vec());
+            Ok(())
+        },
+    )
+    .unwrap();
+    let mut lv = FirstChunkLevel::new(&profile);
+    let stream: Vec<f32> = pieces.iter().flat_map(|p| lv.apply(p)).collect();
+    let (cs, cb) = (clamped(&profile, &stream), clamped(&profile, &read.samples));
+    println!(
+        "quiet-first              clamped: stream {cs}, batch {cb}, allowance {}",
+        clamp_allowance(stream.len())
+    );
+    assert!(
+        cs > cb + clamp_allowance(stream.len()),
+        "a quiet first chunk must turn the clamp check red: stream {cs}, batch {cb}"
+    );
 }
 
 #[test]

@@ -6,7 +6,8 @@
 #   ENGINE=kitten-tts-2 TALKER=<lm.gguf> CODEC=<s3gen.gguf> VOICE=<voice.json> WORK=<dir> scripts/stream_probe.sh
 #
 # Three story renders: batch, --stream --stream-raw (the parity stream: the FLAC must be identical), and --stream
-# (the listener's levelled stream: its loudness against the FLAC's, declared within 3 dB).
+# (the listener's levelled stream: its loudness against the FLAC's, declared within 3 dB, and its clamped samples
+# against the FLAC's, declared at most max(16, 0.01%) more).
 #
 # ENGINE is qwen3-tts (the default) or kitten-tts-2. For Kitten, VOICE (a prepared reference voice) is required, the
 # story defaults to ../ggtts-kitten/fixtures/story/lighthouse.txt, and the frame-level step is skipped: Kitten
@@ -120,9 +121,23 @@ def loud_db(x):
     return 10 * math.log10(sum(a * a for a in v) / len(v))
 s, f = pcm16(wav), pcm16(flac)
 d = loud_db(s) - loud_db(f)
+# Clamped samples (declared on the issue before measuring): |s| >= round(0.999 * 32767), the stream's count at most
+# the FLAC's plus max(16, 0.01% of the samples).
+top = round(0.999 * 32767)
+cs, cf = sum(1 for v in s if abs(v) >= top), sum(1 for v in f if abs(v) >= top)
+allow = max(16, len(s) // 10000)
 print(f"  levelled stream {loud_db(s):.2f} dB vs FLAC {loud_db(f):.2f} dB: {d:+.2f} dB "
-      f"({'within' if abs(d) <= 3 else 'OVER'} the declared 3 dB), peak {max(abs(v) for v in s) / 32767:.4f}")
-sys.exit(0 if abs(d) <= 3 else 1)
+      f"({'within' if abs(d) <= 3 else 'OVER'} the declared 3 dB), peak {max(abs(v) for v in s) / 32767:.4f}, "
+      f"clamped {cs} vs FLAC {cf} ({'within' if cs <= cf + allow else 'OVER'} the allowance {allow})")
+# The clamp count shown to see a defect: the same stream at +6 dB (as if the first chunk's gain were 6 dB too high)
+# must be over the allowance wherever the stream already reaches near the clip.
+cp = sum(1 for v in s if abs(min(32767, max(-32768, 2 * v))) >= top)
+near = max(abs(v) for v in s) >= top // 2
+print(f"  +6 dB plant on the stream: clamped {cp}: "
+      + (("red, as it must be" if cp > cf + allow else "NOT RED") if near
+         else "cannot clamp here (the stream peaks under half the clip)"))
+ok = abs(d) <= 3 and cs <= cf + allow and (cp > cf + allow or not near)
+sys.exit(0 if ok else 1)
 PY
 
 if [ "$engine" != qwen3-tts ]; then

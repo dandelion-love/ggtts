@@ -2,12 +2,14 @@
 //!
 //! ```text
 //! ggtts-render --model M.gguf [--codec C.gguf] --out x.flac [--engine auto|qwen3-tts] [--threads N]
-//!              (--text "..." [--seed S] | --story story.txt)
+//!              [--device cpu|cuda] [--trace trace.jsonl] (--text "..." [--seed S] | --story story.txt)
 //! ```
 //!
 //! `--engine auto` (the default) picks the engine from the model's `general.architecture`. `--text` renders one
 //! request at one seed (default 20260905). `--story` reads a story file (title line, then one paragraph per line)
-//! and renders it on the core's story path. Engines need the `ggml` feature; without it only `--version` works.
+//! and renders it on the core's story path. `--trace` writes the engine's per-step stop probabilities as JSON
+//! lines; it is read-only, so the FLAC is the same with or without it. Engines need the `ggml` feature (and
+//! `--device cuda` the `cuda` feature); without it only `--version` works.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -23,7 +25,7 @@ mod gguf_arch;
 
 const BINARY: &str = "ggtts-render";
 const USAGE: &str = "usage: ggtts-render --model M.gguf [--codec C.gguf] --out x.flac [--engine auto|qwen3-tts] \
-[--threads N] (--text TEXT [--seed S] | --story FILE)\n       ggtts-render --version";
+[--threads N] [--device cpu|cuda] [--trace FILE] (--text TEXT [--seed S] | --story FILE)\n       ggtts-render --version";
 
 #[derive(Default)]
 struct Args {
@@ -35,6 +37,8 @@ struct Args {
     story: Option<PathBuf>,
     seed: Option<u64>,
     threads: Option<i32>,
+    device: Option<String>,
+    trace: Option<PathBuf>,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -50,6 +54,8 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--text" | "-t" => a.text = Some(value()?),
             "--story" => a.story = Some(value()?.into()),
             "--seed" => a.seed = Some(value()?.parse().map_err(|_| "--seed needs an integer")?),
+            "--device" => a.device = Some(value()?),
+            "--trace" => a.trace = Some(value()?.into()),
             "--threads" | "-j" => a.threads = Some(value()?.parse().map_err(|_| "--threads needs an integer")?),
             other => return Err(format!("invalid argument: {other}")),
         }
@@ -65,7 +71,13 @@ fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, St
         #[cfg(feature = "ggml")]
         "qwen3-tts" => {
             let codec = a.codec.as_ref().ok_or("the qwen3-tts engine needs --codec")?;
-            let voice = ggtts_qwen3_tts::engine::Voice::default();
+            let device = a.device.as_deref().unwrap_or("cpu");
+            let voice = ggtts_qwen3_tts::engine::Voice {
+                device: ggtts_qwen3_tts::cpu::Device::parse(device)
+                    .ok_or(format!("--device must be cpu or cuda, not {device}"))?,
+                trace: a.trace.clone(),
+                ..Default::default()
+            };
             ggtts_qwen3_tts::engine::Qwen3Tts::load(model, codec, threads, voice)
                 .map(|e| Box::new(e) as Box<dyn Engine>)
                 .map_err(|e| e.to_string())

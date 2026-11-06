@@ -2,17 +2,20 @@
 //! [`generate`](Engine::generate), the codec decoder for [`decode`](Engine::decode), and the
 //! `story-v1/qwen3-tts` profile.
 
-use std::path::Path;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 
 use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm};
 use ggtts_core::profile::Profile;
 
-use crate::codec::Decoder;
-use crate::talker::{language_id, Sampling, Talker};
+use crate::codec::{Decoder, Plant as DecoderPlant};
+use crate::cpu::Device;
+use crate::talker::{language_id, FrameStop, Plant as TalkerPlant, Sampling, Talker};
 use crate::PROFILE;
 
 /// What a request is rendered with besides its text and seed. The defaults are the reference CLI's, with the
-/// published model's one speaker.
+/// published model's one speaker, on CPU, untraced.
 #[derive(Debug, Clone)]
 pub struct Voice {
     pub speaker: String,
@@ -21,6 +24,10 @@ pub struct Voice {
     /// The frame cap (`--max-tokens`).
     pub max_frames: i32,
     pub sampling: Sampling,
+    pub device: Device,
+    /// Write the stop-probability trace here, one JSON object per talker step. The trace is read-only: the
+    /// rendered output is the same with or without it.
+    pub trace: Option<PathBuf>,
 }
 
 impl Default for Voice {
@@ -30,6 +37,8 @@ impl Default for Voice {
             language: "zh".into(),
             max_frames: 1200,
             sampling: Sampling::default(),
+            device: Device::Cpu,
+            trace: None,
         }
     }
 }
@@ -40,27 +49,40 @@ pub struct Qwen3Tts {
     decoder: Decoder,
     voice: Voice,
     language_id: i32,
+    trace: Option<BufWriter<File>>,
 }
 
 impl Qwen3Tts {
-    /// Loads the talker GGUF and the codec GGUF, both on the CPU backend with `threads` threads.
+    /// Loads the talker GGUF and the codec GGUF on `voice.device` with `threads` CPU threads.
     pub fn load(talker: &Path, codec: &Path, threads: i32, voice: Voice) -> Result<Self, EngineError> {
         let language_id =
             language_id(&voice.language).ok_or_else(|| EngineError(format!("unknown language: {}", voice.language)))?;
-        let talker = Talker::load(talker, threads)?;
+        let talker = Talker::load_on(talker, threads, voice.device, TalkerPlant::None)?;
         if talker.speaker_id(&voice.speaker).is_none() {
             return Err(EngineError(format!("the talker has no speaker {}", voice.speaker)));
         }
+        let trace = match &voice.trace {
+            Some(p) => Some(BufWriter::new(
+                File::create(p).map_err(|e| EngineError(format!("{}: {e}", p.display())))?,
+            )),
+            None => None,
+        };
         Ok(Self {
             info: EngineInfo {
                 family: "qwen3-tts".into(),
-                backend: "ggml-cpu".into(),
+                backend: if voice.device.is_cuda() {
+                    "ggml-cuda"
+                } else {
+                    "ggml-cpu"
+                }
+                .into(),
                 parity: "exact".into(),
             },
             talker,
-            decoder: Decoder::load(codec, threads)?,
+            decoder: Decoder::load_on(codec, threads, voice.device, DecoderPlant::None)?,
             voice,
             language_id,
+            trace,
         })
     }
 }
@@ -75,14 +97,27 @@ impl Engine for Qwen3Tts {
     }
 
     fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
-        let g = self.talker.generate(
+        let mut steps: Vec<FrameStop> = Vec::new();
+        let g = self.talker.generate_traced(
             req.text,
             &self.voice.speaker,
             self.language_id,
             req.seed,
             self.voice.max_frames,
             self.voice.sampling,
+            self.trace.as_ref().map(|_| &mut steps),
         )?;
+        if let Some(w) = self.trace.as_mut() {
+            for s in &steps {
+                writeln!(
+                    w,
+                    "{{\"chunk\":{},\"draw\":{},\"seed\":{},\"frame\":{},\"token\":{},\"p_stop\":{:e}}}",
+                    req.chunk, req.draw, req.seed, s.frame, s.token, s.p_stop
+                )
+                .and_then(|_| w.flush())
+                .map_err(|e| EngineError(format!("trace: {e}")))?;
+            }
+        }
         let frames = g
             .codes
             .iter()

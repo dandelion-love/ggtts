@@ -170,6 +170,56 @@ pub struct Generation {
     pub stop: Stop,
 }
 
+/// One talker step as the instrument sees it: the frame, the token drawn for codebook 0, and the probability the
+/// sampler gave the end-of-speech token at that step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrameStop {
+    pub frame: i32,
+    pub token: i32,
+    pub p_stop: f64,
+}
+
+/// The end-of-speech probability under the distribution the sampler draws from: the logits after suppression and
+/// repetition penalty, scaled by the temperature, cut to the top k (and top p), softmaxed. Computed in f64 on a copy,
+/// so it changes nothing the sampler sees and draws nothing from its stream.
+fn stop_probability(logits: &[f32], eos: i32, s: Sampling) -> f64 {
+    if s.temperature <= 0.0 {
+        return if argmax(logits) == eos { 1.0 } else { 0.0 };
+    }
+    let mut l: Vec<f32> = logits.iter().map(|&x| x * (1.0f32 / s.temperature)).collect();
+    if s.top_k > 0 && (s.top_k as usize) < l.len() {
+        let mut sorted = l.clone();
+        sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+        let threshold = sorted[s.top_k as usize - 1];
+        for x in l.iter_mut() {
+            if *x < threshold {
+                *x = f32::NEG_INFINITY;
+            }
+        }
+    }
+    let max = l.iter().fold(f32::NEG_INFINITY, |m, &x| if x > m { x } else { m });
+    let mut p: Vec<f64> = l.iter().map(|&x| f64::from(x - max).exp()).collect();
+    if s.top_p > 0.0 && s.top_p < 1.0 {
+        let total: f64 = p.iter().sum();
+        let mut order: Vec<usize> = (0..p.len()).collect();
+        order.sort_by(|&a, &b| p[b].partial_cmp(&p[a]).unwrap_or(std::cmp::Ordering::Equal));
+        let mut cum = 0.0;
+        for (j, &i) in order.iter().enumerate() {
+            if j > 0 && cum >= f64::from(s.top_p) {
+                p[i] = 0.0;
+            } else {
+                cum += p[i] / total;
+            }
+        }
+    }
+    let total: f64 = p.iter().sum();
+    if total > 0.0 {
+        p[eos as usize] / total
+    } else {
+        0.0
+    }
+}
+
 /// The loaded talker, code predictor and text tokenizer.
 pub struct Talker {
     pub config: Config,
@@ -586,6 +636,23 @@ impl Talker {
         max_len: i32,
         sampling: Sampling,
     ) -> Result<Generation, EngineError> {
+        self.generate_traced(text, speaker, language_id, seed, max_len, sampling, None)
+    }
+
+    /// [`generate`](Self::generate), and with `trace` one [`FrameStop`] per talker step, the step that drew
+    /// end-of-speech included. The trace reads values the loop already has; the output is the same with or without
+    /// it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate_traced(
+        &mut self,
+        text: &str,
+        speaker: &str,
+        language_id: i32,
+        seed: u64,
+        max_len: i32,
+        sampling: Sampling,
+        mut trace: Option<&mut Vec<FrameStop>>,
+    ) -> Result<Generation, EngineError> {
         let c = self.config.clone();
         let h = c.hidden_size as usize;
         let spk = self
@@ -690,11 +757,21 @@ impl Talker {
                 }
             }
             repetition_penalty(&mut logits, &history, sampling.repetition_penalty);
+            let p_stop = trace
+                .as_ref()
+                .map(|_| stop_probability(&logits, c.codec_eos_id, sampling));
             let next = if sampling.temperature <= 0.0 {
                 argmax(&logits)
             } else {
                 sample_top_k_p(&mut logits, sampling, &mut rng)
             };
+            if let (Some(t), Some(p_stop)) = (trace.as_mut(), p_stop) {
+                t.push(FrameStop {
+                    frame,
+                    token: next,
+                    p_stop,
+                });
+            }
             if next == c.codec_eos_id {
                 stop = Stop::Eos;
                 break;

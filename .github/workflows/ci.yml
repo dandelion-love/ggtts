@@ -280,6 +280,7 @@ jobs:
             yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" > /dev/null
           fi
           echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ndk" >> "$GITHUB_ENV"
       - name: Fetch the ggml submodule at its pin
         run: git submodule update --init crates/ggtts-ggml-sys/ggml
       - name: Build for aarch64-linux-android; check the ggml pin and NEON in the kernels

@@ -1,0 +1,13 @@
+[package]
+name = "ggml-sys"
+description = "Raw bindings to ggml at af97976 (bindgen), built from the ggml submodule"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+links = "ggml"
+
+[build-dependencies]
+bindgen = "0.71"
+cmake = "0.1"

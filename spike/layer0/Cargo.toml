@@ -1,0 +1,12 @@
+# A spike, kept out of the main workspace so the main CI jobs neither build ggml nor need libclang.
+# See README.md.
+[workspace]
+resolver = "2"
+members = ["ggml-sys", "layer0"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+rust-version = "1.88"

@@ -12,6 +12,10 @@ publish = false
 name = "ggtts-render"
 path = "src/bin/ggtts-render.rs"
 
+[[bin]]
+name = "ggtts-measure"
+path = "src/bin/ggtts-measure.rs"
+
 [dependencies]
 ggtts-core.workspace = true
 ggtts-instruments.workspace = true

@@ -2,8 +2,8 @@
 //!
 //! The parts every engine shares: the engine interface ([`engine`]), the long-text story path ([`text`] for
 //! reading and chunking, [`seed`] for the seed per chunk, [`audio`] for the judge and the trim, [`pipeline`] for
-//! the redraw, the joins and the level), and FLAC output ([`flac`]). The instrument events, the trace format and
-//! the provenance manifest come next.
+//! the redraw, the joins and the level), FLAC output ([`flac`]), and the instrument events with the trace format,
+//! replay and the trace-identity check ([`trace`]). The provenance manifest comes next.
 //!
 //! The core holds the rules and no protocol number: the ceilings, the pause table, the judge bars and the level
 //! target come from the [`profile::Profile`] the engine declares.
@@ -19,6 +19,7 @@ pub mod pipeline;
 pub mod profile;
 pub mod seed;
 pub mod text;
+pub mod trace;
 
 /// The ggtts version, from the workspace manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

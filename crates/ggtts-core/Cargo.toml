@@ -10,9 +10,10 @@ publish = false
 
 [dependencies]
 libm.workspace = true
+# float_roundtrip: a trace is compared field for field after a write and a read, so every f64 must survive both.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 
 [dev-dependencies]
-ggtts-fake.workspace = true
+ggtts-fake = { workspace = true, features = ["plant"] }
 ggtts-qwen3-tts.workspace = true
-serde_json.workspace = true
 claxon.workspace = true

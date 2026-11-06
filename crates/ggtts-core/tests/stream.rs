@@ -20,7 +20,10 @@ use ggtts_core::pipeline::{
     RenderOptions,
 };
 use ggtts_core::profile::Profile;
-use ggtts_core::stream::{first_sample_diff, raw_header, Container, FirstChunkLevel, StreamWriter, UNKNOWN_LENGTH};
+use ggtts_core::stream::{
+    first_sample_diff, raw_header, Container, FirstChunkLevel, StreamLevel, StreamWriter, DEFAULT_HOLD_S,
+    UNKNOWN_LENGTH,
+};
 use ggtts_core::trace::{NullEvents, Recorder};
 use ggtts_fake::{FakeEngine, Shape};
 
@@ -509,4 +512,173 @@ fn the_levelled_check_sees_a_planted_gain_defect() {
         first_sample_diff(&lv, &expected_stream(&case, &s)).is_some(),
         "a levelled raw stream must be red"
     );
+}
+
+/// The listener's stream under `StreamLevel` with `hold_s` held, as `ggtts-render --stream` writes it.
+fn held_stream(profile: &Profile, pieces: &[Vec<f32>], rate: u32, hold_s: f64) -> (Vec<f32>, Option<f64>) {
+    let mut lv = StreamLevel::new(profile, hold_s);
+    let mut out: Vec<f32> = Vec::new();
+    for p in pieces {
+        for piece in lv.push(p, rate) {
+            out.extend(piece);
+        }
+    }
+    for piece in lv.finish() {
+        out.extend(piece);
+    }
+    (out, lv.gain())
+}
+
+#[test]
+fn holding_0_s_is_the_first_chunk_gain() {
+    for case in cases() {
+        let s = stream(&case);
+        let profile = *s.engine.profile();
+        let raw: Vec<Vec<f32>> = s.pieces.iter().map(|p| p.2.clone()).collect();
+        let (held, _) = held_stream(&profile, &raw, s.read.sample_rate, 0.0);
+        let (first, _) = listener_stream(&profile, &s);
+        assert_eq!(first_sample_diff(&held, &first), None, "{}", case.id);
+    }
+}
+
+#[test]
+fn the_default_hold_meets_the_bounds_declared_on_44() {
+    // Declared before measuring (#44, for 10 s; the default is now 5 s, chosen from `hold_sweep`): with the
+    // default held, every fake render case with sound is within 3 dB of the
+    // levelled batch read, clamps at most the batch's count plus the allowance, and is the raw stream times one gain.
+    for case in cases() {
+        let s = stream(&case);
+        let profile = *s.engine.profile();
+        let raw: Vec<Vec<f32>> = s.pieces.iter().map(|p| p.2.clone()).collect();
+        let (lv, gain) = held_stream(&profile, &raw, s.read.sample_rate, DEFAULT_HOLD_S);
+        let mut want = concat(&s.pieces);
+        if let Some(g) = gain {
+            apply_gain(&profile, &mut want, g);
+        }
+        assert_eq!(first_sample_diff(&lv, &want), None, "{}: not one gain", case.id);
+        let (cs, cb) = (clamped(&profile, &lv), clamped(&profile, &s.read.samples));
+        assert!(
+            cs <= cb + clamp_allowance(lv.len()),
+            "{}: clamped {cs} vs batch {cb}",
+            case.id
+        );
+        if gain.is_none() {
+            continue;
+        }
+        let d = loud_rms_db(&profile, &lv) - loud_rms_db(&profile, &s.read.samples);
+        println!(
+            "{:<24} held {DEFAULT_HOLD_S} s: {d:+.2} dB from the batch, clamped {cs} vs {cb}",
+            case.id
+        );
+        assert!(d.abs() <= 3.0, "{}: {d:+.2} dB from the batch", case.id);
+    }
+}
+
+#[test]
+fn a_quiet_opening_is_red_at_0_and_3_s_and_green_at_the_default() {
+    let (pieces, read, profile) = quiet_opening();
+    let verdict = |hold_s: f64| {
+        let (d, cs, cb, ok) = held_verdict(&profile, &pieces, &read, hold_s);
+        println!("quiet-opening held {hold_s:>4} s: {d:+.2} dB, clamped {cs} vs {cb}");
+        ok
+    };
+    assert!(!verdict(0.0), "the first-chunk gain must fail on a quiet opening");
+    assert!(!verdict(3.0), "a hold no longer than the quiet chunk must fail it too");
+    assert!(verdict(DEFAULT_HOLD_S), "the default hold must pass it");
+}
+
+/// The sweep behind the default hold (#44): every hold from 0 to 10 s on the quiet-opening plant and every fake case.
+/// Run with `--ignored --nocapture` to read it.
+#[test]
+#[ignore]
+fn hold_sweep() {
+    let holds = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 10.0];
+    let (pieces, read, profile) = quiet_opening();
+    let secs = |p: &Vec<f32>| p.len() as f64 / read.sample_rate as f64;
+    println!(
+        "quiet-opening: the quiet chunk is {:.2} s, the next {:.2} s",
+        secs(&pieces[0]),
+        secs(&pieces[1])
+    );
+    for h in holds {
+        let (d, cs, cb, ok) = held_verdict(&profile, &pieces, &read, h);
+        println!(
+            "{:<24} held {h:>4} s: {d:+.2} dB, clamped {cs} vs {cb} {}",
+            "quiet-opening",
+            if ok { "" } else { "OVER" }
+        );
+    }
+    for case in cases() {
+        let s = stream(&case);
+        let profile = *s.engine.profile();
+        let raw: Vec<Vec<f32>> = s.pieces.iter().map(|p| p.2.clone()).collect();
+        for h in holds {
+            if held_stream(&profile, &raw, s.read.sample_rate, h).1.is_none() {
+                continue;
+            }
+            let (d, cs, cb, ok) = held_verdict(&profile, &raw, &s.read, h);
+            println!(
+                "{:<24} held {h:>4} s: {d:+.2} dB, clamped {cs} vs {cb} {}",
+                case.id,
+                if ok { "" } else { "OVER" }
+            );
+        }
+    }
+}
+
+/// Loudness against the batch read, the clamp counts, and whether both are inside the bounds declared on #44.
+fn held_verdict(profile: &Profile, pieces: &[Vec<f32>], read: &Read, hold_s: f64) -> (f64, usize, usize, bool) {
+    let (lv, _) = held_stream(profile, pieces, read.sample_rate, hold_s);
+    let d = loud_rms_db(profile, &lv) - loud_rms_db(profile, &read.samples);
+    let (cs, cb) = (clamped(profile, &lv), clamped(profile, &read.samples));
+    (d, cs, cb, d.abs() <= 3.0 && cs <= cb + clamp_allowance(lv.len()))
+}
+
+/// Planted (#44): a first chunk 26 dB quieter than the rest, in a story longer than the hold.
+fn quiet_opening() -> (Vec<Vec<f32>>, Read, Profile) {
+    let paragraphs: Vec<String> = (0..8)
+        .map(|i| {
+            format!(
+                "{}一二三四五六七。",
+                ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛"][i]
+            )
+        })
+        .collect();
+    let probe = FakeEngine::default();
+    let chunks = plan_story(probe.profile(), &paragraphs);
+    let shape: HashMap<String, Shape> = chunks
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let amp = if i == 0 { 0.05 } else { 1.0 };
+            (
+                c.text.clone(),
+                Shape {
+                    amplitude_scale: Some(amp),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
+    let mut engine = FakeEngine::new(HashMap::new(), shape);
+    let profile = *engine.profile();
+    let mut pieces = Vec::new();
+    let read = render_story_streamed(
+        &mut engine,
+        "quiet-opening",
+        &chunks,
+        &RenderOptions::for_profile(&profile),
+        &mut NullEvents,
+        &mut |p| {
+            pieces.push(p.samples.to_vec());
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert!(
+        read.seconds() > 12.0,
+        "the story must be longer than the hold: {:.1} s",
+        read.seconds()
+    );
+    (pieces, read, profile)
 }

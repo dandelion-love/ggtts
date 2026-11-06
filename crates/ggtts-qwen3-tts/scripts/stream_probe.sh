@@ -5,7 +5,10 @@
 #   TALKER=<model.gguf> CODEC=<codec.gguf> WORK=<scratch dir> [DEVICE=cuda] scripts/stream_probe.sh
 #   ENGINE=kitten-tts-2 TALKER=<lm.gguf> CODEC=<s3gen.gguf> VOICE=<voice.json> WORK=<dir> scripts/stream_probe.sh
 #
-# Three story renders: batch, --stream --stream-raw (the parity stream: the FLAC must be identical), and --stream
+# FRAME=0 skips the frame-level table (Qwen only; about 20 minutes on CPU).
+#
+# Four story renders: batch; --stream --stream-raw (the parity stream: the FLAC must be identical); --stream at
+# --stream-level-seconds 0 (the first-chunk gain, for the latency the default hold costs); and --stream
 # (the listener's levelled stream: its loudness against the FLAC's, declared within 3 dB, and its clamped samples
 # against the FLAC's, declared at most max(16, 0.01%) more).
 #
@@ -82,19 +85,26 @@ render batch || { echo "batch render failed: $WORK/batch.log"; exit 1; }
 # The parity run asks for the raw stream by name; the listener's levelled stream is a third run.
 render stream --stream "$WORK/stream.wav" --stream-raw || { echo "stream render failed: $WORK/stream.log"; exit 1; }
 render level --stream "$WORK/level.wav" || { echo "levelled stream render failed: $WORK/level.log"; exit 1; }
-python3 - "$WORK" <<'PY' || status=1
+# Other holds, for what the default costs in first audio and buys in loudness (#44): 0 is the first chunk alone, and
+# LEVELS="3 5" adds more.
+holds="0 ${LEVELS:-}"
+for h in $holds; do
+  render "level$h" --stream "$WORK/level$h.wav" --stream-level-seconds "$h" \
+    || { echo "stream render held $h s failed: $WORK/level$h.log"; exit 1; }
+done
+python3 - "$WORK" $holds <<'PY' || status=1
 import re, sys
 work = sys.argv[1]
 def grab(name, pat):
     m = re.search(pat, open(f"{work}/{name}.log").read())
     return float(m.group(1)) if m else float("nan")
-for name in ("batch", "stream"):
+for name in ["batch", "stream", "level"] + [f"level{h}" for h in sys.argv[2:]]:
     render_ms = grab(name, r"render (\d+) ms")
     samples = grab(name, r"\((\d+) samples at")
     rate = grab(name, r"samples at (\d+) Hz")
     audio = samples / rate
     line = f"  {name}: render {render_ms / 1e3:.2f} s for {audio:.2f} s of audio, RTF {render_ms / 1e3 / audio:.3f}"
-    if name == "stream":
+    if name != "batch":
         first = grab(name, r"first audio at (\d+) ms") / 1e3
         line += f", first audio at {first:.2f} s"
     print(line + f", wall {open(f'{work}/{name}.wall').read().strip()} s")
@@ -105,30 +115,33 @@ else
   echo "  FLAC DIFFERS with --stream"
   status=1
 fi
-grep -h "level gain" "$WORK/stream.log" "$WORK/level.log" | sed 's/^/  /'
+for name in stream level $(printf 'level%s ' $holds); do grep -h "level gain" "$WORK/$name.log"; done | sed 's/^/  /'
 # The listener's stream against the FLAC: loudness (RMS over samples above the level floor, 1e-3) and peak. The
 # bound declared for it is 3 dB; ffmpeg decodes the FLAC, the WAV is read directly.
-python3 - "$WORK" <<'PY' || status=1
+python3 - "$WORK" $holds <<'PY' || status=1
 import math, struct, subprocess, sys
 work = sys.argv[1]
 def pcm16(b):
     return struct.unpack(f"<{len(b) // 2}h", b[: len(b) // 2 * 2])
-wav = open(f"{work}/level.wav", "rb").read()[44:]
 flac = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", f"{work}/batch.flac", "-f", "s16le", "-"],
                       capture_output=True, check=True).stdout
 def loud_db(x):
     v = [s / 32767 for s in x if abs(s / 32767) > 1e-3]
     return 10 * math.log10(sum(a * a for a in v) / len(v))
-s, f = pcm16(wav), pcm16(flac)
-d = loud_db(s) - loud_db(f)
+f = pcm16(flac)
 # Clamped samples (declared on the issue before measuring): |s| >= round(0.999 * 32767), the stream's count at most
 # the FLAC's plus max(16, 0.01% of the samples).
 top = round(0.999 * 32767)
-cs, cf = sum(1 for v in s if abs(v) >= top), sum(1 for v in f if abs(v) >= top)
-allow = max(16, len(s) // 10000)
-print(f"  levelled stream {loud_db(s):.2f} dB vs FLAC {loud_db(f):.2f} dB: {d:+.2f} dB "
-      f"({'within' if abs(d) <= 3 else 'OVER'} the declared 3 dB), peak {max(abs(v) for v in s) / 32767:.4f}, "
-      f"clamped {cs} vs FLAC {cf} ({'within' if cs <= cf + allow else 'OVER'} the allowance {allow})")
+cf = sum(1 for v in f if abs(v) >= top)
+# The other holds are reported; the default (level.wav) is the one that decides.
+for name in [f"level{h}" for h in sys.argv[2:]] + ["level"]:
+    s = pcm16(open(f"{work}/{name}.wav", "rb").read()[44:])
+    d = loud_db(s) - loud_db(f)
+    cs = sum(1 for v in s if abs(v) >= top)
+    allow = max(16, len(s) // 10000)
+    print(f"  {name}: levelled stream {loud_db(s):.2f} dB vs FLAC {loud_db(f):.2f} dB: {d:+.2f} dB "
+          f"({'within' if abs(d) <= 3 else 'OVER'} the declared 3 dB), peak {max(abs(v) for v in s) / 32767:.4f}, "
+          f"clamped {cs} vs FLAC {cf} ({'within' if cs <= cf + allow else 'OVER'} the allowance {allow})")
 # The clamp count shown to see a defect: the same stream at +6 dB (as if the first chunk's gain were 6 dB too high)
 # must be over the allowance wherever the stream already reaches near the clip.
 cp = sum(1 for v in s if abs(min(32767, max(-32768, 2 * v))) >= top)
@@ -140,7 +153,7 @@ ok = abs(d) <= 3 and cs <= cf + allow and (cp > cf + allow or not near)
 sys.exit(0 if ok else 1)
 PY
 
-if [ "$engine" != qwen3-tts ]; then
+if [ "$engine" != qwen3-tts ] || [ "${FRAME:-1}" = 0 ]; then
   echo "stream probe ($engine, $device): exit $status (logs in $WORK)"
   exit $status
 fi

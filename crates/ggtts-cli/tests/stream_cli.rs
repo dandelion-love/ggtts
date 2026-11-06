@@ -219,7 +219,92 @@ fn the_default_stream_is_levelled_for_a_listener() {
     let story = story(&dir);
     let (out, err) = run(&["--engine", "fake", "--story", story.to_str().unwrap(), "--stream", "-"]);
     let (pieces, _, _, _) = reference(&story);
-    // The same pieces, levelled as the binary must have levelled them: one gain, from the first chunk.
+    // The same pieces, levelled as the binary must have levelled them: one gain, from the default hold.
+    let (title, paragraphs) = read_text(&std::fs::read_to_string(&story).unwrap());
+    let mut engine = FakeEngine::default();
+    let profile = *engine.profile();
+    let chunks = plan_story(&profile, &paragraphs);
+    let mut lv = ggtts_core::stream::StreamLevel::new(&profile, ggtts_core::stream::DEFAULT_HOLD_S);
+    let mut want = Vec::new();
+    render_story_streamed(
+        &mut engine,
+        &title,
+        &chunks,
+        &RenderOptions::for_profile(&profile),
+        &mut NullEvents,
+        &mut |p| {
+            for piece in lv.push(p.samples, p.sample_rate) {
+                want.extend(piece.into_iter().map(to_i16));
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+    for piece in lv.finish() {
+        want.extend(piece.into_iter().map(to_i16));
+    }
+    let got = pcm(&out[44..]);
+    assert_eq!(got.len(), pieces.len());
+    assert!(got == want, "the default stream is the levelled pieces");
+    let raw: Vec<i16> = pieces.iter().map(|&x| to_i16(x)).collect();
+    assert!(got != raw, "and not the raw ones");
+    assert!(
+        err.contains("levelled by the gain of its first"),
+        "stderr says which stream: {err}"
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn stream_level_seconds_is_checked_and_0_is_the_first_chunk() {
+    for args in [
+        vec![
+            "--engine",
+            "fake",
+            "--text",
+            "一二三四",
+            "--stream-level-seconds",
+            "5",
+            "--out",
+            "x.flac",
+        ],
+        vec![
+            "--engine",
+            "fake",
+            "--text",
+            "一二三四",
+            "--stream",
+            "-",
+            "--stream-raw",
+            "--stream-level-seconds",
+            "5",
+        ],
+        vec![
+            "--engine",
+            "fake",
+            "--text",
+            "一二三四",
+            "--stream",
+            "-",
+            "--stream-level-seconds",
+            "-1",
+        ],
+    ] {
+        let o = Command::new(BIN).args(&args).output().unwrap();
+        assert!(!o.status.success(), "{args:?} should be refused");
+    }
+    let dir = scratch("level0");
+    let story = story(&dir);
+    let (out, _) = run(&[
+        "--engine",
+        "fake",
+        "--story",
+        story.to_str().unwrap(),
+        "--stream",
+        "-",
+        "--stream-level-seconds",
+        "0",
+    ]);
     let (title, paragraphs) = read_text(&std::fs::read_to_string(&story).unwrap());
     let mut engine = FakeEngine::default();
     let profile = *engine.profile();
@@ -238,14 +323,9 @@ fn the_default_stream_is_levelled_for_a_listener() {
         },
     )
     .unwrap();
-    let got = pcm(&out[44..]);
-    assert_eq!(got.len(), pieces.len());
-    assert!(got == want, "the default stream is the levelled pieces");
-    let raw: Vec<i16> = pieces.iter().map(|&x| to_i16(x)).collect();
-    assert!(got != raw, "and not the raw ones");
     assert!(
-        err.contains("levelled by the first chunk's gain"),
-        "stderr says which stream: {err}"
+        pcm(&out[44..]) == want,
+        "--stream-level-seconds 0 is the first-chunk gain"
     );
     std::fs::remove_dir_all(dir).ok();
 }

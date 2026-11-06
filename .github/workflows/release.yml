@@ -68,8 +68,9 @@ jobs:
           test ${#commit} -eq 40
           name="ggtts-${TAG}-${TARGET}-cpu-ggml-${commit:0:7}"
           mkdir -p "dist/$name"
-          cp "target/release/ggtts-render${EXE}" "dist/$name/"
-          cp LICENSE README.md "dist/$name/"
+          # The binary, LICENSE, README and the script instruments (instruments/ beside the binary), packed by the
+          # same script ci.yml smoke-tests on every pull request.
+          scripts/package_and_smoke.sh pack "target/release/ggtts-render${EXE}" "dist/$name"
           cat > "dist/$name/BUILDINFO.json" <<EOF
           {
             "ggtts": "${TAG}",
@@ -88,6 +89,13 @@ jobs:
           if [ "$ARCHIVE" = zip ]; then 7z a -tzip "$name.zip" "$name" >/dev/null; else tar -czf "$name.tar.gz" "$name"; fi
           rm -rf "$name"
           ls -l
+      - name: Smoke the archive (a shipped Python instrument runs from it; a planted missing instruments/ is reported)
+        run: |
+          set -euo pipefail
+          for a in dist/*.tar.gz dist/*.zip; do
+            [ -e "$a" ] || continue
+            scripts/package_and_smoke.sh smoke "$a"
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.target }}

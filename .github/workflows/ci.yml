@@ -302,6 +302,8 @@ jobs:
           list=$(scripts/package_and_smoke.sh pack "target/release/ggtts-render${{ matrix.exe }}" dist/ggtts-ci)
           echo "binaries: $list"
           test "$list" = '["ggtts-render${{ matrix.exe }}","ggtts-measure${{ matrix.exe }}"]'
+          # Match the release's metadata, so the archive smoke reaches the same check.
+          printf '{"binaries": %s}\n' "$list" > dist/ggtts-ci/BUILDINFO.json
       - name: Smoke the packed directory (a shipped Python instrument runs from it)
         run: scripts/package_and_smoke.sh smoke dist/ggtts-ci
       - name: Archive it as release.yml does (a .zip on windows) and smoke the archive by its relative path
@@ -309,6 +311,24 @@ jobs:
           set -eu
           (cd dist && ../scripts/package_and_smoke.sh archive ggtts-ci ${{ matrix.archive }})
           scripts/package_and_smoke.sh smoke dist/ggtts-ci.${{ matrix.archive }}
+      - name: Planted, an archive with an incorrect BUILDINFO binary must fail
+        run: |
+          set -eu
+          for missing in render measure; do
+            cp -r dist/ggtts-ci "dist/info-$missing"
+            if [ "$missing" = render ]; then
+              printf '{"binaries": ["ggtts-renderXexe","ggtts-measure${{ matrix.exe }}"]}\n' > "dist/info-$missing/BUILDINFO.json"
+            else
+              printf '{"binaries": ["ggtts-render${{ matrix.exe }}","ggtts-measureXexe"]}\n' > "dist/info-$missing/BUILDINFO.json"
+            fi
+            (cd dist && ../scripts/package_and_smoke.sh archive "info-$missing" ${{ matrix.archive }})
+            if scripts/package_and_smoke.sh smoke "dist/info-$missing.${{ matrix.archive }}" 2> info.err; then
+              echo "::error::incorrect BUILDINFO passed for ggtts-$missing"
+              exit 1
+            fi
+            cat info.err
+            grep -F "BUILDINFO.json's binaries does not name ggtts-$missing" info.err
+          done
       - name: Planted, a missing archive must fail, naming it
         run: |
           set -u

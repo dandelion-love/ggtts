@@ -3,8 +3,16 @@
 //!
 //! * **Handles are ids, not pointers.** Engines live in a registry behind a `u64` id that is never reused, so a call
 //!   after [`ggtts_free`], or with id `0`, is [`GGTTS_ERR_HANDLE`], never a use of freed memory.
-//! * **Nothing unwinds across the boundary.** Every entry point runs inside `catch_unwind`; a panic comes back as
-//!   [`GGTTS_ERR_PANIC`] with its message.
+//! * **The registry is locked only to look an engine up, never while it renders.** Each engine has its own lock, taken
+//!   with `try_lock`: a second call on an engine that is rendering (from its own stream callback, or another thread)
+//!   is [`GGTTS_ERR_BUSY`], never a deadlock. Different engines render at once, and [`ggtts_free`] never waits for a
+//!   render: it drops the registry's reference, and the engine goes when the render holding it returns.
+//! * **No panic unwinds across the boundary.** The entry points that reach an engine or the registry
+//!   ([`ggtts_load`], [`ggtts_render`], [`ggtts_render_stream`], [`ggtts_free`]) run inside `catch_unwind`, and a
+//!   panic comes back as [`GGTTS_ERR_PANIC`] with its message; the engine that panicked is dropped from the
+//!   registry. [`ggtts_pcm_free`] and [`ggtts_last_error`] are not wrapped: one drops a box, the other reads a
+//!   thread-local. `catch_unwind` catches unwinding panics only: an abort, a stack overflow or a crash in C code
+//!   still ends the process.
 //! * **Errors are a code plus a message:** [`ggtts_last_error`] holds the calling thread's last message.
 //!
 //! With the `jni` feature, `jni.rs` adds the `Java_ggtts_Native_*` entry points over the same functions.
@@ -15,7 +23,7 @@ use std::ffi::{c_char, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use ggtts_core::engine::Engine;
 use ggtts_core::pipeline::{plan_story, render_story, render_story_streamed, RenderError, RenderOptions};
@@ -35,6 +43,8 @@ pub const GGTTS_ERR_ENGINE: i32 = -3;
 pub const GGTTS_ERR_PANIC: i32 = -4;
 /// The stream callback asked to stop.
 pub const GGTTS_ERR_STOPPED: i32 = -5;
+/// The engine is rendering: a call on it from its own stream callback, or from another thread meanwhile.
+pub const GGTTS_ERR_BUSY: i32 = -6;
 
 /// The story id every binding render uses: the seed of each chunk is derived from it, the text and the seed given.
 const STORY: &str = "ggtts-binding";
@@ -73,24 +83,80 @@ fn guard(f: impl FnOnce() -> Result<(), Fail>) -> i32 {
     }
 }
 
-/// An engine, held only by the registry and used by one call at a time under its lock.
+/// An engine in the registry. `Engine` has no `Send` bound, and the real engines are not `Send` to the compiler (raw
+/// ggml pointers; Kitten-TTS 2 shares its backend through `Rc`), so a `Held` is built in one of two ways only:
+/// [`Held::checked`], where the compiler proves the engine `Send`, or [`Held::assume_send`], whose every caller argues
+/// it for that one engine.
 struct Held(Box<dyn Engine>);
-// SAFETY: the registry's mutex serialises every use of an engine; the engines keep no thread-affine state between
-// calls.
+
+impl Held {
+    fn checked(e: Box<dyn Engine + Send>) -> Self {
+        Held(e)
+    }
+
+    /// # Safety
+    /// The engine may be moved to another thread whole and used there by one thread at a time: nothing in it is tied
+    /// to the thread that made it, and nothing it shares (an `Rc`, a pointer) is reachable from outside it.
+    #[cfg_attr(not(feature = "ggml"), allow(dead_code))]
+    unsafe fn assume_send(e: Box<dyn Engine>) -> Self {
+        Held(e)
+    }
+}
+
+// SAFETY: every `Held` is `Send` by the compiler's proof or by its constructor's per-engine argument (above), and its
+// engine is used under its own mutex, one call at a time.
 unsafe impl Send for Held {}
 
-static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-static ENGINES: Mutex<Option<HashMap<u64, Held>>> = Mutex::new(None);
+type Slot = Arc<Mutex<Held>>;
 
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+static ENGINES: Mutex<Option<HashMap<u64, Slot>>> = Mutex::new(None);
+
+/// The registry, locked for a lookup, an insert or a remove and never longer. None of those panics, so a poisoned lock
+/// still holds a whole map.
+fn registry() -> MutexGuard<'static, Option<HashMap<u64, Slot>>> {
+    ENGINES.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn no_engine(handle: u64) -> Fail {
+    (
+        GGTTS_ERR_HANDLE,
+        format!("no engine with handle {handle} (never loaded, or freed)"),
+    )
+}
+
+/// Run `f` on the engine. The registry lock is released before `f` runs, so `f` (and a stream callback inside it) may
+/// call any entry point; the engine's own lock is taken with `try_lock`, so a second call on a rendering engine is
+/// [`GGTTS_ERR_BUSY`]. If `f` panics, the engine is dropped from the registry before the panic goes on to [`guard`].
 fn with_engine<T>(handle: u64, f: impl FnOnce(&mut dyn Engine) -> Result<T, Fail>) -> Result<T, Fail> {
-    let mut reg = ENGINES.lock().unwrap_or_else(|p| p.into_inner());
-    let engines = reg.get_or_insert_with(HashMap::new);
-    match engines.get_mut(&handle) {
-        Some(Held(e)) => f(e.as_mut()),
-        None => Err((
-            GGTTS_ERR_HANDLE,
-            format!("no engine with handle {handle} (never loaded, or freed)"),
-        )),
+    let slot = registry()
+        .get_or_insert_with(HashMap::new)
+        .get(&handle)
+        .cloned()
+        .ok_or_else(|| no_engine(handle))?;
+    let mut held = match slot.try_lock() {
+        Ok(h) => h,
+        Err(TryLockError::WouldBlock) => {
+            return Err((
+                GGTTS_ERR_BUSY,
+                format!(
+                    "the engine with handle {handle} is rendering (a call from its own stream callback, or from \
+                     another thread)"
+                ),
+            ))
+        }
+        // A panic inside a render evicts the engine and poisons its lock (below), so a call that looked it up just
+        // before the eviction never uses it either.
+        Err(TryLockError::Poisoned(_)) => return Err(no_engine(handle)),
+    };
+    match catch_unwind(AssertUnwindSafe(|| f(held.0.as_mut()))) {
+        Ok(r) => r,
+        Err(p) => {
+            // The registry is never locked while an engine's lock is waited on, so taking it here cannot deadlock.
+            registry().get_or_insert_with(HashMap::new).remove(&handle);
+            // `held` drops while this panic unwinds, which poisons the engine's lock on purpose.
+            std::panic::resume_unwind(p)
+        }
     }
 }
 
@@ -131,20 +197,22 @@ fn check_gguf(what: &str, path: &str) -> Result<(), Fail> {
 }
 
 /// The engine for a name. The fake engine needs no files.
-pub fn open_engine(
+fn open_engine(
     engine: &str,
     model: Option<&str>,
     codec: Option<&str>,
     voice: Option<&str>,
     threads: i32,
-) -> Result<Box<dyn Engine>, Fail> {
+) -> Result<Held, Fail> {
     let threads = if threads <= 0 { 4 } else { threads };
     if engine == "fake" {
-        return Ok(Box::new(ggtts_fake::FakeEngine::default()));
+        return Ok(Held::checked(Box::new(ggtts_fake::FakeEngine::default())));
     }
     #[cfg(feature = "plant")]
     if engine == "panic" {
-        return Ok(Box::new(planted::Panics(ggtts_fake::FakeEngine::default())));
+        return Ok(Held::checked(Box::new(planted::Panics(
+            ggtts_fake::FakeEngine::default(),
+        ))));
     }
     if !matches!(engine, "qwen3-tts" | "kitten-tts-2") {
         return Err((GGTTS_ERR_ENGINE, format!("no engine named {engine:?}")));
@@ -157,17 +225,15 @@ pub fn open_engine(
 }
 
 #[cfg(feature = "ggml")]
-fn load_real(
-    engine: &str,
-    model: &Path,
-    codec: &Path,
-    voice: Option<&str>,
-    threads: i32,
-) -> Result<Box<dyn Engine>, Fail> {
+fn load_real(engine: &str, model: &Path, codec: &Path, voice: Option<&str>, threads: i32) -> Result<Held, Fail> {
     let refused = |e: String| (GGTTS_ERR_ENGINE, e);
     match engine {
         "qwen3-tts" => ggtts_qwen3_tts::engine::Qwen3Tts::load(model, codec, threads, Default::default())
-            .map(|e| Box::new(e) as Box<dyn Engine>)
+            // SAFETY: Qwen3-TTS is not `Send` to the compiler only for its raw ggml pointers (contexts, tensors,
+            // graphs, backend buffers), every one allocated by this engine and reachable only through it. It holds no
+            // `Rc` and no thread-local, and ggml's CPU backend keeps no per-thread state between graph runs, so the
+            // engine is sound to move whole and use from one thread at a time.
+            .map(|e| unsafe { Held::assume_send(Box::new(e)) })
             .map_err(|e| refused(e.to_string())),
         _ => {
             let voice = voice.ok_or((GGTTS_ERR_ARG, "the kitten-tts-2 engine needs a voice".to_string()))?;
@@ -178,14 +244,18 @@ fn load_real(
                 threads as usize,
                 ggtts_kitten::backend::Device::Cpu,
             )
-            .map(|e| Box::new(e) as Box<dyn Engine>)
+            // SAFETY: Kitten-TTS 2 is not `Send` to the compiler for its raw ggml pointers and for the `Rc<Backend>`
+            // its parts share. Every clone of that `Rc` lives inside this engine, and the registry hands out no
+            // reference to its parts, so the clones always move together and their count is only ever touched by the
+            // one thread using the engine. It runs on the CPU backend here, which keeps no per-thread state.
+            .map(|e| unsafe { Held::assume_send(Box::new(e)) })
             .map_err(refused)
         }
     }
 }
 
 #[cfg(not(feature = "ggml"))]
-fn load_real(engine: &str, _: &Path, _: &Path, _: Option<&str>, _: i32) -> Result<Box<dyn Engine>, Fail> {
+fn load_real(engine: &str, _: &Path, _: &Path, _: Option<&str>, _: i32) -> Result<Held, Fail> {
     Err((
         GGTTS_ERR_ENGINE,
         format!("this build has no {engine} engine (built without the ggml feature)"),
@@ -247,11 +317,9 @@ pub unsafe extern "C" fn ggtts_load(
             threads,
         )?;
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        ENGINES
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+        registry()
             .get_or_insert_with(HashMap::new)
-            .insert(id, Held(e));
+            .insert(id, Arc::new(Mutex::new(e)));
         unsafe { *handle = id };
         Ok(())
     })
@@ -336,18 +404,15 @@ pub unsafe extern "C" fn ggtts_pcm_free(pcm: *mut f32, len: usize) {
     }
 }
 
-/// Release an engine. Its id is never reused, so a later call with it is [`GGTTS_ERR_HANDLE`].
+/// Release an engine. Its id is never reused, so a later call with it is [`GGTTS_ERR_HANDLE`]. It never waits: if the
+/// engine is rendering (on another thread, or this call comes from its own stream callback), that render finishes and
+/// the engine is dropped when it returns.
 #[no_mangle]
 pub extern "C" fn ggtts_free(handle: u64) -> i32 {
     guard(|| {
-        let mut reg = ENGINES.lock().unwrap_or_else(|p| p.into_inner());
-        match reg.get_or_insert_with(HashMap::new).remove(&handle) {
-            Some(_) => Ok(()),
-            None => Err((
-                GGTTS_ERR_HANDLE,
-                format!("no engine with handle {handle} (never loaded, or freed)"),
-            )),
-        }
+        // The registry guard is a temporary, so it is released before `slot`, and the engine with it, drops.
+        let slot = registry().get_or_insert_with(HashMap::new).remove(&handle);
+        slot.map(drop).ok_or_else(|| no_engine(handle))
     })
 }
 

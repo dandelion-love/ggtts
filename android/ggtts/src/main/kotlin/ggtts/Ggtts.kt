@@ -27,7 +27,11 @@ internal object Native {
     @JvmStatic external fun free(handle: Long)
 }
 
-/** One loaded engine. Close it to release the model; any call after that throws GGTTS_ERR_HANDLE. */
+/**
+ * One loaded engine. Close it to release the model; any call after that throws GGTTS_ERR_HANDLE. Close never waits: a
+ * render already running (on another thread, or the one whose listener closes it) finishes, and the model goes then.
+ * One render at a time per engine: a second call while one runs throws GGTTS_ERR_BUSY.
+ */
 class Ggtts private constructor(private var handle: Long) : AutoCloseable {
     companion object {
         const val ERR_ARG = -1
@@ -35,6 +39,8 @@ class Ggtts private constructor(private var handle: Long) : AutoCloseable {
         const val ERR_ENGINE = -3
         const val ERR_PANIC = -4
         const val ERR_STOPPED = -5
+        /** The engine is rendering: a call on it from its own listener, or from another thread meanwhile. */
+        const val ERR_BUSY = -6
         const val DEFAULT_SEED = 20260905L
 
         /** [engine]: "qwen3-tts", "kitten-tts-2" or "fake". [voice] is Kitten-TTS 2's reference voice. */

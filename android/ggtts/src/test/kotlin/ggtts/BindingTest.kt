@@ -39,6 +39,33 @@ fun main() {
     val stopped = g.renderStream(TEXT) { _, _ -> seen++; false }
     check(!stopped && seen == 1, "stream: a listener returning false stops after one piece (saw $seen)")
 
+    // A listener may call back in: rendering on its own engine is busy, never a deadlock; closing it lets the stream
+    // finish, and the engine is gone after.
+    var inner: Int? = null
+    val reentered = g.renderStream(TEXT) { _, _ ->
+        if (inner == null) {
+            inner = try {
+                g.render(TEXT)
+                0
+            } catch (e: GgttsException) {
+                e.code
+            }
+        }
+        true
+    }
+    check(reentered && inner == Ggtts.ERR_BUSY, "a listener rendering on its own engine: busy (got $inner), the stream finishes")
+    val closing = Ggtts.load("fake")
+    var closes = 0
+    val closed = closing.renderStream(TEXT) { _, _ -> if (closes++ == 0) closing.close(); true }
+    check(closed && closes >= 2, "a listener closing its own engine: the stream finishes ($closes pieces)")
+    throwsCode(Ggtts.ERR_HANDLE, "render after a listener closed it") { closing.render(TEXT) }
+
+    // A freed id, not just the zeroed handle a closed Ggtts holds.
+    val freed = Native.load("fake", null, null, null, 0)
+    Native.free(freed)
+    throwsCode(Ggtts.ERR_HANDLE, "render with a freed id") { Native.render(freed, TEXT, 1L, IntArray(1)) }
+    throwsCode(Ggtts.ERR_HANDLE, "free a freed id") { Native.free(freed) }
+
     // Errors are exceptions.
     throwsCode(Ggtts.ERR_ENGINE, "a missing model file") { Ggtts.load("qwen3-tts", "/no/such/model.gguf", "/no/such/codec.gguf") }
     throwsCode(Ggtts.ERR_ENGINE, "an unknown engine") { Ggtts.load("nonesuch") }

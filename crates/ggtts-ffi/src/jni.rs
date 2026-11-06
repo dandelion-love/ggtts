@@ -1,18 +1,37 @@
 //! The JNI entry points behind `ggtts.Native` (the Kotlin class `Ggtts` calls them). Each goes through the C-ABI
 //! functions, so there is one implementation; a non-zero status becomes a thrown `ggtts.GgttsException(code,
 //! message)`, never a crash.
+//!
+//! Two rules hold throughout. **No JNI call is made with an exception pending** beyond the ones JNI allows then
+//! (`exception_check`, `delete_local_ref`): after a failed JNI call the function returns at once and lets the pending
+//! exception reach Kotlin, and [`throw`] never throws over one. **No panic leaves a `Java_*` function or the stream
+//! callback:** each body runs inside `catch_unwind`, and a panic becomes a `GgttsException` with `GGTTS_ERR_PANIC`.
 
 use std::ffi::{c_void, CString};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
 use jni::objects::{JClass, JFloatArray, JIntArray, JObject, JString, JThrowable, JValue};
 use jni::sys::{jboolean, jint, jlong};
 use jni::JNIEnv;
 
-use crate::{ggtts_free, ggtts_load, ggtts_pcm_free, ggtts_render, ggtts_render_stream, last_error, GGTTS_ERR_ARG};
+use crate::{
+    ggtts_free, ggtts_load, ggtts_pcm_free, ggtts_render, ggtts_render_stream, last_error, GGTTS_ERR_ARG,
+    GGTTS_ERR_PANIC,
+};
 
-/// Throw `ggtts.GgttsException(code, message)`.
+/// Whether an exception is pending. A failed check is read as pending, so nothing is thrown over an unknown state.
+fn pending(env: &mut JNIEnv) -> bool {
+    env.exception_check().unwrap_or(true)
+}
+
+/// Throw `ggtts.GgttsException(code, message)`, unless an exception is already pending: that one goes to Kotlin as it
+/// is. Building the exception can itself fail (out of memory, a missing class), and then whatever that left pending is
+/// thrown instead.
 fn throw(env: &mut JNIEnv, code: i32, msg: &str) {
+    if pending(env) {
+        return;
+    }
     let built = env.new_string(msg).and_then(|m| {
         env.new_object(
             "ggtts/GgttsException",
@@ -24,9 +43,25 @@ fn throw(env: &mut JNIEnv, code: i32, msg: &str) {
         Ok(obj) => {
             let _ = env.throw(JThrowable::from(obj));
         }
-        // The exception class is missing: still throw, never crash.
-        Err(_) => {
+        Err(_) if !pending(env) => {
             let _ = env.throw_new("java/lang/RuntimeException", format!("ggtts error {code}: {msg}"));
+        }
+        Err(_) => {}
+    }
+}
+
+/// Run a `Java_*` body, turning a panic into a thrown `GgttsException` and `fallback`.
+fn jni_guard<'l, T>(env: &mut JNIEnv<'l>, fallback: impl FnOnce() -> T, f: impl FnOnce(&mut JNIEnv<'l>) -> T) -> T {
+    match catch_unwind(AssertUnwindSafe(|| f(&mut *env))) {
+        Ok(v) => v,
+        Err(p) => {
+            let msg = p
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| p.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "a panic with no message".into());
+            throw(env, GGTTS_ERR_PANIC, &format!("panic inside ggtts: {msg}"));
+            fallback()
         }
     }
 }
@@ -66,34 +101,40 @@ pub extern "system" fn Java_ggtts_Native_load<'l>(
     voice: JString<'l>,
     threads: jint,
 ) -> jlong {
-    let Ok(engine) = cstr(&mut env, &engine, "engine") else {
-        return 0;
-    };
-    let Ok(model) = cstr(&mut env, &model, "model") else {
-        return 0;
-    };
-    let Ok(codec) = cstr(&mut env, &codec, "codec") else {
-        return 0;
-    };
-    let Ok(voice) = cstr(&mut env, &voice, "voice") else {
-        return 0;
-    };
-    let mut handle = 0u64;
-    let code = unsafe {
-        ggtts_load(
-            or_null(&engine),
-            or_null(&model),
-            or_null(&codec),
-            or_null(&voice),
-            threads,
-            &mut handle,
-        )
-    };
-    if code != 0 {
-        throw(&mut env, code, &last_error());
-        return 0;
-    }
-    handle as jlong
+    jni_guard(
+        &mut env,
+        || 0,
+        |env| {
+            let Ok(engine) = cstr(env, &engine, "engine") else {
+                return 0;
+            };
+            let Ok(model) = cstr(env, &model, "model") else {
+                return 0;
+            };
+            let Ok(codec) = cstr(env, &codec, "codec") else {
+                return 0;
+            };
+            let Ok(voice) = cstr(env, &voice, "voice") else {
+                return 0;
+            };
+            let mut handle = 0u64;
+            let code = unsafe {
+                ggtts_load(
+                    or_null(&engine),
+                    or_null(&model),
+                    or_null(&codec),
+                    or_null(&voice),
+                    threads,
+                    &mut handle,
+                )
+            };
+            if code != 0 {
+                throw(env, code, &last_error());
+                return 0;
+            }
+            handle as jlong
+        },
+    )
 }
 
 #[no_mangle]
@@ -105,40 +146,47 @@ pub extern "system" fn Java_ggtts_Native_render<'l>(
     seed: jlong,
     rate_out: JIntArray<'l>,
 ) -> JFloatArray<'l> {
-    let null = JFloatArray::from(JObject::null());
-    let Ok(text) = cstr(&mut env, &text, "text") else {
-        return null;
-    };
-    let (mut pcm, mut len, mut rate) = (ptr::null_mut(), 0usize, 0u32);
-    let code = unsafe {
-        ggtts_render(
-            handle as u64,
-            or_null(&text),
-            seed as u64,
-            &mut pcm,
-            &mut len,
-            &mut rate,
-        )
-    };
-    if code != 0 {
-        throw(&mut env, code, &last_error());
-        return null;
-    }
-    let samples = unsafe { std::slice::from_raw_parts(pcm, len) };
-    let out = env
-        .new_float_array(len as jint)
-        .and_then(|a| env.set_float_array_region(&a, 0, samples).map(|_| a));
-    unsafe { ggtts_pcm_free(pcm, len) };
-    if !rate_out.is_null() {
-        let _ = env.set_int_array_region(&rate_out, 0, &[rate as jint]);
-    }
-    match out {
-        Ok(a) => a,
-        Err(_) => {
-            throw(&mut env, GGTTS_ERR_ARG, "could not allocate the sample array");
-            null
+    let null = || JFloatArray::from(JObject::null());
+    jni_guard(&mut env, null, |env| {
+        let Ok(text) = cstr(env, &text, "text") else {
+            return null();
+        };
+        let (mut pcm, mut len, mut rate) = (ptr::null_mut(), 0usize, 0u32);
+        let code = unsafe {
+            ggtts_render(
+                handle as u64,
+                or_null(&text),
+                seed as u64,
+                &mut pcm,
+                &mut len,
+                &mut rate,
+            )
+        };
+        if code != 0 {
+            throw(env, code, &last_error());
+            return null();
         }
-    }
+        let samples = unsafe { std::slice::from_raw_parts(pcm, len) };
+        let out = env
+            .new_float_array(len as jint)
+            .and_then(|a| env.set_float_array_region(&a, 0, samples).map(|_| a));
+        unsafe { ggtts_pcm_free(pcm, len) };
+        // A failed JNI call leaves its exception pending (out of memory, or a rate array too short): it goes to
+        // Kotlin as it is, and no further JNI call is made.
+        let Ok(out) = out else {
+            throw(env, GGTTS_ERR_ARG, "could not allocate the sample array");
+            return null();
+        };
+        if !rate_out.is_null() && env.set_int_array_region(&rate_out, 0, &[rate as jint]).is_err() {
+            throw(
+                env,
+                GGTTS_ERR_ARG,
+                "could not write the rate (rateOut must have room for one Int)",
+            );
+            return null();
+        }
+        out
+    })
 }
 
 /// What the stream callback needs: the JNI environment and the listener.
@@ -147,32 +195,37 @@ struct Stream<'a, 'l> {
     listener: &'a JObject<'l>,
 }
 
+/// Hand one piece to the listener. Returns non-zero to stop: the listener returned false or threw, a JNI call failed
+/// (its exception stays pending for `renderStream` to let through), or this panicked.
 extern "C" fn on_piece(user: *mut c_void, samples: *const f32, len: usize, rate: u32) -> i32 {
-    let s = unsafe { &mut *(user as *mut Stream) };
-    let piece = unsafe { std::slice::from_raw_parts(samples, len) };
-    let arr = match s
-        .env
-        .new_float_array(len as jint)
-        .and_then(|a| s.env.set_float_array_region(&a, 0, piece).map(|_| a))
-    {
-        Ok(a) => a,
-        Err(_) => return 1,
-    };
-    let go_on = s
-        .env
-        .call_method(
-            s.listener,
-            "onPiece",
-            "([FI)Z",
-            &[JValue::Object(&arr), JValue::Int(rate as jint)],
-        )
-        .and_then(|v| v.z());
-    let _ = s.env.delete_local_ref(arr);
-    // A listener that threw, or returned false, stops the render.
-    match go_on {
-        Ok(true) if !s.env.exception_check().unwrap_or(true) => 0,
-        _ => 1,
-    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let s = unsafe { &mut *(user as *mut Stream) };
+        let piece = unsafe { std::slice::from_raw_parts(samples, len) };
+        let arr = match s
+            .env
+            .new_float_array(len as jint)
+            .and_then(|a| s.env.set_float_array_region(&a, 0, piece).map(|_| a))
+        {
+            Ok(a) => a,
+            Err(_) => return 1,
+        };
+        let go_on = s
+            .env
+            .call_method(
+                s.listener,
+                "onPiece",
+                "([FI)Z",
+                &[JValue::Object(&arr), JValue::Int(rate as jint)],
+            )
+            .and_then(|v| v.z());
+        // Deleting a local reference is allowed with an exception pending.
+        let _ = s.env.delete_local_ref(arr);
+        match go_on {
+            Ok(true) if !pending(s.env) => 0,
+            _ => 1,
+        }
+    }))
+    .unwrap_or(1)
 }
 
 #[no_mangle]
@@ -184,46 +237,57 @@ pub extern "system" fn Java_ggtts_Native_renderStream<'l>(
     seed: jlong,
     listener: JObject<'l>,
 ) -> jboolean {
-    let Ok(text) = cstr(&mut env, &text, "text") else {
-        return 0;
-    };
-    if listener.is_null() {
-        throw(&mut env, GGTTS_ERR_ARG, "listener is null");
-        return 0;
-    }
-    let code = {
-        let mut stream = Stream {
-            env: &mut env,
-            listener: &listener,
-        };
-        unsafe {
-            ggtts_render_stream(
-                handle as u64,
-                or_null(&text),
-                seed as u64,
-                Some(on_piece),
-                &mut stream as *mut Stream as *mut c_void,
-            )
-        }
-    };
-    // A listener's own exception is already pending: let it propagate as is.
-    if env.exception_check().unwrap_or(false) {
-        return 0;
-    }
-    match code {
-        0 => 1,
-        crate::GGTTS_ERR_STOPPED => 0,
-        _ => {
-            throw(&mut env, code, &last_error());
-            0
-        }
-    }
+    jni_guard(
+        &mut env,
+        || 0,
+        |env| {
+            let Ok(text) = cstr(env, &text, "text") else {
+                return 0;
+            };
+            if listener.is_null() {
+                throw(env, GGTTS_ERR_ARG, "listener is null");
+                return 0;
+            }
+            let code = {
+                let mut stream = Stream {
+                    env: &mut *env,
+                    listener: &listener,
+                };
+                unsafe {
+                    ggtts_render_stream(
+                        handle as u64,
+                        or_null(&text),
+                        seed as u64,
+                        Some(on_piece),
+                        &mut stream as *mut Stream as *mut c_void,
+                    )
+                }
+            };
+            match code {
+                0 => 1,
+                // Stopped by the listener: returning false, or throwing, whose exception is still pending and goes to
+                // Kotlin as it is.
+                crate::GGTTS_ERR_STOPPED => 0,
+                // `throw` lets an exception a failed JNI call left pending through instead.
+                _ => {
+                    throw(env, code, &last_error());
+                    0
+                }
+            }
+        },
+    )
 }
 
 #[no_mangle]
 pub extern "system" fn Java_ggtts_Native_free<'l>(mut env: JNIEnv<'l>, _class: JClass<'l>, handle: jlong) {
-    let code = ggtts_free(handle as u64);
-    if code != 0 {
-        throw(&mut env, code, &last_error());
-    }
+    jni_guard(
+        &mut env,
+        || (),
+        |env| {
+            let code = ggtts_free(handle as u64);
+            if code != 0 {
+                throw(env, code, &last_error());
+            }
+        },
+    )
 }

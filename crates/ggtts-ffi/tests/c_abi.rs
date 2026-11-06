@@ -1,6 +1,6 @@
 //! The C-ABI, driven through its `extern "C"` functions on the host with the fake engine: load, render, the stream's
-//! order and its stop, every error a code and a message, a planted panic caught at the boundary, and no use of a
-//! freed or null handle.
+//! order and its stop, every error a code and a message, a planted panic caught at the boundary, no use of a freed or
+//! null handle, and calls back in from a stream callback or another thread that neither deadlock nor wait.
 
 use std::ffi::{c_void, CString};
 use std::ptr;
@@ -175,9 +175,113 @@ fn a_panic_inside_is_caught_at_the_boundary_and_the_process_goes_on() {
     assert_eq!(code, GGTTS_ERR_PANIC);
     assert!(pcm.is_empty());
     assert!(last_error().contains("planted panic in generate"), "{}", last_error());
+    // The engine that panicked is gone: its id is unknown from then on.
+    assert_eq!(render(h, TEXT).0, GGTTS_ERR_HANDLE);
+    assert_eq!(ggtts_free(h), GGTTS_ERR_HANDLE);
     // The registry survived the panic: another engine still loads and renders.
     let (_, ok) = load("fake", None, None);
     assert_eq!(render(ok, TEXT).0, GGTTS_OK);
     assert_eq!(ggtts_free(ok), GGTTS_OK);
+}
+
+/// What a re-entering callback does on its first piece, and what it saw.
+struct Reenter {
+    own: u64,
+    other: u64,
+    action: &'static str,
+    codes: Vec<i32>,
+}
+
+extern "C" fn reenter(user: *mut c_void, _samples: *const f32, _len: usize, _rate: u32) -> i32 {
+    let r = unsafe { &mut *(user as *mut Reenter) };
+    if r.codes.is_empty() {
+        r.codes.push(match r.action {
+            "render-own" => render(r.own, TEXT).0,
+            "render-other" => render(r.other, TEXT).0,
+            "free-own" => ggtts_free(r.own),
+            _ => unreachable!(),
+        });
+    }
+    0
+}
+
+fn stream_with(own: u64, other: u64, action: &'static str) -> (i32, Vec<i32>) {
+    let t = c(TEXT);
+    let mut r = Reenter {
+        own,
+        other,
+        action,
+        codes: Vec::new(),
+    };
+    let code = unsafe { ggtts_render_stream(own, t.as_ptr(), 7, Some(reenter), &mut r as *mut Reenter as *mut c_void) };
+    (code, r.codes)
+}
+
+/// A stream callback may call back in: on its own engine it is told the engine is busy, never deadlocked; another
+/// engine renders; and freeing its own engine lets the render finish, after which the id is gone.
+#[test]
+fn a_stream_callback_may_call_back_in_without_a_deadlock() {
+    let (_, own) = load("fake", None, None);
+    let (_, other) = load("fake", None, None);
+
+    let (code, inner) = stream_with(own, other, "render-own");
+    assert_eq!(code, GGTTS_OK, "{}", last_error());
+    assert_eq!(inner, vec![GGTTS_ERR_BUSY]);
+
+    let (code, inner) = stream_with(own, other, "render-other");
+    assert_eq!(code, GGTTS_OK, "{}", last_error());
+    assert_eq!(inner, vec![GGTTS_OK], "two engines render at once");
+
+    let (code, inner) = stream_with(own, other, "free-own");
+    assert_eq!(
+        (code, inner),
+        (GGTTS_OK, vec![GGTTS_OK]),
+        "the render outlives the free"
+    );
+    assert_eq!(render(own, TEXT).0, GGTTS_ERR_HANDLE);
+    assert_eq!(ggtts_free(other), GGTTS_OK);
+}
+
+/// Two channels the stream callback uses to hold a render open while another thread acts.
+struct Hold {
+    started: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+    pieces: usize,
+}
+
+extern "C" fn hold(user: *mut c_void, _samples: *const f32, _len: usize, _rate: u32) -> i32 {
+    let h = unsafe { &mut *(user as *mut Hold) };
+    if h.pieces == 0 {
+        h.started.send(()).unwrap();
+        h.release.recv().unwrap();
+    }
+    h.pieces += 1;
+    0
+}
+
+/// Freeing an engine from another thread while it renders returns at once (an app's close() on its UI thread must not
+/// wait out a background render), and the render it interrupted runs to the end.
+#[test]
+fn free_from_another_thread_never_waits_for_a_render() {
+    let (_, h) = load("fake", None, None);
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let renderer = std::thread::spawn(move || {
+        let t = c(TEXT);
+        let mut state = Hold {
+            started: started_tx,
+            release: release_rx,
+            pieces: 0,
+        };
+        let code = unsafe { ggtts_render_stream(h, t.as_ptr(), 7, Some(hold), &mut state as *mut Hold as *mut c_void) };
+        (code, state.pieces)
+    });
+    started_rx.recv().unwrap();
+    // The render is inside its callback now. With the registry locked across a render, this call would block forever.
     assert_eq!(ggtts_free(h), GGTTS_OK);
+    assert_eq!(render(h, TEXT).0, GGTTS_ERR_HANDLE);
+    release_tx.send(()).unwrap();
+    let (code, pieces) = renderer.join().unwrap();
+    assert_eq!(code, GGTTS_OK);
+    assert!(pieces >= 2, "the render ran to the end: {pieces} pieces");
 }

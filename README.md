@@ -35,7 +35,7 @@ tiers are in [docs/instruments/hooks.md](docs/instruments/hooks.md), and the str
 **Running instruments.** `ggtts-render --instrument NAME` (or `--instruments FILE.yaml`) runs instruments on the
 finished render, each in its own process with its own log, a timeout and a crash boundary; the template config
 `instruments/instruments.yaml` lists every shipped one. The Python instruments are scripts, run under
-`GGTTS_PYTHON` if set, else `python3` (`python` on Windows). They are found in the `instruments/` directory:
+`GGTTS_PYTHON` if set, else `python3` (`python` on Windows), and need Python 3.8 or later on `PATH`. They are found in the `instruments/` directory:
 next to `ggtts-render` in a release archive, or the repository's own when run from a checkout. Set
 `GGTTS_INSTRUMENTS_DIR` to use another. If none is found, the instrument is reported failed with that reason and
 the render's audio is still written. Writing one: [instruments/README.md](instruments/README.md).

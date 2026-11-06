@@ -58,7 +58,7 @@ const USAGE: &str = "usage: ggtts-render --model M.gguf [--codec C.gguf] --out x
 const INSTRUMENTS_HELP: &str = "\ninstruments: --instrument NAME runs a shipped instrument on the finished render \
 (instruments/instruments.yaml lists them).\nScript (Python) instruments are found in the instruments/ directory next to \
 ggtts-render (a release archive), or the nearest one above it (a source checkout); GGTTS_INSTRUMENTS_DIR overrides \
-that.\nThey run under GGTTS_PYTHON, else python3 (python on Windows).";
+that.\nThey need Python 3.8 or later: GGTTS_PYTHON, else python3 (python on Windows) on PATH.";
 
 #[derive(Default)]
 struct Args {

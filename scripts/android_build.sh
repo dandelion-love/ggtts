@@ -3,6 +3,7 @@
 #
 #   scripts/android_build.sh build [OUT_DIR]   # build ggtts-render for aarch64-linux-android, check it, write
 #                                              # OUT_DIR (default dist/android-arm64): the binary and BUILDINFO.json
+#   scripts/android_build.sh cargo-build TARGET_DIR   # only the cargo build (the planted builds use it)
 #   scripts/android_build.sh check-pin PIN     # refuse unless the ggml submodule is at PIN (the planted case)
 #   scripts/android_build.sh check-neon BIN    # refuse unless BIN's ggml dot product uses NEON vector instructions
 #
@@ -47,11 +48,19 @@ check_neon() { # BIN
     say "NEON in ggml_vec_dot_q8_0_q8_0: $n vector instructions"
 }
 
+cargo_build() { # TARGET_DIR
+    local sysroot
+    sysroot=$(ls -d "${ANDROID_NDK_HOME:?set ANDROID_NDK_HOME}"/toolchains/llvm/prebuilt/*/sysroot | head -1)
+    # bindgen runs the host's libclang: point it at the NDK's headers for the Android target, not /usr/include.
+    export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$sysroot --target=$target$api"
+    (cd "$root" && cargo ndk -t arm64-v8a --platform "$api" build --release --locked -p ggtts-cli -p ggtts-ggml-sys \
+        --features ggtts-cli/ggml,ggtts-ggml-sys/bindgen --target-dir "$1")
+}
+
 build() { # OUT_DIR
     local out=${1:-dist/android-arm64}
     check_pin "$(pin)"
-    (cd "$root" && cargo ndk -t arm64-v8a --platform "$api" build --release --locked -p ggtts-cli -p ggtts-ggml-sys \
-        --features ggtts-cli/ggml,ggtts-ggml-sys/bindgen)
+    cargo_build "$root/target"
     local bin="$root/target/$target/release/ggtts-render"
     check_neon "$bin"
     mkdir -p "$out"
@@ -76,7 +85,8 @@ EOF
 
 case "${1:-}" in
     build) build "${2:-}" ;;
+    cargo-build) cargo_build "$2" ;;
     check-pin) check_pin "$2" ;;
     check-neon) check_neon "$2" ;;
-    *) echo "usage: $0 build [OUT_DIR] | check-pin PIN | check-neon BIN" >&2; exit 2 ;;
+    *) echo "usage: $0 build [OUT_DIR] | cargo-build TARGET_DIR | check-pin PIN | check-neon BIN" >&2; exit 2 ;;
 esac

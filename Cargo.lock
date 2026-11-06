@@ -152,9 +152,12 @@ dependencies = [
 name = "ggtts-cli"
 version = "0.0.1"
 dependencies = [
+ "claxon",
  "ggtts-core",
+ "ggtts-fake",
  "ggtts-kitten",
  "ggtts-qwen3-tts",
+ "serde_json",
 ]
 
 [[package]]

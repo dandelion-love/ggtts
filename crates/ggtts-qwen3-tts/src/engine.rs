@@ -11,6 +11,7 @@ use ggtts_core::profile::Profile;
 
 use crate::codec::Decoder;
 use crate::cpu::Device;
+use crate::stream::IncrementalDecoder;
 use crate::talker::{language_id, FrameStop, Sampling, Talker};
 use crate::PROFILE;
 
@@ -92,6 +93,88 @@ impl Qwen3Tts {
     }
 }
 
+/// One JSON line per talker step for `req`, as `Voice.trace` documents.
+fn write_steps(w: &mut BufWriter<File>, req: &ChunkRequest<'_>, steps: &[FrameStop]) -> Result<(), EngineError> {
+    for s in steps {
+        writeln!(
+            w,
+            "{{\"chunk\":{},\"draw\":{},\"seed\":{},\"frame\":{},\"token\":{},\"p_stop\":{:e}}}",
+            req.chunk, req.draw, req.seed, s.frame, s.token, s.p_stop
+        )
+        .and_then(|_| w.flush())
+        .map_err(|e| EngineError(format!("trace: {e}")))?;
+    }
+    Ok(())
+}
+
+impl Qwen3Tts {
+    /// Render one request with frame-level streaming: the talker hands each frame to an [`IncrementalDecoder`]
+    /// as it is generated, and `sink` gets each batch of ready samples with the number of frames generated so far.
+    /// `every` and `hold` are the decoder's (see [`crate::stream`]): at `hold = 32` the concatenated samples were
+    /// measured bit-identical to [`decode`](Engine::decode) of the same codes on CPU. Returns the codes, as
+    /// [`generate`](Engine::generate) would.
+    pub fn render_streamed(
+        &mut self,
+        req: &ChunkRequest<'_>,
+        every: usize,
+        hold: usize,
+        sink: &mut dyn FnMut(&[f32], usize),
+    ) -> Result<Generated, EngineError> {
+        let Self {
+            talker,
+            decoder,
+            voice,
+            language_id,
+            trace,
+            ..
+        } = self;
+        let mut steps: Vec<FrameStop> = Vec::new();
+        let mut inc = IncrementalDecoder::new(decoder, every, hold);
+        let mut failed: Option<EngineError> = None;
+        let mut frames = 0usize;
+        let mut hook = |codes: &[i32]| {
+            frames += 1;
+            if failed.is_some() {
+                return;
+            }
+            match inc.push(codes) {
+                Ok(Some(samples)) if !samples.is_empty() => sink(&samples, frames),
+                Ok(_) => {}
+                Err(e) => failed = Some(e),
+            }
+        };
+        let g = talker.generate_streamed(
+            req.text,
+            &voice.speaker,
+            *language_id,
+            req.seed,
+            voice.max_frames,
+            voice.sampling,
+            trace.as_ref().map(|_| &mut steps),
+            Some(&mut hook),
+        )?;
+        if let Some(w) = trace.as_mut() {
+            write_steps(w, req, &steps)?;
+        }
+        if let Some(e) = failed {
+            return Err(e);
+        }
+        let tail = inc.finish()?;
+        if !tail.is_empty() {
+            sink(&tail, inc.frames());
+        }
+        let frames = g
+            .codes
+            .iter()
+            .map(|&c| u16::try_from(c).map_err(|_| EngineError(format!("codec token {c} out of range"))))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Generated {
+            codes: Codes { codebooks: 16, frames },
+            stop: g.stop,
+        })
+    }
+}
+
 impl Engine for Qwen3Tts {
     fn info(&self) -> &EngineInfo {
         &self.info
@@ -113,15 +196,7 @@ impl Engine for Qwen3Tts {
             self.trace.as_ref().map(|_| &mut steps),
         )?;
         if let Some(w) = self.trace.as_mut() {
-            for s in &steps {
-                writeln!(
-                    w,
-                    "{{\"chunk\":{},\"draw\":{},\"seed\":{},\"frame\":{},\"token\":{},\"p_stop\":{:e}}}",
-                    req.chunk, req.draw, req.seed, s.frame, s.token, s.p_stop
-                )
-                .and_then(|_| w.flush())
-                .map_err(|e| EngineError(format!("trace: {e}")))?;
-            }
+            write_steps(w, req, &steps)?;
         }
         let frames = g
             .codes

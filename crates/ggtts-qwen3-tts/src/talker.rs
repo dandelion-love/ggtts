@@ -94,16 +94,21 @@ mod planted {
         RopeNormal,
         /// The sampler's random stream starts one draw late.
         SamplerOffByOne,
+        /// The frame hook of [`Talker::generate_streamed`](super::Talker::generate_streamed) draws once from the
+        /// sampler's stream after each frame, so every later token moves. It fires only when a hook is passed: it
+        /// exists to show that the hook's identity check can see a hook that is not quiet.
+        FrameHookDraw,
     }
 
     #[cfg(feature = "plant")]
     impl Plant {
-        /// `none`, `rope-normal` or `sampler-off-by-one`.
+        /// `none`, `rope-normal`, `sampler-off-by-one` or `frame-hook-draw`.
         pub fn parse(s: &str) -> Option<Self> {
             Some(match s {
                 "" | "none" => Self::None,
                 "rope-normal" => Self::RopeNormal,
                 "sampler-off-by-one" => Self::SamplerOffByOne,
+                "frame-hook-draw" => Self::FrameHookDraw,
                 _ => return None,
             })
         }
@@ -199,6 +204,9 @@ impl Drop for Cache {
         }
     }
 }
+
+/// Called with each kept frame's 16 codes by [`Talker::generate_streamed`].
+pub type FrameHook<'a> = dyn FnMut(&[i32]) + 'a;
 
 /// What one request produced: frame-major codes, why it stopped, and the number of frames generated, thinking
 /// frames included.
@@ -695,7 +703,25 @@ impl Talker {
         seed: u64,
         max_len: i32,
         sampling: Sampling,
+        trace: Option<&mut Vec<FrameStop>>,
+    ) -> Result<Generation, EngineError> {
+        self.generate_streamed(text, speaker, language_id, seed, max_len, sampling, trace, None)
+    }
+
+    /// [`generate_traced`](Self::generate_traced), and with `on_frame` a call per kept frame, with its 16 codes, as
+    /// soon as they are final and before the next talker step: the frames the returned codes hold, in order. Like
+    /// the trace, the hook only reads; the tokens are the same with or without it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate_streamed(
+        &mut self,
+        text: &str,
+        speaker: &str,
+        language_id: i32,
+        seed: u64,
+        max_len: i32,
+        sampling: Sampling,
         mut trace: Option<&mut Vec<FrameStop>>,
+        mut on_frame: Option<&mut FrameHook<'_>>,
     ) -> Result<Generation, EngineError> {
         sampling.check()?;
         let c = self.config.clone();
@@ -828,6 +854,12 @@ impl Talker {
             frame_codes[1..].copy_from_slice(&rest);
             if !thinking {
                 out.extend_from_slice(&frame_codes);
+                if let Some(f) = on_frame.as_mut() {
+                    f(&frame_codes);
+                    if self.plant == Plant::FrameHookDraw {
+                        rng.next_uniform();
+                    }
+                }
             }
             if frame + 1 >= max_len {
                 break;

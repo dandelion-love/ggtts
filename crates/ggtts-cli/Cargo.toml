@@ -16,9 +16,16 @@ path = "src/bin/ggtts-render.rs"
 ggtts-core.workspace = true
 ggtts-qwen3-tts.workspace = true
 ggtts-kitten = { path = "../ggtts-kitten" }
+ggtts-fake.workspace = true
+
+[dev-dependencies]
+claxon.workspace = true
+serde_json.workspace = true
 
 [features]
 default = []
 # The engines over ggml. Off by default, so the workspace builds without the ggml submodule; ggtts-render then
 # only reports its version.
 ggml = ["ggtts-qwen3-tts/ggml", "ggtts-kitten/ggml"]
+# The CUDA backend as well, for --device cuda.
+cuda = ["ggml", "ggtts-qwen3-tts/cuda", "ggtts-kitten/cuda"]

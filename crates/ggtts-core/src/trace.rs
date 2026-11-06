@@ -18,6 +18,7 @@
 //! | `cb`, `cb_p` | Level 2: the depth model's tokens (codebooks 1 onward) and each one's probability. |
 //! | `stop` | `eos`, `cap` or `abort`. |
 //! | `spc`, `verdict` | The judge's seconds per character and its verdict (`null` when clean). |
+//! | `emit` | A chunk's piece of the read (the chunk and its gap, before the level) was handed to the stream: its first sample `start` and its length `samples`. `t_ms` is when. |
 //! | `ms` (on `chunk_end`) | Wall-clock for the whole draw: `generate`, `decode` and the judge together, not generation alone. |
 //!
 //! The schema is what an engine must emit. It is not a claim that any field measures what its name says: an
@@ -135,6 +136,12 @@ pub enum Event<'a> {
         start: usize,
         end: usize,
     },
+    /// A chunk's piece of the read was handed to the stream.
+    Emit {
+        chunk: u32,
+        start: usize,
+        samples: usize,
+    },
     Join {
         chunks: u32,
         samples: usize,
@@ -239,6 +246,12 @@ impl Event<'_> {
                 m.insert("tail_s".into(), (*tail_s).into());
                 m.insert("start".into(), (*start).into());
                 m.insert("end".into(), (*end).into());
+            }
+            Event::Emit { chunk, start, samples } => {
+                m.insert("ev".into(), "emit".into());
+                m.insert("chunk".into(), (*chunk).into());
+                m.insert("start".into(), (*start).into());
+                m.insert("samples".into(), (*samples).into());
             }
             Event::Join {
                 chunks,

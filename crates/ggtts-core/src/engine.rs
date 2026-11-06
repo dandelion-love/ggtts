@@ -3,6 +3,10 @@
 //! `generate` (text to codec tokens) and `decode` (tokens to audio) are separate on purpose: the parity ladder
 //! checks tokens first and the decoder second, and an engine that only returned audio could not say which half
 //! drifted. The instrument events (`--trace`) join this interface with the trace format.
+//!
+//! An engine also declares its [`Profile`]: the protocol numbers the story path renders its output with.
+
+use crate::profile::Profile;
 
 /// What an engine is, for provenance.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +88,8 @@ impl std::error::Error for EngineError {}
 /// One model family.
 pub trait Engine {
     fn info(&self) -> &EngineInfo;
+    /// The protocol numbers this engine's output is rendered with: ceilings, pauses, judge bars and level.
+    fn profile(&self) -> &Profile;
     /// Text to codec tokens for one chunk.
     fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError>;
     /// Codec tokens to PCM.

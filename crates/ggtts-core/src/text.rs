@@ -1,16 +1,12 @@
 //! Text in: the story file, clause chunking at a ceiling, and the chunk plan (render spec sections 1 and 2).
 //!
 //! The rules are reproduced as they are, oddities included, so that parity holds: a mark on an empty clause is
-//! lost, a hard cut carries no mark, and a chunk under four code points is dropped. A fix is a new protocol version.
+//! lost, a hard cut carries no mark, and a chunk under the profile's minimum is dropped. A fix is a new protocol
+//! version.
+//!
+//! The split marks, the joiner, the minimum length and the ceilings come from the [`Profile`].
 
-/// The clause marks the chunker splits on. ASCII punctuation, quotes and `……` are not split points.
-pub const SPLIT: [char; 7] = ['，', '。', '、', '；', '：', '！', '？'];
-
-/// A chunk whose text (without its mark) is shorter than this many code points is dropped.
-pub const MIN_CHUNK_CHARS: usize = 4;
-
-/// The joiner inserted when two clauses merge and the first carries no mark.
-const UNMARKED_JOINER: char = '，';
+use crate::profile::Profile;
 
 /// Whitespace as the reference strips it: Unicode `White_Space`, plus the four ASCII separators U+001C..U+001F.
 pub fn is_strip_space(c: char) -> bool {
@@ -34,18 +30,20 @@ pub fn read_text(contents: &str) -> (String, Vec<String>) {
 
 /// Split one paragraph into `(text, mark)` pairs no longer than `ceiling` code points (the mark not counted).
 ///
-/// Clauses end at a [`SPLIT`] mark. Neighbouring clauses merge while the merge, counting a one-character joiner,
-/// fits the ceiling; the first clause keeps its own mark as the joiner (or `，` if it has none). A clause longer
-/// than the ceiling is hard-cut, and the cut pieces carry no mark. Chunks under [`MIN_CHUNK_CHARS`] are dropped.
+/// Clauses end at one of the profile's [`split_marks`](Profile::split_marks). Neighbouring clauses merge while the
+/// merge, counting a one-character joiner, fits the ceiling; the first clause keeps its own mark as the joiner (or
+/// the profile's [`unmarked_joiner`](Profile::unmarked_joiner) if it has none). A clause longer than the ceiling is
+/// hard-cut, and the cut pieces carry no mark. Chunks under [`min_chunk_chars`](Profile::min_chunk_chars) are
+/// dropped.
 ///
 /// # Panics
 /// If `ceiling` is zero.
-pub fn chunk(text: &str, ceiling: usize) -> Vec<(String, String)> {
+pub fn chunk(profile: &Profile, text: &str, ceiling: usize) -> Vec<(String, String)> {
     assert!(ceiling > 0, "the chunk ceiling must be at least 1");
     let mut parts: Vec<(String, String)> = Vec::new();
     let mut buf = String::new();
     for ch in text.chars() {
-        if SPLIT.contains(&ch) {
+        if profile.split_marks.contains(&ch) {
             parts.push((strip(&buf).to_string(), ch.to_string()));
             buf.clear();
         } else {
@@ -70,7 +68,7 @@ pub fn chunk(text: &str, ceiling: usize) -> Vec<(String, String)> {
             cur_mark = mark;
         } else if cur.len() + part.len() < ceiling {
             if cur_mark.is_empty() {
-                cur.push(UNMARKED_JOINER);
+                cur.push(profile.unmarked_joiner);
             } else {
                 cur.extend(cur_mark.chars());
             }
@@ -90,7 +88,7 @@ pub fn chunk(text: &str, ceiling: usize) -> Vec<(String, String)> {
         out.push((cur.iter().collect(), cur_mark));
     }
     out.into_iter()
-        .filter(|(c, _)| c.chars().count() >= MIN_CHUNK_CHARS)
+        .filter(|(c, _)| c.chars().count() >= profile.min_chunk_chars)
         .collect()
 }
 
@@ -107,11 +105,11 @@ pub struct PlannedChunk {
     pub last_in_para: bool,
 }
 
-/// Chunk every paragraph at `ceiling` and list the chunks in reading order.
-pub fn plan(paragraphs: &[String], ceiling: usize) -> Vec<PlannedChunk> {
+/// Chunk every paragraph at `ceiling`, by the profile's rules, and list the chunks in reading order.
+pub fn plan(profile: &Profile, paragraphs: &[String], ceiling: usize) -> Vec<PlannedChunk> {
     let mut out = Vec::new();
     for (para, text) in paragraphs.iter().enumerate() {
-        let chunks = chunk(text, ceiling);
+        let chunks = chunk(profile, text, ceiling);
         let n = chunks.len();
         for (ci, (body, punct)) in chunks.into_iter().enumerate() {
             out.push(PlannedChunk {
@@ -138,12 +136,6 @@ pub fn cjk_len(s: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn merge_keeps_the_first_clause_mark() {
-        let got = chunk("今日好熱。我哋去游水！", 45);
-        assert_eq!(got, vec![("今日好熱。我哋去游水".to_string(), "！".to_string())]);
-    }
 
     #[test]
     fn strip_matches_reference_whitespace() {

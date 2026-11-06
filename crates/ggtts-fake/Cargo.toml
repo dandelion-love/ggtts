@@ -10,4 +10,5 @@ publish = false
 
 [dependencies]
 ggtts-core.workspace = true
+ggtts-qwen3-tts.workspace = true
 libm.workspace = true

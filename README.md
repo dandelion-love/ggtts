@@ -22,7 +22,9 @@ ggtts turns text into speech with neural codec language models (Qwen3-TTS first)
 **A pipeline for long text.** Long text is split into chunks with a deterministic rule. Each chunk gets its own seed,
 derived from the text and its position. Each chunk is rendered, judged, trimmed and joined, and the read is levelled
 and written as FLAC with a provenance manifest. The defaults are a fixed, versioned protocol: a render can be
-reproduced from its command line and its manifest.
+reproduced from its command line and its manifest. The core holds the rules and no protocol number: the chunk
+ceilings, the pause table, the judge bars and the level target are a profile the engine declares, named
+`{protocol}/{family}`, for example `story-v1/qwen3-tts`.
 
 **Instruments, opt in.** `--trace` writes per-step events (the sampled token, the stop probability, entropy and
 more) as JSON Lines. With tracing off nothing is computed for it. With it on, the output must not change: an

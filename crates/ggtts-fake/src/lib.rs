@@ -6,12 +6,17 @@
 //! chunk may also be given its own amplitude, a click pair or a sample rate. The pipeline's parity cases run
 //! against it, so the pipeline is tested before any real engine exists.
 //!
+//! It stands in for Qwen3-TTS (its default rate is that codec's), so by default it declares that engine's
+//! profile, `story-v1/qwen3-tts`. [`FakeEngine::with_profile`] declares another, for a planted change or a second
+//! architecture's numbers.
+//!
 //! Its codec tokens are a deterministic function of the seed, the frame and the codebook, so a seed change is
 //! visible in the tokens. They are not the reference sampler's stream: that arrives with the first real engine.
 
 use std::collections::HashMap;
 
 use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm, Stop};
+use ggtts_core::profile::Profile;
 use ggtts_core::text::cjk_len;
 
 pub mod signal;
@@ -60,6 +65,7 @@ struct Pending {
 #[derive(Debug)]
 pub struct FakeEngine {
     info: EngineInfo,
+    profile: Profile,
     script: HashMap<String, Vec<f64>>,
     shape: HashMap<String, Shape>,
     draws: HashMap<String, usize>,
@@ -78,14 +84,20 @@ impl Default for FakeEngine {
 
 impl FakeEngine {
     /// `script` maps a chunk text to the speech seconds of its draws (the last repeats); `shape` maps a chunk text
-    /// to its overrides.
+    /// to its overrides. The engine declares `story-v1/qwen3-tts`.
     pub fn new(script: HashMap<String, Vec<f64>>, shape: HashMap<String, Shape>) -> Self {
+        Self::with_profile(ggtts_qwen3_tts::PROFILE, script, shape)
+    }
+
+    /// As [`FakeEngine::new`], declaring `profile` instead.
+    pub fn with_profile(profile: Profile, script: HashMap<String, Vec<f64>>, shape: HashMap<String, Shape>) -> Self {
         Self {
             info: EngineInfo {
                 family: "fake".into(),
                 backend: "none".into(),
                 parity: "none".into(),
             },
+            profile,
             script,
             shape,
             draws: HashMap::new(),
@@ -114,6 +126,10 @@ pub fn fake_token(seed: u64, frame: u64, codebook: u64) -> u16 {
 impl Engine for FakeEngine {
     fn info(&self) -> &EngineInfo {
         &self.info
+    }
+
+    fn profile(&self) -> &Profile {
+        &self.profile
     }
 
     fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {

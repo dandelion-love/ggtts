@@ -23,10 +23,8 @@ use ggtts_core::pipeline::render_story_traced;
 use ggtts_core::trace::{emit_header, Header, JsonlEvents};
 
 fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap()
+    // Not canonicalized: on Windows that gives a verbatim path, a needless thing to hand Python as its cwd.
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
 }
 
 /// A Python 3.8+ interpreter, or `None` when skipping was asked for.

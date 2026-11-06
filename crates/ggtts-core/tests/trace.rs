@@ -367,6 +367,41 @@ fn replay_sees_a_planted_change_and_not_the_clock() {
         .expect("a changed engine is red");
     assert_eq!(m.chunk, Some(0), "{m}");
 
+    // The decoder changed and the generator did not: the first chunk now decodes at 16 kHz, with the same tokens.
+    // Every step still matches, so this is red only because replay decodes, and it names the trim.
+    let first = case.chunks(&case.engine())[0].text.clone();
+    let mut shape = case.shape.clone();
+    shape.entry(first).or_default().sample_rate = Some(16_000);
+    let mut decoder = FakeEngine::new(case.script.clone(), shape);
+    let m = replay(&mut decoder, &lines)
+        .unwrap()
+        .mismatch
+        .expect("a changed decoder is red");
+    assert_eq!((m.chunk, m.field.as_str()), (Some(0), "end"), "{m}");
+
+    // A recorded judge field or trim bound changed by hand: replay recomputes them, so each is red.
+    let spc = tamper(
+        &lines,
+        |l| ev(l) == "chunk_end",
+        |l| {
+            let v = l["spc"].as_f64().unwrap();
+            l.insert("spc".into(), (v + 0.01).into());
+        },
+    );
+    assert_eq!(replay(&mut case.engine(), &spc).unwrap().mismatch.unwrap().field, "spc");
+    let trim = tamper(
+        &lines,
+        |l| ev(l) == "trim",
+        |l| {
+            let v = l["start"].as_u64().unwrap();
+            l.insert("start".into(), (v + 1).into());
+        },
+    );
+    assert_eq!(
+        replay(&mut case.engine(), &trim).unwrap().mismatch.unwrap().field,
+        "start"
+    );
+
     // A trace made by another engine is refused, not compared.
     let other = tamper(
         &lines,

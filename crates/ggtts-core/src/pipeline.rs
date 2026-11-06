@@ -134,13 +134,44 @@ pub fn render_story_traced(
     opts: &RenderOptions,
     events: &mut dyn Events,
 ) -> Result<Read, RenderError> {
+    render_story_streamed(engine, story_id, chunks, opts, events, &mut |_| {})
+}
+
+/// One piece of a streamed read: a kept chunk, trimmed, followed by the gap after it (none after the last).
+///
+/// The pieces arrive in order, each as soon as its chunk is kept, and they are the read **before the level
+/// step**: the level's gain is computed over the whole read, so it is known only at the end, as [`Read::gain`].
+/// Concatenated, the pieces are the batch read's samples before levelling, exactly; [`level`] with the profile
+/// over that concatenation gives [`Read::samples`].
+#[derive(Debug, Clone, Copy)]
+pub struct StreamPiece<'a> {
+    pub chunk: usize,
+    /// The piece's first sample in the read.
+    pub start: usize,
+    pub samples: &'a [f32],
+    /// The read's rate: the first chunk's. Later chunks are not resampled or checked.
+    pub sample_rate: u32,
+}
+
+/// [`render_story_traced`], handing each [`StreamPiece`] to `sink` as soon as its chunk is kept, before the next
+/// chunk is generated. The read it returns is the batch read: identical with any sink.
+pub fn render_story_streamed(
+    engine: &mut dyn Engine,
+    story_id: &str,
+    chunks: &[PlannedChunk],
+    opts: &RenderOptions,
+    events: &mut dyn Events,
+    sink: &mut dyn FnMut(StreamPiece<'_>),
+) -> Result<Read, RenderError> {
     let tracing = events.level() > 0;
     let mut total_frames: u64 = 0;
     if chunks.is_empty() {
         return Err(RenderError::Empty);
     }
     let profile = *engine.profile();
-    let mut clips: Vec<(Vec<f32>, u32)> = Vec::with_capacity(chunks.len());
+    let n = chunks.len();
+    let mut samples: Vec<f32> = Vec::new();
+    let mut sample_rate = 0;
     let mut records = Vec::with_capacity(chunks.len());
     for (i, c) in chunks.iter().enumerate() {
         let mut first = None;
@@ -200,7 +231,30 @@ pub fn render_story_traced(
                 end: t.end_sample,
             });
         }
-        clips.push((pcm.samples[t.start_sample..t.end_sample].to_vec(), pcm.sample_rate));
+        if i == 0 {
+            sample_rate = pcm.sample_rate;
+        }
+        // Join as each chunk is kept: the chunk, then its gap unless it is the last.
+        let start = samples.len();
+        samples.extend_from_slice(&pcm.samples[t.start_sample..t.end_sample]);
+        let span = (start, samples.len());
+        if i + 1 < n {
+            let gap = gap_samples(&profile, &c.punct, c.last_in_para, sample_rate);
+            samples.resize(samples.len() + gap, 0.0);
+        }
+        sink(StreamPiece {
+            chunk: i,
+            start,
+            samples: &samples[start..],
+            sample_rate,
+        });
+        if tracing {
+            events.emit(Event::Emit {
+                chunk: i as u32,
+                start,
+                samples: samples.len() - start,
+            });
+        }
         records.push(ChunkRecord {
             i,
             text: c.text.clone(),
@@ -210,22 +264,10 @@ pub fn render_story_traced(
             final_defect: j.verdict,
             s_per_char: j.s_per_char,
             first_s_per_char: first.s_per_char,
-            span: (0, 0),
+            span,
         });
     }
 
-    let sample_rate = clips[0].1;
-    let mut samples = Vec::new();
-    let n = clips.len();
-    for (idx, ((y, _), c)) in clips.iter().zip(chunks).enumerate() {
-        let start = samples.len();
-        samples.extend_from_slice(y);
-        records[idx].span = (start, samples.len());
-        if idx + 1 < n {
-            let gap = gap_samples(&profile, &c.punct, c.last_in_para, sample_rate);
-            samples.resize(samples.len() + gap, 0.0);
-        }
-    }
     let gain = level(&profile, &mut samples);
     if tracing {
         events.emit(Event::Join {

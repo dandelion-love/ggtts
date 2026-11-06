@@ -15,6 +15,11 @@ path = "src/bin/ggtts-render.rs"
 [dependencies]
 ggtts-core.workspace = true
 ggtts-qwen3-tts.workspace = true
+ggtts-fake.workspace = true
+
+[dev-dependencies]
+claxon.workspace = true
+serde_json.workspace = true
 
 [features]
 default = []

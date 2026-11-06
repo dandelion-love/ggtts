@@ -80,8 +80,8 @@ jobs:
           echo "ggml submodule at $pin"
       - name: cargo clippy with the engines (ggml built by cargo with CMake)
         run: cargo clippy --workspace --all-targets --features ggtts-cli/ggml --locked -- -D warnings
-      - name: cargo clippy with the test-only plant feature (the planted defects and their expected-failure tests)
-        run: cargo clippy --workspace --all-targets --features ggtts-cli/ggml,ggtts-qwen3-tts/plant --locked -- -D warnings
+      - name: cargo clippy with the test-only plant feature (the planted defects and their expected-failure tests), and the binding with its engines and JNI layer
+        run: cargo clippy --workspace --all-targets --features ggtts-cli/ggml,ggtts-qwen3-tts/plant,ggtts-ffi/ggml,ggtts-ffi/jni,ggtts-ffi/plant --locked -- -D warnings
       - name: Test with the engines (the identity checks need model files and stay opt-in, so they report ignored)
         run: cargo test --workspace --features ggtts-cli/ggml --locked -- --nocapture
       - name: ggml links and computes (one ggml_add through the bindings)
@@ -292,6 +292,20 @@ jobs:
           fi
           cat planted-measure.err
           grep -F "no ggtts-measure in" planted-measure.err
+
+  binding:
+    name: binding (the C-ABI with the planted panic, and the Kotlin binding on the host JVM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: The C-ABI on the host, with the planted panic caught at the boundary
+        run: cargo test --locked -p ggtts-ffi --features plant -- --nocapture
+      - name: The Kotlin binding on the host JVM (the runner's JDK and kotlinc)
+        run: scripts/kotlin_binding_test.sh
 
   release-build:
     # The release's build step, run on every PR with the release's matrix, so a bad feature string or a build that

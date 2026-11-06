@@ -249,11 +249,40 @@ fn render(a: Args) -> Result<(), String> {
     Ok(())
 }
 
+/// The model engines compiled into this binary, one line each, with the backends each can run on. Read from the
+/// build's features, not written by hand, so a build that dropped an engine says so (`scripts/buildinfo_engines.sh`
+/// turns these lines into the release's BUILDINFO list and refuses an empty or short one). The fake engine is a test
+/// instrument, always present, and not listed.
+fn engine_lines() -> Vec<String> {
+    let mut backends = Vec::new();
+    if cfg!(feature = "ggml") {
+        backends.push("cpu");
+    }
+    if cfg!(feature = "cuda") {
+        backends.push("cuda");
+    }
+    let engines: &[&str] = if cfg!(feature = "ggml") {
+        &["qwen3-tts", "kitten-tts-2"]
+    } else {
+        &[]
+    };
+    if engines.is_empty() {
+        return vec!["engines: none (built without the ggml feature)".into()];
+    }
+    engines
+        .iter()
+        .map(|e| format!("engine {e} backends {}", backends.join(",")))
+        .collect()
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         None | Some("--version") | Some("-V") => {
             for line in ggtts_core::version_lines(BINARY) {
+                println!("{line}");
+            }
+            for line in engine_lines() {
                 println!("{line}");
             }
             ExitCode::SUCCESS

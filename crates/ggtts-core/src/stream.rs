@@ -168,6 +168,18 @@ impl FirstChunkLevel {
     }
 }
 
+/// The listener stream's default hold, in seconds (#44).
+///
+/// The rule: the hold must be longer than the longest unrepresentative opening it is meant to see past, and no
+/// longer, because every held second is paid in first-audio latency at the engine's real-time factor. Measured on the
+/// fake engine's cases (`hold_sweep` in `tests/stream.rs`): the planted quiet opening, one chunk, is red at 3 s and
+/// green from 4 s (+2.33 dB at 5 s, +0.64 dB at 10 s); `arm-redraw-exhausted` is red at 0 and 1 s and green from 2 s.
+/// 5 s is the smallest whole second inside the 3 dB bound on every case, one second past the plant's floor. On the
+/// real engines on CPU it costs nothing: their first chunks (Kitten-TTS 2 8.6 s, Qwen3-TTS 12.6 s) already exceed it,
+/// so first audio is the first chunk's, where 10 s doubled Kitten's (43.8 s against 23.9 s). A longer hold is a flag
+/// away (`--stream-level-seconds`), and reverting to 10 is this one line.
+pub const DEFAULT_HOLD_S: f64 = 5.0;
+
 /// Levels a stream's pieces with one gain taken from at least the first `hold_s` seconds of audio.
 ///
 /// Pieces are held back, whole and in order, until the held audio reaches `hold_s` seconds (always at least the

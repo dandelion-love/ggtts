@@ -19,7 +19,7 @@
 //! default) or raw s16le after a one-line header. A story streams chunk by chunk, each piece as soon as its chunk
 //! is kept. Which stream:
 //!
-//! * **To listen: `--stream`.** Levelled with the level step's own rule, one gain set from the first 10 s of audio
+//! * **To listen: `--stream`.** Levelled with the level step's own rule, one gain set from the first 5 s of audio
 //!   (`--stream-level-seconds`, held back until then; 0 takes the first chunk alone) and held
 //!   for the read (`stream::FirstChunkLevel`), so it adds no latency. Its loudness is close to the FLAC's but not
 //!   equal: the FLAC's gain is computed over the whole read, known only after the last chunk.
@@ -62,16 +62,13 @@ const USAGE: &str = "usage: ggtts-render --model M.gguf [--codec C.gguf] --out x
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
 [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID]\n       ggtts-render --version";
 
-/// Seconds of audio the listener's stream holds back to set its gain (#44). 0 takes the first chunk's alone.
-const DEFAULT_STREAM_LEVEL_SECONDS: f64 = 10.0;
-
 /// Which stream to ask for, printed by `--help`.
 const STREAMS: &str = concat!(
     "streams:\n",
     "  --stream FILE|-             to listen: levelled as it is produced, with one gain set from the first\n",
-    "                              10 s of audio (held back until then)\n",
+    "                              5 s of audio (held back until then)\n",
     "  --stream-level-seconds S    how much audio sets that gain: more is closer to the FLAC's loudness,\n",
-    "                              less is earlier first audio; 0 = the first chunk alone (default 10)\n",
+    "                              less is earlier first audio; 0 = the first chunk alone (default 5)\n",
     "  --stream FILE --stream-raw  for parity checks: before the level step, bit-exact to the batch read;\n",
     "                              the FLAC is it times the gain printed at the end\n",
     "  --stream-format wav|s16le   wav (default: plays as it arrives) or raw s16le after a one-line header",
@@ -279,7 +276,7 @@ fn render(a: Args) -> Result<u8, String> {
             let profile = *engine.profile();
             let chunks = plan_story(&profile, &paragraphs);
             let mut first_audio_ms = None;
-            let hold_s = a.stream_level_seconds.unwrap_or(DEFAULT_STREAM_LEVEL_SECONDS);
+            let hold_s = a.stream_level_seconds.unwrap_or(ggtts_core::stream::DEFAULT_HOLD_S);
             let mut leveller = StreamLevel::new(&profile, hold_s);
             let raw = a.stream_raw;
             let read = render_story_streamed(

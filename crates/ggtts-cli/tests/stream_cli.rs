@@ -219,12 +219,12 @@ fn the_default_stream_is_levelled_for_a_listener() {
     let story = story(&dir);
     let (out, err) = run(&["--engine", "fake", "--story", story.to_str().unwrap(), "--stream", "-"]);
     let (pieces, _, _, _) = reference(&story);
-    // The same pieces, levelled as the binary must have levelled them: one gain, from the first 10 s held.
+    // The same pieces, levelled as the binary must have levelled them: one gain, from the default hold.
     let (title, paragraphs) = read_text(&std::fs::read_to_string(&story).unwrap());
     let mut engine = FakeEngine::default();
     let profile = *engine.profile();
     let chunks = plan_story(&profile, &paragraphs);
-    let mut lv = ggtts_core::stream::StreamLevel::new(&profile, 10.0);
+    let mut lv = ggtts_core::stream::StreamLevel::new(&profile, ggtts_core::stream::DEFAULT_HOLD_S);
     let mut want = Vec::new();
     render_story_streamed(
         &mut engine,

@@ -47,7 +47,7 @@ environment variable, after llama.cpp's `LLAMA_ARG_*` convention.
 ### Streaming: which stream
 
 - **To listen: `ggtts-render --stream FILE|-`.** The audio leaves chunk by chunk while the render runs, levelled with
-  one gain set from its first 10 s of audio, which are held back until then. Its loudness is close to the FLAC's
+  one gain set from its first 5 s of audio, which are held back until then. Its loudness is close to the FLAC's
   but not equal, because the FLAC's gain is computed over the whole read. `--stream-level-seconds S` trades the
   two: more seconds give loudness closer to the FLAC's, fewer give earlier first audio, and `0` takes the first
   chunk's gain alone, which adds no latency but goes wrong when the first chunk is unlike the rest.

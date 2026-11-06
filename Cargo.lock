@@ -185,6 +185,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ggtts-kitten"
+version = "0.0.1"
+dependencies = [
+ "ggtts-core",
+ "serde_json",
+]
+
+[[package]]
 name = "ggtts-qwen3-tts"
 version = "0.0.1"
 dependencies = [

@@ -1,0 +1,17 @@
+[package]
+name = "ggtts-kitten"
+description = "The ggtts Kitten-TTS 2 engine: a ternary (BitNet-style) Qwen3 speech LM on ggml, its converter and its parity checks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "ggtts-kitten-convert"
+path = "src/bin/ggtts-kitten-convert.rs"
+
+[dependencies]
+ggtts-core.workspace = true
+serde_json.workspace = true

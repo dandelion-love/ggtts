@@ -6,6 +6,7 @@ members = [
     "crates/ggtts-fake",
     "crates/ggtts-qwen3-tts",
     "crates/ggtts-cli",
+    "crates/ggtts-kitten",
 ]
 # A spike with its own workspace; it builds ggml and needs libclang, so the main CI jobs leave it out.
 exclude = ["spike/layer0"]

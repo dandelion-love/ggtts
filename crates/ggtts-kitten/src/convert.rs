@@ -373,7 +373,8 @@ mod tests {
     fn round_trip(rule: Rule, strict: bool) -> Result<Verified, String> {
         let st = SafeTensors::from_bytes(tiny_safetensors()).unwrap();
         let (model, lm) = configs();
-        let dir = std::env::temp_dir().join(format!("ggtts-kitten-conv-{}-{:?}", std::process::id(), rule));
+        let tag = format!("{}-{:?}", rule.group, rule.scale);
+        let dir = std::env::temp_dir().join(format!("ggtts-kitten-conv-{}-{tag}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("m.gguf");
         convert(&st, &model, &lm, "tiny", &out, rule, strict)?;

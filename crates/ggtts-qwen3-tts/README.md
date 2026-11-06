@@ -55,12 +55,15 @@ Both hold whether ggml is built by `ggtts-ggml-sys` or the reference's own archi
 ## Rendering end to end
 
 ```bash
-cargo run --release -p ggtts-qwen3-tts --features ggml --example render -- \
-  --talker "$GGTTS_TALKER" --codec "$GGTTS_CODEC" --out out.flac --threads 4 --text "今日天氣好好，我哋去公園行下"
+cargo build --release -p ggtts-cli --features ggml
+target/release/ggtts-render --model "$GGTTS_TALKER" --codec "$GGTTS_CODEC" --out out.flac -j 4 \
+  --text "今日天氣好好，我哋去公園行下"
 # or --story story.txt: title line, one paragraph per line, rendered on the core's story path
 ```
+
+`ggtts-render` picks the engine from the model's `general.architecture`; `--engine` overrides it.
 
 Timed against the reference CLI on the same machine, the same 4 threads and the `bus` fixture text (144 frames),
 three alternating rounds, medians: generate 11,043 ms against 10,759 ms (+2.6%), decode 6,424 ms against 6,271 ms
 (+2.4%), wall clock including model load 18,937 ms against 18,670 ms (+1.4%). The tokens were identical every
-round.
+round. (Measured with the same render code as an example, before it moved into `ggtts-render`.)

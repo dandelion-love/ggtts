@@ -33,7 +33,3 @@ required-features = ["ggml"]
 [[example]]
 name = "generate"
 required-features = ["ggml"]
-
-[[example]]
-name = "render"
-required-features = ["ggml"]

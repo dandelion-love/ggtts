@@ -69,6 +69,11 @@ target/release/ggtts-render --model "$GGTTS_TALKER" --codec "$GGTTS_CODEC" --out
 
 `ggtts-render` picks the engine from the model's `general.architecture`; `--engine` overrides it.
 
+The story path, on `fixtures/story/outing.txt` (five paragraphs written for the purpose): 8 chunks at the profile's
+ceiling of 45, a seed per chunk from the story, no first-draw defects, joined, trimmed and levelled into 66.44 s of
+audio in 110 s of rendering on 4 threads (RTF 1.66, 1.68 with model load). Rendered twice, the two FLAC files are
+byte-identical (sha256 `bafda0ed…1645`).
+
 Timed against the reference CLI on the same machine, the same 4 threads and the `bus` fixture text (144 frames),
 three alternating rounds, medians: generate 11,043 ms against 10,759 ms (+2.6%), decode 6,424 ms against 6,271 ms
 (+2.4%), wall clock including model load 18,937 ms against 18,670 ms (+1.4%). The tokens were identical every

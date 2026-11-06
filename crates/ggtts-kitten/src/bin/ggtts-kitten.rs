@@ -618,7 +618,12 @@ fn bench_cmd(a: &Args) -> Result<bool, String> {
     let path = a.get("gguf")?;
     let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
     let gguf = Gguf::open(Path::new(path))?;
-    let model = Model::load(&gguf, Weights::Ternary, be.clone())?;
+    let weights = match a.or("weights", "ternary") {
+        "f32" => Weights::F32,
+        "ternary" => Weights::Ternary,
+        w => return Err(format!("unknown --weights {w}")),
+    };
+    let model = Model::load(&gguf, weights, be.clone())?;
     drop(gguf);
     let ids: Vec<u32> = (0..prompt as u32).map(|i| 151675 + (i * 37) % 6561).collect();
     let mut embd = Vec::new();
@@ -635,7 +640,7 @@ fn bench_cmd(a: &Args) -> Result<bool, String> {
     }
     let step = t1.elapsed().as_secs_f64();
     println!(
-        "{}: layout {}, {:.0} MB; prefill {prompt} tokens {prefill:.2}s ({:.0} tokens/s); {steps} steps {step:.2}s ({:.1} tokens/s)",
+        "{} ({weights:?}): layout {}, {:.0} MB; prefill {prompt} tokens {prefill:.2}s ({:.0} tokens/s); {steps} steps {step:.2}s ({:.1} tokens/s)",
         path,
         model.layout.name(),
         size as f64 / 1e6,

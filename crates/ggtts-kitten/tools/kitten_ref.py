@@ -228,10 +228,45 @@ def cmd_s3dump(a) -> int:
     toks = torch.tensor([t for t in tokens if 0 <= t < 6561] + [int(S3GEN_SIL)] * 3, dtype=torch.long)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
+    # Record every draw and the flow's intermediates: the CFM's full initial noise comes from randn_like over the
+    # prompt and the target, with the target part then overwritten by `noise`.
+    rec = {"randn_like": [], "est": []}
+    real_randn_like = torch.randn_like
+
+    def randn_like(t, *args, **kw):
+        r = real_randn_like(t, *args, **kw)
+        rec["randn_like"].append(r)
+        return r
+
+    flow = s3.flow
+    hooks = [
+        flow.encoder.register_forward_hook(lambda m, i, o: rec.__setitem__("enc", o[0])),
+        flow.encoder_proj.register_forward_hook(lambda m, i, o: rec.__setitem__("mu", o)),
+    ]
+    est = flow.decoder.estimator
+    real_forward = est.forward
+
+    def est_forward(*args, **kw):  # the solver calls .forward directly, so a hook would not fire
+        o = real_forward(*args, **kw)
+        rec["est"].append(((args[0] if args else kw["x"]).clone(), o.clone()))
+        return o
+
+    est.forward = est_forward
     with torch.inference_mode():
         noise = torch.randn(1, 80, toks.shape[0] * 2)
-        mel = S3Token2Mel.forward(s3, toks, ref_wav=None, ref_sr=None, ref_dict=dict(cond), n_cfm_timesteps=2,
-                                  finalize=True, noised_mels=noise)
+        torch.randn_like = randn_like
+        try:
+            mel = S3Token2Mel.forward(s3, toks, ref_wav=None, ref_sr=None, ref_dict=dict(cond), n_cfm_timesteps=2,
+                                      finalize=True, noised_mels=noise)
+        finally:
+            torch.randn_like = real_randn_like
+            est.forward = real_forward
+            for h in hooks:
+                h.remove()
+        z = rec["randn_like"][0].clone()
+        z[..., z.shape[2] - noise.shape[2]:] = noise
+        emb = torch.nn.functional.normalize(torch.atleast_2d(cond["embedding"]), dim=1)
+        spks = flow.spk_embed_affine_layer(emb)
         hift = s3.mel2wav
         f0 = hift.f0_predictor(mel)
         src = hift.f0_upsamp(f0[:, None]).transpose(1, 2)
@@ -249,6 +284,9 @@ def cmd_s3dump(a) -> int:
         "noise": put("noise", noise), "mel": put("mel", mel), "f0": put("f0", f0), "source": put("source", src),
         "wav_raw": put("wav_raw", wav), "wav": put("wav", faded), "prompt_feat": put("prompt_feat", cond["prompt_feat"]),
         "embedding": put("embedding", cond["embedding"]),
+        "z": put("z", z), "enc": put("enc", rec["enc"]), "mu": put("mu", rec["mu"]), "spks": put("spks", spks),
+        "est0_x": put("est0_x", rec["est"][0][0]), "est0_out": put("est0_out", rec["est"][0][1]),
+        "est1_x": put("est1_x", rec["est"][1][0]), "est1_out": put("est1_out", rec["est"][1][1]),
     }
     meta = {"tokens": toks.tolist(), "prompt_token": cond["prompt_token"][0].tolist(), "shapes": shapes,
             "seed": a.seed, "torch": torch.__version__}

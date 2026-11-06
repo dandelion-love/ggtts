@@ -329,6 +329,97 @@ fn hift_cmd(a: &Args) -> Result<bool, String> {
     Ok(ok)
 }
 
+fn flow_cmd(a: &Args) -> Result<bool, String> {
+    use ggtts_kitten::flow::{Flow, FlowRef, MEL};
+    use ggtts_kitten::{dsp, hift::Hift};
+    let threads: usize = a.or("threads", "4").parse().map_err(|_| "bad --threads")?;
+    let dir = PathBuf::from(a.get("ref")?);
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("meta.json")).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let ids = |k: &str| -> Vec<u32> {
+        meta[k]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as u32)
+            .collect()
+    };
+    let tokens = ids("tokens");
+    let r = FlowRef {
+        prompt_token: ids("prompt_token"),
+        prompt_feat: read_f32(&dir.join("prompt_feat.f32"))?,
+        embedding: read_f32(&dir.join("embedding.f32"))?,
+    };
+    let gguf = Gguf::open(Path::new(a.get("s3gguf")?))?;
+    let flow = Flow::load(&gguf, threads)?;
+    let e_spk = parity::rel_l2(&flow.spks(&r.embedding), &read_f32(&dir.join("spks.f32"))?);
+    println!("spks: rel L2 {e_spk:.3e}");
+    let mut all = r.prompt_token.clone();
+    all.extend_from_slice(&tokens);
+    let t0 = Instant::now();
+    let (mu, enc) = flow.encode(&all)?;
+    let e_enc = parity::rel_l2(&enc, &read_f32(&dir.join("enc.f32"))?);
+    let e_mu = parity::rel_l2(&mu, &read_f32(&dir.join("mu.f32"))?);
+    println!(
+        "encoder: rel L2 {e_enc:.3e}; mu: rel L2 {e_mu:.3e} ({:.2}s)",
+        t0.elapsed().as_secs_f64()
+    );
+    // One estimator call on PyTorch's own first-step input.
+    let tn = 2 * all.len();
+    let spks = flow.spks(&r.embedding);
+    let est_x = read_f32(&dir.join("est0_x.f32"))?;
+    let mu_ref = read_f32(&dir.join("mu.f32"))?;
+    let p_frames = r.prompt_feat.len() / MEL;
+    let mut inp = vec![0f32; 320 * tn];
+    inp[..MEL * tn].copy_from_slice(&est_x);
+    for ch in 0..MEL {
+        for f in 0..tn {
+            inp[(MEL + ch) * tn + f] = mu_ref[f * MEL + ch];
+            inp[(2 * MEL + ch) * tn + f] = spks[ch];
+            if f < p_frames {
+                inp[(3 * MEL + ch) * tn + f] = r.prompt_feat[f * MEL + ch];
+            }
+        }
+    }
+    let t1 = Instant::now();
+    let d0 = flow.estimate(&inp, tn, 0.0, 0.5)?;
+    let e_est = parity::rel_l2(&d0, &read_f32(&dir.join("est0_out.f32"))?);
+    println!(
+        "estimator, step 1 on PyTorch's input: rel L2 {e_est:.3e} ({:.2}s)",
+        t1.elapsed().as_secs_f64()
+    );
+    let z = read_f32(&dir.join("z.f32"))?;
+    let t2 = Instant::now();
+    let (mel, frames) = flow.mel(&tokens, &r, &z)?;
+    let flow_s = t2.elapsed().as_secs_f64();
+    let e_mel = parity::rel_l2(&mel, &read_f32(&dir.join("mel.f32"))?);
+    println!("flow end to end (recorded noise): {frames} mel frames, rel L2 {e_mel:.3e} ({flow_s:.2}s)");
+    let h = Hift::load(&gguf, threads)?;
+    let t3 = Instant::now();
+    let src = read_f32(&dir.join("source.f32"))?;
+    let (spec, _) = dsp::stft(&src);
+    let wav = h.decode(&mel, frames, &spec)?;
+    let voc_s = t3.elapsed().as_secs_f64();
+    let snr = 10.0 * (1.0 / parity::rel_l2(&wav, &read_f32(&dir.join("wav_raw.f32"))?).powi(2)).log10();
+    let audio_s = wav.len() as f64 / 24000.0;
+    println!(
+        "decoder end to end (flow then vocoder, recorded noise and source): SNR {snr:.1} dB; {audio_s:.2}s audio in {:.2}s (RTF {:.2})",
+        flow_s + voc_s,
+        (flow_s + voc_s) / audio_s
+    );
+    let ok = e_mel <= 1e-3 && snr >= 40.0;
+    println!(
+        "{} (bars: mel rel L2 <= 1e-3, waveform SNR >= 40 dB)",
+        if ok {
+            "DECODER PARITY PASS"
+        } else {
+            "DECODER PARITY FAIL"
+        }
+    );
+    Ok(ok)
+}
+
 fn text_of(lines: &[String], i: usize) -> &str {
     &lines[i]
 }
@@ -341,6 +432,7 @@ fn main() -> ExitCode {
         "tokcheck" => tokcheck_cmd(&a),
         "render" => render_cmd(&a),
         "hift-parity" => hift_cmd(&a),
+        "decoder-parity" => flow_cmd(&a),
         _ => Err("usage: ggtts-kitten (parity|tokcheck|render) ...; see the source's header".into()),
     });
     match res {

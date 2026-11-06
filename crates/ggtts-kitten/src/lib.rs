@@ -10,6 +10,8 @@ pub mod convert;
 pub mod dsp;
 #[cfg(feature = "ggml")]
 pub mod engine;
+#[cfg(feature = "ggml")]
+pub mod flow;
 pub mod gguf;
 #[cfg(feature = "ggml")]
 pub mod hift;

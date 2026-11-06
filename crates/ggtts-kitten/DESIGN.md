@@ -189,8 +189,23 @@ The bars above were written before these numbers and are not moved by them.
   upsampling, the source fusion, the Snake resblocks and the post convolution. `src/dsp.rs` covers the host-side
   harmonic source, the 16-point STFT and its inverse. Both were checked on a fixed-token PyTorch decode with the
   random source recorded. The f0's relative L2 is `4.71e-7` (bar 1e-3), and the waveform is at SNR `106.2 dB`
-  against PyTorch's (bar 40 dB): **PASS**. It vocodes 4.1 s of audio in 1.23 s on 4 threads. The flow (tokens to
-  mel) is still PyTorch.
+  against PyTorch's (bar 40 dB): **PASS**. It vocodes 4.1 s of audio in 1.23 s on 4 threads.
+* **Decoder port, step 2: the flow runs on ggml, so the whole S3Gen decode does.** `src/flow.rs` covers the
+  conformer encoder with relative-position attention and the 2x upsampling, and the meanflow U-Net estimator (56
+  transformer blocks) over two Euler steps. On a 103-token decode against a 248-token prompt, with PyTorch's noise
+  and source recorded, every relative L2 was measured:
+
+  | Stage | Relative L2 |
+  |---|---|
+  | speaker affine | `1.2e-7` |
+  | encoder | `5.1e-7` |
+  | `mu` | `3.4e-7` |
+  | one estimator call | `4.5e-7` |
+  | final mel | `2.9e-7` (bar 1e-3) |
+
+  The waveform is at SNR `89.3 dB` (bar 40 dB): **level 3 PASS**. It decodes 4.10 s of audio in 3.63 s on 4
+  threads (RTF 0.89). Reference conditioning (the clip's mel, CAMPPlus x-vector and S3 tokens) is still prepared
+  by the PyTorch tool, as in kitten-tts-2-cpp.
 
 ## Layout
 
@@ -205,6 +220,7 @@ The bars above were written before these numbers and are not moved by them.
 | `src/engine.rs` | `KittenEngine`, the `Engine` trait, and the PyTorch S3Gen bridge (feature `ggml`) |
 | `src/parity.rs` | the parity measures and the bars above |
 | `src/s3convert.rs` | S3Gen's safetensors to a GGUF, weight norm folded |
+| `src/flow.rs` | the S3Gen flow on ggml: conformer encoder and meanflow estimator (feature `ggml`) |
 | `src/hift.rs`, `src/dsp.rs` | the HiFT vocoder on ggml (feature `ggml`) and its host-side source and STFT |
 | `src/bin/ggtts-kitten-convert.rs` | the converter's command line |
 | `src/bin/ggtts-kitten.rs` | `parity`, `tokcheck` and `render` (feature `ggml`) |

@@ -7,104 +7,22 @@
 //!
 //! The stories are the recorded render cases' (`fixtures/pipeline/render.json`), with their scripts and shapes.
 
+mod common;
+
 use std::collections::HashMap;
 use std::io;
-use std::path::Path;
+
+use common::{cases, Case};
 
 use ggtts_core::engine::{ChunkRequest, Engine};
-use ggtts_core::pipeline::{plan_story, render_story, render_story_traced, RenderOptions};
+use ggtts_core::pipeline::{render_story, render_story_traced};
 use ggtts_core::seed::seed_of;
-use ggtts_core::text::PlannedChunk;
 use ggtts_core::trace::{
     check_trace_identity, compare, emit_header, parse, replay, Events, Header, JsonlEvents, NullEvents, Recorder,
     FORMAT,
 };
-use ggtts_fake::{fake_p_stop, fake_token, FakeEngine, Shape, CODEBOOKS};
+use ggtts_fake::{fake_p_stop, fake_token, FakeEngine, CODEBOOKS};
 use serde_json::{Map, Value};
-
-struct Case {
-    id: String,
-    story_id: String,
-    paragraphs: Vec<String>,
-    redraw: u32,
-    seed_salt: String,
-    script: HashMap<String, Vec<f64>>,
-    shape: HashMap<String, Shape>,
-}
-
-impl Case {
-    fn engine(&self) -> FakeEngine {
-        FakeEngine::new(self.script.clone(), self.shape.clone())
-    }
-    fn chunks(&self, engine: &FakeEngine) -> Vec<PlannedChunk> {
-        plan_story(engine.profile(), &self.paragraphs)
-    }
-    fn opts(&self, engine: &FakeEngine) -> RenderOptions {
-        RenderOptions {
-            redraw: self.redraw,
-            seed_salt: self.seed_salt.clone(),
-            ..RenderOptions::for_profile(engine.profile())
-        }
-    }
-    /// Render traced at `level` on a fresh engine; the trace's lines.
-    fn trace(&self, level: u8) -> Vec<Map<String, Value>> {
-        let mut engine = self.engine();
-        let chunks = self.chunks(&engine);
-        let opts = self.opts(&engine);
-        let mut rec = Recorder::new(level);
-        emit_header(&mut rec, &Header::for_engine(&engine, level));
-        render_story_traced(&mut engine, &self.story_id, &chunks, &opts, &mut rec).expect("renders");
-        rec.lines
-    }
-}
-
-fn cases() -> Vec<Case> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/pipeline/render.json");
-    let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    v["cases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|c| Case {
-            id: c["id"].as_str().unwrap().to_string(),
-            story_id: c["story_id"].as_str().unwrap().to_string(),
-            paragraphs: c["paragraphs"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|p| p.as_str().unwrap().to_string())
-                .collect(),
-            redraw: c["redraw"].as_u64().unwrap() as u32,
-            seed_salt: c["seed_salt"].as_str().unwrap().to_string(),
-            script: c["script"]
-                .as_object()
-                .unwrap()
-                .iter()
-                .map(|(k, v)| {
-                    (
-                        k.clone(),
-                        v.as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect(),
-                    )
-                })
-                .collect(),
-            shape: c["shape"]
-                .as_object()
-                .unwrap()
-                .iter()
-                .map(|(k, v)| {
-                    (
-                        k.clone(),
-                        Shape {
-                            amplitude_scale: v["amplitude_scale"].as_f64(),
-                            spike: v["spike"].as_f64(),
-                            sample_rate: v["sample_rate"].as_u64().map(|n| n as u32),
-                        },
-                    )
-                })
-                .collect(),
-        })
-        .collect()
-}
 
 fn ev(m: &Map<String, Value>) -> &str {
     m["ev"].as_str().unwrap()
@@ -235,6 +153,11 @@ fn the_fake_and_the_pipeline_emit_every_event_with_its_meaning() {
                         assert!(num(l, "lead_s") >= 0.0 && num(l, "tail_s") >= 0.0);
                         assert!(l["start"].as_u64().unwrap() <= l["end"].as_u64().unwrap());
                     }
+                    "emit" => assert_eq!(
+                        l["chunk"].as_u64().unwrap() as usize,
+                        trims - 1,
+                        "{id}: a chunk is emitted right after its trim"
+                    ),
                     "join" => assert_eq!(
                         l["chunks"].as_u64().unwrap() as usize,
                         trims,
@@ -261,9 +184,18 @@ fn the_fake_and_the_pipeline_emit_every_event_with_its_meaning() {
             assert_eq!(ev(lines.last().unwrap()), "end");
         }
     }
-    let want: std::collections::BTreeSet<String> = ["trace", "chunk_begin", "step", "chunk_end", "trim", "join", "end"]
-        .map(String::from)
-        .into();
+    let want: std::collections::BTreeSet<String> = [
+        "trace",
+        "chunk_begin",
+        "step",
+        "chunk_end",
+        "trim",
+        "emit",
+        "join",
+        "end",
+    ]
+    .map(String::from)
+    .into();
     assert_eq!(kinds, want, "every event kind is emitted");
     assert!(redrawn > 0, "the cases include a redraw, so draw > 0 is exercised");
 }

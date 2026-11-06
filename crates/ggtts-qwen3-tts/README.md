@@ -65,7 +65,8 @@ Both hold whether ggml is built by `ggtts-ggml-sys` or the reference's own archi
   this engine does not.
 * **The reference's CPU path.** It moves the talker's last hidden row to the code predictor through a device tensor;
   here it goes through the host as the same f32 bits. Its replay graphs, dedicated schedulers and CUDA-only greedy
-  chains are not ported. Instructions, voice cloning (ICL) and the streaming decoder are not ported.
+  chains are not ported. Instructions, voice cloning (ICL) and the reference's streaming decoder are not ported; ggtts streams
+  differently, by re-decoding the prefix (`src/stream.rs`).
 * **top-p below 1.** The reference sorts with `std::sort`, which is not stable; ties in probability may order
   differently here. The fixtures use top-p 1.0, which skips that branch.
 * **The sampler's `expf`** comes from the platform's C library on both sides.

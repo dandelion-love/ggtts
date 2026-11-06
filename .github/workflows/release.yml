@@ -21,10 +21,13 @@ jobs:
             target: x86_64-linux
             exe: ""
             archive: tar.gz
+            features: ggtts-cli/ggml
           - os: windows-latest
             target: x86_64-windows
             exe: ".exe"
             archive: zip
+            # the committed bindings are for x86_64 Linux only, so Windows generates its own
+            features: ggtts-cli/ggml,ggtts-ggml-sys/bindgen
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     permissions:
@@ -37,9 +40,18 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup show active-toolchain || rustup toolchain install
+      - name: Fetch the ggml submodule at its pin
+        run: |
+          set -eu
+          git submodule update --init crates/ggtts-ggml-sys/ggml
+          pin=$(sed -n 's/^pub const GGML_COMMIT: &str = "\([0-9a-f]\{40\}\)";$/\1/p' crates/ggtts-ggml-sys/src/lib.rs)
+          test "$(git -C crates/ggtts-ggml-sys/ggml rev-parse HEAD)" = "$pin"
       - name: Test before building the release
         run: cargo test --workspace --locked
-      - run: cargo build --release --locked -p ggtts-cli
+      - name: Build ggtts-render with both engines (Qwen3-TTS, Kitten-TTS 2) on ggml
+        env:
+          LIBCLANG_PATH: ${{ runner.os == 'Windows' && 'C:\Program Files\LLVM\bin' || '' }}
+        run: cargo build --release --locked -p ggtts-cli --features "${{ matrix.features }}"
       - name: Package, named with the ggml pin
         id: pkg
         env:
@@ -65,7 +77,7 @@ jobs:
             "ggml_describe": "${describe}",
             "rustc": "$(rustc -V)",
             "target": "${TARGET}",
-            "features": ["cpu"],
+            "features": ["cpu", "ggml", "qwen3-tts", "kitten-tts-2"],
             "built_by": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           }
           EOF

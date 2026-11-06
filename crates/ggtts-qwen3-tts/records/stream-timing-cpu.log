@@ -1,0 +1,93 @@
+# scripts/stream_probe.sh on CPU, both engines, 2026-11-06 (Pacific), WSL Ubuntu on an x86-64 desktop
+# ggtts at 7dfecbe plus the uncommitted review fixes this log ships with
+# rustc 1.88.0, release, 4 threads, nice 19, 12 logical CPUs; no GPU used
+# Short CPU tasks (seconds each) ran alongside parts of this run. The Qwen RTF here (1.550) is below an
+# earlier clean run's (1.680), so they did not inflate it; treat the timings as indicative, not a benchmark.
+
+## Qwen3-TTS (ENGINE=qwen3-tts)
+== build (cpu)
+model: 33502b2035f97d7f  qwen-talker-hk-cantonese-cc0-v0.0.1-q8_0.gguf
+model: 7771c653aea5d26c  qwen-tokenizer-12hz-q8_0.gguf
+== qwen3-tts on cpu: story, chunk-level stream (crates/ggtts-qwen3-tts/fixtures/story/outing.txt)
+  batch: render 102.99 s for 66.44 s of audio, RTF 1.550, wall 107.87 s
+  stream: render 103.60 s for 66.44 s of audio, RTF 1.559, first audio at 17.05 s, wall 110.19 s
+  FLAC identical with and without --stream
+  ggtts-render: streamed 1594560 samples before the level step, first audio at 17052 ms; level gain +3.9617 dB (the --out FLAC applies it)
+== frame-level decoder on cpu (tests/stream_identity.rs)
+beach          n=83   every=4    hold=32  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  31753 ms vs batch 3558 ms
+beach          n=83   every=12   hold=32  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  12073 ms vs batch 3558 ms
+beach          n=83   every=12   hold=31  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  11951 ms vs batch 3558 ms
+beach          n=83   every=12   hold=16  Prefix        IDENTICAL  max 0 LSB  first audio after 24 frames  12702 ms vs batch 3558 ms
+beach          n=83   every=4    hold=0   Prefix        DIFFERS at sample 30720 (frame 16)  max 120 LSB  first audio after 4 frames  37118 ms vs batch 3558 ms
+beach          n=83   every=12   hold=0   Prefix        DIFFERS at sample 30720 (frame 16)  max 120 LSB  first audio after 12 frames  14690 ms vs batch 3558 ms
+beach          n=83   every=83   hold=0   Prefix        IDENTICAL  max 0 LSB  first audio after 83 frames  3413 ms vs batch 3558 ms
+beach          n=83   every=12   hold=0   NewFramesOnly DIFFERS at sample 23040 (frame 12)  max 10093 LSB  first audio after 12 frames  3243 ms vs batch 3558 ms
+bus            n=144  every=4    hold=32  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  110421 ms vs batch 6100 ms
+bus            n=144  every=12   hold=32  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  42634 ms vs batch 6100 ms
+bus            n=144  every=12   hold=31  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  42270 ms vs batch 6100 ms
+bus            n=144  every=12   hold=16  Prefix        DIFFERS at sample 78720 (frame 41)  max 1 LSB  first audio after 24 frames  42714 ms vs batch 6100 ms
+bus            n=144  every=4    hold=0   Prefix        DIFFERS at sample 67200 (frame 35)  max 111 LSB  first audio after 4 frames  106869 ms vs batch 6100 ms
+bus            n=144  every=12   hold=0   Prefix        DIFFERS at sample 67200 (frame 35)  max 111 LSB  first audio after 12 frames  37875 ms vs batch 6100 ms
+bus            n=144  every=144  hold=0   Prefix        IDENTICAL  max 0 LSB  first audio after 144 frames  5854 ms vs batch 6100 ms
+bus            n=144  every=12   hold=0   NewFramesOnly DIFFERS at sample 23040 (frame 12)  max 16638 LSB  first audio after 12 frames  5438 ms vs batch 6100 ms
+cafe           n=87   every=4    hold=32  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  34517 ms vs batch 3455 ms
+cafe           n=87   every=12   hold=32  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  15447 ms vs batch 3455 ms
+cafe           n=87   every=12   hold=31  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  16603 ms vs batch 3455 ms
+cafe           n=87   every=12   hold=16  Prefix        DIFFERS at sample 11520 (frame 6)  max 3 LSB  first audio after 24 frames  16472 ms vs batch 3455 ms
+cafe           n=87   every=4    hold=0   Prefix        DIFFERS at sample 11520 (frame 6)  max 458 LSB  first audio after 4 frames  40599 ms vs batch 3455 ms
+cafe           n=87   every=12   hold=0   Prefix        DIFFERS at sample 11520 (frame 6)  max 458 LSB  first audio after 12 frames  17167 ms vs batch 3455 ms
+cafe           n=87   every=87   hold=0   Prefix        IDENTICAL  max 0 LSB  first audio after 87 frames  3490 ms vs batch 3455 ms
+cafe           n=87   every=12   hold=0   NewFramesOnly DIFFERS at sample 11520 (frame 6)  max 9784 LSB  first audio after 12 frames  3371 ms vs batch 3455 ms
+dinner         n=59   every=4    hold=32  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  13464 ms vs batch 2295 ms
+dinner         n=59   every=12   hold=32  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  5748 ms vs batch 2295 ms
+dinner         n=59   every=12   hold=31  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  5710 ms vs batch 2295 ms
+dinner         n=59   every=12   hold=16  Prefix        IDENTICAL  max 0 LSB  first audio after 24 frames  6820 ms vs batch 2295 ms
+dinner         n=59   every=4    hold=0   Prefix        DIFFERS at sample 44160 (frame 23)  max 115 LSB  first audio after 4 frames  19270 ms vs batch 2295 ms
+dinner         n=59   every=12   hold=0   Prefix        DIFFERS at sample 44160 (frame 23)  max 26 LSB  first audio after 12 frames  7726 ms vs batch 2295 ms
+dinner         n=59   every=59   hold=0   Prefix        IDENTICAL  max 0 LSB  first audio after 59 frames  2326 ms vs batch 2295 ms
+dinner         n=59   every=12   hold=0   NewFramesOnly DIFFERS at sample 23040 (frame 12)  max 7389 LSB  first audio after 12 frames  2245 ms vs batch 2295 ms
+first-meeting  n=78   every=4    hold=32  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  27873 ms vs batch 3106 ms
+first-meeting  n=78   every=12   hold=32  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  12036 ms vs batch 3106 ms
+first-meeting  n=78   every=12   hold=31  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  11854 ms vs batch 3106 ms
+first-meeting  n=78   every=12   hold=16  Prefix        IDENTICAL  max 0 LSB  first audio after 24 frames  12949 ms vs batch 3106 ms
+first-meeting  n=78   every=4    hold=0   Prefix        DIFFERS at sample 32640 (frame 17)  max 247 LSB  first audio after 4 frames  35052 ms vs batch 3106 ms
+first-meeting  n=78   every=12   hold=0   Prefix        DIFFERS at sample 32640 (frame 17)  max 247 LSB  first audio after 12 frames  14624 ms vs batch 3106 ms
+first-meeting  n=78   every=78   hold=0   Prefix        IDENTICAL  max 0 LSB  first audio after 78 frames  3170 ms vs batch 3106 ms
+first-meeting  n=78   every=12   hold=0   NewFramesOnly DIFFERS at sample 23040 (frame 12)  max 9678 LSB  first audio after 12 frames  3008 ms vs batch 3106 ms
+greeting       n=38   every=4    hold=32  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  3063 ms vs batch 1600 ms
+greeting       n=38   every=12   hold=32  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  3002 ms vs batch 1600 ms
+greeting       n=38   every=12   hold=31  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  3008 ms vs batch 1600 ms
+greeting       n=38   every=12   hold=16  Prefix        IDENTICAL  max 0 LSB  first audio after 24 frames  3837 ms vs batch 1600 ms
+greeting       n=38   every=4    hold=0   Prefix        DIFFERS at sample 24960 (frame 13)  max 152 LSB  first audio after 4 frames  8658 ms vs batch 1600 ms
+greeting       n=38   every=12   hold=0   Prefix        DIFFERS at sample 24960 (frame 13)  max 152 LSB  first audio after 12 frames  4333 ms vs batch 1600 ms
+greeting       n=38   every=38   hold=0   Prefix        IDENTICAL  max 0 LSB  first audio after 38 frames  1542 ms vs batch 1600 ms
+greeting       n=38   every=12   hold=0   NewFramesOnly DIFFERS at sample 23040 (frame 12)  max 7978 LSB  first audio after 12 frames  1563 ms vs batch 1600 ms
+park           n=76   every=4    hold=32  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  27521 ms vs batch 3132 ms
+park           n=76   every=12   hold=32  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  11563 ms vs batch 3132 ms
+park           n=76   every=12   hold=31  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  11586 ms vs batch 3132 ms
+park           n=76   every=12   hold=16  Prefix        DIFFERS at sample 61440 (frame 32)  max 206 LSB  first audio after 24 frames  12330 ms vs batch 3132 ms
+park           n=76   every=4    hold=0   Prefix        DIFFERS at sample 40320 (frame 21)  max 206 LSB  first audio after 4 frames  31125 ms vs batch 3132 ms
+park           n=76   every=12   hold=0   Prefix        DIFFERS at sample 40320 (frame 21)  max 206 LSB  first audio after 12 frames  13001 ms vs batch 3132 ms
+park           n=76   every=76   hold=0   Prefix        IDENTICAL  max 0 LSB  first audio after 76 frames  3049 ms vs batch 3132 ms
+park           n=76   every=12   hold=0   NewFramesOnly DIFFERS at sample 23040 (frame 12)  max 14094 LSB  first audio after 12 frames  2882 ms vs batch 3132 ms
+rainy-day      n=89   every=4    hold=32  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  37972 ms vs batch 3518 ms
+rainy-day      n=89   every=12   hold=32  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  15441 ms vs batch 3518 ms
+rainy-day      n=89   every=12   hold=31  Prefix        IDENTICAL  max 0 LSB  first audio after 36 frames  15478 ms vs batch 3518 ms
+rainy-day      n=89   every=12   hold=16  Prefix        IDENTICAL  max 0 LSB  first audio after 24 frames  16362 ms vs batch 3518 ms
+rainy-day      n=89   every=4    hold=0   Prefix        DIFFERS at sample 111360 (frame 58)  max 29 LSB  first audio after 4 frames  43584 ms vs batch 3518 ms
+rainy-day      n=89   every=12   hold=0   Prefix        DIFFERS at sample 111360 (frame 58)  max 29 LSB  first audio after 12 frames  16783 ms vs batch 3518 ms
+rainy-day      n=89   every=89   hold=0   Prefix        IDENTICAL  max 0 LSB  first audio after 89 frames  3586 ms vs batch 3518 ms
+rainy-day      n=89   every=12   hold=0   NewFramesOnly DIFFERS at sample 23040 (frame 12)  max 12440 LSB  first audio after 12 frames  3339 ms vs batch 3518 ms
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1174.46s
+stream probe (cpu): exit 0 (logs in WORK)
+
+## Kitten-TTS 2 (ENGINE=kitten-tts-2); the voice file is a local prepared reference and is not committed
+== build (cpu)
+model: 263b8e69682a4b31  lm.gguf
+model: 54ad2c36c0b32278  s3gen.gguf
+== kitten-tts-2 on cpu: story, chunk-level stream (crates/ggtts-kitten/fixtures/story/lighthouse.txt)
+  batch: render 53.24 s for 21.47 s of audio, RTF 2.480, wall 58.67 s
+  stream: render 53.44 s for 21.47 s of audio, RTF 2.489, first audio at 20.64 s, wall 58.13 s
+  FLAC identical with and without --stream
+  ggtts-render: streamed 515280 samples before the level step, first audio at 20637 ms; level gain -3.5102 dB (the --out FLAC applies it)
+stream probe (kitten-tts-2, cpu): exit 0 (logs in WORK)

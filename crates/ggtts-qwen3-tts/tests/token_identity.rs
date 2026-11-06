@@ -9,9 +9,24 @@
 
 use std::path::{Path, PathBuf};
 
+use ggtts_qwen3_tts::cpu::Device;
 use ggtts_qwen3_tts::fixtures::Golden;
 use ggtts_qwen3_tts::talker::{language_id, Plant, Sampling, Talker};
 use sha2::{Digest, Sha256};
+
+/// `GGTTS_DEVICE`: `cpu` (the default) or `cuda`.
+fn device() -> Device {
+    let d = std::env::var("GGTTS_DEVICE").unwrap_or_else(|_| "cpu".into());
+    Device::parse(&d).unwrap_or_else(|| panic!("GGTTS_DEVICE must be cpu or cuda, not {d}"))
+}
+
+/// `GGTTS_FIXTURES`: a fixture directory, by default the committed CPU fixtures. A CUDA run points it at fixtures
+/// recorded with the reference on CUDA (`scripts/cuda_probe.sh`).
+fn fixtures_dir() -> PathBuf {
+    std::env::var_os("GGTTS_FIXTURES")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/cpu"))
+}
 
 #[test]
 #[ignore = "needs GGTTS_TALKER, the published talker GGUF"]
@@ -24,12 +39,12 @@ fn codec_tokens_are_identical_to_the_reference() {
         Ok(p) => panic!("unknown plant {p}"),
     };
     let only = std::env::var("GGTTS_ONLY").ok();
-    let goldens = Golden::load_all(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/cpu")).unwrap();
+    let goldens = Golden::load_all(&fixtures_dir()).unwrap();
     assert!(!goldens.is_empty());
     let mut h = Sha256::new();
     std::io::copy(&mut std::fs::File::open(&path).unwrap(), &mut h).unwrap();
     let talker_sha = format!("{:x}", h.finalize());
-    let mut talker = Talker::load_planted(&path, 4, plant).unwrap();
+    let mut talker = Talker::load_on(&path, 4, device(), plant).unwrap();
     let (mut same, mut failed) = (0, Vec::new());
     for gold in goldens.iter().filter(|g| only.as_deref().is_none_or(|o| o == g.name)) {
         assert_eq!(

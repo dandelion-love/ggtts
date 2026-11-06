@@ -44,7 +44,13 @@ Both hold whether ggml is built by `ggtts-ggml-sys` or the reference's own archi
 * **One machine.** The fixtures and the checks ran on one CPU with `-march=native`. A different CPU, a different
   instruction set or a different compiler may change ggml's kernels and so the bits; re-record with
   `scripts/record_fixtures.sh` on the machine that checks.
-* **CPU only.** CUDA parity is a separate step.
+* **CPU proven, CUDA not yet run.** The `cuda` feature builds ggml's CUDA backend (`GGML_CUDA_ARCH`, default 86)
+  and `Device::Cuda` follows the reference's CUDA-only branches: weights and caches on the device with a CPU
+  fallback in the scheduler, packed Q/K/V projections in the talker and code predictor step graphs, and the
+  decoder's per-codebook projection from 64 frames up. `scripts/cuda_probe.sh` records the fixtures with the
+  reference built for CUDA and runs both checks and every plant on CUDA. One open question it answers: the
+  reference normalizes the decoder's codebooks by writing through the tensor's data pointer, which is host memory
+  only on CPU; here the same arithmetic goes through the backend API.
 * **The reference's CPU path.** It moves the talker's last hidden row to the code predictor through a device tensor;
   here it goes through the host as the same f32 bits. Its replay graphs, dedicated schedulers and CUDA-only greedy
   chains are not ported. Instructions, voice cloning (ICL) and the streaming decoder are not ported.

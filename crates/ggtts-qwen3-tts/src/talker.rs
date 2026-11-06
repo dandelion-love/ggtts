@@ -24,7 +24,7 @@ use std::ptr;
 use ggtts_core::engine::{EngineError, Stop};
 use ggtts_ggml_sys as g;
 
-use crate::cpu::{Cpu, Meta};
+use crate::cpu::{Cpu, Device, Meta};
 use crate::gguf::{set_name, Gguf, Weights};
 use crate::tokenizer::Tokenizer;
 
@@ -135,6 +135,9 @@ struct Layer {
     ffn_gate: T,
     ffn_up: T,
     ffn_down: T,
+    /// Q, K and V weights concatenated, created on CUDA only, as the reference creates them in a CUDA build
+    /// (`transformer_loader_tensors.cpp:308-370`) and uses them in step graphs on a CUDA backend.
+    attn_qkv: T,
 }
 
 struct Cache {
@@ -217,6 +220,11 @@ impl Talker {
     }
 
     pub fn load_planted(path: &Path, threads: i32, plant: Plant) -> Result<Self, EngineError> {
+        Self::load_on(path, threads, Device::Cpu, plant)
+    }
+
+    /// Loads onto `device`: the weights in its buffer, the caches and graphs on its backend.
+    pub fn load_on(path: &Path, threads: i32, device: Device, plant: Plant) -> Result<Self, EngineError> {
         let gguf = Gguf::open(path)?;
         let hidden_size = u32_any(
             &gguf,
@@ -425,7 +433,7 @@ impl Talker {
         // SAFETY: size query; the context is owned by Weights.
         let ctx = unsafe {
             g::ggml_init(g::ggml_init_params {
-                mem_size: g::ggml_tensor_overhead() * (names.len() + 8),
+                mem_size: g::ggml_tensor_overhead() * (2 * names.len() + 8),
                 mem_buffer: ptr::null_mut(),
                 no_alloc: true,
             })
@@ -461,14 +469,34 @@ impl Talker {
                 ffn_gate: need(&format!("{p}ffn_gate.weight"))?,
                 ffn_up: need(&format!("{p}ffn_up.weight"))?,
                 ffn_down: need(&format!("{p}ffn_down.weight"))?,
+                attn_qkv: ptr::null_mut(),
             })
         };
-        let layers = (0..config.n_layers)
+        let mut layers = (0..config.n_layers)
             .map(|i| layer(&format!("talker.blk.{i}.")))
             .collect::<Result<Vec<_>, _>>()?;
-        let cp_layers = (0..config.cp_layers)
+        let mut cp_layers = (0..config.cp_layers)
             .map(|i| layer(&format!("code_pred.blk.{i}.")))
             .collect::<Result<Vec<_>, _>>()?;
+        if device.is_cuda() {
+            // Every code predictor layer, and the talker's when its hidden size is over 1024.
+            let talker_too = config.hidden_size > 1024;
+            for l in cp_layers.iter_mut().chain(layers.iter_mut().filter(|_| talker_too)) {
+                // SAFETY: q, k, v are live tensors of ctx, which has room for one more per layer.
+                unsafe {
+                    let (q, k, v) = (l.attn_q, l.attn_k, l.attn_v);
+                    if (*q).type_ != (*k).type_
+                        || (*q).type_ != (*v).type_
+                        || (*q).ne[0] != (*k).ne[0]
+                        || (*q).ne[0] != (*v).ne[0]
+                    {
+                        return Err(err("incompatible Q/K/V weights for a packed layer"));
+                    }
+                    let rows = (*q).ne[1] + (*k).ne[1] + (*v).ne[1];
+                    l.attn_qkv = g::ggml_new_tensor_2d(ctx, (*q).type_, (*q).ne[0], rows);
+                }
+            }
+        }
         let n_cp = (config.n_codebooks - 1) as usize;
         let cp_embd = (0..n_cp)
             .map(|i| need(&format!("code_pred.codec_embd.{i}.weight")))
@@ -498,8 +526,22 @@ impl Talker {
         let output_norm = need("talker.output_norm.weight")?;
         let cp_output_norm = need("code_pred.output_norm.weight")?;
         // SAFETY: every tensor in `tensors` was made in ctx above.
-        let buffer = unsafe { gguf.load_into(ctx, &tensors)? };
+        let buffer = unsafe { gguf.load_into(ctx, &tensors, device)? };
         let weights = Weights { ctx, buffer, tensors };
+        // The packed tensors get the same bytes, Q then K then V (`transformer_loader_tensors.cpp:436-464`).
+        for l in layers.iter().chain(cp_layers.iter()).filter(|l| !l.attn_qkv.is_null()) {
+            // SAFETY: all four tensors are allocated in the buffer just filled.
+            unsafe {
+                let mut off = 0;
+                for t in [l.attn_q, l.attn_k, l.attn_v] {
+                    let n = g::ggml_nbytes(t);
+                    let mut b = vec![0u8; n];
+                    g::ggml_backend_tensor_get(t, b.as_mut_ptr().cast(), 0, n);
+                    g::ggml_backend_tensor_set(l.attn_qkv, b.as_ptr().cast(), off, n);
+                    off += n;
+                }
+            }
+        }
         Ok(Self {
             config,
             tokenizer,
@@ -520,7 +562,7 @@ impl Talker {
             cp_embd,
             cp_head,
             cp_output_norm,
-            cpu: Cpu::new(threads, MAX_NODES)?,
+            cpu: Cpu::on(device, threads, MAX_NODES)?,
             meta: Meta::new(MAX_NODES),
             cp_meta: Meta::new(CODE_PRED_MAX_NODES),
             cache: None,
@@ -838,9 +880,8 @@ impl Talker {
         let mut inp_l = inp;
         for (il, l) in self.layers.iter().enumerate() {
             let mut cur = g::ggml_mul(ctx, g::ggml_rms_norm(ctx, inp_l, eps), l.attn_norm);
-            let mut q = g::ggml_reshape_3d(ctx, g::ggml_mul_mat(ctx, l.attn_q, cur), hd, nh, n_tokens);
-            let mut k = g::ggml_reshape_3d(ctx, g::ggml_mul_mat(ctx, l.attn_k, cur), hd, nkv, n_tokens);
-            let v = g::ggml_reshape_3d(ctx, g::ggml_mul_mat(ctx, l.attn_v, cur), hd, nkv, n_tokens);
+            let packed = !prefill && self.cpu.device.is_cuda();
+            let (mut q, mut k, v) = qkv(ctx, l, cur, hd, nh, nkv, n_tokens, packed);
             if !l.attn_q_norm.is_null() {
                 q = g::ggml_mul(ctx, g::ggml_rms_norm(ctx, q, eps), l.attn_q_norm);
             }
@@ -1133,9 +1174,8 @@ impl Talker {
         let mut inp_l = inp;
         for (il, l) in self.cp_layers.iter().enumerate() {
             let mut cur = g::ggml_mul(ctx, g::ggml_rms_norm(ctx, inp_l, eps), l.attn_norm);
-            let mut q = g::ggml_reshape_3d(ctx, g::ggml_mul_mat(ctx, l.attn_q, cur), hd, nh, n_tokens);
-            let mut k = g::ggml_reshape_3d(ctx, g::ggml_mul_mat(ctx, l.attn_k, cur), hd, nkv, n_tokens);
-            let v = g::ggml_reshape_3d(ctx, g::ggml_mul_mat(ctx, l.attn_v, cur), hd, nkv, n_tokens);
+            let packed = n_tokens == 1 && self.cpu.device.is_cuda();
+            let (mut q, mut k, v) = qkv(ctx, l, cur, hd, nh, nkv, n_tokens, packed);
             if !l.attn_q_norm.is_null() {
                 q = g::ggml_mul(ctx, g::ggml_rms_norm(ctx, q, eps), l.attn_q_norm);
             }
@@ -1328,6 +1368,28 @@ impl Talker {
         }
         Ok(out)
     }
+}
+
+/// Q, K and V for one layer: three projections, or on a CUDA step graph one packed projection viewed three ways
+/// (`transformer_graph_talker.cpp:280-299`, `transformer_graph_code_pred.cpp:448-467`).
+#[allow(clippy::too_many_arguments)]
+unsafe fn qkv(ctx: Ctx, l: &Layer, cur: T, hd: i64, nh: i64, nkv: i64, n_tokens: i64, packed: bool) -> (T, T, T) {
+    if packed && !l.attn_qkv.is_null() {
+        let all = g::ggml_mul_mat(ctx, l.attn_qkv, cur);
+        let nb0 = (*all).nb[0];
+        let row = hd as usize * nb0;
+        let q_bytes = hd as usize * nh as usize * nb0;
+        let kv_bytes = hd as usize * nkv as usize * nb0;
+        let q = g::ggml_view_3d(ctx, all, hd, nh, n_tokens, row, (*all).nb[1], 0);
+        let k = g::ggml_view_3d(ctx, all, hd, nkv, n_tokens, row, (*all).nb[1], q_bytes);
+        let v = g::ggml_view_3d(ctx, all, hd, nkv, n_tokens, row, (*all).nb[1], q_bytes + kv_bytes);
+        return (q, k, v);
+    }
+    (
+        g::ggml_reshape_3d(ctx, g::ggml_mul_mat(ctx, l.attn_q, cur), hd, nh, n_tokens),
+        g::ggml_reshape_3d(ctx, g::ggml_mul_mat(ctx, l.attn_k, cur), hd, nkv, n_tokens),
+        g::ggml_reshape_3d(ctx, g::ggml_mul_mat(ctx, l.attn_v, cur), hd, nkv, n_tokens),
+    )
 }
 
 /// `ffn_down_matmul`: an F16 down projection is cast to F32 first.

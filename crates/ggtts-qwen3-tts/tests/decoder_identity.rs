@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use ggtts_qwen3_tts::codec::{Decoder, Plant};
+use ggtts_qwen3_tts::cpu::Device;
 use ggtts_qwen3_tts::fixtures::Golden;
 use sha2::{Digest, Sha256};
 
@@ -18,6 +19,20 @@ fn sha256_file(path: &Path) -> String {
     let mut f = std::fs::File::open(path).unwrap();
     std::io::copy(&mut f, &mut h).unwrap();
     format!("{:x}", h.finalize())
+}
+
+/// `GGTTS_DEVICE`: `cpu` (the default) or `cuda`.
+fn device() -> Device {
+    let d = std::env::var("GGTTS_DEVICE").unwrap_or_else(|_| "cpu".into());
+    Device::parse(&d).unwrap_or_else(|| panic!("GGTTS_DEVICE must be cpu or cuda, not {d}"))
+}
+
+/// `GGTTS_FIXTURES`: a fixture directory, by default the committed CPU fixtures. A CUDA run points it at fixtures
+/// recorded with the reference on CUDA (`scripts/cuda_probe.sh`).
+fn fixtures_dir() -> PathBuf {
+    std::env::var_os("GGTTS_FIXTURES")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/cpu"))
 }
 
 #[test]
@@ -31,10 +46,10 @@ fn decoder_samples_are_bit_identical_to_the_reference() {
         Ok("window-off-by-one") => Plant::WindowOffByOne,
         Ok(p) => panic!("unknown plant {p}"),
     };
-    let goldens = Golden::load_all(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/cpu")).unwrap();
+    let goldens = Golden::load_all(&fixtures_dir()).unwrap();
     assert!(!goldens.is_empty());
     let codec_sha = sha256_file(&codec);
-    let mut dec = Decoder::load_planted(&codec, 4, plant).unwrap();
+    let mut dec = Decoder::load_on(&codec, 4, device(), plant).unwrap();
     let mut failed = Vec::new();
     for gold in &goldens {
         assert_eq!(

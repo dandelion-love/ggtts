@@ -158,8 +158,8 @@ impl Gguf {
         unsafe { g::ggml_get_tensor(self.meta, c.as_ptr()) }
     }
 
-    /// `load_tensor_data_from_file` (`src/gguf_loader.cpp:303-433`): allocates every tensor of `ctx` in one CPU
-    /// buffer and fills the ones named in `tensors` from the file, in file order. Same type: bytes copied. F32 or
+    /// `load_tensor_data_from_file` (`src/gguf_loader.cpp:303-433`): allocates every tensor of `ctx` in one buffer of
+    /// `device` and fills the ones named in `tensors` from the file, in file order. Same type: bytes copied. F32 or
     /// BF16 in the file to an F16 tensor: converted with ggml's own routines. Anything else is refused.
     ///
     /// # Safety
@@ -168,12 +168,13 @@ impl Gguf {
         &self,
         ctx: *mut g::ggml_context,
         tensors: &HashMap<String, *mut g::ggml_tensor>,
+        device: crate::cpu::Device,
     ) -> Result<g::ggml_backend_buffer_t, EngineError> {
         // SAFETY: a fresh CPU backend, used only to allocate and freed before returning, as the reference does.
         unsafe {
-            let backend = g::ggml_backend_init_by_type(g::GGML_BACKEND_DEVICE_TYPE_CPU, ptr::null());
+            let backend = device.init_backend(1);
             if backend.is_null() {
-                return Err(err("failed to initialize a CPU backend for the tensor loader"));
+                return Err(err("failed to initialize a backend for the tensor loader"));
             }
             let buffer = g::ggml_backend_alloc_ctx_tensors(ctx, backend);
             g::ggml_backend_free(backend);

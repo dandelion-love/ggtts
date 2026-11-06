@@ -13,7 +13,7 @@ use std::ptr;
 use ggtts_core::engine::{EngineError, Pcm};
 use ggtts_ggml_sys as g;
 
-use crate::cpu::{Cpu, Meta};
+use crate::cpu::{Cpu, Device, Meta};
 use crate::gguf::{set_name, Gguf, Weights};
 
 type T = *mut g::ggml_tensor;
@@ -157,6 +157,11 @@ impl Decoder {
     }
 
     pub fn load_planted(path: &Path, threads: i32, plant: Plant) -> Result<Self, EngineError> {
+        Self::load_on(path, threads, Device::Cpu, plant)
+    }
+
+    /// Loads onto `device`: the weights in its buffer, the graphs on its scheduler.
+    pub fn load_on(path: &Path, threads: i32, device: Device, plant: Plant) -> Result<Self, EngineError> {
         let gguf = Gguf::open(path)?;
         let config = Config {
             sample_rate: gguf.u32_or(
@@ -397,10 +402,12 @@ impl Decoder {
             }
         }
         // SAFETY: ctx is the live no-alloc context every tensor above was made in.
-        let buffer = unsafe { gguf.load_into(ctx, &tensors)? };
+        // SAFETY: ctx is the live no-alloc context every tensor above was made in.
+        let buffer = unsafe { gguf.load_into(ctx, &tensors, device)? };
         let weights = Weights { ctx, buffer, tensors };
 
-        // SAFETY: every tensor below lives in the CPU buffer just filled, so data pointers are host memory.
+        // SAFETY: every tensor below lives in the buffer just filled; it is read and written through the backend
+        // API, as the reference does, so this holds on CUDA as on CPU.
         unsafe {
             // `upload_snake_tensors` (`decoder_loader.cpp:555-624`).
             for &(alpha, beta, ae, ib) in &snake_src {
@@ -408,8 +415,8 @@ impl Decoder {
                     return Err(err("snake tensors must be F32"));
                 }
                 let ch = (*alpha).ne[0] as usize;
-                let a = std::slice::from_raw_parts((*alpha).data as *const f32, ch);
-                let b = std::slice::from_raw_parts((*beta).data as *const f32, ch);
+                let a = get_f32(alpha);
+                let b = get_f32(beta);
                 let eps = if plant == Plant::SnakeNoEpsilon {
                     0.0f32
                 } else {
@@ -428,17 +435,18 @@ impl Decoder {
             for (&src, dst) in perms {
                 let (k, oc, ic) = ((*src).ne[0] as usize, (*src).ne[1] as usize, (*src).ne[2] as usize);
                 let ty = (*src).type_;
-                let load = |idx: usize| -> f32 {
-                    let d = (*src).data;
-                    match ty {
-                        g::GGML_TYPE_F32 => *(d as *const f32).add(idx),
-                        g::GGML_TYPE_F16 => g::ggml_fp16_to_fp32(*(d as *const u16).add(idx)),
-                        _ => g::ggml_bf16_to_fp32(*(d as *const g::ggml_bf16_t).add(idx)),
-                    }
-                };
                 if ty != g::GGML_TYPE_F32 && ty != g::GGML_TYPE_F16 && ty != g::GGML_TYPE_BF16 {
                     return Err(err("a ConvTranspose weight cannot be pre-permuted"));
                 }
+                let bytes = get_bytes(src);
+                let load = |idx: usize| -> f32 {
+                    let d = bytes.as_ptr();
+                    match ty {
+                        g::GGML_TYPE_F32 => (d as *const f32).add(idx).read_unaligned(),
+                        g::GGML_TYPE_F16 => g::ggml_fp16_to_fp32((d as *const u16).add(idx).read_unaligned()),
+                        _ => g::ggml_bf16_to_fp32((d as *const g::ggml_bf16_t).add(idx).read_unaligned()),
+                    }
+                };
                 let mut host = vec![0f32; k * oc * ic];
                 for i in 0..ic {
                     for o in 0..oc {
@@ -450,25 +458,31 @@ impl Decoder {
                 g::ggml_backend_tensor_set(dst, host.as_ptr().cast(), 0, host.len() * 4);
             }
             // `normalize_codebooks` (`decoder_loader.cpp:120-157`): each F16 codebook row divided by its usage.
+            // The reference writes through the tensor's data pointer, which is host memory on CPU. On a device
+            // buffer this reads, normalizes and writes back the same values.
             let normalize = |cb: T, usage: T| {
                 if cb.is_null() || usage.is_null() {
                     return;
                 }
                 let dim = (*cb).ne[0] as usize;
                 let size = (*cb).ne[1] as usize;
-                let data = (*cb).data as *mut u16;
-                let u = (*usage).data as *const f32;
+                let mut data: Vec<u16> = get_bytes(cb)
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+                let u = get_f32(usage);
                 for e in 0..size {
-                    let mut uu = *u.add(e);
+                    let mut uu = u[e];
                     if uu < 1e-5f32 {
                         uu = 1e-5f32;
                     }
                     let inv = 1.0f32 / uu;
                     for d in 0..dim {
-                        let p = data.add(d + e * dim);
+                        let p = &mut data[d + e * dim];
                         *p = g::ggml_fp32_to_fp16(g::ggml_fp16_to_fp32(*p) * inv);
                     }
                 }
+                g::ggml_backend_tensor_set(cb, data.as_ptr().cast(), 0, data.len() * 2);
             };
             normalize(vq_first_codebook, vq_first_usage);
             for i in 0..15 {
@@ -476,7 +490,7 @@ impl Decoder {
             }
         }
 
-        let cpu = Cpu::new(threads, MAX_NODES)?;
+        let cpu = Cpu::on(device, threads, MAX_NODES)?;
         Ok(Self {
             vq_first_codebook,
             vq_first_output_proj,
@@ -594,14 +608,28 @@ impl Decoder {
             c.codebook_dim as i64,
             c.hidden_dim as i64,
         );
-        // The summed projection: the reference's choice on a CPU backend (`decoder_graph.cpp:61-74,148-154`).
+        // The reference sums the 15 embeddings and projects once on CPU, and on CUDA below 64 frames; otherwise it
+        // projects each and sums the projections (`decoder_graph.cpp:61-74,147-166`).
+        let summed = !self.cpu.device.is_cuda() || n < 64;
+        let mut rest_proj: T = ptr::null_mut();
         let mut sum: T = ptr::null_mut();
         for cb in 0..15 {
             let e = g::ggml_get_rows(ctx, self.vq_rest_codebook[cb], inputs[cb + 1]);
             let e2 = g::ggml_reshape_2d(ctx, e, c.codebook_dim as i64, n64);
-            sum = if sum.is_null() { e2 } else { g::ggml_add(ctx, sum, e2) };
+            if summed {
+                sum = if sum.is_null() { e2 } else { g::ggml_add(ctx, sum, e2) };
+            } else {
+                let p = g::ggml_mul_mat(ctx, rest_w, e2);
+                rest_proj = if rest_proj.is_null() {
+                    p
+                } else {
+                    g::ggml_add(ctx, rest_proj, p)
+                };
+            }
         }
-        let rest_proj = g::ggml_mul_mat(ctx, rest_w, sum);
+        if summed {
+            rest_proj = g::ggml_mul_mat(ctx, rest_w, sum);
+        }
         let latent = g::ggml_add(ctx, first_proj, rest_proj);
         let latent = g::ggml_cont(ctx, g::ggml_transpose(ctx, latent));
         let latent = g::ggml_reshape_3d(ctx, latent, n64, c.hidden_dim as i64, 1);
@@ -742,6 +770,21 @@ impl Decoder {
         }
         g::ggml_add(ctx, residual, ffn)
     }
+}
+
+/// A tensor's bytes, read through the backend.
+unsafe fn get_bytes(t: T) -> Vec<u8> {
+    let mut b = vec![0u8; g::ggml_nbytes(t)];
+    g::ggml_backend_tensor_get(t, b.as_mut_ptr().cast(), 0, b.len());
+    b
+}
+
+/// An F32 tensor's values, read through the backend.
+unsafe fn get_f32(t: T) -> Vec<f32> {
+    get_bytes(t)
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
 }
 
 /// `as_f16_conv_weight`.

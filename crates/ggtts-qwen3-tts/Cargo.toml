@@ -13,6 +13,8 @@ default = []
 # The engine itself: builds and links ggml through ggtts-ggml-sys. Off by default, so the workspace builds without
 # the ggml submodule.
 ggml = ["ggtts-ggml-sys/ggml"]
+# The CUDA backend as well (Device::Cuda).
+cuda = ["ggml", "ggtts-ggml-sys/cuda"]
 
 [dependencies]
 ggtts-core.workspace = true

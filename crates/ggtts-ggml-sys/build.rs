@@ -44,10 +44,17 @@ mod with_ggml {
 
         if let Some(dir) = env::var_os("GGML_LIB_DIR") {
             let dir = PathBuf::from(dir);
-            for lib in ["libggml.a", "libggml-cpu.a", "libggml-base.a"] {
+            for lib in [
+                "libggml.a",
+                "libggml-cpu.a",
+                "libggml-base.a",
+                "ggml-cuda/libggml-cuda.a",
+            ] {
                 println!("cargo:rerun-if-changed={}", dir.join(lib).display());
             }
             println!("cargo:rustc-link-search=native={}", dir.display());
+            // A CMake build of ggml puts the CUDA archive in a directory of its own.
+            println!("cargo:rustc-link-search=native={}", dir.join("ggml-cuda").display());
         } else {
             build_ggml(&src);
         }
@@ -64,7 +71,11 @@ mod with_ggml {
             .define("BUILD_SHARED_LIBS", "OFF")
             .define("GGML_BUILD_TESTS", "OFF")
             .define("GGML_BUILD_EXAMPLES", "OFF")
-            .define("GGML_CUDA", "OFF")
+            .define("GGML_CUDA", if cfg!(feature = "cuda") { "ON" } else { "OFF" })
+            .define(
+                "CMAKE_CUDA_ARCHITECTURES",
+                env::var("GGML_CUDA_ARCH").unwrap_or_else(|_| "86".into()),
+            )
             // Rust links position-independent executables.
             .define("CMAKE_POSITION_INDEPENDENT_CODE", "ON")
             .build();
@@ -74,8 +85,22 @@ mod with_ggml {
     }
 
     fn link() {
-        // Order matters for static linking: ggml (the backend registry), then ggml-cpu, then ggml-base.
+        // Order matters for static linking: ggml (the backend registry), then the backends, then ggml-base.
         println!("cargo:rustc-link-lib=static=ggml");
+        #[cfg(feature = "cuda")]
+        {
+            // CUDA_HOME (default /usr/local/cuda) for the runtime and cuBLAS; /usr/lib/wsl/lib holds libcuda under
+            // WSL.
+            let cuda = env::var("CUDA_HOME").unwrap_or_else(|_| "/usr/local/cuda".into());
+            println!("cargo:rerun-if-env-changed=CUDA_HOME");
+            println!("cargo:rustc-link-lib=static=ggml-cuda");
+            println!("cargo:rustc-link-search=native={cuda}/lib64");
+            println!("cargo:rustc-link-search=native={cuda}/lib64/stubs");
+            println!("cargo:rustc-link-search=native=/usr/lib/wsl/lib");
+            for lib in ["cudart", "cublas", "cublasLt", "cuda"] {
+                println!("cargo:rustc-link-lib=dylib={lib}");
+            }
+        }
         println!("cargo:rustc-link-lib=static=ggml-cpu");
         println!("cargo:rustc-link-lib=static=ggml-base");
         let target = env::var("TARGET").unwrap();

@@ -307,6 +307,7 @@ fn render(a: Args) -> Result<u8, String> {
         audio_seconds: (rate > 0).then(|| samples.len() as f64 / f64::from(rate)),
         events: a.trace.clone(),
         bin_dir: None,
+        instruments_dir: None,
     };
     let summary = ggtts_instruments::run(&config, &inputs)?;
     for e in &summary.envelopes {

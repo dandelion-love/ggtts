@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use ggtts_core::flac::write_flac;
 use ggtts_core::pipeline::{plan_story, render_story, render_story_traced, RenderOptions};
 use ggtts_core::report::{Direction, Metric, Status};
-use ggtts_core::trace::Recorder;
+use ggtts_core::trace::{emit_header, Header, Recorder};
 use ggtts_fake::FakeEngine;
 use ggtts_instruments::config::{Config, OnError};
 use ggtts_instruments::runner::{
@@ -70,6 +70,8 @@ fn setup_with(tag: &str, paragraphs: &[String]) -> (PathBuf, Inputs) {
     let mut engine = FakeEngine::new(HashMap::new(), HashMap::new());
     let profile = *ggtts_core::engine::Engine::profile(&engine);
     let mut rec = Recorder::new(1);
+    // A real trace starts with its header; the Python SDK refuses one that does not.
+    emit_header(&mut rec, &Header::for_engine(&engine, 1));
     let read = render_story_traced(
         &mut engine,
         "story",
@@ -94,6 +96,7 @@ fn setup_with(tag: &str, paragraphs: &[String]) -> (PathBuf, Inputs) {
         audio_seconds: Some(read.seconds()),
         events: Some(events),
         bin_dir: Path::new(SELFTEST).parent().map(Path::to_path_buf),
+        instruments_dir: Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments")),
     };
     (dir, inputs)
 }
@@ -379,8 +382,13 @@ fn the_overhead_is_logged_against_the_budget_stated_before_measuring() {
     let paragraphs = long_prose();
     let (dir, inputs) = setup_with("overhead", &paragraphs);
     let mut c = Config::default();
-    for name in ggtts_instruments::catalogue::CATALOGUE.iter().map(|k| k.name) {
-        c.apply_instrument_flag(name).unwrap();
+    // Every shipped instrument: the selftest binary and the Python templates and example, unless Python is skipped on
+    // purpose (GGTTS_SKIP_PYTHON=1, as the Python instrument suites honour).
+    let skip_python = std::env::var_os("GGTTS_SKIP_PYTHON").is_some();
+    for k in ggtts_instruments::catalogue::CATALOGUE {
+        if k.interpreter.is_none() || !skip_python {
+            c.apply_instrument_flag(k.name).unwrap();
+        }
     }
     let s = run(&c, &inputs).unwrap();
     assert!(s.envelopes.iter().all(|e| e.status == Status::Ok), "{:?}", s.envelopes);
@@ -401,6 +409,10 @@ fn the_overhead_is_logged_against_the_budget_stated_before_measuring() {
     );
     assert!(log.contains("overhead: RTF added"), "{log}");
     eprintln!("{line}");
+    for e in &s.envelopes {
+        eprintln!("  {} {}: {}", e.name, e.version, e.status.as_str());
+    }
+    eprintln!("{}", log.lines().find(|l| l.starts_with("overhead: RTF")).unwrap_or(""));
     // The budget is a claim about the shipped (optimised) runner, so a release build checks it. Most of the runner's
     // own time is the audio's SHA-256 for provenance, which an unoptimised build runs about 50 times slower (86 ms
     // for 3 MB, measured), so a debug build only refuses a cost ten times over budget.
@@ -455,4 +467,26 @@ fn an_in_process_hook_panic_is_caught_and_reported_but_is_not_a_full_boundary() 
     ggtts_core::report::validate(&panicked.to_json()).unwrap();
     // A hang or a process abort is not contained here; runner.rs's docs say so, and nothing tests a containment
     // that does not exist.
+}
+
+#[test]
+fn a_script_instrument_runs_under_its_interpreter_and_a_missing_one_is_reported() {
+    if std::env::var_os("GGTTS_SKIP_PYTHON").is_some() {
+        return;
+    }
+    let (dir, inputs) = setup("interpreter");
+    // The shipped Python instrument runs under the default interpreter, never as a bare `.py` (Windows cannot).
+    let mut c = Config::default();
+    c.apply_instrument_flag("audio-levels").unwrap();
+    let s = run(&c, &inputs).unwrap();
+    assert_eq!(s.envelopes[0].status, Status::Ok, "{:?}", s.envelopes[0]);
+    // The planted case: an interpreter that does not exist is a failure that names it, not a silent skip.
+    let mut c = Config::default();
+    c.apply_instrument_flag("audio-levels,interpreter=no-such-python")
+        .unwrap();
+    let s = run(&c, &inputs).unwrap();
+    assert_eq!(s.envelopes[0].status, Status::Failed);
+    let why = s.envelopes[0].error.clone().unwrap_or_default();
+    assert!(why.starts_with("could not start no-such-python "), "{why}");
+    let _ = std::fs::remove_dir_all(dir);
 }

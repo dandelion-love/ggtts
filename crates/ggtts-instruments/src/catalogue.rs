@@ -8,8 +8,12 @@
 pub struct Known {
     pub name: &'static str,
     pub version: &'static str,
-    /// The program, looked up beside the running binary.
+    /// The program: a binary looked up beside the running binary, or, with an `interpreter`, a script's path inside
+    /// the shipped `instruments/` directory.
     pub program: &'static str,
+    /// The interpreter that runs `program`, when it is a script. `python` means `GGTTS_PYTHON` if set, else
+    /// `python3` (`python` on Windows). A script is never started directly: Windows cannot run a `.py` file.
+    pub interpreter: Option<&'static str>,
     /// What it measures, in one line.
     pub about: &'static str,
     /// Example `args`, for the template.
@@ -18,15 +22,67 @@ pub struct Known {
     pub needs_events: bool,
 }
 
-pub const CATALOGUE: &[Known] = &[Known {
-    name: "selftest",
-    version: env!("CARGO_PKG_VERSION"),
-    program: "ggtts-instrument-selftest",
-    about: "the runner's own check: counts the run's events and audio bytes; arg mode=crash|hang|bad-envelope|tamper \
-            plants a failure",
-    args: &[("mode", "ok")],
-    needs_events: false,
-}];
+/// A shipped Python instrument: its script under `instruments/`, run by the Python interpreter.
+const fn python(name: &'static str, program: &'static str, about: &'static str, needs_events: bool) -> Known {
+    Known {
+        name,
+        version: "0.1.0",
+        program,
+        interpreter: Some("python"),
+        about,
+        args: &[],
+        needs_events,
+    }
+}
+
+pub const CATALOGUE: &[Known] = &[
+    Known {
+        name: "selftest",
+        version: env!("CARGO_PKG_VERSION"),
+        program: "ggtts-instrument-selftest",
+        interpreter: None,
+        about: "the runner's own check: counts the run's events and audio bytes; arg mode=crash|hang|bad-envelope|\
+                tamper plants a failure",
+        args: &[("mode", "ok")],
+        needs_events: false,
+    },
+    python(
+        "p-stop-early",
+        "templates/python/step/instrument.py",
+        "per step: frames whose stop probability rose early, before the chunk's last frames (template)",
+        true,
+    ),
+    python(
+        "draws",
+        "templates/python/chunk/instrument.py",
+        "per chunk: draws, redraws and the judge's verdicts (template)",
+        true,
+    ),
+    python(
+        "edge-trim",
+        "templates/python/trim/instrument.py",
+        "per chunk: the lead and tail seconds trimmed from each kept draw (template)",
+        true,
+    ),
+    python(
+        "render-totals",
+        "templates/python/render/instrument.py",
+        "per render: frames, seconds and chunks, and truncated when the stream has no end (template)",
+        true,
+    ),
+    python(
+        "audio-levels",
+        "templates/python/audio/instrument.py",
+        "the rendered audio: peak and RMS level (template)",
+        false,
+    ),
+    python(
+        "internal-pauses",
+        "examples/python/internal-pauses/instrument.py",
+        "the rendered audio: silences inside the speech, between its first and last loud frame (example)",
+        false,
+    ),
+];
 
 pub fn find(name: &str) -> Option<&'static Known> {
     CATALOGUE.iter().find(|k| k.name == name)

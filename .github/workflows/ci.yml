@@ -220,3 +220,84 @@ jobs:
           cuobjdump --list-elf "$lib" | tee elf.txt
           grep -q 'sm_86' elf.txt
           grep -q 'sm_89' elf.txt
+
+  package-smoke:
+    name: package-smoke (${{ matrix.os }}; script instruments run from a packed release directory, and a planted missing instruments/ is red)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            exe: ""
+          - os: windows-latest
+            exe: ".exe"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      # The fake engine needs no ggml, so this builds without it; release.yml packs its ggml build with the same script.
+      - run: cargo build --release --locked -p ggtts-cli
+      - name: Pack, as release.yml does
+        run: scripts/package_and_smoke.sh pack "target/release/ggtts-render${{ matrix.exe }}" dist/ggtts-ci
+      - name: Smoke the packed directory (a shipped Python instrument runs from it)
+        run: scripts/package_and_smoke.sh smoke dist/ggtts-ci
+      - name: Planted, the same directory without instruments/ must fail, naming the missing directory
+        run: |
+          set -u
+          cp -r dist/ggtts-ci dist/planted
+          rm -rf dist/planted/instruments
+          if scripts/package_and_smoke.sh smoke dist/planted 2> planted.err; then
+            cat planted.err
+            echo "::error::the smoke passed without instruments/"
+            exit 1
+          fi
+          cat planted.err
+          grep -F "instruments/ directory was not found" planted.err
+
+  release-build:
+    # The release's build step, run on every PR with the release's matrix, so a bad feature string or a build that
+    # only breaks under --release fails here and not first at a tag (v0.1.0-rc.2 did). Keep the matrix the same as
+    # release.yml's; the first step refuses a drift.
+    name: release-build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-linux
+            features: ggtts-cli/ggml
+          - os: windows-latest
+            target: x86_64-windows
+            features: ggtts-cli/bindgen
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The release matrix carries the same target and features
+        env:
+          TARGET: ${{ matrix.target }}
+          FEATURES: ${{ matrix.features }}
+        run: |
+          set -euo pipefail
+          # The line after "target: <this target>" in release.yml that sets features, read without a YAML parser.
+          got=$(awk -v t="target: ${TARGET}" '$0 ~ t {f=1} f && /^ *features:/ {sub(/^ *features: */, ""); print; exit}' \
+            .github/workflows/release.yml)
+          echo "release.yml features for ${TARGET}: ${got:-<none>}"
+          test "$got" = "$FEATURES"
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: git submodule update --init crates/ggtts-ggml-sys/ggml
+      - name: Build ggtts-render exactly as release.yml does
+        env:
+          LIBCLANG_PATH: ${{ runner.os == 'Windows' && 'C:\Program Files\LLVM\bin' || '' }}
+        run: cargo build --release --locked -p ggtts-cli --features "${{ matrix.features }}"

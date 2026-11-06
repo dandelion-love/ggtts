@@ -81,6 +81,9 @@ pub struct Inputs {
     pub events: Option<PathBuf>,
     /// Where shipped instruments' programs are. Default: beside the running binary.
     pub bin_dir: Option<PathBuf>,
+    /// The shipped `instruments/` directory, which holds the script instruments. Default: `GGTTS_INSTRUMENTS_DIR`,
+    /// else the nearest `instruments/` above the running binary (a source checkout's `target/` sits beside it).
+    pub instruments_dir: Option<PathBuf>,
 }
 
 /// What the instrument phase cost, after the render.
@@ -168,6 +171,9 @@ fn entry_config(config: &Config, entry: &Entry, needs_events: bool) -> Map<Strin
     m.insert("needs_events".into(), json!(needs_events));
     if let Some(c) = &entry.command {
         m.insert("command".into(), json!(c));
+    }
+    if let Some(i) = &entry.interpreter {
+        m.insert("interpreter".into(), json!(i));
     }
     let args: Map<String, Value> = entry.args.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
     m.insert("args".into(), Value::Object(args));
@@ -397,9 +403,22 @@ fn one(
     made: &dyn Fn(Status, String) -> Envelope,
 ) -> (Envelope, String, u128) {
     let fail = |status: Status, why: String, exit: &str, ms: u128| (made(status, why), exit.to_string(), ms);
-    let program = match (&entry.command, catalogue::find(&entry.name)) {
-        (Some(c), _) => PathBuf::from(c),
-        (None, Some(k)) => bin_dir.join(format!("{}{}", k.program, std::env::consts::EXE_SUFFIX)),
+    let (program, interpreter) = match (&entry.command, catalogue::find(&entry.name)) {
+        (Some(c), _) => (PathBuf::from(c), entry.interpreter.clone()),
+        (None, Some(k)) if k.interpreter.is_some() => match instruments_dir(inputs) {
+            Some(d) => (
+                d.join(k.program),
+                Some(entry.interpreter.clone().unwrap_or_else(default_python)),
+            ),
+            None => {
+                let why = "the shipped instruments/ directory was not found; set GGTTS_INSTRUMENTS_DIR".to_string();
+                return fail(Status::Failed, why, "not started", 0);
+            }
+        },
+        (None, Some(k)) => (
+            bin_dir.join(format!("{}{}", k.program, std::env::consts::EXE_SUFFIX)),
+            entry.interpreter.clone(),
+        ),
         (None, None) => {
             return fail(
                 Status::Failed,
@@ -421,7 +440,16 @@ fn one(
     };
     let audio_before = fs::read(&inputs.audio).ok();
 
-    let mut cmd = Command::new(&program);
+    // A script runs under its interpreter: Windows cannot start a `.py` file, and on every system the interpreter is
+    // then the one asked for, not whatever the file's first line names.
+    let mut cmd = match &interpreter {
+        Some(i) => {
+            let mut c = Command::new(i);
+            c.arg(&program);
+            c
+        }
+        None => Command::new(&program),
+    };
     cmd.arg("--run").arg(&inputs.run).arg("--render").arg(&inputs.render);
     if let Some(ev) = &inputs.events {
         cmd.arg("--events").arg(ev);
@@ -440,7 +468,10 @@ fn one(
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            let why = format!("could not start {}: {e}", program.display());
+            let why = match &interpreter {
+                Some(i) => format!("could not start {i} {}: {e}", program.display()),
+                None => format!("could not start {}: {e}", program.display()),
+            };
             return fail(Status::Failed, why, "not started", 0);
         }
     };
@@ -513,6 +544,27 @@ fn one(
             (env, exit, ms)
         }
     }
+}
+
+/// `GGTTS_PYTHON`, else `python3`, or `python` on Windows (where the installer names it so).
+pub fn default_python() -> String {
+    std::env::var("GGTTS_PYTHON").unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.to_string())
+}
+
+/// The shipped `instruments/` directory: [`Inputs::instruments_dir`], `GGTTS_INSTRUMENTS_DIR`, or the nearest
+/// `instruments/` holding the Python SDK above the running binary.
+fn instruments_dir(inputs: &Inputs) -> Option<PathBuf> {
+    if let Some(d) = &inputs.instruments_dir {
+        return Some(d.clone());
+    }
+    if let Some(d) = std::env::var_os("GGTTS_INSTRUMENTS_DIR") {
+        return Some(PathBuf::from(d));
+    }
+    let exe = std::env::current_exe().ok()?;
+    exe.ancestors()
+        .skip(1)
+        .map(|a| a.join("instruments"))
+        .find(|d| d.join("python/ggtts_instrument").is_dir())
 }
 
 enum Waited {

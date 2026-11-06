@@ -32,6 +32,14 @@ instrument never draws from the sampler's random stream. The hook points, the ev
 tiers are in [docs/instruments/hooks.md](docs/instruments/hooks.md), and the stream's JSON schema is
 [schemas/ggtts-trace-1.schema.json](schemas/ggtts-trace-1.schema.json).
 
+**Running instruments.** `ggtts-render --instrument NAME` (or `--instruments FILE.yaml`) runs instruments on the
+finished render, each in its own process with its own log, a timeout and a crash boundary; the template config
+`instruments/instruments.yaml` lists every shipped one. The Python instruments are scripts, run under
+`GGTTS_PYTHON` if set, else `python3` (`python` on Windows), and need Python 3.8 or later on `PATH`. They are found in the `instruments/` directory:
+next to `ggtts-render` in a release archive, or the repository's own when run from a checkout. Set
+`GGTTS_INSTRUMENTS_DIR` to use another. If none is found, the instrument is reported failed with that reason and
+the render's audio is still written. Writing one: [instruments/README.md](instruments/README.md).
+
 ## Binaries
 
 | Binary | Job |
@@ -43,6 +51,17 @@ tiers are in [docs/instruments/hooks.md](docs/instruments/hooks.md), and the str
 
 Only `ggtts-render` exists so far, and it prints its version and the ggml pin. Every flag will have a `GGTTS_ARG_*`
 environment variable, after llama.cpp's `LLAMA_ARG_*` convention.
+
+### Streaming: which stream
+
+- **To listen: `ggtts-render --stream FILE|-`.** The audio leaves chunk by chunk while the render runs, levelled with
+  one gain set from its first 5 s of audio, which are held back until then. Its loudness is close to the FLAC's
+  but not equal, because the FLAC's gain is computed over the whole read. `--stream-level-seconds S` trades the
+  two: more seconds give loudness closer to the FLAC's, fewer give earlier first audio, and `0` takes the first
+  chunk's gain alone, which adds no latency but goes wrong when the first chunk is unlike the rest.
+- **For parity checks: `--stream FILE --stream-raw`.** The pieces before the level step, bit-exact to the batch read
+  before its level step. The FLAC is this stream times the gain printed at the end. Tests and `stream_probe.sh` ask
+  for it by name.
 
 ## How parity is tested
 

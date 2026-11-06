@@ -10,6 +10,7 @@
 //! | `--instrument NAME,command=PATH,version=V` | `- {name: NAME, command: PATH, version: V}` |
 //! | `--instrument NAME,arg.K=V` | `- {name: NAME, args: {K: V}}` |
 //! | `--instrument NAME,needs_events=true` | `- {name: NAME, needs_events: true}` |
+//! | `--instrument NAME,interpreter=PROG` | `- {name: NAME, interpreter: PROG}` |
 //! | `--require NAME` | `require: [NAME]` |
 //! | `--on-instrument-error continue\|abort` | `on_error: continue\|abort` |
 //! | `--instrument-timeout S` | `timeout_s: S` |
@@ -36,7 +37,15 @@ pub const DEFAULT_TIMEOUT_S: f64 = 60.0;
 /// The keys a config file may have at the top. The published schema lists the same keys; a test holds them equal.
 pub const TOP_KEYS: [&str; 5] = ["format", "on_error", "timeout_s", "require", "instruments"];
 /// The keys one instrument entry may have.
-pub const ENTRY_KEYS: [&str; 6] = ["name", "timeout_s", "command", "version", "args", "needs_events"];
+pub const ENTRY_KEYS: [&str; 7] = [
+    "name",
+    "timeout_s",
+    "command",
+    "version",
+    "args",
+    "needs_events",
+    "interpreter",
+];
 
 /// What the runner does after an instrument fails or times out. It governs the run only: whether the measurement
 /// is complete is decided by `require`, never by this.
@@ -73,6 +82,9 @@ pub struct Entry {
     /// It needs the run's event stream; without one, or with a truncated one, it is `skipped`. `None`: the
     /// catalogue's value, or no.
     pub needs_events: Option<bool>,
+    /// Run `command` (or a shipped script) with this program: `python3 instrument.py ...`. A script cannot be
+    /// started directly on Windows, so a `.py` instrument names its interpreter.
+    pub interpreter: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -174,6 +186,9 @@ impl Config {
                 }
                 if e.needs_events.is_some() {
                     x.needs_events = e.needs_events;
+                }
+                if e.interpreter.is_some() {
+                    x.interpreter = e.interpreter;
                 }
                 for (k, v) in e.args {
                     match x.args.iter_mut().find(|(xk, _)| *xk == k) {
@@ -281,6 +296,7 @@ fn parse_spec(spec: &str) -> Result<Entry, String> {
             }
             "command" => e.command = Some(v.to_string()),
             "version" => e.version = Some(v.to_string()),
+            "interpreter" => e.interpreter = Some(v.to_string()),
             "needs_events" => {
                 e.needs_events = Some(match v {
                     "true" => true,
@@ -293,7 +309,7 @@ fn parse_spec(spec: &str) -> Result<Entry, String> {
                 _ => {
                     return Err(format!(
                         "--instrument {spec}: unknown key {k:?} (allowed: timeout_s, command, version, \
-                         needs_events, arg.NAME)"
+                         needs_events, interpreter, arg.NAME)"
                     ))
                 }
             },
@@ -324,6 +340,7 @@ fn entry(item: &Yaml, at: &str) -> Result<Entry, String> {
             "timeout_s" => e.timeout_s = Some(seconds(v, &path)?),
             "command" => e.command = Some(string(v, &path)?),
             "version" => e.version = Some(string(v, &path)?),
+            "interpreter" => e.interpreter = Some(string(v, &path)?),
             "needs_events" => match v {
                 Yaml::Boolean(b) => e.needs_events = Some(*b),
                 _ => return Err(format!("{path}: must be true or false")),
@@ -410,7 +427,7 @@ mod tests {
     fn flags_and_yaml_map_one_to_one() {
         let yaml = Config::from_yaml(
             "on_error: abort\ntimeout_s: 5\nrequire: [other]\ninstruments:\n  - selftest\n  - name: other\n    \
-             command: /bin/x\n    version: '2'\n    timeout_s: 1.5\n    needs_events: true\n    args: {mode: ok, n: 3}\n",
+             command: /bin/x\n    version: '2'\n    timeout_s: 1.5\n    needs_events: true\n    interpreter: python3\n    args: {mode: ok, n: 3}\n",
         )
         .unwrap();
         let mut flags = Config::default();
@@ -419,7 +436,7 @@ mod tests {
         flags.apply_require_flag("other").unwrap();
         flags.apply_instrument_flag("selftest").unwrap();
         flags
-            .apply_instrument_flag("other,command=/bin/x,version=2,timeout_s=1.5,needs_events=true,arg.mode=ok,arg.n=3")
+            .apply_instrument_flag("other,command=/bin/x,version=2,timeout_s=1.5,needs_events=true,interpreter=python3,arg.mode=ok,arg.n=3")
             .unwrap();
         assert_eq!(yaml, flags);
     }

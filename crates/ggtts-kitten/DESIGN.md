@@ -163,6 +163,12 @@ tolerances fixed here, before any measurement:
      CAMPPlus (cosine below the bar), no absolute value after pyannote's sinc filters (cosine below the bar), and no
      pre-emphasis in the fbank (relative L2 above the bar). Each must turn its check red.
 
+6. **CUDA** (bars written 2026-11-06, before any CUDA run). `--device cuda` runs every graph on the first CUDA
+   device, with the CPU as the scheduler's fallback for ops CUDA lacks. It is held to the same bars as the CPU
+   path: levels 1, 2, 3 and 5 against the same CPU PyTorch recordings, with the same plants red. Level 4 also holds
+   on CUDA: the same seed must render a byte-identical FLAC twice. Matching the CPU render byte for byte is not
+   claimed, because the kernels differ. `scripts/cuda_probe.sh` runs all of it in one command.
+
 ## Measured (2026-11-06, CPU, 4 threads, WSL Ubuntu on x86-64)
 
 The bars above were written before these numbers and are not moved by them.
@@ -288,6 +294,8 @@ is patched.
 | `src/model.rs` | the ggml graph and KV-cache session (feature `ggml`) |
 | `src/prompt.rs`, `src/sampler.rs`, `src/tokenizer.rs` | the prompt, the sampler in PyTorch's order, the BPE |
 | `src/engine.rs` | `KittenEngine`, the `Engine` trait, and the PyTorch S3Gen bridge (feature `ggml`) |
+| `src/backend.rs` | the device (CPU, or CUDA with a CPU fallback) and the scheduler every graph runs through |
+| `scripts/cuda_probe.sh` | the CUDA parity probe: build, every check with `--device cuda`, the plants, a render twice |
 | `src/parity.rs` | the parity measures and the bars above |
 | `src/s3convert.rs` | S3Gen's safetensors to a GGUF, weight norm folded |
 | `src/flow.rs` | the S3Gen flow on ggml: conformer encoder and meanflow estimator (feature `ggml`) |

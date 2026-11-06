@@ -9,39 +9,75 @@
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::ptr;
+use std::rc::Rc;
 
 use ggtts_ggml_sys as g;
 
+use crate::backend::{Backend, GRAPH_SIZE};
 use crate::dsp;
 use crate::gguf::{GgmlType, Gguf};
 
 type T = *mut g::ggml_tensor;
 
-/// Weights of one GGUF loaded into a ggml context, by name.
+/// Weights of one GGUF in a device buffer, by name, with host copies of the small ones.
 pub struct Weights {
     ctx: *mut g::ggml_context,
+    buf: g::ggml_backend_buffer_t,
     map: HashMap<String, T>,
     host: HashMap<String, Vec<f32>>,
 }
 
 impl Drop for Weights {
     fn drop(&mut self) {
-        unsafe { g::ggml_free(self.ctx) };
+        unsafe {
+            if !self.buf.is_null() {
+                g::ggml_backend_buffer_free(self.buf);
+            }
+            g::ggml_free(self.ctx);
+        }
     }
 }
 
 impl Weights {
-    pub fn load(gguf: &Gguf, prefix: &str) -> Result<Self, String> {
-        let names: Vec<&String> = gguf.order.iter().filter(|n| n.starts_with(prefix)).collect();
-        let mut mem = 1 << 20;
-        for n in &names {
-            mem += gguf.tensors[*n].len + unsafe { g::ggml_tensor_overhead() } + 64;
+    pub fn load(gguf: &Gguf, prefix: &str, be: &Backend) -> Result<Self, String> {
+        let mut items = Vec::new();
+        for n in gguf.order.iter().filter(|n| n.starts_with(prefix)) {
+            let (t, data) = gguf.tensor(n)?;
+            if t.ty != GgmlType::F32 {
+                return Err(format!("{n}: expected f32"));
+            }
+            let d: Vec<i64> = t.dims.iter().map(|&x| x as i64).collect();
+            items.push((n.clone(), d, data));
         }
+        Self::from_bytes(be, &items)
+    }
+
+    /// Small f32 tensors computed on the host (for example the inverse of every Snake alpha), one dimension each.
+    pub fn from_host(be: &Backend, items: &[(String, Vec<f32>)]) -> Result<Self, String> {
+        let bytes: Vec<(String, Vec<i64>, Vec<u8>)> = items
+            .iter()
+            .map(|(n, v)| {
+                (
+                    n.clone(),
+                    vec![v.len() as i64],
+                    v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+                )
+            })
+            .collect();
+        let refs: Vec<(String, Vec<i64>, &[u8])> = bytes
+            .iter()
+            .map(|(n, d, b)| (n.clone(), d.clone(), b.as_slice()))
+            .collect();
+        Self::from_bytes(be, &refs)
+    }
+
+    fn from_bytes(be: &Backend, items: &[(String, Vec<i64>, &[u8])]) -> Result<Self, String> {
+        let mem = (items.len() + 1) * unsafe { g::ggml_tensor_overhead() };
         let ctx = unsafe {
             g::ggml_init(g::ggml_init_params {
                 mem_size: mem,
                 mem_buffer: ptr::null_mut(),
-                no_alloc: false,
+                no_alloc: true,
             })
         };
         if ctx.is_null() {
@@ -49,12 +85,7 @@ impl Weights {
         }
         let mut map = HashMap::new();
         let mut host = HashMap::new();
-        for n in names {
-            let (t, data) = gguf.tensor(n)?;
-            if t.ty != GgmlType::F32 {
-                return Err(format!("{n}: expected f32"));
-            }
-            let d: Vec<i64> = t.dims.iter().map(|&x| x as i64).collect();
+        for (n, d, data) in items {
             let x = unsafe {
                 match d.len() {
                     1 => g::ggml_new_tensor_1d(ctx, g::GGML_TYPE_F32, d[0]),
@@ -64,7 +95,6 @@ impl Weights {
                 }
             };
             unsafe {
-                ptr::copy_nonoverlapping(data.as_ptr(), (*x).data as *mut u8, data.len());
                 let c = CString::new(n.as_str()).unwrap();
                 g::ggml_set_name(x, c.as_ptr());
             }
@@ -78,7 +108,15 @@ impl Weights {
             }
             map.insert(n.clone(), x);
         }
-        Ok(Weights { ctx, map, host })
+        let buf = if items.is_empty() {
+            ptr::null_mut()
+        } else {
+            be.alloc(ctx)?
+        };
+        for (n, _, data) in items {
+            unsafe { g::ggml_backend_tensor_set(map[n], data.as_ptr().cast(), 0, data.len()) };
+        }
+        Ok(Weights { ctx, buf, map, host })
     }
 
     pub fn t(&self, name: &str) -> Result<T, String> {
@@ -96,18 +134,15 @@ impl Weights {
     }
 }
 
-/// A graph context and its CPU backend, built and run once.
-pub struct Graph {
+/// A graph context, built once and run through the backend's scheduler.
+pub struct Graph<'a> {
     pub ctx: *mut g::ggml_context,
     pub gf: *mut g::ggml_cgraph,
-    backend: g::ggml_backend_t,
-    galloc: g::ggml_gallocr_t,
+    be: &'a Backend,
 }
 
-const GRAPH_SIZE: usize = 16384;
-
-impl Graph {
-    pub fn new(threads: usize) -> Result<Self, String> {
+impl<'a> Graph<'a> {
+    pub fn new(be: &'a Backend) -> Result<Self, String> {
         unsafe {
             let size = g::ggml_tensor_overhead() * GRAPH_SIZE + g::ggml_graph_overhead_custom(GRAPH_SIZE, false);
             let ctx = g::ggml_init(g::ggml_init_params {
@@ -119,15 +154,7 @@ impl Graph {
                 return Err("ggml_init failed for a decoder graph".into());
             }
             let gf = g::ggml_new_graph_custom(ctx, GRAPH_SIZE, false);
-            let backend = g::ggml_backend_cpu_init();
-            g::ggml_backend_cpu_set_n_threads(backend, threads as i32);
-            let galloc = g::ggml_gallocr_new(g::ggml_backend_cpu_buffer_type());
-            Ok(Graph {
-                ctx,
-                gf,
-                backend,
-                galloc,
-            })
+            Ok(Graph { ctx, gf, be })
         }
     }
 
@@ -160,17 +187,13 @@ impl Graph {
                 g::ggml_set_output(o);
                 g::ggml_build_forward_expand(self.gf, o);
             }
-            if !g::ggml_gallocr_alloc_graph(self.galloc, self.gf) {
-                return Err("ggml_gallocr_alloc_graph failed".into());
+            let sched = self.be.sched;
+            g::ggml_backend_sched_reset(sched);
+            if !g::ggml_backend_sched_alloc_graph(sched, self.gf) {
+                return Err("ggml_backend_sched_alloc_graph failed".into());
             }
+            // An input the graph never reads is never allocated, and setting it would abort.
             for (t, d) in inputs {
-                if g::ggml_nbytes(*t) != d.len() * 4 {
-                    return Err("decoder input size mismatch".into());
-                }
-                g::ggml_backend_tensor_set(*t, d.as_ptr().cast(), 0, d.len() * 4);
-            }
-            for (t, d) in ints {
-                // An input the graph never reads is never allocated, and setting it would abort.
                 if (**t).buffer.is_null() {
                     continue;
                 }
@@ -179,7 +202,16 @@ impl Graph {
                 }
                 g::ggml_backend_tensor_set(*t, d.as_ptr().cast(), 0, d.len() * 4);
             }
-            if g::ggml_backend_graph_compute(self.backend, self.gf) != g::GGML_STATUS_SUCCESS {
+            for (t, d) in ints {
+                if (**t).buffer.is_null() {
+                    continue;
+                }
+                if g::ggml_nbytes(*t) != d.len() * 4 {
+                    return Err("decoder input size mismatch".into());
+                }
+                g::ggml_backend_tensor_set(*t, d.as_ptr().cast(), 0, d.len() * 4);
+            }
+            if g::ggml_backend_sched_graph_compute(sched, self.gf) != g::GGML_STATUS_SUCCESS {
                 return Err("decoder graph compute failed".into());
             }
             Ok(outputs
@@ -195,11 +227,10 @@ impl Graph {
     }
 }
 
-impl Drop for Graph {
+impl Drop for Graph<'_> {
     fn drop(&mut self) {
         unsafe {
-            g::ggml_gallocr_free(self.galloc);
-            g::ggml_backend_free(self.backend);
+            g::ggml_backend_sched_reset(self.be.sched);
             g::ggml_free(self.ctx);
         }
     }
@@ -260,7 +291,7 @@ impl Ops<'_> {
 pub struct Hift {
     w: Weights,
     inv: Weights,
-    pub threads: usize,
+    pub be: Rc<Backend>,
 }
 
 const UP_RATES: [i32; 3] = [8, 5, 3];
@@ -273,39 +304,15 @@ const SRC_DOWN: [(i32, i32); 3] = [(15, 7), (3, 1), (1, 0)]; // (stride, padding
 pub const UPSAMPLE: usize = 480;
 
 impl Hift {
-    pub fn load(gguf: &Gguf, threads: usize) -> Result<Self, String> {
-        let w = Weights::load(gguf, "mel2wav.")?;
-        // The inverse alphas as their own small context, named after the alpha they invert.
-        let mut inv_ctx_mem = 1 << 20;
-        let alphas: Vec<String> = w.map.keys().filter(|n| n.ends_with(".alpha")).cloned().collect();
-        for a in &alphas {
-            inv_ctx_mem += w.host(a)?.len() * 4 + unsafe { g::ggml_tensor_overhead() } + 64;
+    pub fn load(gguf: &Gguf, be: Rc<Backend>) -> Result<Self, String> {
+        let w = Weights::load(gguf, "mel2wav.", &be)?;
+        // The inverse alphas, named after the alpha they invert.
+        let mut inv = Vec::new();
+        for a in w.map.keys().filter(|n| n.ends_with(".alpha")) {
+            inv.push((a.clone(), w.host(a)?.iter().map(|&x| 1.0 / (x + 1e-9)).collect()));
         }
-        let ctx = unsafe {
-            g::ggml_init(g::ggml_init_params {
-                mem_size: inv_ctx_mem,
-                mem_buffer: ptr::null_mut(),
-                no_alloc: false,
-            })
-        };
-        let mut map = HashMap::new();
-        for a in alphas {
-            let v: Vec<f32> = w.host(&a)?.iter().map(|&x| 1.0 / (x + 1e-9)).collect();
-            unsafe {
-                let t = g::ggml_new_tensor_1d(ctx, g::GGML_TYPE_F32, v.len() as i64);
-                ptr::copy_nonoverlapping(v.as_ptr(), (*t).data as *mut f32, v.len());
-                map.insert(a, t);
-            }
-        }
-        Ok(Hift {
-            w,
-            inv: Weights {
-                ctx,
-                map,
-                host: HashMap::new(),
-            },
-            threads,
-        })
+        let inv = Weights::from_host(&be, &inv)?;
+        Ok(Hift { w, inv, be })
     }
 
     fn resblock(&self, o: &Ops, mut x: T, name: &str, k: i32) -> Result<T, String> {
@@ -323,7 +330,7 @@ impl Hift {
 
     /// `ConvRNNF0Predictor`: mel (`[T, 80]`, channel-major) to f0 (`T`).
     pub fn f0(&self, mel: &[f32], t: usize) -> Result<Vec<f32>, String> {
-        let mut gr = Graph::new(self.threads)?;
+        let mut gr = Graph::new(&self.be)?;
         let o = Ops {
             ctx: gr.ctx,
             w: &self.w,
@@ -347,7 +354,7 @@ impl Hift {
     /// the magnitude and phase (9 channels each, channel-major), then the inverse STFT and the clamp.
     pub fn decode(&self, mel: &[f32], t: usize, s_stft: &[f32]) -> Result<Vec<f32>, String> {
         let frames = t * 120 + 1;
-        let mut gr = Graph::new(self.threads)?;
+        let mut gr = Graph::new(&self.be)?;
         let o = Ops {
             ctx: gr.ctx,
             w: &self.w,

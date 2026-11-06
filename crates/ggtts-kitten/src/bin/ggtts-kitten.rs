@@ -1,5 +1,7 @@
 //! ggtts-kitten: the Kitten-TTS 2 engine's command line.
 //!
+//! Every command takes `--device cpu|cuda` (default `cpu`; `cuda` needs ggml built with CUDA).
+//!
 //! ```text
 //! ggtts-kitten parity --gguf FILE --ref DIR [--weights f32|ternary|ternary-f32head] [--threads N]
 //! ggtts-kitten tokcheck --tokenizer tokenizer.json --expect FILE
@@ -70,6 +72,7 @@ fn parity_cmd(a: &Args) -> Result<bool, String> {
         w => return Err(format!("unknown --weights {w}")),
     };
     let threads: usize = a.or("threads", "4").parse().map_err(|_| "bad --threads")?;
+    let be = backend(a, threads)?;
     let dir = PathBuf::from(a.get("ref")?);
     let meta: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("meta.json")).map_err(|e| format!("meta.json: {e}"))?)
@@ -84,7 +87,7 @@ fn parity_cmd(a: &Args) -> Result<bool, String> {
 
     let t0 = Instant::now();
     let gguf = Gguf::open(Path::new(a.get("gguf")?))?;
-    let model = Model::load(&gguf, weights)?;
+    let model = Model::load(&gguf, weights, be.clone())?;
     drop(gguf);
     eprintln!("loaded ({weights:?}) in {:.1}s", t0.elapsed().as_secs_f64());
     let hp = model.hp.clone();
@@ -99,7 +102,7 @@ fn parity_cmd(a: &Args) -> Result<bool, String> {
     model.embed_tokens(&ids, &mut embd);
     embd[..hp.n_embd].copy_from_slice(&spk);
 
-    let mut sess = Session::new(&model, ids.len() + 8, threads)?;
+    let mut sess = Session::new(&model, ids.len() + 8)?;
     let t1 = Instant::now();
     let out = sess.forward(&embd, n_last, true)?;
     eprintln!(
@@ -171,6 +174,7 @@ fn tokcheck_cmd(a: &Args) -> Result<bool, String> {
 
 fn render_cmd(a: &Args) -> Result<bool, String> {
     let threads: usize = a.or("threads", "4").parse().map_err(|_| "bad --threads")?;
+    let be = backend(a, threads)?;
     let seed: u64 = a.or("seed", "1234").parse().map_err(|_| "bad --seed")?;
     let out_dir = PathBuf::from(a.get("out-dir")?);
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
@@ -183,7 +187,7 @@ fn render_cmd(a: &Args) -> Result<bool, String> {
         .collect();
     let t0 = Instant::now();
     let gguf = Gguf::open(Path::new(a.get("gguf")?))?;
-    let model = Model::load(&gguf, Weights::Ternary)?;
+    let model = Model::load(&gguf, Weights::Ternary, be.clone())?;
     drop(gguf);
     let load_s = t0.elapsed().as_secs_f64();
     let tok = Tokenizer::open(Path::new(a.get("tokenizer")?))?;
@@ -199,8 +203,8 @@ fn render_cmd(a: &Args) -> Result<bool, String> {
         (Some(p), "ggml") => {
             let g = Gguf::open(Path::new(p))?;
             Decoder::Ggml(Box::new(GgmlDecoder {
-                flow: Flow::load(&g, threads)?,
-                hift: Hift::load(&g, threads)?,
+                flow: Flow::load(&g, be.clone())?,
+                hift: Hift::load(&g, be.clone())?,
             }))
         }
         (_, "ggml" | "pytorch") => Decoder::PyTorch(py),
@@ -310,13 +314,14 @@ fn render_cmd(a: &Args) -> Result<bool, String> {
 fn hift_cmd(a: &Args) -> Result<bool, String> {
     use ggtts_kitten::{dsp, hift::Hift};
     let threads: usize = a.or("threads", "4").parse().map_err(|_| "bad --threads")?;
+    let be = backend(a, threads)?;
     let dir = PathBuf::from(a.get("ref")?);
     let meta: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("meta.json")).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
     let t = meta["shapes"]["mel"][2].as_u64().ok_or("meta.shapes.mel")? as usize;
     let gguf = Gguf::open(Path::new(a.get("s3gguf")?))?;
-    let h = Hift::load(&gguf, threads)?;
+    let h = Hift::load(&gguf, be.clone())?;
     let mel = read_f32(&dir.join("mel.f32"))?;
     let t0 = Instant::now();
     let f0 = h.f0(&mel, t)?;
@@ -364,6 +369,7 @@ fn flow_cmd(a: &Args) -> Result<bool, String> {
     use ggtts_kitten::flow::{Flow, FlowRef, MEL};
     use ggtts_kitten::{dsp, hift::Hift};
     let threads: usize = a.or("threads", "4").parse().map_err(|_| "bad --threads")?;
+    let be = backend(a, threads)?;
     let dir = PathBuf::from(a.get("ref")?);
     let meta: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("meta.json")).map_err(|e| e.to_string())?)
@@ -383,7 +389,7 @@ fn flow_cmd(a: &Args) -> Result<bool, String> {
         embedding: read_f32(&dir.join("embedding.f32"))?,
     };
     let gguf = Gguf::open(Path::new(a.get("s3gguf")?))?;
-    let flow = Flow::load(&gguf, threads)?;
+    let flow = Flow::load(&gguf, be.clone())?;
     let e_spk = parity::rel_l2(&flow.spks(&r.embedding), &read_f32(&dir.join("spks.f32"))?);
     println!("spks: rel L2 {e_spk:.3e}");
     let mut all = r.prompt_token.clone();
@@ -426,7 +432,7 @@ fn flow_cmd(a: &Args) -> Result<bool, String> {
     let flow_s = t2.elapsed().as_secs_f64();
     let e_mel = parity::rel_l2(&mel, &read_f32(&dir.join("mel.f32"))?);
     println!("flow end to end (recorded noise): {frames} mel frames, rel L2 {e_mel:.3e} ({flow_s:.2}s)");
-    let h = Hift::load(&gguf, threads)?;
+    let h = Hift::load(&gguf, be.clone())?;
     let t3 = Instant::now();
     let src = read_f32(&dir.join("source.f32"))?;
     let (spec, _) = dsp::stft(&src);
@@ -455,6 +461,7 @@ fn cond_cmd(a: &Args) -> Result<bool, String> {
     use ggtts_kitten::condnet::{CondNets, Plant};
     use ggtts_kitten::refdsp;
     let threads: usize = a.or("threads", "4").parse().map_err(|_| "bad --threads")?;
+    let be = backend(a, threads)?;
     let dir = PathBuf::from(a.get("ref")?);
     let meta: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("meta.json")).map_err(|e| e.to_string())?)
@@ -476,7 +483,7 @@ fn cond_cmd(a: &Args) -> Result<bool, String> {
         p => return Err(format!("unknown --plant {p}")),
     };
     let gguf = Gguf::open(Path::new(a.get("s3gguf")?))?;
-    let mut nets = CondNets::load(&gguf, threads)?;
+    let mut nets = CondNets::load(&gguf, be.clone())?;
     nets.plant = plant;
     let rd = |n: &str| read_f32(&dir.join(format!("{n}.f32")));
     let agree = |x: &[u32], y: &[u32]| -> f64 {
@@ -559,6 +566,7 @@ fn cond_cmd(a: &Args) -> Result<bool, String> {
 fn prepare_cmd(a: &Args) -> Result<bool, String> {
     use ggtts_kitten::condnet::CondNets;
     let threads: usize = a.or("threads", "4").parse().map_err(|_| "bad --threads")?;
+    let be = backend(a, threads)?;
     let wav = PathBuf::from(a.get("wav")?);
     let transcript = a.get("transcript")?.trim().to_string();
     if transcript.is_empty() {
@@ -566,7 +574,7 @@ fn prepare_cmd(a: &Args) -> Result<bool, String> {
     }
     let (samples, sr) = ggtts_kitten::refdsp::read_wav(&wav)?;
     let gguf = Gguf::open(Path::new(a.get("s3gguf")?))?;
-    let nets = CondNets::load(&gguf, threads)?;
+    let nets = CondNets::load(&gguf, be.clone())?;
     let t0 = Instant::now();
     let p = nets.prepare(&samples, sr)?;
     let j = serde_json::json!({
@@ -591,17 +599,18 @@ fn prepare_cmd(a: &Args) -> Result<bool, String> {
 
 fn bench_cmd(a: &Args) -> Result<bool, String> {
     let threads: usize = a.or("threads", "4").parse().map_err(|_| "bad --threads")?;
+    let be = backend(a, threads)?;
     let steps: usize = a.or("steps", "64").parse().map_err(|_| "bad --steps")?;
     let prompt: usize = a.or("prompt", "300").parse().map_err(|_| "bad --prompt")?;
     let path = a.get("gguf")?;
     let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
     let gguf = Gguf::open(Path::new(path))?;
-    let model = Model::load(&gguf, Weights::Ternary)?;
+    let model = Model::load(&gguf, Weights::Ternary, be.clone())?;
     drop(gguf);
     let ids: Vec<u32> = (0..prompt as u32).map(|i| 151675 + (i * 37) % 6561).collect();
     let mut embd = Vec::new();
     model.embed_tokens(&ids, &mut embd);
-    let mut sess = Session::new(&model, prompt + steps + 1, threads)?;
+    let mut sess = Session::new(&model, prompt + steps + 1)?;
     let t0 = Instant::now();
     sess.forward(&embd, 1, false)?;
     let prefill = t0.elapsed().as_secs_f64();
@@ -621,6 +630,13 @@ fn bench_cmd(a: &Args) -> Result<bool, String> {
         steps as f64 / step
     );
     Ok(true)
+}
+
+/// `--device cpu|cuda` (default cpu): one backend for every graph of the command.
+fn backend(a: &Args, threads: usize) -> Result<std::rc::Rc<ggtts_kitten::backend::Backend>, String> {
+    let d = a.or("device", "cpu");
+    let device = ggtts_kitten::backend::Device::parse(d).ok_or(format!("unknown --device {d}"))?;
+    ggtts_kitten::backend::Backend::new(device, threads)
 }
 
 fn text_of(lines: &[String], i: usize) -> &str {

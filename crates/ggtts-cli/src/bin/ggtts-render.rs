@@ -97,7 +97,11 @@ fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, St
                 .voice
                 .as_ref()
                 .ok_or("the kitten-tts-2 engine needs --voice, a ggtts-kitten prepare JSON")?;
-            ggtts_kitten::engine::KittenEngine::open(model, codec, voice, threads as usize)
+            let device = match a.device.as_deref().unwrap_or("cpu") {
+                "cuda" => ggtts_kitten::backend::Device::Cuda,
+                _ => ggtts_kitten::backend::Device::Cpu,
+            };
+            ggtts_kitten::engine::KittenEngine::open(model, codec, voice, threads as usize, device)
                 .map(|e| Box::new(e) as Box<dyn Engine>)
         }
         #[cfg(not(feature = "ggml"))]

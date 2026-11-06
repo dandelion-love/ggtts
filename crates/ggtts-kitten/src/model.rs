@@ -13,11 +13,14 @@
 //! The token embedding is looked up on the host (it is bf16, and widening is exact), and position 0 is overwritten
 //! by the projected speaker embedding before the first forward pass, as `kittenml/speaker.py` does at prefill.
 
+use std::cell::RefCell;
 use std::ffi::CString;
 use std::ptr;
+use std::rc::Rc;
 
 use ggtts_ggml_sys as g;
 
+use crate::backend::Backend;
 use crate::convert::{ARCH, EMBED};
 use crate::gguf::{GgmlType, Gguf};
 use crate::safetensors::bf16_to_f32;
@@ -68,7 +71,9 @@ pub struct Model {
     pub weights: Weights,
     /// How the ternary matrices are stored in the GGUF.
     pub layout: Layout,
+    pub be: Rc<Backend>,
     ctx: *mut g::ggml_context,
+    buf: g::ggml_backend_buffer_t,
     layers: Vec<Layer>,
     norm: *mut g::ggml_tensor,
     head: *mut g::ggml_tensor,
@@ -84,7 +89,12 @@ pub struct Model {
 
 impl Drop for Model {
     fn drop(&mut self) {
-        unsafe { g::ggml_free(self.ctx) };
+        unsafe {
+            if !self.buf.is_null() {
+                g::ggml_backend_buffer_free(self.buf);
+            }
+            g::ggml_free(self.ctx);
+        }
     }
 }
 
@@ -95,7 +105,7 @@ fn f32s(b: &[u8]) -> Vec<f32> {
 }
 
 impl Model {
-    pub fn load(gguf: &Gguf, weights: Weights) -> Result<Model, String> {
+    pub fn load(gguf: &Gguf, weights: Weights, be: Rc<Backend>) -> Result<Model, String> {
         if gguf.str("general.architecture")? != ARCH {
             return Err("not a ggtts Kitten-TTS 2 GGUF".into());
         }
@@ -114,23 +124,11 @@ impl Model {
             spk_dim: u("speaker_dim")?,
         };
         // Size the context: every tensor, f32 for dequantized matrices.
-        let mut mem = 0usize;
-        for (name, t) in &gguf.tensors {
-            let n: usize = t.dims.iter().map(|&d| d as usize).product();
-            mem += match (t.ty, weights) {
-                (GgmlType::TQ2_0, Weights::F32) => n / 2 * 4,
-                (GgmlType::Q4_0, Weights::F32) => n * 4,
-                (GgmlType::BF16, Weights::F32 | Weights::TernaryF32Head) => n * 4,
-                _ => t.len,
-            };
-            mem += unsafe { g::ggml_tensor_overhead() } + 64;
-            let _ = name;
-        }
         let ctx = unsafe {
             g::ggml_init(g::ggml_init_params {
-                mem_size: mem + (1 << 20),
+                mem_size: (gguf.tensors.len() + 1) * g::ggml_tensor_overhead(),
                 mem_buffer: ptr::null_mut(),
-                no_alloc: false,
+                no_alloc: true,
             })
         };
         if ctx.is_null() {
@@ -140,7 +138,9 @@ impl Model {
             hp,
             weights,
             layout,
+            be: be.clone(),
             ctx,
+            buf: ptr::null_mut(),
             layers: Vec::new(),
             norm: ptr::null_mut(),
             head: ptr::null_mut(),
@@ -151,6 +151,8 @@ impl Model {
             spk_ln_b: Vec::new(),
             meta: gguf.kv.clone(),
         };
+        // Tensors first, in a no-alloc context; then one device buffer; then the bytes.
+        let pending: RefCell<Vec<(*mut g::ggml_tensor, Vec<u8>)>> = RefCell::new(Vec::new());
         let load = |name: &str| -> Result<*mut g::ggml_tensor, String> {
             let (t, data) = gguf.tensor(name)?;
             let cname = CString::new(name).unwrap();
@@ -158,38 +160,44 @@ impl Model {
                 let out = match (t.ty, weights) {
                     (GgmlType::TQ2_0, Weights::Ternary | Weights::TernaryF32Head) => {
                         let x = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_TQ2_0, t.dims[0] as i64, t.dims[1] as i64);
-                        ptr::copy_nonoverlapping(data.as_ptr(), (*x).data as *mut u8, data.len());
+                        pending.borrow_mut().push((x, data.to_vec()));
                         x
                     }
                     (GgmlType::Q4_0, Weights::Ternary | Weights::TernaryF32Head) => {
                         let x = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_Q4_0, t.dims[0] as i64, t.dims[1] as i64);
-                        ptr::copy_nonoverlapping(data.as_ptr(), (*x).data as *mut u8, data.len());
+                        pending.borrow_mut().push((x, data.to_vec()));
                         x
                     }
                     (GgmlType::TQ2_0 | GgmlType::Q4_0, Weights::F32) => {
                         let cols = t.dims[0] as usize / if t.ty == GgmlType::TQ2_0 { 2 } else { 1 };
                         let rows = t.dims[1] as usize;
                         let x = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_F32, cols as i64, rows as i64);
-                        let dst = std::slice::from_raw_parts_mut((*x).data as *mut f32, cols * rows);
+                        let mut dst = vec![0f32; cols * rows];
                         let rb = layout.row_bytes(cols);
                         for r in 0..rows {
                             let row = layout.dequantize_row(&data[r * rb..(r + 1) * rb], cols)?;
                             dst[r * cols..(r + 1) * cols].copy_from_slice(&row);
                         }
+                        pending
+                            .borrow_mut()
+                            .push((x, dst.iter().flat_map(|v| v.to_le_bytes()).collect()));
                         x
                     }
                     (GgmlType::BF16, Weights::Ternary) => {
                         let x = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_BF16, t.dims[0] as i64, t.dims[1] as i64);
-                        ptr::copy_nonoverlapping(data.as_ptr(), (*x).data as *mut u8, data.len());
+                        pending.borrow_mut().push((x, data.to_vec()));
                         x
                     }
                     (GgmlType::BF16, Weights::F32 | Weights::TernaryF32Head) => {
                         let x = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_F32, t.dims[0] as i64, t.dims[1] as i64);
                         let n = data.len() / 2;
-                        let dst = std::slice::from_raw_parts_mut((*x).data as *mut f32, n);
+                        let mut dst = vec![0f32; n];
                         for (d, c) in dst.iter_mut().zip(data.chunks_exact(2)) {
                             *d = bf16_to_f32(u16::from_le_bytes([c[0], c[1]]));
                         }
+                        pending
+                            .borrow_mut()
+                            .push((x, dst.iter().flat_map(|v| v.to_le_bytes()).collect()));
                         x
                     }
                     (GgmlType::F32, _) => {
@@ -197,7 +205,7 @@ impl Model {
                             1 => g::ggml_new_tensor_1d(ctx, g::GGML_TYPE_F32, t.dims[0] as i64),
                             _ => g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_F32, t.dims[0] as i64, t.dims[1] as i64),
                         };
-                        ptr::copy_nonoverlapping(data.as_ptr(), (*x).data as *mut u8, data.len());
+                        pending.borrow_mut().push((x, data.to_vec()));
                         x
                     }
                     (ty, _) => return Err(format!("{name}: unexpected type {ty:?}")),
@@ -224,6 +232,10 @@ impl Model {
         }
         model.norm = load("model.norm.weight")?;
         model.head = load(EMBED)?;
+        model.buf = be.alloc(ctx)?;
+        for (x, bytes) in pending.into_inner() {
+            unsafe { g::ggml_backend_tensor_set(x, bytes.as_ptr().cast(), 0, bytes.len()) };
+        }
         let (_, emb) = gguf.tensor(EMBED)?;
         model.embed = emb.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
         model.spk_w = f32s(gguf.tensor("spk_proj.0.weight")?.1);
@@ -277,15 +289,13 @@ pub struct Session<'m> {
     v: Vec<*mut g::ggml_tensor>,
     pub n_ctx: usize,
     pub n_past: usize,
-    backend: g::ggml_backend_t,
-    galloc: g::ggml_gallocr_t,
+    kv_buf: g::ggml_backend_buffer_t,
 }
 
 impl Drop for Session<'_> {
     fn drop(&mut self) {
         unsafe {
-            g::ggml_gallocr_free(self.galloc);
-            g::ggml_backend_free(self.backend);
+            g::ggml_backend_buffer_free(self.kv_buf);
             g::ggml_free(self.kv_ctx);
         }
     }
@@ -303,15 +313,14 @@ pub struct Output {
 }
 
 impl<'m> Session<'m> {
-    pub fn new(model: &'m Model, n_ctx: usize, threads: usize) -> Result<Self, String> {
+    pub fn new(model: &'m Model, n_ctx: usize) -> Result<Self, String> {
         let hp = &model.hp;
-        let per = hp.head_dim * hp.n_head_kv * n_ctx * 4;
-        let mem = hp.n_layer * 2 * (per + unsafe { g::ggml_tensor_overhead() }) + (1 << 20);
+        let mem = (hp.n_layer * 2 + 1) * unsafe { g::ggml_tensor_overhead() };
         unsafe {
             let kv_ctx = g::ggml_init(g::ggml_init_params {
                 mem_size: mem,
                 mem_buffer: ptr::null_mut(),
-                no_alloc: false,
+                no_alloc: true,
             });
             if kv_ctx.is_null() {
                 return Err("ggml_init failed for the KV cache".into());
@@ -335,13 +344,13 @@ impl<'m> Session<'m> {
                     shape.2,
                 ));
             }
-            let backend = g::ggml_backend_cpu_init();
-            if backend.is_null() {
-                g::ggml_free(kv_ctx);
-                return Err("ggml_backend_cpu_init failed".into());
-            }
-            g::ggml_backend_cpu_set_n_threads(backend, threads as i32);
-            let galloc = g::ggml_gallocr_new(g::ggml_backend_cpu_buffer_type());
+            let kv_buf = match model.be.alloc(kv_ctx) {
+                Ok(b) => b,
+                Err(e) => {
+                    g::ggml_free(kv_ctx);
+                    return Err(e);
+                }
+            };
             Ok(Session {
                 model,
                 kv_ctx,
@@ -349,8 +358,7 @@ impl<'m> Session<'m> {
                 v,
                 n_ctx,
                 n_past: 0,
-                backend,
-                galloc,
+                kv_buf,
             })
         }
     }
@@ -486,9 +494,11 @@ impl<'m> Session<'m> {
             }
             g::ggml_build_forward_expand(gf, logits);
 
-            if !g::ggml_gallocr_alloc_graph(self.galloc, gf) {
+            let sched = self.model.be.sched;
+            g::ggml_backend_sched_reset(sched);
+            if !g::ggml_backend_sched_alloc_graph(sched, gf) {
                 g::ggml_free(ctx);
-                return Err("ggml_gallocr_alloc_graph failed".into());
+                return Err("ggml_backend_sched_alloc_graph failed".into());
             }
             g::ggml_backend_tensor_set(inp, embd.as_ptr().cast(), 0, embd.len() * 4);
             let p: Vec<i32> = (pos0..pos0 + t).map(|p| p as i32).collect();
@@ -504,7 +514,7 @@ impl<'m> Session<'m> {
                 }
                 g::ggml_backend_tensor_set(mask, mk.as_ptr().cast(), 0, mk.len() * 4);
             }
-            let st = g::ggml_backend_graph_compute(self.backend, gf);
+            let st = g::ggml_backend_sched_graph_compute(sched, gf);
             if st != g::GGML_STATUS_SUCCESS {
                 g::ggml_free(ctx);
                 return Err(format!("graph compute failed: {st}"));
@@ -519,6 +529,7 @@ impl<'m> Session<'m> {
                 logits: read(logits),
                 hidden: outs.iter().map(|&t| read(t)).collect(),
             };
+            g::ggml_backend_sched_reset(sched);
             g::ggml_free(ctx);
             self.n_past += t;
             Ok(out)

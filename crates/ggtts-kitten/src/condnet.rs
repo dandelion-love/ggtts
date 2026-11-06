@@ -13,6 +13,9 @@ use std::f64::consts::PI;
 
 use ggtts_ggml_sys as g;
 
+use std::rc::Rc;
+
+use crate::backend::Backend;
 use crate::gguf::Gguf;
 use crate::hift::{Graph, Ops, Weights};
 use crate::refdsp;
@@ -38,7 +41,7 @@ pub struct CondNets {
     cam: Weights,
     py: Weights,
     mel_filters: Vec<f32>,
-    pub threads: usize,
+    pub be: Rc<Backend>,
     pub plant: Plant,
 }
 
@@ -139,13 +142,13 @@ impl B<'_> {
 }
 
 impl CondNets {
-    pub fn load(gguf: &Gguf, threads: usize) -> Result<Self, String> {
+    pub fn load(gguf: &Gguf, be: Rc<Backend>) -> Result<Self, String> {
         Ok(CondNets {
-            tok: Weights::load(gguf, "tokenizer.")?,
-            cam: Weights::load(gguf, "speaker_encoder.")?,
-            py: Weights::load(gguf, "pyannote.")?,
+            tok: Weights::load(gguf, "tokenizer.", &be)?,
+            cam: Weights::load(gguf, "speaker_encoder.", &be)?,
+            py: Weights::load(gguf, "pyannote.", &be)?,
             mel_filters: f32s(gguf.tensor("tokenizer._mel_filters")?.1),
-            threads,
+            be,
             plant: Plant::None,
         })
     }
@@ -159,7 +162,7 @@ impl CondNets {
     pub fn s3_tokens(&self, wav16: &[f32]) -> Result<Vec<u32>, String> {
         let mel = refdsp::whisper_mel(wav16, &self.mel_filters);
         let t = mel.len() / 128;
-        let mut gr = Graph::new(self.threads)?;
+        let mut gr = Graph::new(&self.be)?;
         let b = B {
             o: Ops {
                 ctx: gr.ctx,
@@ -250,7 +253,7 @@ impl CondNets {
             }
         }
         let off = self.plant == Plant::NoBatchNorm;
-        let mut gr = Graph::new(self.threads)?;
+        let mut gr = Graph::new(&self.be)?;
         let b = B {
             o: Ops {
                 ctx: gr.ctx,
@@ -376,7 +379,7 @@ impl CondNets {
             .map(|&v| ((f64::from(v) - mean) / (var + 1e-5).sqrt() * w0 + b0) as f32)
             .collect();
         let filters = self.sinc_filters()?;
-        let mut gr = Graph::new(self.threads)?;
+        let mut gr = Graph::new(&self.be)?;
         let b = B {
             o: Ops {
                 ctx: gr.ctx,

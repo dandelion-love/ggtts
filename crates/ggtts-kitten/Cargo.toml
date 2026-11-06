@@ -22,6 +22,8 @@ default = []
 # The ggml graph (the model, the session, the parity check and rendering). Off by default, like ggtts-ggml-sys's
 # own feature, so the default workspace build needs neither the ggml submodule nor a C toolchain.
 ggml = ["dep:ggtts-ggml-sys", "ggtts-ggml-sys/ggml"]
+# The same, with ggml built (or linked from GGML_LIB_DIR) with CUDA, for `--device cuda`.
+cuda = ["ggml", "ggtts-ggml-sys/cuda"]
 
 [dependencies]
 ggtts-core.workspace = true

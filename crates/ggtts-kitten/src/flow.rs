@@ -10,6 +10,9 @@
 
 use ggtts_ggml_sys as g;
 
+use std::rc::Rc;
+
+use crate::backend::Backend;
 use crate::gguf::Gguf;
 use crate::hift::{Graph, Ops, Weights};
 
@@ -22,7 +25,7 @@ const HEAD_DIM: i64 = 64;
 
 pub struct Flow {
     w: Weights,
-    pub threads: usize,
+    pub be: Rc<Backend>,
     /// `flow.input_embedding.weight`, `[6561, 512]` row-major, for the host-side lookup.
     tok_emb: Vec<f32>,
     /// `flow.spk_embed_affine_layer`: `[80, 192]` and `[80]`.
@@ -222,11 +225,11 @@ impl B<'_> {
 }
 
 impl Flow {
-    pub fn load(gguf: &Gguf, threads: usize) -> Result<Self, String> {
-        let w = Weights::load(gguf, "flow.")?;
+    pub fn load(gguf: &Gguf, be: Rc<Backend>) -> Result<Self, String> {
+        let w = Weights::load(gguf, "flow.", &be)?;
         Ok(Flow {
             w,
-            threads,
+            be,
             tok_emb: f32s(gguf.tensor("flow.input_embedding.weight")?.1),
             spk_w: f32s(gguf.tensor("flow.spk_embed_affine_layer.weight")?.1),
             spk_b: f32s(gguf.tensor("flow.spk_embed_affine_layer.bias")?.1),
@@ -262,7 +265,7 @@ impl Flow {
             }
             emb.extend_from_slice(&self.tok_emb[t * 512..(t + 1) * 512]);
         }
-        let mut gr = Graph::new(self.threads)?;
+        let mut gr = Graph::new(&self.be)?;
         let b = B {
             o: Ops {
                 ctx: gr.ctx,
@@ -317,7 +320,7 @@ impl Flow {
     /// (x, mu, spks, cond), returns `dx/dt` as `[T, 80]` channel-major.
     pub fn estimate(&self, inp: &[f32], t_len: usize, t: f32, r: f32) -> Result<Vec<f32>, String> {
         let p = "flow.decoder.estimator";
-        let mut gr = Graph::new(self.threads)?;
+        let mut gr = Graph::new(&self.be)?;
         let b = B {
             o: Ops {
                 ctx: gr.ctx,

@@ -13,6 +13,7 @@ use std::process::Command;
 use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm, Stop};
 use ggtts_core::profile::Profile;
 
+use crate::backend::{Backend, Device};
 use crate::dsp::{self, Noise};
 use crate::flow::{Flow, FlowRef};
 use crate::gguf::Value;
@@ -249,19 +250,20 @@ impl PyDecoder {
 impl KittenEngine {
     /// Everything from files, for `ggtts-render`: the LM GGUF (with its tokenizer embedded by the converter), the
     /// S3Gen GGUF, and a reference JSON (`ggtts-kitten prepare`). Ternary weights, the ggml decoder.
-    pub fn open(lm: &Path, s3gen: &Path, reference: &Path, threads: usize) -> Result<Self, String> {
+    pub fn open(lm: &Path, s3gen: &Path, reference: &Path, threads: usize, device: Device) -> Result<Self, String> {
+        let be = Backend::new(device, threads)?;
         let g = crate::gguf::Gguf::open(lm)?;
         let json =
             g.kv.get("kitten.tokenizer.json")
                 .and_then(Value::as_str)
                 .ok_or("this GGUF has no embedded tokenizer: re-convert it with ggtts-kitten-convert")?;
         let tok = Tokenizer::from_json(json)?;
-        let model = Model::load(&g, crate::model::Weights::Ternary)?;
+        let model = Model::load(&g, crate::model::Weights::Ternary, be.clone())?;
         drop(g);
         let s3 = crate::gguf::Gguf::open(s3gen)?;
         let decoder = Decoder::Ggml(Box::new(GgmlDecoder {
-            flow: Flow::load(&s3, threads)?,
-            hift: Hift::load(&s3, threads)?,
+            flow: Flow::load(&s3, be.clone())?,
+            hift: Hift::load(&s3, be.clone())?,
         }));
         let reference = Reference::open(reference)?;
         KittenEngine::new(model, tok, reference, decoder, threads)
@@ -371,7 +373,7 @@ impl KittenEngine {
         let mut embd = Vec::with_capacity(prompt.len() * n);
         self.model.embed_tokens(&prompt, &mut embd);
         embd[..n].copy_from_slice(&self.speaker);
-        let mut sess = Session::new(&self.model, prompt.len() + self.max_new_tokens + 1, self.threads)?;
+        let mut sess = Session::new(&self.model, prompt.len() + self.max_new_tokens + 1)?;
         let t0 = std::time::Instant::now();
         let mut out = sess.forward(&embd, 1, false)?;
         let prefill_s = t0.elapsed().as_secs_f64();

@@ -7,6 +7,8 @@
 //! * [`ternary`]: Kitten's ternary rule and its `TQ2_0` storage on zero-padded 128-weight groups.
 
 #[cfg(feature = "ggml")]
+pub mod backend;
+#[cfg(feature = "ggml")]
 pub mod condnet;
 pub mod convert;
 pub mod dsp;

@@ -1,11 +1,12 @@
 //! ggtts-render: text in, FLAC out.
 //!
 //! ```text
-//! ggtts-render --model M.gguf [--codec C.gguf] --out x.flac [--engine auto|qwen3-tts|fake] [--threads N]
-//!              [--device cpu|cuda] [--trace trace.jsonl] [--stream FILE|- [--stream-format wav|s16le]]
-//!              (--text "..." [--seed S] | --story story.txt)
+//! ggtts-render --model M.gguf [--codec C.gguf] --out x.flac [--engine auto|qwen3-tts|kitten-tts-2|fake]
+//!              [--threads N] [--device cpu|cuda] [--trace trace.jsonl] [--voice REF.json]
+//!              [--stream FILE|- [--stream-format wav|s16le]] (--text "..." [--seed S] | --story story.txt)
 //! ```
 //!
+//! `--voice` is a reference voice for an engine that clones one; an engine that does not ignores it.
 //! `--engine auto` (the default) picks the engine from the model's `general.architecture`. `--text` renders one
 //! request at one seed (default 20260905). `--story` reads a story file (title line, then one paragraph per line)
 //! and renders it on the core's story path. `--trace` writes the engine's per-step stop probabilities as JSON
@@ -36,9 +37,9 @@ use ggtts_core::trace::NullEvents;
 mod gguf_arch;
 
 const BINARY: &str = "ggtts-render";
-const USAGE: &str = "usage: ggtts-render --model M.gguf [--codec C.gguf] --out x.flac [--engine auto|qwen3-tts|fake] \
-[--threads N] [--device cpu|cuda] [--trace FILE] [--stream FILE|- [--stream-format wav|s16le]] \
-(--text TEXT [--seed S] | --story FILE)\n       ggtts-render --version";
+const USAGE: &str = "usage: ggtts-render --model M.gguf [--codec C.gguf] --out x.flac \
+[--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N] [--device cpu|cuda] [--trace FILE] [--voice REF] \
+[--stream FILE|- [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE)\n       ggtts-render --version";
 
 #[derive(Default)]
 struct Args {
@@ -52,6 +53,8 @@ struct Args {
     threads: Option<i32>,
     device: Option<String>,
     trace: Option<PathBuf>,
+    /// A reference voice, for engines that clone one (kitten-tts-2: a `ggtts-kitten prepare` JSON). Others ignore it.
+    voice: Option<PathBuf>,
     stream: Option<String>,
     stream_format: Option<String>,
 }
@@ -71,6 +74,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--seed" => a.seed = Some(value()?.parse().map_err(|_| "--seed needs an integer")?),
             "--device" => a.device = Some(value()?),
             "--trace" => a.trace = Some(value()?.into()),
+            "--voice" => a.voice = Some(value()?.into()),
             "--stream" => a.stream = Some(value()?),
             "--stream-format" => a.stream_format = Some(value()?),
             "--threads" | "-j" => a.threads = Some(value()?.parse().map_err(|_| "--threads needs an integer")?),
@@ -99,9 +103,27 @@ fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, St
                 .map(|e| Box::new(e) as Box<dyn Engine>)
                 .map_err(|e| e.to_string())
         }
+        // Kitten-TTS 2: --model is the LM GGUF, --codec the S3Gen GGUF, --voice the reference (`ggtts-kitten prepare`).
+        #[cfg(feature = "ggml")]
+        "kitten-tts-2" => {
+            let codec = a
+                .codec
+                .as_ref()
+                .ok_or("the kitten-tts-2 engine needs --codec (the S3Gen GGUF)")?;
+            let voice = a
+                .voice
+                .as_ref()
+                .ok_or("the kitten-tts-2 engine needs --voice, a ggtts-kitten prepare JSON")?;
+            let device = match a.device.as_deref().unwrap_or("cpu") {
+                "cuda" => ggtts_kitten::backend::Device::Cuda,
+                _ => ggtts_kitten::backend::Device::Cpu,
+            };
+            ggtts_kitten::engine::KittenEngine::open(model, codec, voice, threads as usize, device)
+                .map(|e| Box::new(e) as Box<dyn Engine>)
+        }
         #[cfg(not(feature = "ggml"))]
-        "qwen3-tts" => {
-            let _ = (threads, model);
+        "qwen3-tts" | "kitten-tts-2" => {
+            let _ = (threads, model, &a.voice);
             Err("this build has no engines: rebuild with --features ggml".into())
         }
         "fake" => Ok(Box::new(ggtts_fake::FakeEngine::default())),

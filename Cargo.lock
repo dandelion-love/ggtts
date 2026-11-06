@@ -155,6 +155,7 @@ dependencies = [
  "claxon",
  "ggtts-core",
  "ggtts-fake",
+ "ggtts-kitten",
  "ggtts-qwen3-tts",
  "serde_json",
 ]
@@ -185,6 +186,15 @@ version = "0.0.1"
 dependencies = [
  "bindgen",
  "cmake",
+]
+
+[[package]]
+name = "ggtts-kitten"
+version = "0.0.1"
+dependencies = [
+ "ggtts-core",
+ "ggtts-ggml-sys",
+ "serde_json",
 ]
 
 [[package]]

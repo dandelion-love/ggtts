@@ -439,6 +439,32 @@ Predictions for the next probe:
 * With `GGML_CUDA_DISABLE_FUSION=0` (a diagnostic), it fails or errors, naming a layer.
 * Two renders run, stop on their own and are byte-identical.
 
+**The probe at `cd2f62f`, and a third kernel (2026-11-06).** Most of it passed:
+* the f32 single-token check;
+* the CUDA render, byte-identical twice (sha256 `a890c708...`), so the generation path runs;
+* everything that passed before.
+
+The ternary single-token check failed in its **batched** half. A 16-token forward gave 316,482 of 2,531,856 logits
+non-finite, the first non-finite hidden state being after layer 28 of 28. That happened with the fusions on and off,
+so the fused add is not its cause. It also means the fusions-on control never reached a single-token step, so it says
+nothing about the fused add either.
+
+The cause, read from ggml: a product of 2 to 16 columns goes to the small-batch `mmf` kernel
+(`ggml-cuda/mmf.cu:176`, chosen at `ggml-cuda/ggml-cuda.cu:1758`). That kernel takes an f16 matrix on sm_86
+(`mmf.cu:184-185`) and converts the f32 activations to f16 (`ggml-cuda/mmf.cuh:202-203`). It never reads the
+product's precision, so `GGML_PREC_F32` cannot help. Only the last layer overflowing fits large activations there.
+
+Real renders never send 2 to 16 tokens at once: a prompt is hundreds of tokens and generation is one at a time.
+But a forward of any width should not produce infinities. So on CUDA the f16 ternary products of 2 to 16 columns
+are now padded with zero columns to 17. That sends them to cuBLAS at f32 precision, and only the real columns are
+kept (`CUDA_MMF_MAX_COLS` in `model.rs`). It costs at most 17 columns of work for a short batch.
+
+Predictions for the probe after this change:
+* Both single-token checks pass on CUDA.
+* The fusions-on control now reaches the single-token steps. Whether it fails tells whether the fused add was the
+  render's NaN or a bystander.
+* The renders stay byte-identical, and their hash is unchanged, because they never take the padded path.
+
 ## Layout
 
 | Path | What |

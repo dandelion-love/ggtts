@@ -317,6 +317,14 @@ impl Model {
     }
 }
 
+/// The widest product ggml's CUDA backend sends to its small-batch `mmf` kernel (`ggml/src/ggml-cuda/mmf.cu:176`),
+/// which takes an f16 matrix on sm_70 and later (`mmf.cu:184-185`, chosen at `ggml-cuda.cu:1758`). That kernel
+/// converts the f32 activations to f16 (`ggml-cuda/mmf.cuh:202-203`) whatever precision the product asks for, so a
+/// large activation overflows to infinity: a 16-token batch through the f16 ternary matrices gave non-finite
+/// output after the last layer. One column goes to the f32 mat-vec kernel (`mmvf`) and more than this many to
+/// cuBLAS, both of which honour `GGML_PREC_F32`; so a product of 2 to 16 columns is padded to one more than this.
+const CUDA_MMF_MAX_COLS: i64 = 16;
+
 /// What [`Session::step_check`] measured.
 #[derive(Debug, Clone, Copy)]
 pub struct StepCheck {
@@ -466,6 +474,13 @@ impl<'m> Session<'m> {
                     let xp = g::ggml_pad(ctx, x3, GROUP as i32, 0, 0, 0);
                     let x2 = g::ggml_reshape_2d(ctx, xp, 2 * n_in, ti);
                     g::ggml_mul_mat(ctx, w, x2)
+                } else if f32_prec && (2..=CUDA_MMF_MAX_COLS).contains(&ti) {
+                    // Pad to one column past ggml's f16 small-batch kernel, which ignores the precision and
+                    // rounds the activations to f16 (see CUDA_MMF_MAX_COLS), then keep the real columns.
+                    let xp = g::ggml_pad(ctx, x, 0, (CUDA_MMF_MAX_COLS + 1 - ti) as i32, 0, 0);
+                    let y = g::ggml_mul_mat(ctx, w, xp);
+                    g::ggml_mul_mat_set_prec(y, g::GGML_PREC_F32);
+                    return g::ggml_view_2d(ctx, y, (*y).ne[0], ti, (*y).nb[1], 0);
                 } else {
                     g::ggml_mul_mat(ctx, w, x)
                 };

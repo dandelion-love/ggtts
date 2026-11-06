@@ -5,7 +5,8 @@
 //! * The planted `FrameHookDraw` (the hook draws once from the sampler's stream) is red with a hook, and quiet
 //!   without one: the check sees a hook that is not quiet.
 //! * `Qwen3Tts::render_streamed` at `every = 12, hold = 32`: the concatenated samples are bit-identical to the batch
-//!   decode of the same codes, and the first samples arrive before the talker has finished.
+//!   decode of the same codes, the first samples arrive before the talker has finished, and the stop-probability
+//!   trace it writes is byte-identical to the one `generate` writes for the same request.
 //!
 //! The hook's own check needs the test-only `plant` feature.
 //!
@@ -15,11 +16,12 @@
 
 use std::path::{Path, PathBuf};
 
-use ggtts_core::engine::ChunkRequest;
+use ggtts_core::engine::{ChunkRequest, Engine};
 use ggtts_core::stream::first_sample_diff;
 use ggtts_qwen3_tts::codec::Decoder;
 use ggtts_qwen3_tts::engine::{Qwen3Tts, Voice};
 use ggtts_qwen3_tts::fixtures::Golden;
+use ggtts_qwen3_tts::stream::{DEFAULT_EVERY, DEFAULT_HOLD};
 #[cfg(feature = "plant")]
 use ggtts_qwen3_tts::talker::{language_id, Plant, Sampling, Talker};
 
@@ -92,13 +94,17 @@ fn frame_level_streaming_end_to_end_is_the_batch_decode() {
     let mut batch = Decoder::load(&codec, 4).unwrap();
     let mut failures = Vec::new();
     for gold in &goldens() {
-        let voice = Voice {
+        let scratch = std::env::temp_dir().join(format!("ggtts-frame-hook-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let (streamed_trace, batch_trace) = (scratch.join("streamed.jsonl"), scratch.join("batch.jsonl"));
+        let voice = |trace: &Path| Voice {
             speaker: gold.speaker.clone(),
             language: gold.language.clone(),
             max_frames: gold.max_tokens as i32,
+            trace: Some(trace.to_path_buf()),
             ..Default::default()
         };
-        let mut engine = Qwen3Tts::load(&talker, &codec, 4, voice).unwrap();
+        let mut engine = Qwen3Tts::load(&talker, &codec, 4, voice(&streamed_trace)).unwrap();
         let req = ChunkRequest {
             text: &gold.text,
             seed: gold.seed,
@@ -108,26 +114,41 @@ fn frame_level_streaming_end_to_end_is_the_batch_decode() {
         let mut stream = Vec::new();
         let mut first_at = None;
         let g = engine
-            .render_streamed(&req, 12, 32, &mut |s, frames| {
+            .render_streamed(&req, DEFAULT_EVERY, DEFAULT_HOLD, &mut |s, frames| {
                 first_at.get_or_insert(frames);
                 stream.extend_from_slice(s);
             })
             .unwrap();
         let codes: Vec<i32> = g.codes.frames.iter().map(|&c| i32::from(c)).collect();
+        // The trace: render_streamed writes the same lines generate does.
+        drop(engine);
+        let mut batch_engine = Qwen3Tts::load(&talker, &codec, 4, voice(&batch_trace)).unwrap();
+        batch_engine.generate(&req).unwrap();
+        drop(batch_engine);
+        let (st, bt) = (
+            std::fs::read(&streamed_trace).unwrap(),
+            std::fs::read(&batch_trace).unwrap(),
+        );
+        let traced = !st.is_empty() && st == bt;
         let want = batch.decode(&codes).unwrap().samples;
         let diff = first_sample_diff(&stream, &want);
         let n = g.codes.n_frames();
         let early = first_at.is_some_and(|f| f < n);
         println!(
-            "{:<14} {n} frames: stream {} the batch decode; first audio after {} of {n} frames",
+            "{:<14} {n} frames: stream {} the batch decode; first audio after {} of {n} frames; trace {}",
             gold.name,
             match diff {
                 None => "IDENTICAL to".to_string(),
                 Some(i) => format!("DIFFERS at sample {i} from"),
             },
             first_at.map_or("-".to_string(), |f| f.to_string()),
+            if traced {
+                "identical to generate's"
+            } else {
+                "DIFFERS from generate's (or is empty)"
+            },
         );
-        if codes != gold.codes || diff.is_some() || (n > 44 && !early) {
+        if codes != gold.codes || diff.is_some() || (n > 44 && !early) || !traced {
             failures.push(gold.name.clone());
         }
     }

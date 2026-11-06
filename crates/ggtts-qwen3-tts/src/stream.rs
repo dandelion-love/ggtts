@@ -10,22 +10,35 @@
 //! convs stack to a receptive field of about 45 s, longer than any story chunk. A shorter context would change
 //! the samples.
 //!
-//! Why a hold-back: in floating point the prefix decode is not guaranteed identical for its last frames, because
-//! ggml's softmax and key-value dot products reduce over `e` keys instead of the full length, in aligned blocks.
-//! Frames at least one block (32) behind the decode end reduce identically. Measured on the 8 CPU fixtures
-//! (`tests/stream_identity.rs`): at `hold = 32` the stream is bit-identical to the batch decode at every `every`
-//! tried; at `hold = 0` the newest frames of a prefix differ by up to 458 LSB at 16 bits, so `hold = 0` is earlier
-//! but not exact. The last call, [`finish`](IncrementalDecoder::finish), decodes the whole utterance, so the tail is
-//! always exact.
+//! Why a hold-back: in floating point the prefix decode is not identical to the batch decode for its newest frames.
+//! The expected reason was that ggml's softmax and key-value dot products reduce over `e` keys instead of the full
+//! length, in aligned blocks of up to 32, so frames one block behind the decode end would reduce identically. The
+//! measurement does not pin that down (`tests/stream_identity.rs`, `records/stream-timing-cpu.log`, the 8 CPU
+//! fixtures, 38 to 144 frames):
 //!
-//! The cost: every step re-decodes the prefix. At `every = 12, hold = 32` the decoder did 3 to 7 times the batch
-//! decode's work on CPU over the fixtures.
+//! | hold | result |
+//! |---|---|
+//! | 32 | bit-identical on 8 of 8, at `every` = 1, 4 and 12 |
+//! | 31 | bit-identical on 8 of 8 (`every` = 12) |
+//! | 16 | differs on 3 of 8: 1, 3 and 206 LSB at 16 bits |
+//! | 0 | differs on 8 of 8, up to 458 LSB |
+//!
+//! So the exact threshold on these fixtures lies between 17 and 31, and 32 is a margin above it, not a measured
+//! boundary. Nothing longer than 144 frames has been measured. The last call, [`finish`](IncrementalDecoder::finish),
+//! decodes the whole utterance, so the tail is always exact.
+//!
+//! The cost: every step re-decodes the prefix from frame 0, so the work grows with the square of the utterance's
+//! length. A story chunk is bounded by the profile's ceiling (45 characters, at most about 150 frames on the
+//! fixtures), so the cost is bounded in practice: at `every = 12, hold = 32` the decoder did 3 to 7 times the batch
+//! decode's work on CPU over the fixtures (`records/stream-timing-cpu.log`). An utterance much longer than a
+//! chunk should not be streamed this way.
 
 use ggtts_core::engine::EngineError;
 
 use crate::codec::Decoder;
 
-/// Frames from the decode end that are held back by default: one 32-wide reduction block.
+/// Frames from the decode end that are held back by default: exact on every fixture measured (31 was too, 16 was
+/// not), with a margin above the measured threshold.
 pub const DEFAULT_HOLD: usize = 32;
 /// Frames between decodes by default: about a second at 12.5 frames per second.
 pub const DEFAULT_EVERY: usize = 12;

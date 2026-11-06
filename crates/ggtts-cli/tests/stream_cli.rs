@@ -50,7 +50,10 @@ fn reference(path: &Path) -> (Vec<f32>, Vec<f32>, u32, Option<f64>) {
         &chunks,
         &RenderOptions::for_profile(&profile),
         &mut NullEvents,
-        &mut |p| pieces.extend_from_slice(p.samples),
+        &mut |p| {
+            pieces.extend_from_slice(p.samples);
+            Ok(())
+        },
     )
     .unwrap();
     (pieces, read.samples, read.sample_rate, read.gain)

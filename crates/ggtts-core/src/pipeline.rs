@@ -92,6 +92,8 @@ pub enum RenderError {
     /// The plan has no chunks.
     Empty,
     Engine(EngineError),
+    /// The stream sink refused a piece (for example, its writer failed). The render stops there.
+    Sink(String),
 }
 
 impl std::fmt::Display for RenderError {
@@ -99,6 +101,7 @@ impl std::fmt::Display for RenderError {
         match self {
             RenderError::Empty => write!(f, "the story has no chunk to render"),
             RenderError::Engine(e) => write!(f, "engine: {e}"),
+            RenderError::Sink(e) => write!(f, "stream: {e}"),
         }
     }
 }
@@ -134,7 +137,7 @@ pub fn render_story_traced(
     opts: &RenderOptions,
     events: &mut dyn Events,
 ) -> Result<Read, RenderError> {
-    render_story_streamed(engine, story_id, chunks, opts, events, &mut |_| {})
+    render_story_streamed(engine, story_id, chunks, opts, events, &mut |_| Ok(()))
 }
 
 /// One piece of a streamed read: a kept chunk, trimmed, followed by the gap after it (none after the last).
@@ -154,14 +157,16 @@ pub struct StreamPiece<'a> {
 }
 
 /// [`render_story_traced`], handing each [`StreamPiece`] to `sink` as soon as its chunk is kept, before the next
-/// chunk is generated. The read it returns is the batch read: identical with any sink.
+/// chunk is generated. The read it returns is the batch read: identical with any sink that accepts every piece.
+/// A sink that returns an error stops the render before the next chunk is generated, as
+/// [`RenderError::Sink`]: a stream nobody can receive is not worth the rest of the generation.
 pub fn render_story_streamed(
     engine: &mut dyn Engine,
     story_id: &str,
     chunks: &[PlannedChunk],
     opts: &RenderOptions,
     events: &mut dyn Events,
-    sink: &mut dyn FnMut(StreamPiece<'_>),
+    sink: &mut dyn FnMut(StreamPiece<'_>) -> Result<(), String>,
 ) -> Result<Read, RenderError> {
     let tracing = events.level() > 0;
     let mut total_frames: u64 = 0;
@@ -247,7 +252,8 @@ pub fn render_story_streamed(
             start,
             samples: &samples[start..],
             sample_rate,
-        });
+        })
+        .map_err(RenderError::Sink)?;
         if tracing {
             events.emit(Event::Emit {
                 chunk: i as u32,

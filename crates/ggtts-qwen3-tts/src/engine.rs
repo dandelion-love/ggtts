@@ -93,6 +93,20 @@ impl Qwen3Tts {
     }
 }
 
+/// One JSON line per talker step for `req`, as `Voice.trace` documents.
+fn write_steps(w: &mut BufWriter<File>, req: &ChunkRequest<'_>, steps: &[FrameStop]) -> Result<(), EngineError> {
+    for s in steps {
+        writeln!(
+            w,
+            "{{\"chunk\":{},\"draw\":{},\"seed\":{},\"frame\":{},\"token\":{},\"p_stop\":{:e}}}",
+            req.chunk, req.draw, req.seed, s.frame, s.token, s.p_stop
+        )
+        .and_then(|_| w.flush())
+        .map_err(|e| EngineError(format!("trace: {e}")))?;
+    }
+    Ok(())
+}
+
 impl Qwen3Tts {
     /// Render one request with frame-level streaming: the talker hands each frame to an [`IncrementalDecoder`]
     /// as it is generated, and `sink` gets each batch of ready samples with the number of frames generated so far.
@@ -111,8 +125,10 @@ impl Qwen3Tts {
             decoder,
             voice,
             language_id,
+            trace,
             ..
         } = self;
+        let mut steps: Vec<FrameStop> = Vec::new();
         let mut inc = IncrementalDecoder::new(decoder, every, hold);
         let mut failed: Option<EngineError> = None;
         let mut frames = 0usize;
@@ -134,9 +150,12 @@ impl Qwen3Tts {
             req.seed,
             voice.max_frames,
             voice.sampling,
-            None,
+            trace.as_ref().map(|_| &mut steps),
             Some(&mut hook),
         )?;
+        if let Some(w) = trace.as_mut() {
+            write_steps(w, req, &steps)?;
+        }
         if let Some(e) = failed {
             return Err(e);
         }
@@ -177,15 +196,7 @@ impl Engine for Qwen3Tts {
             self.trace.as_ref().map(|_| &mut steps),
         )?;
         if let Some(w) = self.trace.as_mut() {
-            for s in &steps {
-                writeln!(
-                    w,
-                    "{{\"chunk\":{},\"draw\":{},\"seed\":{},\"frame\":{},\"token\":{},\"p_stop\":{:e}}}",
-                    req.chunk, req.draw, req.seed, s.frame, s.token, s.p_stop
-                )
-                .and_then(|_| w.flush())
-                .map_err(|e| EngineError(format!("trace: {e}")))?;
-            }
+            write_steps(w, req, &steps)?;
         }
         let frames = g
             .codes

@@ -10,6 +10,10 @@
 //! * the planted `Context::NewFramesOnly`, which drops the left context at every seam, is not identical: **red** on
 //!   every fixture, at the first seam. Asserted.
 //!
+//! Holds 31 and 16 are controls, reported and not asserted. Measured 2026-11-06: hold 31 is bit-identical on 8 of 8,
+//! hold 16 differs on 3 of 8 (1, 3 and 206 LSB). So 32 is not the boundary, only enough with a margin on these
+//! fixtures, which run 38 to 144 frames. Nothing longer has been measured.
+//!
 //! `every = 1` re-decodes the prefix once per frame and took 36 minutes over the fixtures; it runs only with
 //! `GGTTS_STREAM_EVERY_1=1`.
 //!
@@ -31,7 +35,7 @@ use ggtts_core::stream::first_sample_diff;
 use ggtts_qwen3_tts::codec::Decoder;
 use ggtts_qwen3_tts::cpu::Device;
 use ggtts_qwen3_tts::fixtures::Golden;
-use ggtts_qwen3_tts::stream::{stream_codes, Context};
+use ggtts_qwen3_tts::stream::{stream_codes, Context, DEFAULT_EVERY, DEFAULT_HOLD};
 
 fn max_lsb(a: &[f32], b: &[f32]) -> i32 {
     a.iter()
@@ -63,8 +67,11 @@ fn the_stream_matches_the_batch_decode_as_declared() {
             runs.push((1, 32, Context::Prefix));
         }
         runs.extend([
-            (4, 32, Context::Prefix),
-            (12, 32, Context::Prefix),
+            (4, DEFAULT_HOLD, Context::Prefix),
+            (DEFAULT_EVERY, DEFAULT_HOLD, Context::Prefix),
+            // Controls on the hold, reported only: is 32 the boundary, or merely enough on these fixtures?
+            (DEFAULT_EVERY, 31, Context::Prefix),
+            (DEFAULT_EVERY, 16, Context::Prefix),
             (4, 0, Context::Prefix),
             (12, 0, Context::Prefix),
             (n, 0, Context::Prefix),

@@ -14,7 +14,7 @@ use common::{cases, Case};
 use ggtts_core::audio::trim_edges_f32;
 use ggtts_core::engine::Engine;
 use ggtts_core::flac::to_i16;
-use ggtts_core::pipeline::{gap_samples, level, render_story, render_story_streamed, Read};
+use ggtts_core::pipeline::{gap_samples, level, render_story, render_story_streamed, Read, RenderError};
 use ggtts_core::stream::{first_sample_diff, raw_header, Container, StreamWriter, UNKNOWN_LENGTH};
 use ggtts_core::trace::{NullEvents, Recorder};
 use ggtts_fake::FakeEngine;
@@ -31,7 +31,8 @@ fn stream(case: &Case) -> Streamed {
     let opts = case.opts(&engine);
     let mut pieces = Vec::new();
     let read = render_story_streamed(&mut engine, &case.story_id, &chunks, &opts, &mut NullEvents, &mut |p| {
-        pieces.push((p.chunk, p.start, p.samples.to_vec(), p.sample_rate))
+        pieces.push((p.chunk, p.start, p.samples.to_vec(), p.sample_rate));
+        Ok(())
     })
     .unwrap();
     Streamed { pieces, read, engine }
@@ -127,7 +128,7 @@ fn each_piece_arrives_before_the_next_chunk_is_generated() {
         let chunks = case.chunks(&engine);
         let opts = case.opts(&engine);
         let mut rec = Recorder::new(1);
-        render_story_streamed(&mut engine, &case.story_id, &chunks, &opts, &mut rec, &mut |_| {}).unwrap();
+        render_story_streamed(&mut engine, &case.story_id, &chunks, &opts, &mut rec, &mut |_| Ok(())).unwrap();
         let order: Vec<(String, u64)> = rec
             .lines
             .iter()
@@ -285,9 +286,38 @@ fn a_reader_plays_the_stream_as_it_arrives() {
                 assert_eq!(rate, p.sample_rate);
                 assert_eq!(got, seen, "{}: the stream so far", case.id);
                 reads += 1;
+                Ok(())
             })
             .unwrap();
             assert_eq!(reads, chunks.len());
         }
     }
+}
+
+#[test]
+fn a_failing_sink_stops_the_render_before_the_next_chunk() {
+    let case = cases()
+        .into_iter()
+        .find(|c| c.paragraphs.join("").chars().count() > 40)
+        .unwrap();
+    let mut engine = case.engine();
+    let chunks = case.chunks(&engine);
+    assert!(chunks.len() >= 2, "{}: needs two chunks", case.id);
+    let opts = case.opts(&engine);
+    let mut handed = 0;
+    let got = render_story_streamed(
+        &mut engine,
+        &case.story_id,
+        &chunks,
+        &opts,
+        &mut NullEvents,
+        &mut |_| {
+            handed += 1;
+            Err("the reader went away".into())
+        },
+    );
+    assert!(matches!(got, Err(RenderError::Sink(_))), "a refused piece is an error");
+    assert_eq!(handed, 1, "no piece after the refused one");
+    let generated: std::collections::HashSet<&str> = engine.calls.iter().map(|c| c.text.as_str()).collect();
+    assert_eq!(generated.len(), 1, "{}: only the first chunk was generated", case.id);
 }

@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# Streaming timings on one device: time to first audio and real-time factor for the chunk-level story stream, and the
-# frame-level decoder's cost against the batch decode. CPU by default; DEVICE=cuda for the GPU.
+# Streaming timings on one device: time to first audio and real-time factor for the chunk-level story stream, and,
+# for Qwen3-TTS, the frame-level decoder's cost against the batch decode. CPU by default; DEVICE=cuda for the GPU.
 #
-#   TALKER=<talker.gguf> CODEC=<codec.gguf> WORK=<scratch dir> [DEVICE=cuda] scripts/stream_probe.sh
+#   TALKER=<model.gguf> CODEC=<codec.gguf> WORK=<scratch dir> [DEVICE=cuda] scripts/stream_probe.sh
+#   ENGINE=kitten-tts-2 TALKER=<lm.gguf> CODEC=<s3gen.gguf> VOICE=<voice.json> WORK=<dir> scripts/stream_probe.sh
+#
+# ENGINE is qwen3-tts (the default) or kitten-tts-2. For Kitten, VOICE (a prepared reference voice) is required, the
+# story defaults to ../ggtts-kitten/fixtures/story/lighthouse.txt, and the frame-level step is skipped: Kitten
+# streams at chunk level only.
 #
 # Optional: THREADS (4), CUDA_HOME (/usr/local/cuda), GGML_CUDA_ARCH (86), CARGO_TARGET_DIR (WORK/target),
 # NICE ("nice -n 19"), GPU_WAIT_FILE (wait while this file exists, before any GPU work), STORY (the committed
@@ -19,7 +24,19 @@ root=$(cd "$here/../.." && pwd)
 device=${DEVICE:-cpu}
 threads=${THREADS:-4}
 nice=${NICE:-nice -n 19}
-story=${STORY:-$here/fixtures/story/outing.txt}
+engine=${ENGINE:-qwen3-tts}
+case $engine in
+  qwen3-tts)
+    story=${STORY:-$here/fixtures/story/outing.txt}
+    voice_args=()
+    ;;
+  kitten-tts-2)
+    : "${VOICE:?kitten-tts-2 needs VOICE, a prepared reference voice}"
+    story=${STORY:-$root/crates/ggtts-kitten/fixtures/story/lighthouse.txt}
+    voice_args=(--voice "$VOICE")
+    ;;
+  *) echo "ENGINE must be qwen3-tts or kitten-tts-2, not $engine" >&2; exit 2 ;;
+esac
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$WORK/target}
 case $device in
   cpu) features=ggml ;;
@@ -51,11 +68,12 @@ sha256sum "$TALKER" "$CODEC" | awk '{print "model: " substr($1, 1, 16) "  " $2}'
 render() { # name extra-args...
   local name=$1
   shift
-  /usr/bin/time -f "%e" -o "$WORK/$name.wall" $nice "$bin" --model "$TALKER" --codec "$CODEC" -j "$threads" \
-    --device "$device" --story "$story" --out "$WORK/$name.flac" "$@" 2> "$WORK/$name.log"
+  /usr/bin/time -f "%e" -o "$WORK/$name.wall" $nice "$bin" --engine "$engine" --model "$TALKER" --codec "$CODEC" \
+    -j "$threads" --device "$device" "${voice_args[@]}" --story "$story" --out "$WORK/$name.flac" "$@" \
+    2> "$WORK/$name.log"
 }
 
-echo "== story, chunk-level stream ($story)"
+echo "== $engine on $device: story, chunk-level stream ($story)"
 render batch || { echo "batch render failed: $WORK/batch.log"; exit 1; }
 render stream --stream "$WORK/stream.wav" || { echo "stream render failed: $WORK/stream.log"; exit 1; }
 python3 - "$WORK" <<'PY' || status=1
@@ -83,6 +101,10 @@ else
 fi
 grep -h "level gain" "$WORK/stream.log" | sed 's/^/  /'
 
+if [ "$engine" != qwen3-tts ]; then
+  echo "stream probe ($engine, $device): exit $status (logs in $WORK)"
+  exit $status
+fi
 echo "== frame-level decoder on $device (tests/stream_identity.rs)"
 (cd "$root" && GGTTS_DEVICE=$device GGTTS_CODEC=$CODEC $nice cargo test -j 4 --release --locked -p ggtts-qwen3-tts \
   --features "$features plant" --test stream_identity -- --ignored --nocapture) > "$WORK/frame.log" 2>&1 || status=1

@@ -197,7 +197,6 @@ fn render(a: Args) -> Result<(), String> {
             let (title, paragraphs) = read_text(&contents);
             let profile = *engine.profile();
             let chunks = plan_story(&profile, &paragraphs);
-            let mut stream_error = None;
             let mut first_audio_ms = None;
             let read = render_story_streamed(
                 engine.as_mut(),
@@ -208,16 +207,13 @@ fn render(a: Args) -> Result<(), String> {
                 &mut |p| {
                     if let Some(w) = stream.as_mut() {
                         first_audio_ms.get_or_insert(t1.elapsed().as_millis());
-                        if stream_error.is_none() {
-                            stream_error = w.write(p.samples, p.sample_rate).err();
-                        }
+                        // A failed write stops the render: nothing can receive the rest.
+                        w.write(p.samples, p.sample_rate).map_err(|e| e.to_string())?;
                     }
+                    Ok(())
                 },
             )
             .map_err(|e| e.to_string())?;
-            if let Some(e) = stream_error {
-                return Err(format!("--stream: {e}"));
-            }
             if let Some(w) = &stream {
                 let gain = read.gain.map_or("none".to_string(), |g| {
                     format!("{:+.4} dB (the --out FLAC applies it)", 20.0 * g.log10())

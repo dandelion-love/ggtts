@@ -76,6 +76,12 @@ const STREAMS: &str = concat!(
     "  --stream-format wav|s16le   wav (default: plays as it arrives) or raw s16le after a one-line header",
 );
 
+/// Where `--help` says the script instruments are found.
+const INSTRUMENTS_HELP: &str = "\ninstruments: --instrument NAME runs a shipped instrument on the finished render \
+(instruments/instruments.yaml lists them).\nScript (Python) instruments are found in the instruments/ directory next to \
+ggtts-render (a release archive), or the nearest one above it (a source checkout); GGTTS_INSTRUMENTS_DIR overrides \
+that.\nThey need Python 3.8 or later: GGTTS_PYTHON, else python3 (python on Windows) on PATH.";
+
 #[derive(Default)]
 struct Args {
     model: Option<PathBuf>,
@@ -442,6 +448,7 @@ fn main() -> ExitCode {
         }
         Some("-h") | Some("--help") => {
             println!("{USAGE}\n\n{STREAMS}");
+            println!("{INSTRUMENTS_HELP}");
             ExitCode::SUCCESS
         }
         Some(_) => match parse(&args).and_then(render) {

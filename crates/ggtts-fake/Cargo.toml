@@ -12,3 +12,7 @@ publish = false
 ggtts-core.workspace = true
 ggtts-qwen3-tts.workspace = true
 libm.workspace = true
+
+[features]
+# A planted instrument that draws from the sampler's stream, for the trace-identity check's own test.
+plant = []

@@ -2,11 +2,13 @@
 //!
 //! `generate` (text to codec tokens) and `decode` (tokens to audio) are separate on purpose: the parity ladder
 //! checks tokens first and the decoder second, and an engine that only returned audio could not say which half
-//! drifted. The instrument events (`--trace`) join this interface with the trace format.
+//! drifted. The instrument events (`--trace`) reach an engine through [`Engine::generate_traced`]; the format and
+//! its rules are in [`trace`](crate::trace).
 //!
 //! An engine also declares its [`Profile`]: the protocol numbers the story path renders its output with.
 
 use crate::profile::Profile;
+use crate::trace::Events;
 
 /// What an engine is, for provenance.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +62,17 @@ pub enum Stop {
     Abort,
 }
 
+impl Stop {
+    /// The trace's name for it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Stop::Eos => "eos",
+            Stop::Cap => "cap",
+            Stop::Abort => "abort",
+        }
+    }
+}
+
 /// The result of [`Engine::generate`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Generated {
@@ -93,6 +106,14 @@ pub trait Engine {
     fn profile(&self) -> &Profile;
     /// Text to codec tokens for one chunk.
     fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError>;
+    /// [`generate`](Engine::generate), emitting a `step` event per frame into `events` when its level is above 0.
+    /// The tokens must be identical to `generate`'s at every level: an instrument reads values the engine already
+    /// has and never draws from the sampler's stream ([`check_trace_identity`](crate::trace::check_trace_identity)).
+    /// The default emits nothing, for an engine with no instruments yet.
+    fn generate_traced(&mut self, req: &ChunkRequest<'_>, events: &mut dyn Events) -> Result<Generated, EngineError> {
+        let _ = events;
+        self.generate(req)
+    }
     /// Codec tokens to PCM.
     fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError>;
 }

@@ -276,6 +276,59 @@ fn render_cmd(a: &Args) -> Result<bool, String> {
     Ok(true)
 }
 
+fn hift_cmd(a: &Args) -> Result<bool, String> {
+    use ggtts_kitten::{dsp, hift::Hift};
+    let threads: usize = a.or("threads", "4").parse().map_err(|_| "bad --threads")?;
+    let dir = PathBuf::from(a.get("ref")?);
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("meta.json")).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let t = meta["shapes"]["mel"][2].as_u64().ok_or("meta.shapes.mel")? as usize;
+    let gguf = Gguf::open(Path::new(a.get("s3gguf")?))?;
+    let h = Hift::load(&gguf, threads)?;
+    let mel = read_f32(&dir.join("mel.f32"))?;
+    let t0 = Instant::now();
+    let f0 = h.f0(&mel, t)?;
+    let f0_ref = read_f32(&dir.join("f0.f32"))?;
+    let e_f0 = parity::rel_l2(&f0, &f0_ref);
+    println!("f0: rel L2 {e_f0:.3e} ({:.2}s)", t0.elapsed().as_secs_f64());
+    let src = read_f32(&dir.join("source.f32"))?;
+    let (spec, frames) = dsp::stft(&src);
+    if frames != t * 120 + 1 {
+        return Err(format!("{frames} STFT frames for {t} mel frames"));
+    }
+    let t1 = Instant::now();
+    let wav = h.decode(&mel, t, &spec)?;
+    let wav_ref = read_f32(&dir.join("wav_raw.f32"))?;
+    let snr = 10.0 * (1.0 / parity::rel_l2(&wav, &wav_ref).powi(2)).log10();
+    println!(
+        "vocoder on PyTorch's source: {} samples, SNR {snr:.1} dB against PyTorch ({:.2}s, {:.2}x real time)",
+        wav.len(),
+        t1.elapsed().as_secs_f64(),
+        t1.elapsed().as_secs_f64() / (wav.len() as f64 / 24000.0)
+    );
+    let ok = e_f0 <= 1e-3 && snr >= 40.0;
+    println!(
+        "{} (bars: f0 rel L2 <= 1e-3, waveform SNR >= 40 dB)",
+        if ok { "HIFT PARITY PASS" } else { "HIFT PARITY FAIL" }
+    );
+    if let Some(out) = a.map.get("flac-dir") {
+        // Also our own source (a different random draw), for listening; and the PyTorch-source version.
+        let mut noise = dsp::Noise::new(7);
+        let own = h.source(&f0, &mut noise)?;
+        let (spec2, _) = dsp::stft(&own);
+        let mut wav2 = h.decode(&mel, t, &spec2)?;
+        ggtts_kitten::hift::trim_fade(&mut wav2);
+        let mut wav1 = wav.clone();
+        ggtts_kitten::hift::trim_fade(&mut wav1);
+        let d = PathBuf::from(out);
+        std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+        ggtts_core::flac::write_flac(&d.join("hift-torch-source"), &wav1, 24000).map_err(|e| e.to_string())?;
+        ggtts_core::flac::write_flac(&d.join("hift-own-source"), &wav2, 24000).map_err(|e| e.to_string())?;
+    }
+    Ok(ok)
+}
+
 fn text_of(lines: &[String], i: usize) -> &str {
     &lines[i]
 }
@@ -287,6 +340,7 @@ fn main() -> ExitCode {
         "parity" => parity_cmd(&a),
         "tokcheck" => tokcheck_cmd(&a),
         "render" => render_cmd(&a),
+        "hift-parity" => hift_cmd(&a),
         _ => Err("usage: ggtts-kitten (parity|tokcheck|render) ...; see the source's header".into()),
     });
     match res {

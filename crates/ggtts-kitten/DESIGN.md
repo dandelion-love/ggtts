@@ -185,6 +185,13 @@ The bars above were written before these numbers and are not moved by them.
 * **Level 4, self-determinism:** the same GGUF, lines, seed and thread count gave identical codes on separate
   runs, three lines of three, and the clip render reproduced its codes again on its rerun.
 
+* **Decoder port, step 1: the HiFT vocoder runs on ggml.** `src/hift.rs` covers the f0 predictor, the
+  upsampling, the source fusion, the Snake resblocks and the post convolution. `src/dsp.rs` covers the host-side
+  harmonic source, the 16-point STFT and its inverse. Both were checked on a fixed-token PyTorch decode with the
+  random source recorded. The f0's relative L2 is `4.71e-7` (bar 1e-3), and the waveform is at SNR `106.2 dB`
+  against PyTorch's (bar 40 dB): **PASS**. It vocodes 4.1 s of audio in 1.23 s on 4 threads. The flow (tokens to
+  mel) is still PyTorch.
+
 ## Layout
 
 | Path | What |
@@ -197,6 +204,8 @@ The bars above were written before these numbers and are not moved by them.
 | `src/prompt.rs`, `src/sampler.rs`, `src/tokenizer.rs` | the prompt, the sampler in PyTorch's order, the BPE |
 | `src/engine.rs` | `KittenEngine`, the `Engine` trait, and the PyTorch S3Gen bridge (feature `ggml`) |
 | `src/parity.rs` | the parity measures and the bars above |
+| `src/s3convert.rs` | S3Gen's safetensors to a GGUF, weight norm folded |
+| `src/hift.rs`, `src/dsp.rs` | the HiFT vocoder on ggml (feature `ggml`) and its host-side source and STFT |
 | `src/bin/ggtts-kitten-convert.rs` | the converter's command line |
 | `src/bin/ggtts-kitten.rs` | `parity`, `tokcheck` and `render` (feature `ggml`) |
 | `tools/kitten_ref.py` | the PyTorch side: reference dumps, reference-clip preparation, the S3Gen bridge |

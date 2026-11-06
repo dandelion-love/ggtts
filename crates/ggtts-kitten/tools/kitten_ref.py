@@ -13,6 +13,8 @@ Subcommands:
              the 512-dim speaker embedding and the transcript. A built-in voice can be named instead of a clip.
   decode     S3 codec tokens to a 24 kHz waveform through Kitten's S3Gen (chatterbox-turbo, meanflow, 2 steps),
              conditioned on the reference clip. Writes float32 little-endian samples.
+  s3dump     one S3Gen decode on fixed tokens with every random draw recorded (the flow's noise, the vocoder's
+             source), and the mel, f0, source and waveform, for the ggml decoder's parity check.
 
 Outputs never go into the repository: weights, dumps and audio from a Kitten model are under the model's licence.
 """
@@ -210,6 +212,51 @@ def cmd_decode(a) -> int:
     return 0
 
 
+def cmd_s3dump(a) -> int:
+    import torch
+
+    low_priority(a.threads)
+    from kittenml.kittentts2.s3gen import S3GEN_SIL, S3Token2Mel
+    from kittenml.kittentts2.vocoder import S3Codec
+
+    ref = json.loads(Path(a.reference).read_text(encoding="utf-8"))
+    tokens = json.loads(Path(a.tokens).read_text(encoding="utf-8"))
+    torch.manual_seed(a.seed)
+    codec = S3Codec(device="cpu")
+    s3 = codec.s3gen
+    cond = codec.reference_conditioning(ref["reference_wav"])
+    toks = torch.tensor([t for t in tokens if 0 <= t < 6561] + [int(S3GEN_SIL)] * 3, dtype=torch.long)
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    with torch.inference_mode():
+        noise = torch.randn(1, 80, toks.shape[0] * 2)
+        mel = S3Token2Mel.forward(s3, toks, ref_wav=None, ref_sr=None, ref_dict=dict(cond), n_cfm_timesteps=2,
+                                  finalize=True, noised_mels=noise)
+        hift = s3.mel2wav
+        f0 = hift.f0_predictor(mel)
+        src = hift.f0_upsamp(f0[:, None]).transpose(1, 2)
+        src, _, _ = hift.m_source(src)
+        src = src.transpose(1, 2)
+        wav = hift.decode(x=mel, s=src)
+        faded = wav.clone()
+        faded[:, :len(s3.trim_fade)] *= s3.trim_fade
+
+    def put(name, t):
+        np.asarray(t.detach().float().cpu().numpy(), "<f4").tofile(out / f"{name}.f32")
+        return list(t.shape)
+
+    shapes = {
+        "noise": put("noise", noise), "mel": put("mel", mel), "f0": put("f0", f0), "source": put("source", src),
+        "wav_raw": put("wav_raw", wav), "wav": put("wav", faded), "prompt_feat": put("prompt_feat", cond["prompt_feat"]),
+        "embedding": put("embedding", cond["embedding"]),
+    }
+    meta = {"tokens": toks.tolist(), "prompt_token": cond["prompt_token"][0].tolist(), "shapes": shapes,
+            "seed": a.seed, "torch": torch.__version__}
+    (out / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    print(json.dumps(shapes))
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -239,8 +286,14 @@ def main() -> int:
     p.add_argument("--out", required=True, help="float32 little-endian samples at 24 kHz")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--threads", type=int, default=4)
+    p = sub.add_parser("s3dump")
+    p.add_argument("--reference", required=True)
+    p.add_argument("--tokens", required=True, help="a JSON list of S3 token ids")
+    p.add_argument("--out", required=True)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--threads", type=int, default=4)
     a = ap.parse_args()
-    return {"logits": cmd_logits, "tokenize": cmd_tokenize, "reference": cmd_reference, "decode": cmd_decode}[a.cmd](a)
+    return {"s3dump": cmd_s3dump, "logits": cmd_logits, "tokenize": cmd_tokenize, "reference": cmd_reference, "decode": cmd_decode}[a.cmd](a)
 
 
 if __name__ == "__main__":

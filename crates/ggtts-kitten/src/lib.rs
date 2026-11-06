@@ -7,13 +7,17 @@
 //! * [`ternary`]: Kitten's ternary rule and its `TQ2_0` storage on zero-padded 128-weight groups.
 
 pub mod convert;
+pub mod dsp;
 #[cfg(feature = "ggml")]
 pub mod engine;
 pub mod gguf;
 #[cfg(feature = "ggml")]
+pub mod hift;
+#[cfg(feature = "ggml")]
 pub mod model;
 pub mod parity;
 pub mod prompt;
+pub mod s3convert;
 pub mod safetensors;
 pub mod sampler;
 pub mod ternary;

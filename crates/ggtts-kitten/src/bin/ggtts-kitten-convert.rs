@@ -3,6 +3,7 @@
 //! ```text
 //! ggtts-kitten-convert --repo DIR [--weights FILE] --out FILE.gguf [--plant group256|absmean]
 //! ggtts-kitten-convert --repo DIR [--weights FILE] --verify FILE.gguf
+//! ggtts-kitten-convert --s3gen s3gen_meanflow.safetensors --out FILE.gguf
 //! ```
 //!
 //! `--repo` is a Kitten-TTS 2 model directory (its `config.json` and `lm/config.json` are read). `--weights` is the
@@ -33,6 +34,7 @@ fn read_json(p: &std::path::Path) -> Result<serde_json::Value, String> {
 fn run() -> Result<bool, String> {
     let mut args = std::env::args().skip(1);
     let (mut repo, mut weights, mut out, mut verify_only, mut plant) = (None, None, None, None, None);
+    let mut s3gen: Option<PathBuf> = None;
     while let Some(a) = args.next() {
         let mut val = || args.next().ok_or(format!("{a} needs a value"));
         match a.as_str() {
@@ -41,12 +43,23 @@ fn run() -> Result<bool, String> {
             "--out" => out = Some(PathBuf::from(val()?)),
             "--verify" => verify_only = Some(PathBuf::from(val()?)),
             "--plant" => plant = Some(val()?),
+            "--s3gen" => s3gen = Some(PathBuf::from(val()?)),
             "--version" => {
                 println!("ggtts-kitten-convert {}", ggtts_core::VERSION);
                 return Ok(true);
             }
             other => return Err(format!("unknown argument {other}")),
         }
+    }
+    if let Some(src) = s3gen {
+        let out = out.ok_or("--s3gen needs --out")?;
+        let st = SafeTensors::open(&src)?;
+        let n = ggtts_kitten::s3convert::convert(&st, &out)?;
+        println!(
+            "wrote {}: {n} S3Gen tensors (flow and vocoder, weight norm folded)",
+            out.display()
+        );
+        return Ok(true);
     }
     let repo = repo.ok_or("--repo is required")?;
     let weights = weights.unwrap_or_else(|| repo.join("lm").join("model.safetensors"));

@@ -12,6 +12,8 @@ pub enum Dtype {
     BF16,
     F16,
     F32,
+    /// Present in some files (buffers, counters); read as raw bytes only.
+    I64,
 }
 
 impl Dtype {
@@ -20,6 +22,7 @@ impl Dtype {
             "BF16" => Ok(Dtype::BF16),
             "F16" => Ok(Dtype::F16),
             "F32" => Ok(Dtype::F32),
+            "I64" => Ok(Dtype::I64),
             other => Err(format!("unsupported safetensors dtype {other}")),
         }
     }
@@ -28,6 +31,7 @@ impl Dtype {
         match self {
             Dtype::BF16 | Dtype::F16 => 2,
             Dtype::F32 => 4,
+            Dtype::I64 => 8,
         }
     }
 }
@@ -135,6 +139,7 @@ impl SafeTensors {
                 .chunks_exact(4)
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect(),
+            Dtype::I64 => return Err(format!("{name}: an integer tensor is not read as f32")),
         })
     }
 }

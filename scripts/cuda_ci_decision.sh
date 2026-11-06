@@ -16,6 +16,32 @@ if [ "${1:-}" = "--self-test" ]; then
   for path in README.md docs/example.md instruments/example.py; do
     if relevant "$path"; then echo "unrelated path selected: $path" >&2; exit 1; fi
   done
+  # Exercise the actual diff and event handling in an isolated repository.
+  self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  git -C "$tmp" init -q
+  git -C "$tmp" config user.name CUDA-test
+  git -C "$tmp" config user.email cuda-test@example.invalid
+  mkdir -p "$tmp/docs" "$tmp/crates/ggtts-core/src"
+  echo base > "$tmp/docs/a.md"
+  git -C "$tmp" add .
+  git -C "$tmp" commit -qm base
+  base="$(git -C "$tmp" rev-parse HEAD)"
+  echo change >> "$tmp/docs/a.md"
+  git -C "$tmp" commit -qam docs
+  docs="$(git -C "$tmp" rev-parse HEAD)"
+  [ "$(cd "$tmp" && bash "$self" pull_request "$base" "$docs")" = "run=false" ]
+  echo pin > "$tmp/crates/ggtts-core/src/lib.rs"
+  git -C "$tmp" add .
+  git -C "$tmp" commit -qm pin
+  pin="$(git -C "$tmp" rev-parse HEAD)"
+  [ "$(cd "$tmp" && bash "$self" pull_request "$base" "$pin")" = "run=true" ]
+  [ "$(cd "$tmp" && bash "$self" push "" "")" = "run=true" ]
+  if (cd "$tmp" && bash "$self" pull_request invalid "$pin" >/dev/null 2>&1); then
+    echo "invalid base unexpectedly passed" >&2
+    exit 1
+  fi
   echo "CUDA path selection self-test passed"
   exit 0
 fi

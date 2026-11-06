@@ -90,7 +90,7 @@ jobs:
           "dist/$name/ggtts-render${EXE}" --version | tee "dist/$name/VERSION.txt"
           grep -q "$commit" "dist/$name/VERSION.txt"
           cd dist
-          if [ "$ARCHIVE" = zip ]; then 7z a -tzip "$name.zip" "$name" >/dev/null; else tar -czf "$name.tar.gz" "$name"; fi
+          ../scripts/package_and_smoke.sh archive "$name" "$ARCHIVE"
           rm -rf "$name"
           ls -l
       - name: Smoke the archive (a shipped Python instrument runs from it; a planted missing instruments/ is reported)

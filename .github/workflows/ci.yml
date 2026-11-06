@@ -197,7 +197,7 @@ jobs:
 
   cuda-compile:
     needs: cuda-selection
-    if: needs.cuda-selection.outputs.run == 'true'
+    if: needs.cuda-selection.outputs.run == 'true' || (github.event_name == 'pull_request' && github.base_ref == 'main' && github.head_ref == 'rc' && github.event.pull_request.head.repo.full_name == github.repository)
     name: cuda-compile (ggml at the pin, sm_86 and sm_89, no GPU)
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -243,7 +243,36 @@ jobs:
           grep -q 'sm_86' elf.txt
           grep -q 'sm_89' elf.txt
 
+  specialized-selection:
+    name: Select release and binding checks (a skip is not a pass)
+    runs-on: ubuntu-latest
+    outputs:
+      package: ${{ steps.select.outputs.package }}
+      binding: ${{ steps.select.outputs.binding }}
+      android: ${{ steps.select.outputs.android }}
+      release: ${{ steps.select.outputs.release }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Test specialized selection
+        run: python3 scripts/test_select_specialized_ci.py
+      - name: Select checks
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: python3 scripts/select_specialized_ci.py >> "$GITHUB_OUTPUT"
+
   package-smoke:
+    needs: specialized-selection
+    if: needs.specialized-selection.outputs.package == 'true'
     name: package-smoke (${{ matrix.os }}; script instruments run from a packed release directory, and a planted missing instruments/ is red)
     strategy:
       fail-fast: false
@@ -316,6 +345,8 @@ jobs:
           grep -F "no ggtts-measure in" planted-measure.err
 
   binding:
+    needs: specialized-selection
+    if: needs.specialized-selection.outputs.binding == 'true'
     name: binding (the C-ABI with the planted panic, and the Kotlin binding on the host JVM)
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -330,6 +361,8 @@ jobs:
         run: scripts/kotlin_binding_test.sh
 
   android-arm64:
+    needs: specialized-selection
+    if: needs.specialized-selection.outputs.android == 'true'
     name: android-arm64 (cargo-ndk, ggml at the pin, NEON confirmed, with both checks planted)
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -377,9 +410,9 @@ jobs:
           if-no-files-found: error
 
   release-build:
-    # The release's build step, run on every PR with the release's matrix, so a bad feature string or a build that
-    # only breaks under --release fails here and not first at a tag (v0.1.0-rc.2 did). Keep the matrix the same as
-    # release.yml's; the first step refuses a drift.
+    needs: specialized-selection
+    if: needs.specialized-selection.outputs.release == 'true'
+    # Selected PRs and the rc-to-main promotion use the release matrix; the first step refuses drift.
     name: release-build (${{ matrix.target }})
     strategy:
       fail-fast: false

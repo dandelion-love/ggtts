@@ -53,6 +53,12 @@ Work meets on the `rc` branch before it reaches `main`.
 3. The pull request says what changed, why, which parity tests cover it, and what was not tested.
 4. Commit subjects say what changed and what was found, not "fix" or "update".
 
+CI runs the desktop release builds, archive smoke tests, Android build and host binding tests together on the
+same-repository `rc` to `main` promotion PR. Other PRs run the specialized checks selected by
+`scripts/select_specialized_ci.py` for their changed paths; pushes skip these four jobs. A skip is not a pass.
+General checks still run, and the tag-triggered release workflow still builds its archives. CUDA compilation on
+promotion is separate from GPU runtime parity; the local promotion gate supplies the latter.
+
 **Promotion.** `main` moves only by one reviewed pull request from `rc`. Hosted runners have no GPU, so before that
 pull request is merged, someone with a supported GPU runs `scripts/rc_gate.sh --ref origin/rc --work /path/to/scratch`
 and attaches the resulting `rc-gate.json` and the logs it names. The gate runs CPU checks and both engines' CUDA

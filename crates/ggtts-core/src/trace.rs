@@ -23,6 +23,9 @@
 //!
 //! The schema is what an engine must emit. It is not a claim that any field measures what its name says: an
 //! instrument is trusted only once it has been shown to detect a planted defect and to read a no-op as no change.
+//!
+//! The hook catalogue, the event order and the two instrument tiers are in `docs/instruments/hooks.md`; the JSON
+//! schema every line validates against is `schemas/ggtts-trace-1.schema.json`.
 
 use std::io::{self, Write};
 use std::time::Instant;
@@ -34,6 +37,11 @@ use crate::engine::{ChunkRequest, Codes, Engine, EngineError, Pcm, Stop};
 
 /// The trace format this module writes and reads.
 pub const FORMAT: &str = "ggtts-trace/1";
+
+/// The formats [`parse`] accepts: the current one first, then at most the one before it. Readers accept the
+/// previous version for one version, so a trace written by the last release still reads. Writers write only
+/// [`FORMAT`].
+pub const READS: &[&str] = &[FORMAT];
 
 /// The fields replay ignores: wall-clock only.
 pub const CLOCK_FIELDS: [&str; 2] = ["t_ms", "ms"];
@@ -392,8 +400,16 @@ pub fn parse(text: &str) -> Result<Vec<Map<String, Value>>, TraceError> {
     if head["ev"] != "trace" {
         return Err(TraceError("the first line is not the header".into()));
     }
-    if head.get("format").and_then(Value::as_str) != Some(FORMAT) {
-        return Err(TraceError(format!("not a {FORMAT} trace: {:?}", head.get("format"))));
+    if !head
+        .get("format")
+        .and_then(Value::as_str)
+        .is_some_and(|f| READS.contains(&f))
+    {
+        return Err(TraceError(format!(
+            "not a trace this reads ({}): {:?}",
+            READS.join(", "),
+            head.get("format")
+        )));
     }
     Ok(lines)
 }
@@ -782,6 +798,38 @@ mod tests {
             .unwrap()
             .clone()];
         assert_eq!(compare(&a, &b).unwrap().field, "cb[2]");
+    }
+
+    /// `name/N` for a format string, so the rule can be checked without knowing the version.
+    fn version(f: &str) -> (&str, u32) {
+        let (name, n) = f.rsplit_once('/').expect("name/N");
+        (name, n.parse().expect("a number"))
+    }
+
+    #[test]
+    fn reads_the_current_format_and_at_most_the_previous_one() {
+        assert_eq!(READS[0], FORMAT, "writers write the first format readers accept");
+        assert!(
+            READS.len() <= 2,
+            "a reader keeps one previous version, no more: {READS:?}"
+        );
+        if let [cur, prev] = READS {
+            let ((a, n), (b, m)) = (version(cur), version(prev));
+            assert!(
+                a == b && m + 1 == n,
+                "the second format must be the one before the first: {READS:?}"
+            );
+        }
+        for f in READS {
+            let head = format!("{{\"ev\":\"trace\",\"format\":\"{f}\",\"t_ms\":0}}\n");
+            assert!(parse(&head).is_ok(), "{f} is listed but not read");
+        }
+        let (name, n) = version(FORMAT);
+        let next = format!("{{\"ev\":\"trace\",\"format\":\"{name}/{}\",\"t_ms\":0}}\n", n + 1);
+        assert!(
+            parse(&next).is_err(),
+            "a reader never accepts a version it does not know"
+        );
     }
 
     #[test]

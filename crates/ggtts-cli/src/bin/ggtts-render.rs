@@ -2,9 +2,10 @@
 //!
 //! ```text
 //! ggtts-render --model M.gguf [--codec C.gguf] --out x.flac [--engine auto|qwen3-tts] [--threads N]
-//!              [--device cpu|cuda] [--trace trace.jsonl] (--text "..." [--seed S] | --story story.txt)
+//!              [--device cpu|cuda] [--trace trace.jsonl] [--voice REF.json] (--text "..." [--seed S] | --story story.txt)
 //! ```
 //!
+//! `--voice` is a reference voice for an engine that clones one; an engine that does not ignores it.
 //! `--engine auto` (the default) picks the engine from the model's `general.architecture`. `--text` renders one
 //! request at one seed (default 20260905). `--story` reads a story file (title line, then one paragraph per line)
 //! and renders it on the core's story path. `--trace` writes the engine's per-step stop probabilities as JSON
@@ -25,7 +26,7 @@ mod gguf_arch;
 
 const BINARY: &str = "ggtts-render";
 const USAGE: &str = "usage: ggtts-render --model M.gguf [--codec C.gguf] --out x.flac [--engine auto|qwen3-tts] \
-[--threads N] [--device cpu|cuda] [--trace FILE] (--text TEXT [--seed S] | --story FILE)\n       ggtts-render --version";
+[--threads N] [--device cpu|cuda] [--trace FILE] [--voice REF] (--text TEXT [--seed S] | --story FILE)\n       ggtts-render --version";
 
 #[derive(Default)]
 struct Args {
@@ -39,6 +40,8 @@ struct Args {
     threads: Option<i32>,
     device: Option<String>,
     trace: Option<PathBuf>,
+    /// A reference voice, for engines that clone one (kitten-tts-2: a `ggtts-kitten prepare` JSON). Others ignore it.
+    voice: Option<PathBuf>,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -56,6 +59,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--seed" => a.seed = Some(value()?.parse().map_err(|_| "--seed needs an integer")?),
             "--device" => a.device = Some(value()?),
             "--trace" => a.trace = Some(value()?.into()),
+            "--voice" => a.voice = Some(value()?.into()),
             "--threads" | "-j" => a.threads = Some(value()?.parse().map_err(|_| "--threads needs an integer")?),
             other => return Err(format!("invalid argument: {other}")),
         }
@@ -82,22 +86,23 @@ fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, St
                 .map(|e| Box::new(e) as Box<dyn Engine>)
                 .map_err(|e| e.to_string())
         }
-        // Kitten-TTS 2: --model is the LM GGUF, --codec the S3Gen GGUF, and the reference voice comes from
-        // GGTTS_ARG_VOICE (a `ggtts-kitten prepare` JSON) until ggtts-render has a --voice flag.
+        // Kitten-TTS 2: --model is the LM GGUF, --codec the S3Gen GGUF, --voice the reference (`ggtts-kitten prepare`).
         #[cfg(feature = "ggml")]
         "kitten-tts-2" => {
             let codec = a
                 .codec
                 .as_ref()
                 .ok_or("the kitten-tts-2 engine needs --codec (the S3Gen GGUF)")?;
-            let voice = std::env::var_os("GGTTS_ARG_VOICE")
-                .ok_or("the kitten-tts-2 engine needs GGTTS_ARG_VOICE, a reference JSON from ggtts-kitten prepare")?;
-            ggtts_kitten::engine::KittenEngine::open(model, codec, Path::new(&voice), threads as usize)
+            let voice = a
+                .voice
+                .as_ref()
+                .ok_or("the kitten-tts-2 engine needs --voice, a ggtts-kitten prepare JSON")?;
+            ggtts_kitten::engine::KittenEngine::open(model, codec, voice, threads as usize)
                 .map(|e| Box::new(e) as Box<dyn Engine>)
         }
         #[cfg(not(feature = "ggml"))]
         "qwen3-tts" | "kitten-tts-2" => {
-            let _ = (threads, model);
+            let _ = (threads, model, &a.voice);
             Err("this build has no engines: rebuild with --features ggml".into())
         }
         other => Err(format!("no engine for architecture {other:?}")),

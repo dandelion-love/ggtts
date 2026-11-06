@@ -1,0 +1,21 @@
+[package]
+name = "ggtts-instrument-tensor-template"
+description = "Template: an in-process ggtts tensor hook, read-only, compiled only with its feature"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ggtts-core.workspace = true
+
+[features]
+# The hook is compiled only with this feature, so a build that does not ask for it has no tensor hook at all.
+enabled = []
+
+[dev-dependencies]
+ggtts-fake.workspace = true
+# The tests turn the feature on for themselves; a normal build of the workspace leaves it off.
+ggtts-instrument-tensor-template = { path = ".", features = ["enabled"] }

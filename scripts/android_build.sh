@@ -50,7 +50,7 @@ check_neon() { # BIN
 build() { # OUT_DIR
     local out=${1:-dist/android-arm64}
     check_pin "$(pin)"
-    (cd "$root" && cargo ndk -t arm64-v8a -P "$api" build --release --locked -p ggtts-cli \
+    (cd "$root" && cargo ndk -t arm64-v8a --platform "$api" build --release --locked -p ggtts-cli \
         --features ggtts-cli/ggml,ggtts-ggml-sys/bindgen)
     local bin="$root/target/$target/release/ggtts-render"
     check_neon "$bin"

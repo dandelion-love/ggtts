@@ -8,6 +8,8 @@ members = [
     "crates/ggtts-cli",
     "crates/ggtts-instruments",
     "crates/ggtts-kitten",
+    "instruments/templates/rust/event",
+    "instruments/templates/rust/tensor",
 ]
 # A spike with its own workspace; it builds ggml and needs libclang, so the main CI jobs leave it out.
 exclude = ["spike/layer0"]

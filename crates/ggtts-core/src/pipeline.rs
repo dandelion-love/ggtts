@@ -5,6 +5,7 @@
 
 use crate::audio::{judge_f32, trim_edges_f32, Verdict};
 use crate::engine::{ChunkRequest, Engine, EngineError};
+use crate::hooks::Hooks;
 use crate::numeric::{log10, mean_f32, pow};
 use crate::profile::Profile;
 use crate::seed::seed_of;
@@ -137,7 +138,21 @@ pub fn render_story_traced(
     opts: &RenderOptions,
     events: &mut dyn Events,
 ) -> Result<Read, RenderError> {
-    render_story_streamed(engine, story_id, chunks, opts, events, &mut |_| Ok(()))
+    render_story_hooked(engine, story_id, chunks, opts, events, &mut Hooks::new())
+}
+
+/// [`render_story_traced`], handing every generated frame to `hooks` as well (see [`crate::hooks`]). The read is
+/// the same with or without hooks. The caller calls [`Hooks::finish`] and reads [`Hooks::failures`] when the run is
+/// done.
+pub fn render_story_hooked(
+    engine: &mut dyn Engine,
+    story_id: &str,
+    chunks: &[PlannedChunk],
+    opts: &RenderOptions,
+    events: &mut dyn Events,
+    hooks: &mut Hooks,
+) -> Result<Read, RenderError> {
+    render(engine, story_id, chunks, opts, events, &mut |_| Ok(()), hooks)
 }
 
 /// One piece of a streamed read: a kept chunk, trimmed, followed by the gap after it (none after the last).
@@ -167,6 +182,19 @@ pub fn render_story_streamed(
     opts: &RenderOptions,
     events: &mut dyn Events,
     sink: &mut dyn FnMut(StreamPiece<'_>) -> Result<(), String>,
+) -> Result<Read, RenderError> {
+    render(engine, story_id, chunks, opts, events, sink, &mut Hooks::new())
+}
+
+/// The story path every public render shares: events, a sink, and tensor hooks.
+fn render(
+    engine: &mut dyn Engine,
+    story_id: &str,
+    chunks: &[PlannedChunk],
+    opts: &RenderOptions,
+    events: &mut dyn Events,
+    sink: &mut dyn FnMut(StreamPiece<'_>) -> Result<(), String>,
+    hooks: &mut Hooks,
 ) -> Result<Read, RenderError> {
     let tracing = events.level() > 0;
     let mut total_frames: u64 = 0;
@@ -199,7 +227,7 @@ pub fn render_story_streamed(
                     n_text_tokens: None,
                 });
             }
-            let generated = engine.generate_traced(&req, events)?;
+            let generated = engine.generate_hooked(&req, events, hooks)?;
             let pcm = engine.decode(&generated.codes)?;
             let j = judge_f32(&profile, &pcm.samples, pcm.sample_rate, &c.text);
             let frames = generated.codes.n_frames();
@@ -298,16 +326,27 @@ pub fn render_story_streamed(
 /// above its [`level_floor`](Profile::level_floor), then a clip to ±[`clip`](Profile::clip), rounded to float32.
 /// Returns the gain, or `None` (and leaves the read alone) when no sample is above the floor.
 pub fn level(profile: &Profile, read: &mut [f32]) -> Option<f64> {
+    let gain = level_gain(profile, read)?;
+    apply_gain(profile, read, gain);
+    Some(gain)
+}
+
+/// The gain [`level`] applies to `read`: to the profile's [`target_rms_db`](Profile::target_rms_db) over the samples
+/// above its [`level_floor`](Profile::level_floor). `None` when no sample is above the floor.
+pub fn level_gain(profile: &Profile, read: &[f32]) -> Option<f64> {
     let floor = profile.level_floor;
     let squares: Vec<f32> = read.iter().filter(|x| x.abs() > floor).map(|x| x * x).collect();
     if squares.is_empty() {
         return None;
     }
     let rms = f64::from(mean_f32(&squares).sqrt());
-    let gain = pow(10.0, (profile.target_rms_db - 20.0 * log10(rms + 1e-9)) / 20.0);
+    Some(pow(10.0, (profile.target_rms_db - 20.0 * log10(rms + 1e-9)) / 20.0))
+}
+
+/// Multiply by `gain`, clip to ±[`clip`](Profile::clip), and round to float32: [`level`]'s arithmetic, per sample.
+pub fn apply_gain(profile: &Profile, read: &mut [f32], gain: f64) {
     let clip = profile.clip;
     for x in read.iter_mut() {
         *x = (f64::from(*x) * gain).clamp(-clip, clip) as f32;
     }
-    Some(gain)
 }

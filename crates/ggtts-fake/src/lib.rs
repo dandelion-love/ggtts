@@ -27,6 +27,7 @@
 //! makes one that does: traced, it draws once from the stream at a chosen chunk and frame, which shifts every
 //! later token. It exists to show the trace-identity check goes red.
 
+use ggtts_core::hooks::{Hooks, Step as HookStep, Wants};
 use std::collections::HashMap;
 
 use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm, Stop};
@@ -92,6 +93,25 @@ pub struct FakeEngine {
     /// A planted defect: when traced, draw once from the stream at `(chunk, frame)`. Test builds only.
     #[cfg(feature = "plant")]
     pub plant_stream_draw: Option<(u32, u32)>,
+    /// A planted defect: whenever a tensor hook wants anything, the export draws once from the stream before the
+    /// first frame, as a hook path with a side effect would. Test builds only.
+    #[cfg(feature = "plant")]
+    pub plant_hook_export_draw: bool,
+    /// How many `p_stop` values and logit vectors were computed for tensor hooks: zero when no hook asks.
+    pub exported: Exported,
+}
+
+/// What the fake engine computed for tensor hooks, so a test can see that nothing is computed unasked.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Exported {
+    pub p_stop: u64,
+    pub logits: u64,
+}
+
+/// The fake's codebook-0 logits at frame `f`: eight values from the seed, never from the stream the tokens are drawn
+/// from, so exporting them changes nothing.
+pub fn fake_logits(seed: u64, f: u64) -> [f32; 8] {
+    std::array::from_fn(|i| f32::from(fake_token(seed, f, 64 + i as u64) % 1000) / 100.0 - 5.0)
 }
 
 impl Default for FakeEngine {
@@ -124,6 +144,9 @@ impl FakeEngine {
             kept: HashMap::new(),
             #[cfg(feature = "plant")]
             plant_stream_draw: None,
+            #[cfg(feature = "plant")]
+            plant_hook_export_draw: false,
+            exported: Exported::default(),
         }
     }
 
@@ -151,7 +174,11 @@ pub fn fake_p_stop(f: u64, n: u64) -> f64 {
 impl FakeEngine {
     /// The frame from which the planted instrument shifts the stream, when it fires for this request.
     #[allow(unused_variables)]
-    fn planted_frame(&self, req: &ChunkRequest<'_>, events: &dyn Events) -> Option<u64> {
+    fn planted_frame(&self, req: &ChunkRequest<'_>, events: &dyn Events, wants: Wants) -> Option<u64> {
+        #[cfg(feature = "plant")]
+        if self.plant_hook_export_draw && wants.any() {
+            return Some(0);
+        }
         #[cfg(feature = "plant")]
         if events.level() > 0 {
             if let Some((chunk, frame)) = self.plant_stream_draw {
@@ -178,6 +205,16 @@ impl Engine for FakeEngine {
     }
 
     fn generate_traced(&mut self, req: &ChunkRequest<'_>, events: &mut dyn Events) -> Result<Generated, EngineError> {
+        self.generate_hooked(req, events, &mut Hooks::new())
+    }
+
+    fn generate_hooked(
+        &mut self,
+        req: &ChunkRequest<'_>,
+        events: &mut dyn Events,
+        hooks: &mut Hooks,
+    ) -> Result<Generated, EngineError> {
+        let wants = hooks.wants();
         let text = req.text.to_string();
         let k = *self.draws.get(&text).unwrap_or(&0);
         self.draws.insert(text.clone(), k + 1);
@@ -197,7 +234,7 @@ impl Engine for FakeEngine {
             amplitude_scale: amplitude,
         });
         let n_frames = (speech_s * FRAME_RATE).ceil() as u64;
-        let planted = self.planted_frame(req, events);
+        let planted = self.planted_frame(req, events, wants);
         // The stream: one extra draw from the planted frame on moves every later token.
         let stream = |f: u64| {
             if planted.is_some_and(|p| f >= p) {
@@ -227,6 +264,23 @@ impl Engine for FakeEngine {
                     rank: Some(u32::from(fake_token(req.seed, f, cbs + 1) % 4)),
                     cb: (level >= 2).then_some(&row[1..]),
                     cb_p: (level >= 2).then_some(&cb_p[..]),
+                });
+            }
+        }
+        if wants.any() {
+            for f in 0..n_frames {
+                let p_stop = wants.p_stop.then(|| fake_p_stop(f, n_frames));
+                let logits = wants.logits.then(|| fake_logits(req.seed, f));
+                self.exported.p_stop += u64::from(p_stop.is_some());
+                self.exported.logits += u64::from(logits.is_some());
+                hooks.step(&HookStep {
+                    chunk: req.chunk,
+                    draw: req.draw,
+                    seed: req.seed,
+                    frame: f as u32,
+                    token: u32::from(frames[(f * cbs) as usize]),
+                    p_stop,
+                    logits: logits.as_ref().map(|l| &l[..]),
                 });
             }
         }

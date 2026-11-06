@@ -2,10 +2,10 @@
 //!
 //! The parts every engine shares: the engine interface ([`engine`]), the long-text story path ([`text`] for
 //! reading and chunking, [`seed`] for the seed per chunk, [`audio`] for the judge and the trim, [`pipeline`] for
-//! the redraw, the joins and the level), FLAC output ([`flac`]), and the instrument events with the trace format,
-//! replay and the trace-identity check ([`trace`]), streaming output ([`stream`], fed by
-//! [`pipeline::render_story_streamed`]), and the instruments' report envelope with its merger ([`report`]). The
-//! provenance manifest comes next.
+//! the redraw, the joins and the level), FLAC output ([`flac`]), in-process tensor hooks ([`hooks`]), and the
+//! instrument events with the trace format, replay and the trace-identity check ([`trace`]), streaming output
+//! ([`stream`], fed by [`pipeline::render_story_streamed`]), and the instruments' report envelope with its merger
+//! ([`report`]). The provenance manifest comes next.
 //!
 //! The core holds the rules and no protocol number: the ceilings, the pause table, the judge bars and the level
 //! target come from the [`profile::Profile`] the engine declares.
@@ -16,6 +16,7 @@
 pub mod audio;
 pub mod engine;
 pub mod flac;
+pub mod hooks;
 pub mod numeric;
 pub mod pipeline;
 pub mod profile;

@@ -7,6 +7,7 @@
 //!
 //! An engine also declares its [`Profile`]: the protocol numbers the story path renders its output with.
 
+use crate::hooks::Hooks;
 use crate::profile::Profile;
 use crate::trace::Events;
 
@@ -113,6 +114,25 @@ pub trait Engine {
     fn generate_traced(&mut self, req: &ChunkRequest<'_>, events: &mut dyn Events) -> Result<Generated, EngineError> {
         let _ = events;
         self.generate(req)
+    }
+    /// [`generate_traced`](Engine::generate_traced), handing each generated frame to `hooks` with the values they
+    /// ask for ([`Hooks::wants`]) and nothing else. The tokens must be identical with and without hooks.
+    ///
+    /// The default exports nothing: with no hook that wants anything it is `generate_traced`, and otherwise it
+    /// refuses, so a hook is never silently given nothing.
+    fn generate_hooked(
+        &mut self,
+        req: &ChunkRequest<'_>,
+        events: &mut dyn Events,
+        hooks: &mut Hooks,
+    ) -> Result<Generated, EngineError> {
+        if hooks.wants().any() {
+            return Err(EngineError(format!(
+                "the {} engine exports nothing to tensor hooks",
+                self.info().family
+            )));
+        }
+        self.generate_traced(req, events)
     }
     /// Codec tokens to PCM.
     fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError>;

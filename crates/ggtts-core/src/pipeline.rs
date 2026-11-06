@@ -9,6 +9,7 @@ use crate::numeric::{log10, mean_f32, pow};
 use crate::profile::Profile;
 use crate::seed::seed_of;
 use crate::text::{plan, PlannedChunk};
+use crate::trace::{Event, Events, NullEvents};
 
 /// Chunk a story's paragraphs at the profile's [`story_ceiling`](Profile::story_ceiling).
 pub fn plan_story(profile: &Profile, paragraphs: &[String]) -> Vec<PlannedChunk> {
@@ -120,6 +121,21 @@ pub fn render_story(
     chunks: &[PlannedChunk],
     opts: &RenderOptions,
 ) -> Result<Read, RenderError> {
+    render_story_traced(engine, story_id, chunks, opts, &mut NullEvents)
+}
+
+/// [`render_story`], emitting the trace's chunk, trim, join and end events into `events`, and the engine's step
+/// events through [`Engine::generate_traced`]. Emit the header first ([`crate::trace::emit_header`]). At level 0
+/// nothing is emitted or computed for the trace, and at any level the read is the same.
+pub fn render_story_traced(
+    engine: &mut dyn Engine,
+    story_id: &str,
+    chunks: &[PlannedChunk],
+    opts: &RenderOptions,
+    events: &mut dyn Events,
+) -> Result<Read, RenderError> {
+    let tracing = events.level() > 0;
+    let mut total_frames: u64 = 0;
     if chunks.is_empty() {
         return Err(RenderError::Empty);
     }
@@ -137,9 +153,32 @@ pub fn render_story(
                 chunk: i as u32,
                 draw: k,
             };
-            let generated = engine.generate(&req)?;
+            let t0 = tracing.then(std::time::Instant::now);
+            if tracing {
+                events.emit(Event::ChunkBegin {
+                    chunk: req.chunk,
+                    draw: k,
+                    text: &c.text,
+                    seed: req.seed,
+                    n_text_tokens: None,
+                });
+            }
+            let generated = engine.generate_traced(&req, events)?;
             let pcm = engine.decode(&generated.codes)?;
             let j = judge_f32(&profile, &pcm.samples, pcm.sample_rate, &c.text);
+            let frames = generated.codes.n_frames();
+            total_frames += frames as u64;
+            if let Some(t0) = t0 {
+                events.emit(Event::ChunkEnd {
+                    chunk: req.chunk,
+                    draw: k,
+                    frames: frames as u32,
+                    stop: generated.stop,
+                    spc: Some(j.s_per_char),
+                    verdict: j.verdict.map(|v| v.as_str()),
+                    ms: t0.elapsed().as_millis() as u64,
+                });
+            }
             if k == 0 {
                 first = Some(j);
             }
@@ -152,6 +191,15 @@ pub fn render_story(
         let (pcm, j, seed, k) = kept.expect("at least one draw");
         let first = first.expect("draw 0 ran");
         let t = trim_edges_f32(&profile, &pcm.samples, pcm.sample_rate, opts.edge_s);
+        if tracing {
+            events.emit(Event::Trim {
+                chunk: i as u32,
+                lead_s: t.lead_cut_s,
+                tail_s: t.tail_cut_s,
+                start: t.start_sample,
+                end: t.end_sample,
+            });
+        }
         clips.push((pcm.samples[t.start_sample..t.end_sample].to_vec(), pcm.sample_rate));
         records.push(ChunkRecord {
             i,
@@ -179,6 +227,17 @@ pub fn render_story(
         }
     }
     let gain = level(&profile, &mut samples);
+    if tracing {
+        events.emit(Event::Join {
+            chunks: n as u32,
+            samples: samples.len(),
+            gain_db: gain.map(|g| 20.0 * log10(g)),
+        });
+        events.emit(Event::End {
+            frames: total_frames,
+            seconds: samples.len() as f64 / f64::from(sample_rate),
+        });
+    }
     Ok(Read {
         chunks: records,
         samples,

@@ -12,12 +12,27 @@
 //!
 //! Its codec tokens are a deterministic function of the seed, the frame and the codebook, so a seed change is
 //! visible in the tokens. They are not the reference sampler's stream: that arrives with the first real engine.
+//!
+//! Traced, it emits a `step` per frame (see [`ggtts_core::trace`]) whose values are scripted but keep the fields'
+//! meanings, so a test can check them:
+//!
+//! * `token` is the frame's codebook-0 token, the one in the returned codes.
+//! * `p_stop` rises with the frame, `0.001 + 0.989 * ((f + 1) / n)^8`, so it peaks at the stopping frame.
+//! * `top1_p` is in `[0.25, 0.88]`, and `entropy` is `-ln(top1_p) + 0.5`, never below the bound `-ln(top1_p)`
+//!   that any distribution with that top token obeys.
+//! * `rank` is in `0..4`. At level 2, `cb` is codebooks 1 to 15 of the frame and `cb_p` each one's probability,
+//!   in `[0.5, 0.99]`.
+//!
+//! No instrument value feeds back into the tokens. With the `plant` feature, [`FakeEngine::plant_stream_draw`]
+//! makes one that does: traced, it draws once from the stream at a chosen chunk and frame, which shifts every
+//! later token. It exists to show the trace-identity check goes red.
 
 use std::collections::HashMap;
 
 use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm, Stop};
 use ggtts_core::profile::Profile;
 use ggtts_core::text::cjk_len;
+use ggtts_core::trace::{Event, Events, NullEvents};
 
 pub mod signal;
 
@@ -74,6 +89,9 @@ pub struct FakeEngine {
     pub calls: Vec<Call>,
     /// The last decoded clip per chunk text: the draw the pipeline kept.
     pub kept: HashMap<String, Vec<f32>>,
+    /// A planted defect: when traced, draw once from the stream at `(chunk, frame)`. Test builds only.
+    #[cfg(feature = "plant")]
+    pub plant_stream_draw: Option<(u32, u32)>,
 }
 
 impl Default for FakeEngine {
@@ -104,6 +122,8 @@ impl FakeEngine {
             pending: None,
             calls: Vec::new(),
             kept: HashMap::new(),
+            #[cfg(feature = "plant")]
+            plant_stream_draw: None,
         }
     }
 
@@ -123,6 +143,27 @@ pub fn fake_token(seed: u64, frame: u64, codebook: u64) -> u16 {
     ((z ^ (z >> 31)) % 2048) as u16
 }
 
+/// The fake's scripted stop probability at frame `f` of `n`: rising, highest at the last frame.
+pub fn fake_p_stop(f: u64, n: u64) -> f64 {
+    0.001 + 0.989 * libm::pow((f + 1) as f64 / n.max(1) as f64, 8.0)
+}
+
+impl FakeEngine {
+    /// The frame from which the planted instrument shifts the stream, when it fires for this request.
+    #[allow(unused_variables)]
+    fn planted_frame(&self, req: &ChunkRequest<'_>, events: &dyn Events) -> Option<u64> {
+        #[cfg(feature = "plant")]
+        if events.level() > 0 {
+            if let Some((chunk, frame)) = self.plant_stream_draw {
+                if chunk == req.chunk {
+                    return Some(u64::from(frame));
+                }
+            }
+        }
+        None
+    }
+}
+
 impl Engine for FakeEngine {
     fn info(&self) -> &EngineInfo {
         &self.info
@@ -133,6 +174,10 @@ impl Engine for FakeEngine {
     }
 
     fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
+        self.generate_traced(req, &mut NullEvents)
+    }
+
+    fn generate_traced(&mut self, req: &ChunkRequest<'_>, events: &mut dyn Events) -> Result<Generated, EngineError> {
         let text = req.text.to_string();
         let k = *self.draws.get(&text).unwrap_or(&0);
         self.draws.insert(text.clone(), k + 1);
@@ -152,9 +197,39 @@ impl Engine for FakeEngine {
             amplitude_scale: amplitude,
         });
         let n_frames = (speech_s * FRAME_RATE).ceil() as u64;
-        let frames = (0..n_frames)
-            .flat_map(|f| (0..u64::from(CODEBOOKS)).map(move |c| fake_token(req.seed, f, c)))
+        let planted = self.planted_frame(req, events);
+        // The stream: one extra draw from the planted frame on moves every later token.
+        let stream = |f: u64| {
+            if planted.is_some_and(|p| f >= p) {
+                req.seed.wrapping_add(1)
+            } else {
+                req.seed
+            }
+        };
+        let cbs = u64::from(CODEBOOKS);
+        let frames: Vec<u16> = (0..n_frames)
+            .flat_map(|f| (0..cbs).map(move |c| fake_token(stream(f), f, c)))
             .collect();
+        let level = events.level();
+        if level > 0 {
+            for f in 0..n_frames {
+                let row = &frames[(f * cbs) as usize..((f + 1) * cbs) as usize];
+                // Instrument values come from the seed, never from the stream the tokens are drawn from.
+                let top1_p = 0.25 + f64::from(fake_token(req.seed, f, cbs) % 64) / 100.0;
+                let cb_p: Vec<f64> = row[1..].iter().map(|&t| 0.5 + f64::from(t % 50) / 100.0).collect();
+                events.emit(Event::Step {
+                    chunk: req.chunk,
+                    frame: f as u32,
+                    token: row[0],
+                    p_stop: Some(fake_p_stop(f, n_frames)),
+                    entropy: Some(-libm::log(top1_p) + 0.5),
+                    top1_p: Some(top1_p),
+                    rank: Some(u32::from(fake_token(req.seed, f, cbs + 1) % 4)),
+                    cb: (level >= 2).then_some(&row[1..]),
+                    cb_p: (level >= 2).then_some(&cb_p[..]),
+                });
+            }
+        }
         self.pending = Some(Pending {
             text,
             speech_s,

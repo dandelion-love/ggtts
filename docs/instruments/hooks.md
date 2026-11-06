@@ -11,8 +11,8 @@ but no code emits it yet. An instrument must not depend on a planned hook.
 
 | Tier | Language | Where it runs | What it sees | Guarantee |
 |---|---|---|---|---|
-| **Event instrument** | Any | Out of process | The `ggtts-trace/1` stream, live (a pipe) or replayed (a file), plus the run's artifacts (the rendered FLAC) | It cannot change the render: it never shares the engine's memory, sampler or thread. A crash, hang or bad output is its own failure, not the render's. |
-| **Tensor hook** | Rust | In process, behind a cargo feature | Values an event cannot carry cheaply: the talker's logits, chunk audio before trimming | Read-only: it gets shared references to values the engine already computed, never a mutable one, and never draws from the sampler's random stream. It is compiled only with its feature, so a default build has no tensor hook at all. |
+| **Event instrument** | Any | Out of process | The `ggtts-trace/1` stream, live (a pipe) or replayed (a file), plus the run's artifacts (the rendered FLAC) | It cannot change the render's tokens or audio: it never shares the engine's memory, sampler or thread. A crash or bad output is its own failure. A live reader that falls behind can block the engine's writes until the runner (#30) bounds each instrument's buffer; see Timing and order. |
+| **Tensor hook** | Rust | In process, behind a cargo feature | Values an event cannot carry cheaply: the talker's logits, chunk audio before trimming | Read-only by convention (shared references to values the engine already computed, no draw from the sampler's random stream), enforced by the identity check, not by the type system. It has no timeout or crash boundary: its failure is the render's. It is compiled only with its feature, so a default build has no tensor hook at all. |
 
 Python never runs inside the decode loop. Anything that needs a value per frame and can be computed from what the
 stream carries is an event instrument. A tensor hook is justified only by a value the stream cannot carry.
@@ -57,20 +57,28 @@ Every event carries `t_ms`, non-decreasing through the stream. `t_ms` and `chunk
 may differ between two runs of the same render with the same seed: replay and every comparison ignore them, and an
 instrument must not treat them as data about the audio.
 
-An event instrument reading live sees each event once the engine has computed it. Nothing waits for the
-instrument: the engine writes the stream and never reads from it.
+An event instrument reading live sees each event once the engine has computed it. The engine never reads from the
+stream. A live reader that falls behind can fill its pipe and block the engine's writes; the runner (#30) owns the
+bound: a buffer per instrument, and on overflow the instrument is marked failed while the render's tokens and timings
+are unchanged. Until the runner exists, read a written trace (replay) rather than a live pipe.
+
+A stream without `end` is truncated: readers treat it as incomplete, never as a short render.
 
 ## The read-only guarantee, and how it is enforced
 
-An instrument never changes output.
+An instrument never changes output. This is checked, not assumed, and only as far as the check reaches: today on the
+fake engine (`check_trace_identity`), and on a pinned real GGUF at a fixed seed once #34 lands. Each result reports
+its backend, build and seed.
 
 - **Event tier.** The engine computes an event's values from the distribution it has already built, and never
   draws from the sampler's random stream to compute them. `trace::check_trace_identity` renders the same requests
   untraced and traced and requires identical tokens. It goes red on a planted instrument that takes one extra draw
   (`crates/ggtts-core/tests/trace.rs`).
-- **Tensor tier.** A hook receives shared references only, so the type system refuses a write. It runs on the
-  engine's thread between computations the engine has finished, so it cannot reorder them. The same identity check
-  applies to every tensor hook once one exists.
+- **Tensor tier.** A hook receives shared references, so safe Rust cannot write through them; that is a convention,
+  not a proof. What enforces read-only is the identity check: the same requests with and without the hook must give
+  identical tokens and audio, and a planted hook that writes one value must turn it red (#32, #34). A tensor hook
+  runs in the engine's process and thread, so it has no timeout or crash boundary: a panic, hang or abort in a hook
+  is the render's (#30 documents and tests each).
 - **Level 0 computes nothing.** With tracing off the sink is `NullEvents`, and neither the pipeline nor an engine
   computes an instrument value.
 

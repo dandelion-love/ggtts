@@ -39,7 +39,7 @@ the path is not set.
 | Sampler | `kittenml/logits.py:24-117` (the PyTorch order), `cpp/tools/kitten-tts/sampling.h:41-90` | `sampler.rs`: token-run penalty, windowed repetition penalty exempting `speech_end` and `stop`, temperature, top-k, top-p, min-p, then a draw. One deliberate difference from the C++, which also exempts the silence token 4299 from the repetition penalty (`sampling.h:53`): `kittenml/logits.py:30-33` says silence is *not* exempt, on purpose, and this engine follows the PyTorch path |
 | Stop | `cpp/tools/kitten-tts/main.cpp:198` | `speech_end` or `stop`; anything outside the audio range is dropped from the codes, as `kittenml/model.py` `_generate_tokens` does |
 | Tokenizer | the model's `lm/tokenizer.json` (Qwen2 byte-level BPE) | a byte-level BPE in Rust over `vocab.json`, `merges.txt` and the added tokens, checked against the Hugging Face tokenizer's ids |
-| Decoder (S3Gen) | `kittenml/vocoder.py:65-170`, `kittenml/s3gen.py`; `cpp/tools/kitten-tts/decoder.cpp:12-27` | **not ported yet**, see below |
+| Decoder (S3Gen) | `kittenml/vocoder.py:65-170`, `kittenml/s3gen.py` (the flow, the meanflow estimator, HiFT); `cpp/tools/kitten-tts/decoder.cpp:12-27` | `flow.rs`, `hift.rs`, `dsp.rs`: ported to ggml (2026-11-06), see below; the PyTorch bridge stays as the labelled fallback |
 
 ### The decoder, honestly
 
@@ -51,12 +51,17 @@ conformer encoder, the meanflow conditional decoder (a 1-D U-Net with transforme
 vocoder (an F0 predictor, a harmonic source, upsampling convolutions with Snake activations and an inverse STFT),
 and for reference conditioning a mel front end, the CAMPPlus speaker encoder and the S3 tokenizer.
 
-**Estimate: three to five working days** to port and hold to the decode parity below. Until then the engine's
-`decode` hands the codes to Kitten's own PyTorch S3Gen on the CPU through `tools/kitten_ref.py decode`, the same
-split kitten-tts-2-cpp makes with LibTorch, and reference conditioning is prepared once per clip by
-`tools/kitten_ref.py reference`, as kitten-tts-2-cpp's `prepare_reference.py` does. That bridge is the smallest
-honest alternative: the language model, the part that is ternary, runs entirely on ggml; the decoder is labelled
-as not yet ggml in every render's report, never passed off as ported.
+**Estimate (as first written): three to five working days** to port and hold to the decode parity below. Until
+the port matched, the engine's `decode` handed the codes to Kitten's own PyTorch S3Gen on the CPU through
+`tools/kitten_ref.py decode`, the same split kitten-tts-2-cpp makes with LibTorch.
+
+**2026-11-06: the decode is ported, and the estimate was too high.** The vocoder and the flow run on ggml and
+meet level 3 (see Measured). PyTorch S3Gen stays available with `--decoder pytorch`, and every render's report names
+the decoder that made it. **What is still PyTorch:** reference conditioning. The clip's 24 kHz mel, its CAMPPlus
+x-vector, its S3 tokens (for S3Gen and for the LM prompt) and the 512-dim pyannote embedding (for `spk_proj`) are
+prepared once per clip by `tools/kitten_ref.py reference`, as kitten-tts-2-cpp's `prepare_reference.py` does.
+Porting those (a mel front end, CAMPPlus, the S3 tokenizer's encoder, the pyannote model) is the next decoder
+step.
 
 ## The ternary type
 
@@ -206,6 +211,21 @@ The bars above were written before these numbers and are not moved by them.
   The waveform is at SNR `89.3 dB` (bar 40 dB): **level 3 PASS**. It decodes 4.10 s of audio in 3.63 s on 4
   threads (RTF 0.89). Reference conditioning (the clip's mel, CAMPPlus x-vector and S3 tokens) is still prepared
   by the PyTorch tool, as in kitten-tts-2-cpp.
+
+* **End to end on ggml, LM and decoder (CPU, 4 threads, QAT smoke checkpoint).** The same three lines and seeds
+  gave the same codes as before, as level 4 requires. Rendered with the ggml decoder, the RTF overall was 2.86
+  (built-in voice) and 2.91 (reference from a clip). The LM ran at 16.9-18.7 tokens/s; decoding took 3.8-4.3 s
+  per line of 4.1-5.0 s. The decoder's noise and source are this crate's own draws, so the audio is not sample-equal
+  to PyTorch's. Against the PyTorch-decoded render of the same codes, it has the same length, RMS within 0.3 dB,
+  and an amplitude-envelope correlation of 0.975-0.988 at 20 ms.
+
+**The ternary arm's cosine gap: what I would try (not tried).** The measured cause is activation quantization:
+`Q8_K` per 128 real values, where kitten-tts-2-cpp's `TQ2_1`-on-AMX path quantizes per 32 (`Q8_0`) and reports a
+cosine above 0.999998. The cheapest fix is to store the ternary matrices as stock `Q4_0`. With `d` set to the group's
+scale and codes 7, 8 and 9, it is exact for ternary weights, as kitten-tts-2-cpp's `ternary-q4_0` export uses it. It
+needs no padding, its activations are `Q8_0` per 32, and it costs 4.5 bits per weight against 4.125 here. A
+`TQ2_1` patch on the ggml pin is the size-optimal alternative. The bar stays as stated until one of them is
+measured.
 
 ## Layout
 

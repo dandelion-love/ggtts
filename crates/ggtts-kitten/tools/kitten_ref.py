@@ -174,8 +174,21 @@ def cmd_reference(a) -> int:
             "reference_tokens": [int(t) for t in codec.encode_reference(a.wav)],
             "embedding": [float(x) for x in enc(a.wav)],
         }
+    # The S3Gen conditioning the ggml decoder needs (the clip's first 10 s): its S3 tokens, its 24 kHz mel and its
+    # CAMPPlus x-vector, as kitten-tts-2-cpp's prepare_reference.py stores them.
+    import torch
+    from kittenml.kittentts2.vocoder import S3Codec
+
+    with torch.inference_mode():
+        cond = S3Codec(device="cpu").reference_conditioning(ref["reference_wav"])
+    ref["s3gen"] = {
+        "prompt_token": [int(t) for t in cond["prompt_token"][0].tolist()],
+        "prompt_feat": [float(v) for v in cond["prompt_feat"][0].float().reshape(-1).tolist()],
+        "embedding": [float(v) for v in cond["embedding"][0].float().tolist()],
+    }
     Path(a.out).write_text(json.dumps(ref), encoding="utf-8")
-    print(json.dumps({"transcript": ref["transcript"], "reference_tokens": len(ref["reference_tokens"])}))
+    print(json.dumps({"transcript": ref["transcript"], "reference_tokens": len(ref["reference_tokens"]),
+                      "s3gen_prompt_tokens": len(ref["s3gen"]["prompt_token"])}))
     return 0
 
 

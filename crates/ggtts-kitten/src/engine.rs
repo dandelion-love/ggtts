@@ -13,7 +13,10 @@ use std::process::Command;
 use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm, Stop};
 use ggtts_core::profile::Profile;
 
+use crate::dsp::{self, Noise};
+use crate::flow::{Flow, FlowRef};
 use crate::gguf::Value;
+use crate::hift::Hift;
 use crate::model::{Model, Session};
 use crate::prompt::TokenMap;
 use crate::sampler::{self, Ids, Rng, Settings};
@@ -49,6 +52,8 @@ pub struct Reference {
     pub embedding: Vec<f32>,
     /// The JSON file itself, which the decoder bridge reads for its conditioning.
     pub path: PathBuf,
+    /// The S3Gen conditioning, when the reference carries it (what the ggml decoder needs).
+    pub s3: Option<FlowRef>,
 }
 
 impl Reference {
@@ -74,8 +79,60 @@ impl Reference {
                 .map(|v| v.as_f64().unwrap_or(0.0) as f32)
                 .collect(),
             path: path.to_path_buf(),
+            s3: j.get("s3gen").map(|c| {
+                let f = |k: &str| -> Vec<f32> {
+                    c[k].as_array()
+                        .map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect())
+                        .unwrap_or_default()
+                };
+                FlowRef {
+                    prompt_token: c["prompt_token"]
+                        .as_array()
+                        .map(|a| a.iter().map(|v| v.as_u64().unwrap_or(0) as u32).collect())
+                        .unwrap_or_default(),
+                    prompt_feat: f("prompt_feat"),
+                    embedding: f("embedding"),
+                }
+            }),
         })
     }
+}
+
+/// S3Gen on ggml: the flow, then the HiFT vocoder.
+pub struct GgmlDecoder {
+    pub flow: Flow,
+    pub hift: Hift,
+}
+
+impl GgmlDecoder {
+    /// `S3Codec.decode`: three silence tokens appended (S3Gen drops its last few as lookahead), the flow from
+    /// Gaussian noise, the vocoder with a random harmonic source, and the fade-in. The noise and the source come
+    /// from `seed`, so the same codes and seed give the same audio.
+    pub fn decode(&self, codes: &[u16], r: &FlowRef, seed: u64) -> Result<Vec<f32>, String> {
+        let mut toks: Vec<u32> = codes.iter().filter(|&&c| c < 6561).map(|&c| u32::from(c)).collect();
+        if toks.is_empty() {
+            return Ok(Vec::new());
+        }
+        toks.extend([4299u32; 3]);
+        let tn = 2 * (r.prompt_token.len() + toks.len());
+        let mut noise = Noise::new(seed);
+        let z: Vec<f32> = (0..crate::flow::MEL * tn).map(|_| noise.gauss() as f32).collect();
+        let (mel, frames) = self.flow.mel(&toks, r, &z)?;
+        let f0 = self.hift.f0(&mel, frames)?;
+        let src = self.hift.source(&f0, &mut noise)?;
+        let (spec, _) = dsp::stft(&src);
+        let mut wav = self.hift.decode(&mel, frames, &spec)?;
+        crate::hift::trim_fade(&mut wav);
+        Ok(wav)
+    }
+}
+
+/// Which decoder `decode` uses.
+pub enum Decoder {
+    /// S3Gen ported to ggml. The default when the S3Gen GGUF and the reference's conditioning are given.
+    Ggml(Box<GgmlDecoder>),
+    /// Kitten's own PyTorch S3Gen in a separate process: the labelled fallback.
+    PyTorch(PyDecoder),
 }
 
 /// What [`PyDecoder::decode_many`] returns: each chunk's PCM, the S3Gen load time and each chunk's decode time.
@@ -209,7 +266,7 @@ pub struct KittenEngine {
     pub reference: Reference,
     ref_text: Vec<u32>,
     speaker: Vec<f32>,
-    pub decoder: PyDecoder,
+    pub decoder: Decoder,
     pub last: GenStats,
     seed_for_decode: u64,
     tag: u32,
@@ -220,7 +277,7 @@ impl KittenEngine {
         model: Model,
         tokenizer: Tokenizer,
         reference: Reference,
-        decoder: PyDecoder,
+        decoder: Decoder,
         threads: usize,
     ) -> Result<Self, String> {
         let tm = TokenMap::from_meta(&model.meta)?;
@@ -245,14 +302,26 @@ impl KittenEngine {
             repetition_window: u("repetition_window", 50) as usize,
             ..Settings::default()
         };
-        let backend = match model.weights {
-            crate::model::Weights::Ternary => "ggml-cpu (TQ2_0 ternary LM); decoder: PyTorch S3Gen bridge",
-            _ => "ggml-cpu (f32 LM); decoder: PyTorch S3Gen bridge",
+        if let Decoder::Ggml(_) = decoder {
+            if reference.s3.is_none() {
+                return Err(
+                    "the ggml decoder needs the reference's S3Gen conditioning (re-run kitten_ref.py reference)".into(),
+                );
+            }
+        }
+        let lm = match model.weights {
+            crate::model::Weights::Ternary => "ggml-cpu LM (TQ2_0 ternary)",
+            _ => "ggml-cpu LM (f32)",
         };
+        let dec = match decoder {
+            Decoder::Ggml(_) => "ggml-cpu S3Gen decoder",
+            Decoder::PyTorch(_) => "PyTorch S3Gen decoder (bridge)",
+        };
+        let backend = format!("{lm}; {dec}");
         Ok(KittenEngine {
             info: EngineInfo {
                 family: "kitten-tts-2".into(),
-                backend: backend.into(),
+                backend,
                 parity: "distribution".into(),
             },
             model,
@@ -349,10 +418,19 @@ impl Engine for KittenEngine {
     fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
         self.tag += 1;
         let tag = format!("chunk{}-{}", self.tag, std::process::id());
-        let samples = self
-            .decoder
-            .decode(&self.reference.path, &codes.frames, self.seed_for_decode, &tag)
-            .map_err(EngineError)?;
+        let samples = match &self.decoder {
+            Decoder::Ggml(d) => {
+                let r = self
+                    .reference
+                    .s3
+                    .as_ref()
+                    .ok_or_else(|| EngineError("no S3Gen conditioning".into()))?;
+                d.decode(&codes.frames, r, self.seed_for_decode).map_err(EngineError)?
+            }
+            Decoder::PyTorch(p) => p
+                .decode(&self.reference.path, &codes.frames, self.seed_for_decode, &tag)
+                .map_err(EngineError)?,
+        };
         Ok(Pcm {
             samples,
             sample_rate: 24000,

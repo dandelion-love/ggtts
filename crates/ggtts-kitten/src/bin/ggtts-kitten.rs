@@ -20,8 +20,10 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use ggtts_core::engine::{ChunkRequest, Engine};
-use ggtts_kitten::engine::{KittenEngine, PyDecoder, Reference};
+use ggtts_kitten::engine::{Decoder, GgmlDecoder, KittenEngine, PyDecoder, Reference};
+use ggtts_kitten::flow::Flow;
 use ggtts_kitten::gguf::Gguf;
+use ggtts_kitten::hift::Hift;
 use ggtts_kitten::model::{Model, Session, Weights};
 use ggtts_kitten::parity::{self, BAR_F32, BAR_TERNARY};
 use ggtts_kitten::tokenizer::Tokenizer;
@@ -185,11 +187,23 @@ fn render_cmd(a: &Args) -> Result<bool, String> {
     let load_s = t0.elapsed().as_secs_f64();
     let tok = Tokenizer::open(Path::new(a.get("tokenizer")?))?;
     let reference = Reference::open(Path::new(a.get("reference")?))?;
-    let decoder = PyDecoder {
-        python: PathBuf::from(a.get("python")?),
-        script: PathBuf::from(a.get("script")?),
+    let py = PyDecoder {
+        python: PathBuf::from(a.or("python", "")),
+        script: PathBuf::from(a.or("script", "")),
         threads,
         workdir: out_dir.join("work"),
+    };
+    // The ggml S3Gen decoder when its GGUF is given; the PyTorch bridge otherwise, or with --decoder pytorch.
+    let decoder = match (a.map.get("s3gguf"), a.or("decoder", "ggml")) {
+        (Some(p), "ggml") => {
+            let g = Gguf::open(Path::new(p))?;
+            Decoder::Ggml(Box::new(GgmlDecoder {
+                flow: Flow::load(&g, threads)?,
+                hift: Hift::load(&g, threads)?,
+            }))
+        }
+        (_, "ggml" | "pytorch") => Decoder::PyTorch(py),
+        (_, d) => return Err(format!("unknown --decoder {d}")),
     };
     let mut eng = KittenEngine::new(model, tok, reference, decoder, threads)?;
     eng.max_new_tokens = a.or("max-tokens", "1000").parse().map_err(|_| "bad --max-tokens")?;
@@ -222,15 +236,31 @@ fn render_cmd(a: &Args) -> Result<bool, String> {
     if tokens_only {
         return Ok(true);
     }
-    // Phase 2: the PyTorch S3Gen bridge, all lines in one process.
+    // Phase 2: the decoder. The PyTorch bridge decodes every line in one process; the ggml decoder in this one.
     let td = Instant::now();
     let chunks: Vec<Vec<u16>> = gens.iter().map(|g| g.0.codes.frames.clone()).collect();
-    let (pcms, bridge_load_s, dec_each) = eng.decoder.decode_many(
-        &eng.reference.path,
-        &chunks,
-        seed,
-        &format!("render-{}", std::process::id()),
-    )?;
+    let (pcms, bridge_load_s, dec_each) = match &eng.decoder {
+        Decoder::PyTorch(p) => p.decode_many(
+            &eng.reference.path,
+            &chunks,
+            seed,
+            &format!("render-{}", std::process::id()),
+        )?,
+        Decoder::Ggml(d) => {
+            let r = eng
+                .reference
+                .s3
+                .as_ref()
+                .ok_or("no S3Gen conditioning in the reference")?;
+            let (mut pcms, mut each) = (Vec::new(), Vec::new());
+            for (c, g) in chunks.iter().zip(&gens) {
+                let t = Instant::now();
+                pcms.push(d.decode(c, r, g.3)?);
+                each.push(t.elapsed().as_secs_f64());
+            }
+            (pcms, 0.0, each)
+        }
+    };
     let bridge_wall_s = td.elapsed().as_secs_f64();
     let (mut sum_lm, mut sum_audio) = (0f64, 0f64);
     for (i, ((gen, lm_s, st, line_seed), samples)) in gens.iter().zip(&pcms).enumerate() {
@@ -256,7 +286,7 @@ fn render_cmd(a: &Args) -> Result<bool, String> {
     }
     let rtf_all = (sum_lm + bridge_wall_s) / sum_audio.max(1e-9);
     println!(
-        "all: {sum_audio:.2}s audio; LM {sum_lm:.1}s; bridge {bridge_wall_s:.1}s wall (S3Gen load {bridge_load_s:.1}s); RTF overall {rtf_all:.2} (model load excluded)"
+        "all: {sum_audio:.2}s audio; LM {sum_lm:.1}s; decoder {bridge_wall_s:.1}s wall (PyTorch S3Gen load {bridge_load_s:.1}s, 0 on ggml); RTF overall {rtf_all:.2} (model load excluded)"
     );
     report.push(
         serde_json::json!({"summary": {"audio_s": sum_audio, "lm_s": sum_lm, "bridge_wall_s": bridge_wall_s,

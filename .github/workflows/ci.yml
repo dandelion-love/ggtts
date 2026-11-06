@@ -62,6 +62,40 @@ jobs:
         run: cargo test --workspace --locked -- --nocapture
       - run: cargo run --locked -p ggtts-cli --bin ggtts-render -- --version
 
+  ggml:
+    name: ggml (ubuntu-latest, CPU, ggml built from the submodule)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Fetch the ggml submodule at its pin
+        run: |
+          set -eu
+          git submodule update --init crates/ggtts-ggml-sys/ggml
+          pin=$(sed -n 's/^pub const GGML_COMMIT: &str = "\([0-9a-f]\{40\}\)";$/\1/p' crates/ggtts-ggml-sys/src/lib.rs)
+          test "$(git -C crates/ggtts-ggml-sys/ggml rev-parse HEAD)" = "$pin"
+          echo "ggml submodule at $pin"
+      - name: cargo clippy with the engines (ggml built by cargo with CMake)
+        run: cargo clippy --workspace --all-targets --features ggtts-cli/ggml --locked -- -D warnings
+      - name: Test with the engines (the identity checks need model files and stay opt-in, so they report ignored)
+        run: cargo test --workspace --features ggtts-cli/ggml --locked -- --nocapture
+      - name: ggml links and computes (one ggml_add through the bindings)
+        run: cargo test --locked -p ggtts-ggml-sys --features ggml tests::links_and_runs_one_op -- --exact
+      - name: ggtts-render refuses a file that is not a model
+        run: |
+          set -u
+          cargo build --locked -p ggtts-cli --features ggml
+          printf 'not a model' > not-a-model.gguf
+          if target/debug/ggtts-render --model not-a-model.gguf --out x.flac --text hi 2> err.txt; then
+            echo "::error::ggtts-render accepted a file that is not a GGUF"
+            exit 1
+          fi
+          cat err.txt
+          grep -F 'not a GGUF file' err.txt
+
   planted-ceiling:
     name: planted ceiling (44 must turn the pipeline cases red)
     runs-on: ubuntu-latest

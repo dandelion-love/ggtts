@@ -36,6 +36,8 @@ fn run() -> Result<bool, String> {
     let (mut repo, mut weights, mut out, mut verify_only, mut plant) = (None, None, None, None, None);
     let mut s3gen: Option<PathBuf> = None;
     let mut pyannote: Option<PathBuf> = None;
+    // Q4_0 by default: the one layout that passes the ternary arm's parity bar (DESIGN.md, Measured).
+    let mut layout = ggtts_kitten::ternary::Layout::Q4;
     while let Some(a) = args.next() {
         let mut val = || args.next().ok_or(format!("{a} needs a value"));
         match a.as_str() {
@@ -46,6 +48,10 @@ fn run() -> Result<bool, String> {
             "--plant" => plant = Some(val()?),
             "--s3gen" => s3gen = Some(PathBuf::from(val()?)),
             "--pyannote" => pyannote = Some(PathBuf::from(val()?)),
+            "--layout" => {
+                let v = val()?;
+                layout = ggtts_kitten::ternary::Layout::parse(&v).ok_or(format!("unknown --layout {v}"))?;
+            }
             "--version" => {
                 println!("ggtts-kitten-convert {}", ggtts_core::VERSION);
                 return Ok(true);
@@ -101,12 +107,13 @@ fn run() -> Result<bool, String> {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let t1 = Instant::now();
-            let s = convert::convert(&st, &model, &lm, &source, &out, rule, strict)?;
+            let s = convert::convert(&st, &model, &lm, &source, &out, rule, strict, layout)?;
             eprintln!(
-                "wrote {}: {} ternary matrices ({} weights) as padded TQ2_0, {} bf16, {} f32, {} bytes of tensors, in {:.1}s",
+                "wrote {}: {} ternary matrices ({} weights) as {}, {} bf16, {} f32, {} bytes of tensors, in {:.1}s",
                 out.display(),
                 s.ternary,
                 s.ternary_weights,
+                layout.name(),
                 s.bf16,
                 s.f32,
                 s.bytes,

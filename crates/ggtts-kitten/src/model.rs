@@ -18,10 +18,10 @@ use std::ptr;
 
 use ggtts_ggml_sys as g;
 
-use crate::convert::{ARCH, EMBED, LAYOUT};
+use crate::convert::{ARCH, EMBED};
 use crate::gguf::{GgmlType, Gguf};
 use crate::safetensors::bf16_to_f32;
-use crate::ternary::{self, GROUP};
+use crate::ternary::{Layout, GROUP};
 
 /// How the ternary matrices are held at run time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +66,8 @@ struct Layer {
 pub struct Model {
     pub hp: Hparams,
     pub weights: Weights,
+    /// How the ternary matrices are stored in the GGUF.
+    pub layout: Layout,
     ctx: *mut g::ggml_context,
     layers: Vec<Layer>,
     norm: *mut g::ggml_tensor,
@@ -94,9 +96,10 @@ fn f32s(b: &[u8]) -> Vec<f32> {
 
 impl Model {
     pub fn load(gguf: &Gguf, weights: Weights) -> Result<Model, String> {
-        if gguf.str("general.architecture")? != ARCH || gguf.str("kitten.ternary.layout")? != LAYOUT {
-            return Err("not a ggtts Kitten-TTS 2 GGUF with a known ternary layout".into());
+        if gguf.str("general.architecture")? != ARCH {
+            return Err("not a ggtts Kitten-TTS 2 GGUF".into());
         }
+        let layout = Layout::parse(gguf.str("kitten.ternary.layout")?).ok_or("unknown ternary layout")?;
         let u = |k: &str| gguf.u32(&format!("kitten.{k}")).map(|v| v as usize);
         let hp = Hparams {
             n_layer: u("block_count")?,
@@ -116,6 +119,7 @@ impl Model {
             let n: usize = t.dims.iter().map(|&d| d as usize).product();
             mem += match (t.ty, weights) {
                 (GgmlType::TQ2_0, Weights::F32) => n / 2 * 4,
+                (GgmlType::Q4_0, Weights::F32) => n * 4,
                 (GgmlType::BF16, Weights::F32 | Weights::TernaryF32Head) => n * 4,
                 _ => t.len,
             };
@@ -135,6 +139,7 @@ impl Model {
         let mut model = Model {
             hp,
             weights,
+            layout,
             ctx,
             layers: Vec::new(),
             norm: ptr::null_mut(),
@@ -156,13 +161,19 @@ impl Model {
                         ptr::copy_nonoverlapping(data.as_ptr(), (*x).data as *mut u8, data.len());
                         x
                     }
-                    (GgmlType::TQ2_0, Weights::F32) => {
-                        let (cols, rows) = (t.dims[0] as usize / 2, t.dims[1] as usize);
+                    (GgmlType::Q4_0, Weights::Ternary | Weights::TernaryF32Head) => {
+                        let x = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_Q4_0, t.dims[0] as i64, t.dims[1] as i64);
+                        ptr::copy_nonoverlapping(data.as_ptr(), (*x).data as *mut u8, data.len());
+                        x
+                    }
+                    (GgmlType::TQ2_0 | GgmlType::Q4_0, Weights::F32) => {
+                        let cols = t.dims[0] as usize / if t.ty == GgmlType::TQ2_0 { 2 } else { 1 };
+                        let rows = t.dims[1] as usize;
                         let x = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_F32, cols as i64, rows as i64);
                         let dst = std::slice::from_raw_parts_mut((*x).data as *mut f32, cols * rows);
-                        let rb = cols / GROUP * ternary::TQ2_0_BLOCK_BYTES;
+                        let rb = layout.row_bytes(cols);
                         for r in 0..rows {
-                            let row = ternary::dequantize_row(&data[r * rb..(r + 1) * rb], cols)?;
+                            let row = layout.dequantize_row(&data[r * rb..(r + 1) * rb], cols)?;
                             dst[r * cols..(r + 1) * cols].copy_from_slice(&row);
                         }
                         x
@@ -360,7 +371,7 @@ impl<'m> Session<'m> {
         let n_kv = pos0 + t;
         let (hd, nh, nkv) = (hp.head_dim as i64, hp.n_head as i64, hp.n_head_kv as i64);
         let ti = t as i64;
-        let padded = m.weights != Weights::F32;
+        let padded = m.weights != Weights::F32 && m.layout == Layout::Tq2Pad;
         unsafe {
             let size = g::ggml_tensor_overhead() * GRAPH_SIZE + g::ggml_graph_overhead_custom(GRAPH_SIZE, false);
             let ctx = g::ggml_init(g::ggml_init_params {

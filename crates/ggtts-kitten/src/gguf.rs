@@ -14,6 +14,7 @@ pub const ALIGNMENT: usize = 32;
 pub enum GgmlType {
     F32 = 0,
     F16 = 1,
+    Q4_0 = 2,
     TQ2_0 = 35,
     BF16 = 30,
 }
@@ -23,6 +24,7 @@ impl GgmlType {
         match v {
             0 => Some(GgmlType::F32),
             1 => Some(GgmlType::F16),
+            2 => Some(GgmlType::Q4_0),
             30 => Some(GgmlType::BF16),
             35 => Some(GgmlType::TQ2_0),
             _ => None,
@@ -35,6 +37,7 @@ impl GgmlType {
             GgmlType::F32 => 4 * n,
             GgmlType::F16 | GgmlType::BF16 => 2 * n,
             GgmlType::TQ2_0 => n / 256 * crate::ternary::TQ2_0_BLOCK_BYTES,
+            GgmlType::Q4_0 => n / 32 * crate::ternary::Q4_0_BLOCK_BYTES,
         }
     }
 }

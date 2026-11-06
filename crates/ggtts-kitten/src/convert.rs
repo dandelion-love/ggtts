@@ -9,10 +9,9 @@ use std::path::Path;
 
 use crate::gguf::{self, GgmlType, Gguf, TensorOut, Value};
 use crate::safetensors::{Dtype, SafeTensors};
-use crate::ternary::{self, Rule, GROUP, TQ2_0_BLOCK_BYTES};
+use crate::ternary::{Layout, Rule, GROUP};
 
 pub const ARCH: &str = "kitten-tts-2";
-pub const LAYOUT: &str = "tq2_0-pad128";
 pub const EMBED: &str = "model.embed_tokens.weight";
 
 /// True for the 196 ternary-born linears: `q/k/v/o_proj` and `gate/up/down_proj` of every layer.
@@ -55,6 +54,7 @@ pub fn metadata(
     model: &serde_json::Value,
     lm: &serde_json::Value,
     source: &str,
+    layout: Layout,
 ) -> Result<BTreeMap<String, Value>, String> {
     let mut kv = BTreeMap::new();
     let mut put = |k: &str, v: Value| {
@@ -112,7 +112,7 @@ pub fn metadata(
         put("kitten.emotion_control", Value::Str(e.into()));
     }
     put("kitten.ternary.group_size", Value::U32(GROUP as u32));
-    put("kitten.ternary.layout", Value::Str(LAYOUT.into()));
+    put("kitten.ternary.layout", Value::Str(layout.name().into()));
     Ok(kv)
 }
 
@@ -136,8 +136,9 @@ pub fn convert(
     out: &Path,
     rule: Rule,
     strict: bool,
+    layout: Layout,
 ) -> Result<Summary, String> {
-    let kv = metadata(model, lm, source)?;
+    let kv = metadata(model, lm, source, layout)?;
     let mut tensors = Vec::new();
     let mut sum = Summary::default();
     for (name, info) in &st.tensors {
@@ -153,14 +154,18 @@ pub fn convert(
                 return Err(format!("{name}: {cols} columns is not a multiple of {GROUP}"));
             }
             let w = st.f32(name)?;
-            let packed = pack_matrix(name, &w, rows, cols, rule, strict)?;
+            let packed = pack_matrix(name, &w, rows, cols, rule, strict, layout)?;
             sum.ternary += 1;
             sum.ternary_weights += rows * cols;
             sum.bytes += packed.len();
             tensors.push(TensorOut {
                 name: name.clone(),
-                dims: vec![2 * cols as u64, rows as u64],
-                ty: GgmlType::TQ2_0,
+                dims: vec![layout.stored_cols(cols) as u64, rows as u64],
+                ty: if layout == Layout::Q4 {
+                    GgmlType::Q4_0
+                } else {
+                    GgmlType::TQ2_0
+                },
                 data: packed,
             });
         } else if name == EMBED {
@@ -193,8 +198,16 @@ pub fn convert(
 }
 
 /// Pack a ternary matrix's rows on up to four threads.
-fn pack_matrix(name: &str, w: &[f32], rows: usize, cols: usize, rule: Rule, strict: bool) -> Result<Vec<u8>, String> {
-    let row_bytes = cols / GROUP * TQ2_0_BLOCK_BYTES;
+fn pack_matrix(
+    name: &str,
+    w: &[f32],
+    rows: usize,
+    cols: usize,
+    rule: Rule,
+    strict: bool,
+    layout: Layout,
+) -> Result<Vec<u8>, String> {
+    let row_bytes = layout.row_bytes(cols);
     let threads = 4.min(rows.max(1));
     let per = rows.div_ceil(threads);
     let parts: Vec<Result<Vec<u8>, String>> = std::thread::scope(|s| {
@@ -203,7 +216,8 @@ fn pack_matrix(name: &str, w: &[f32], rows: usize, cols: usize, rule: Rule, stri
                 s.spawn(move || {
                     let mut out = Vec::with_capacity(per * row_bytes);
                     for r in (t * per)..((t + 1) * per).min(rows) {
-                        ternary::pack_row(&w[r * cols..(r + 1) * cols], rule, strict, &mut out)
+                        layout
+                            .pack_row(&w[r * cols..(r + 1) * cols], rule, strict, &mut out)
                             .map_err(|e| format!("{name} row {r}: {e:?}"))?;
                     }
                     Ok(out)
@@ -237,8 +251,9 @@ pub fn verify(st: &SafeTensors, g: &Gguf) -> Result<Verified, String> {
     if g.str("general.architecture")? != ARCH {
         return Err("not a Kitten-TTS 2 GGUF".into());
     }
-    if g.str("kitten.ternary.layout")? != LAYOUT || g.u32("kitten.ternary.group_size")? as usize != GROUP {
-        return Err("unknown ternary layout".into());
+    let layout = Layout::parse(g.str("kitten.ternary.layout")?).ok_or("unknown ternary layout")?;
+    if g.u32("kitten.ternary.group_size")? as usize != GROUP {
+        return Err("unknown ternary group size".into());
     }
     if g.tensors.len() != st.tensors.len() {
         return Err(format!(
@@ -252,13 +267,19 @@ pub fn verify(st: &SafeTensors, g: &Gguf) -> Result<Verified, String> {
         let (t, data) = g.tensor(name)?;
         if is_ternary(name) {
             let (rows, cols) = (info.shape[0], info.shape[1]);
-            if t.ty != GgmlType::TQ2_0 || t.dims != [2 * cols as u64, rows as u64] {
+            let want = if layout == Layout::Q4 {
+                GgmlType::Q4_0
+            } else {
+                GgmlType::TQ2_0
+            };
+            if t.ty != want || t.dims != [layout.stored_cols(cols) as u64, rows as u64] {
                 return Err(format!("{name}: stored as {:?} {:?}", t.ty, t.dims));
             }
             let w = st.f32(name)?;
-            let row_bytes = cols / GROUP * TQ2_0_BLOCK_BYTES;
+            let row_bytes = layout.row_bytes(cols);
             for r in 0..rows {
-                ternary::check_row(&w[r * cols..(r + 1) * cols], &data[r * row_bytes..(r + 1) * row_bytes])
+                layout
+                    .check_row(&w[r * cols..(r + 1) * cols], &data[r * row_bytes..(r + 1) * row_bytes])
                     .map_err(|e| format!("{name} row {r}: {e}"))?;
             }
             v.ternary += 1;
@@ -371,13 +392,17 @@ mod tests {
     }
 
     fn round_trip(rule: Rule, strict: bool) -> Result<Verified, String> {
+        round_trip_in(rule, strict, Layout::Tq2Pad)
+    }
+
+    fn round_trip_in(rule: Rule, strict: bool, layout: Layout) -> Result<Verified, String> {
         let st = SafeTensors::from_bytes(tiny_safetensors()).unwrap();
         let (model, lm) = configs();
-        let tag = format!("{}-{:?}", rule.group, rule.scale);
+        let tag = format!("{}-{:?}-{}", rule.group, rule.scale, layout.name());
         let dir = std::env::temp_dir().join(format!("ggtts-kitten-conv-{}-{tag}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("m.gguf");
-        convert(&st, &model, &lm, "tiny", &out, rule, strict)?;
+        convert(&st, &model, &lm, "tiny", &out, rule, strict, layout)?;
         let g = Gguf::open(&out).unwrap();
         let r = verify(&st, &g);
         std::fs::remove_dir_all(&dir).unwrap();
@@ -403,6 +428,17 @@ mod tests {
             round_trip(wrong, false).is_err(),
             "and the readback finds it when it is written anyway"
         );
+    }
+
+    #[test]
+    fn q4_0_converts_exactly_and_a_planted_group_256_is_red() {
+        let v = round_trip_in(Rule::KITTEN, true, Layout::Q4).unwrap();
+        assert_eq!(v.ternary, 4);
+        let wrong = Rule {
+            group: 256,
+            scale: ScaleRule::AbsMax,
+        };
+        assert!(round_trip_in(wrong, false, Layout::Q4).is_err());
     }
 
     #[test]

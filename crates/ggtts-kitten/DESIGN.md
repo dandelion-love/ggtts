@@ -260,13 +260,22 @@ The bars above were written before these numbers and are not moved by them.
   smoke checkpoint from that reference ran with no Python process at all: 13.88 s of audio at RTF 3.51 on a
   busier machine.
 
-**The ternary arm's cosine gap: what I would try (not tried).** The measured cause is activation quantization:
-`Q8_K` per 128 real values, where kitten-tts-2-cpp's `TQ2_1`-on-AMX path quantizes per 32 (`Q8_0`) and reports a
-cosine above 0.999998. The cheapest fix is to store the ternary matrices as stock `Q4_0`. With `d` set to the group's
-scale and codes 7, 8 and 9, it is exact for ternary weights, as kitten-tts-2-cpp's `ternary-q4_0` export uses it. It
-needs no padding, its activations are `Q8_0` per 32, and it costs 4.5 bits per weight against 4.125 here. A
-`TQ2_1` patch on the ggml pin is the size-optimal alternative. The bar stays as stated until one of them is
-measured.
+**The ternary arm's cosine gap, closed by stock `Q4_0` (2026-11-06).** The measured cause was activation
+quantization: `Q8_K` over 128 real values. kitten-tts-2-cpp's `TQ2_1`-on-AMX path quantizes per 32 (`Q8_0`) and
+reports a cosine above 0.999998. `Q4_0` holds ternary weights exactly: each 32-weight block's `d` is the group's
+scale, with codes 7, 8 and 9. It needs no padding and its activations are `Q8_0`. Measured on the same inputs and
+against the unchanged bars:
+
+| Layout | Readback | Logits RMSE | Min cosine | Argmax | Verdict | GGUF | Prefill (300 tokens) | Generation |
+|---|---|---|---|---|---|---|---|---|
+| padded `TQ2_0` | PASS | 0.0505 | 0.9995754 | 32/32 | **FAIL** (cosine) | 1380 MB | 93-100 tokens/s | 13.4-17.8 tokens/s |
+| `Q4_0` | PASS | 0.0473 | **0.9999091** | 32/32 | **PASS** | 1446 MB | 79-82 tokens/s | 16.2-17.3 tokens/s |
+
+Generation speed is the same within the noise of three alternating runs on a shared machine. Prefill is about 20%
+slower on `Q4_0`, and its file is 5% larger. **`Q4_0` is now the converter's default**, because it is the only
+layout that passes. `--layout tq2_0` keeps the padded form. A planted group of 256 reads back red on `Q4_0` too, and
+through its parity arm gives RMSE `1.2201`, cosine `0.8327` and argmax `25/32`. Both are `ggml` stock types; nothing
+is patched.
 
 ## Layout
 

@@ -589,6 +589,40 @@ fn prepare_cmd(a: &Args) -> Result<bool, String> {
     Ok(true)
 }
 
+fn bench_cmd(a: &Args) -> Result<bool, String> {
+    let threads: usize = a.or("threads", "4").parse().map_err(|_| "bad --threads")?;
+    let steps: usize = a.or("steps", "64").parse().map_err(|_| "bad --steps")?;
+    let prompt: usize = a.or("prompt", "300").parse().map_err(|_| "bad --prompt")?;
+    let path = a.get("gguf")?;
+    let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+    let gguf = Gguf::open(Path::new(path))?;
+    let model = Model::load(&gguf, Weights::Ternary)?;
+    drop(gguf);
+    let ids: Vec<u32> = (0..prompt as u32).map(|i| 151675 + (i * 37) % 6561).collect();
+    let mut embd = Vec::new();
+    model.embed_tokens(&ids, &mut embd);
+    let mut sess = Session::new(&model, prompt + steps + 1, threads)?;
+    let t0 = Instant::now();
+    sess.forward(&embd, 1, false)?;
+    let prefill = t0.elapsed().as_secs_f64();
+    let t1 = Instant::now();
+    for i in 0..steps {
+        let mut e = Vec::new();
+        model.embed_tokens(&[151675 + (i as u32 * 11) % 6561], &mut e);
+        sess.forward(&e, 1, false)?;
+    }
+    let step = t1.elapsed().as_secs_f64();
+    println!(
+        "{}: layout {}, {:.0} MB; prefill {prompt} tokens {prefill:.2}s ({:.0} tokens/s); {steps} steps {step:.2}s ({:.1} tokens/s)",
+        path,
+        model.layout.name(),
+        size as f64 / 1e6,
+        prompt as f64 / prefill,
+        steps as f64 / step
+    );
+    Ok(true)
+}
+
 fn text_of(lines: &[String], i: usize) -> &str {
     &lines[i]
 }
@@ -604,6 +638,7 @@ fn main() -> ExitCode {
         "decoder-parity" => flow_cmd(&a),
         "cond-parity" => cond_cmd(&a),
         "prepare" => prepare_cmd(&a),
+        "bench" => bench_cmd(&a),
         _ => Err("usage: ggtts-kitten (parity|tokcheck|render) ...; see the source's header".into()),
     });
     match res {

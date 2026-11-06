@@ -323,3 +323,174 @@ pub(crate) mod tests {
         assert!(check_row(&row, &out).is_err());
     }
 }
+
+/// `sizeof(block_q4_0)`: an fp16 scale and 16 bytes of 4-bit codes for 32 weights.
+pub const Q4_0_BLOCK_BYTES: usize = 18;
+
+/// How the ternary matrices are stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    /// `TQ2_0`, one Kitten group per 256-weight block with zeros in the second half (`Q8_K` activations).
+    Tq2Pad,
+    /// Stock `Q4_0`: each 32-weight block carries its group's scale as `d` and codes 7, 8, 9 for -1, 0, +1, which is
+    /// exact; activations are `Q8_0`, quantized per 32.
+    Q4,
+}
+
+impl Layout {
+    pub fn name(self) -> &'static str {
+        match self {
+            Layout::Tq2Pad => "tq2_0-pad128",
+            Layout::Q4 => "q4_0-g128",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "tq2_0-pad128" | "tq2_0" => Some(Layout::Tq2Pad),
+            "q4_0-g128" | "q4_0" => Some(Layout::Q4),
+            _ => None,
+        }
+    }
+    /// The stored row length (`ne[0]`) for `cols` weights.
+    pub fn stored_cols(self, cols: usize) -> usize {
+        match self {
+            Layout::Tq2Pad => 2 * cols,
+            Layout::Q4 => cols,
+        }
+    }
+    pub fn row_bytes(self, cols: usize) -> usize {
+        match self {
+            Layout::Tq2Pad => cols / GROUP * TQ2_0_BLOCK_BYTES,
+            Layout::Q4 => cols / 32 * Q4_0_BLOCK_BYTES,
+        }
+    }
+    pub fn pack_row(self, row: &[f32], rule: Rule, strict: bool, out: &mut Vec<u8>) -> Result<(), Inexact> {
+        match self {
+            Layout::Tq2Pad => pack_row(row, rule, strict, out),
+            Layout::Q4 => pack_row_q4(row, rule, strict, out),
+        }
+    }
+    pub fn check_row(self, src: &[f32], packed: &[u8]) -> Result<(), String> {
+        match self {
+            Layout::Tq2Pad => check_row(src, packed),
+            Layout::Q4 => check_row_q4(src, packed),
+        }
+    }
+    pub fn dequantize_row(self, packed: &[u8], n: usize) -> Result<Vec<f32>, String> {
+        match self {
+            Layout::Tq2Pad => dequantize_row(packed, n),
+            Layout::Q4 => dequantize_row_q4(packed, n),
+        }
+    }
+}
+
+/// Pack one row as `Q4_0` (ggml-quants.c `block_q4_0`: `d`, then byte `j` holds weight `j` in its low nibble and
+/// weight `j + 16` in its high nibble; the value is `(q - 8) * d`).
+pub fn pack_row_q4(row: &[f32], rule: Rule, strict: bool, out: &mut Vec<u8>) -> Result<(), Inexact> {
+    let (trits, scales) = quantize_row(row, rule);
+    for (g, s) in scales.iter().enumerate() {
+        let h = match f32_to_f16_exact(*s) {
+            Some(h) => h,
+            None if strict => return Err(Inexact::ScaleNotF16 { group: g, scale: *s }),
+            None => half_round(*s),
+        };
+        for blk in 0..GROUP / 32 {
+            let base = g * GROUP + blk * 32;
+            if strict {
+                for j in 0..32 {
+                    if f32::from(trits[base + j]) * s != row[base + j] {
+                        return Err(Inexact::NotTernary {
+                            col: base + j,
+                            value: row[base + j],
+                            scale: *s,
+                        });
+                    }
+                }
+            }
+            out.extend_from_slice(&h.to_le_bytes());
+            for j in 0..16 {
+                let lo = (trits[base + j] + 8) as u8;
+                let hi = (trits[base + j + 16] + 8) as u8;
+                out.push(lo | (hi << 4));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Dequantize a `Q4_0` row.
+pub fn dequantize_row_q4(packed: &[u8], n: usize) -> Result<Vec<f32>, String> {
+    let mut out = vec![0f32; n];
+    for b in 0..n / 32 {
+        let blk = &packed[b * Q4_0_BLOCK_BYTES..(b + 1) * Q4_0_BLOCK_BYTES];
+        let d = f16_to_f32(u16::from_le_bytes([blk[0], blk[1]]));
+        for j in 0..16 {
+            out[b * 32 + j] = (f32::from(blk[2 + j] & 15) - 8.0) * d;
+            out[b * 32 + j + 16] = (f32::from(blk[2 + j] >> 4) - 8.0) * d;
+        }
+    }
+    Ok(out)
+}
+
+/// The readback check for a `Q4_0` row: every code is 7, 8 or 9 and equals the source's trit, every block's scale
+/// equals its group's absmax bit for bit, and every value equals the source's.
+pub fn check_row_q4(src: &[f32], packed: &[u8]) -> Result<(), String> {
+    let (trits, scales) = quantize_row(src, Rule::KITTEN);
+    for b in 0..src.len() / 32 {
+        let blk = &packed[b * Q4_0_BLOCK_BYTES..(b + 1) * Q4_0_BLOCK_BYTES];
+        let d = f16_to_f32(u16::from_le_bytes([blk[0], blk[1]]));
+        let s = scales[b * 32 / GROUP];
+        if d.to_bits() != s.to_bits() {
+            return Err(format!("block {b}: scale {d} read back, source absmax {s}"));
+        }
+        for j in 0..32 {
+            let byte = blk[2 + j % 16];
+            let q = if j < 16 { byte & 15 } else { byte >> 4 };
+            if !(7..=9).contains(&q) {
+                return Err(format!("block {b}: code {q} is not a trit"));
+            }
+            let col = b * 32 + j;
+            let t = q as i8 - 8;
+            if t != trits[col] || f32::from(t) * d != src[col] {
+                return Err(format!(
+                    "col {col}: {} read back, source {}",
+                    f32::from(t) * d,
+                    src[col]
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod q4_tests {
+    use super::tests::kitten_row;
+    use super::*;
+
+    #[test]
+    fn q4_packs_exactly_and_plants_are_caught() {
+        let row = kitten_row(2048, 3);
+        let mut out = Vec::new();
+        pack_row_q4(&row, Rule::KITTEN, true, &mut out).unwrap();
+        assert_eq!(out.len(), 2048 / 32 * Q4_0_BLOCK_BYTES);
+        check_row_q4(&row, &out).unwrap();
+        assert!(dequantize_row_q4(&out, 2048)
+            .unwrap()
+            .iter()
+            .zip(&row)
+            .all(|(a, b)| a == b));
+        let mut bad = Vec::new();
+        pack_row_q4(
+            &row,
+            Rule {
+                group: 256,
+                scale: ScaleRule::AbsMax,
+            },
+            false,
+            &mut bad,
+        )
+        .unwrap();
+        assert!(check_row_q4(&row, &bad).is_err());
+    }
+}

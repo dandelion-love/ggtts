@@ -54,9 +54,15 @@ Work meets on the `rc` branch before it reaches `main`.
 4. Commit subjects say what changed and what was found, not "fix" or "update".
 
 **Promotion.** `main` moves only by one reviewed pull request from `rc`. Hosted runners have no GPU, so before that
-pull request is merged, someone with a supported GPU runs `scripts/rc_gate.sh --ref origin/rc` and attaches the
-`rc-gate.json` it writes. The gate repeats CI's CPU steps at that ref, and it will run the GPU parity steps once an
-engine exists. Until then it records `"gpu": "not-run (no engine)"`, so a CPU pass is never read as a GPU result.
+pull request is merged, someone with a supported GPU runs `scripts/rc_gate.sh --ref origin/rc --work /path/to/scratch`
+and attaches the resulting `rc-gate.json` and the logs it names. The gate runs CPU checks and both engines' CUDA
+probes; missing prerequisites make the result incomplete, never a pass. It requires Python 3, Rust at the pinned
+version, CUDA and the model/reference inputs documented at the top of each engine's `scripts/cuda_probe.sh`.
+Set their environment variables before running; the gate assigns separate `WORK` and `CARGO_TARGET_DIR` directories
+under the persistent scratch directory. Use `--wait-file` for a busy GPU. The report identifies the commit, model
+and fixture hashes, device, probe commands and logs. External CUDA library build provenance must be checked separately.
+The probes compare each engine to its own reference; they do not prove CPU and GPU outputs identical, nor the
+instrument no-change proof in #34. A pass applies only to the recorded commit.
 Release tags are cut from `main`. Pre-release tags (`vX.Y.Z-rc.N`) may be cut from `rc`.
 
 By contributing you agree that your contribution is licensed under the MIT licence of this repository.

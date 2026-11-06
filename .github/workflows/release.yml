@@ -71,6 +71,8 @@ jobs:
           # The binary, LICENSE, README and the script instruments (instruments/ beside the binary), packed by the
           # same script ci.yml smoke-tests on every pull request.
           scripts/package_and_smoke.sh pack "target/release/ggtts-render${EXE}" "dist/$name"
+          # The engines are read from what the binary says it carries; the script refuses an empty or short list.
+          engines=$(bash scripts/buildinfo_engines.sh "dist/$name/ggtts-render${EXE}" qwen3-tts kitten-tts-2)
           cat > "dist/$name/BUILDINFO.json" <<EOF
           {
             "ggtts": "${TAG}",
@@ -79,7 +81,8 @@ jobs:
             "ggml_describe": "${describe}",
             "rustc": "$(rustc -V)",
             "target": "${TARGET}",
-            "features": ["cpu", "ggml", "qwen3-tts", "kitten-tts-2"],
+            "features": ["cpu", "ggml"],
+            "engines": ${engines},
             "built_by": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           }
           EOF

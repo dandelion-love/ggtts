@@ -128,6 +128,7 @@ pub struct Summary {
 
 /// Convert. `strict` refuses a source that `rule` does not reproduce exactly; a planted fault passes
 /// `strict = false` so that the fault reaches the file and the readback check has to find it.
+#[allow(clippy::too_many_arguments)] // the source, two configs, a name, a path and three choices of rule and layout
 pub fn convert(
     st: &SafeTensors,
     model: &serde_json::Value,

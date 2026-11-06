@@ -424,9 +424,10 @@ prefill and 16 single-token steps. The bar does not move:
 cosine `0.9999991`, rel L2 `1.3e-3`, argmax 8/8; f32 rel L2 `1.5e-7`.
 
 So on the CPU the graph and the cache agree to f32 rounding, and the one-column quantized products do not match the
-many-column ones. The quantized body differs at `5.9e-4` and the bf16 head adds the rest. ggml's CPU hands a
-many-column product to a different kernel than a one-column one (`ggml-cpu/ggml-cpu.c:1305`, `:1373`, llamafile's
-sgemm). Which kernel step introduces the `5.9e-4` is not yet found. Two notes on size:
+many-column ones. The quantized body differs at `5.9e-4` and the bf16 head adds the rest. (Corrected 2026-11-06:
+this paragraph said ggml's CPU hands a many-column product to a different kernel, llamafile's sgemm. It does not.
+`GGML_LLAMAFILE` is off in this build, and the products are bit-identical. The cause is under "The CPU
+one-column gap, explained" below.) Two notes on size:
 * The gap is a fraction of the ternary arm's own distance from PyTorch: RMSE 0.047 on the batched path.
 * One near-tie argmax in 16 flipped.
 
@@ -464,6 +465,53 @@ Predictions for the probe after this change:
 * The fusions-on control now reaches the single-token steps. Whether it fails tells whether the fused add was the
   render's NaN or a bystander.
 * The renders stay byte-identical, and their hash is unchanged, because they never take the padded path.
+
+### The CPU one-column gap, explained (2026-11-06, ggtts#21)
+
+On the CPU, the ternary arm's single-token forward differs from the batched one: argmax 15/16, rel L2 `1.4e-3`. The
+f32 arm differs by only `1.3e-7`. The cause is not a kernel. It is `Q8_0` rounding amplifying f32-sized
+differences.
+
+* **Both paths run the same kernel, and it gives bit-identical results.** At the pin, ggml's CPU `mul_mat` quantizes
+  every activation column to `Q8_0`, per 32 values, with the same `from_float` (`ggml-cpu/ggml-cpu.c:1322-1356`;
+  `Q4_0`'s `vec_dot_type` is `Q8_0`, `:239-242`). It computes every output with the same `vec_dot`, one row at a
+  time, whatever the column count (`:1243`, in `ggml_compute_forward_mul_mat_one_chunk`). The `llamafile_sgemm` branches (`:1295`, `:1366`) exist only under `GGML_LLAMAFILE`,
+  which is off in this build (`GGML_LLAMAFILE_DEFAULT` OFF, `ggml/CMakeLists.txt:113-114`, and `build.rs` does not
+  set it). `tests/q4_columns.rs` checks the result directly. 256 ternary rows of 2048 times 16 heavy-tailed columns,
+  at 1 and at 4 threads: every output of the one-column products has the same bits as the 16-column product.
+* **What differs is upstream, and `Q8_0` amplifies it.** The f32 arm shows how far the two paths' f32 arithmetic
+  differs: `1.3e-7` (attention and softmax over a different number of positions, summed in a different order).
+  `Q8_0` rounds each activation to one of 255 levels of its block's absmax, so an input that moves by `1e-7` leaves
+  almost every output alone. Where an activation crosses a rounding boundary, the output jumps by a whole level. In
+  `tests/q4_columns.rs`, a relative perturbation of `1e-6` on the activations moves the f32 product's output by
+  1.03 times as much, and the `Q4_0` product's by 39.5 times as much. Over 28 layers and 16 positions the crossings
+  compound into the `1.4e-3`. The bf16 head (`vec_dot_type` BF16) is a second rounding stage of the same kind, which
+  is why an f32 head halves the gap.
+
+**The levers, measured, and why none is taken.**
+
+* **Exact f16 weights, the lever that fixed CUDA, does not carry over.** ggml's CPU multiplies an f16 matrix by
+  rounding the activations to f16 (`ggml-cpu/ggml-cpu.c:221-224`, `vec_dot_type` F16). The CPU `mul_mat` never reads
+  `GGML_PREC_F32`. So on the CPU it would be another rounding stage, finer than `Q8_0` but still discontinuous. It
+  would also expose the f16 overflow that the last layer showed on CUDA.
+* **Exact f32 weights** (`--weights f32`, the f32 arm) remove the rounding. They hold every bar: hidden rel L2
+  `1.8e-6` against PyTorch, and single-token against batched `1.3e-7` with 16/16 argmax. They cost this much, on
+  4 threads, alternating two runs each:
+
+  | | `Q4_0` | f32 weights |
+  |---|---|---|
+  | prefill, 300 tokens | 89-90 tokens/s | 65-66 tokens/s |
+  | generation, 64 steps | 19.2-20.3 tokens/s | 6.2-6.3 tokens/s |
+
+  That is generation about 3.2 times slower. The weights take about 6.9 GB of memory instead of 1.5 GB: the body as
+  f32, and the head widened from bf16.
+
+**Decision:** keep `Q4_0` on the CPU. Generation is the CPU's bottleneck, already below the 25 tokens/s real time
+needs, and the gap is not a defect. It is the expected behaviour of 8-bit activation rounding, whose effect on the
+model is what the ternary arm's own bar against PyTorch measures. That bar passes. The bar for the single-token check
+is not moved. The ternary arm still misses it on the CPU, and the pinned expected-failure test
+(`cpu_one_column_ternary_product_differs_pinned`) stays. The f32 arm stays as the parity tool that shows the paths
+agree when nothing is rounded.
 
 ## Layout
 

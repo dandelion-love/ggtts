@@ -100,6 +100,7 @@ fn a_wav_stream_on_stdout_and_the_flac_beside_it() {
         flac.to_str().unwrap(),
         "--stream",
         "-",
+        "--stream-raw",
     ]);
     let (pieces, batch, rate, gain) = reference(&story);
 
@@ -139,6 +140,7 @@ fn a_raw_stream_to_a_file_without_a_flac() {
         raw.to_str().unwrap(),
         "--stream-format",
         "s16le",
+        "--stream-raw",
     ]);
     assert!(out.is_empty(), "nothing on stdout when the stream goes to a file");
     let (pieces, _, rate, _) = reference(&story);
@@ -196,8 +198,54 @@ fn stream_flags_are_checked() {
             "x.flac",
         ],
         vec!["--engine", "fake", "--text", "一二三四"],
+        vec![
+            "--engine",
+            "fake",
+            "--text",
+            "一二三四",
+            "--stream-raw",
+            "--out",
+            "x.flac",
+        ],
     ] {
         let o = Command::new(BIN).args(&args).output().unwrap();
         assert!(!o.status.success(), "{args:?} should be refused");
     }
+}
+
+#[test]
+fn the_default_stream_is_levelled_for_a_listener() {
+    let dir = scratch("levelled");
+    let story = story(&dir);
+    let (out, err) = run(&["--engine", "fake", "--story", story.to_str().unwrap(), "--stream", "-"]);
+    let (pieces, _, _, _) = reference(&story);
+    // The same pieces, levelled as the binary must have levelled them: one gain, from the first chunk.
+    let (title, paragraphs) = read_text(&std::fs::read_to_string(&story).unwrap());
+    let mut engine = FakeEngine::default();
+    let profile = *engine.profile();
+    let chunks = plan_story(&profile, &paragraphs);
+    let mut lv = ggtts_core::stream::FirstChunkLevel::new(&profile);
+    let mut want = Vec::new();
+    render_story_streamed(
+        &mut engine,
+        &title,
+        &chunks,
+        &RenderOptions::for_profile(&profile),
+        &mut NullEvents,
+        &mut |p| {
+            want.extend(lv.apply(p.samples).into_iter().map(to_i16));
+            Ok(())
+        },
+    )
+    .unwrap();
+    let got = pcm(&out[44..]);
+    assert_eq!(got.len(), pieces.len());
+    assert!(got == want, "the default stream is the levelled pieces");
+    let raw: Vec<i16> = pieces.iter().map(|&x| to_i16(x)).collect();
+    assert!(got != raw, "and not the raw ones");
+    assert!(
+        err.contains("levelled by the first chunk's gain"),
+        "stderr says which stream: {err}"
+    );
+    std::fs::remove_dir_all(dir).ok();
 }

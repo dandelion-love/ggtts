@@ -298,16 +298,27 @@ pub fn render_story_streamed(
 /// above its [`level_floor`](Profile::level_floor), then a clip to ±[`clip`](Profile::clip), rounded to float32.
 /// Returns the gain, or `None` (and leaves the read alone) when no sample is above the floor.
 pub fn level(profile: &Profile, read: &mut [f32]) -> Option<f64> {
+    let gain = level_gain(profile, read)?;
+    apply_gain(profile, read, gain);
+    Some(gain)
+}
+
+/// The gain [`level`] applies to `read`: to the profile's [`target_rms_db`](Profile::target_rms_db) over the samples
+/// above its [`level_floor`](Profile::level_floor). `None` when no sample is above the floor.
+pub fn level_gain(profile: &Profile, read: &[f32]) -> Option<f64> {
     let floor = profile.level_floor;
     let squares: Vec<f32> = read.iter().filter(|x| x.abs() > floor).map(|x| x * x).collect();
     if squares.is_empty() {
         return None;
     }
     let rms = f64::from(mean_f32(&squares).sqrt());
-    let gain = pow(10.0, (profile.target_rms_db - 20.0 * log10(rms + 1e-9)) / 20.0);
+    Some(pow(10.0, (profile.target_rms_db - 20.0 * log10(rms + 1e-9)) / 20.0))
+}
+
+/// Multiply by `gain`, clip to ±[`clip`](Profile::clip), and round to float32: [`level`]'s arithmetic, per sample.
+pub fn apply_gain(profile: &Profile, read: &mut [f32], gain: f64) {
     let clip = profile.clip;
     for x in read.iter_mut() {
         *x = (f64::from(*x) * gain).clamp(-clip, clip) as f32;
     }
-    Some(gain)
 }

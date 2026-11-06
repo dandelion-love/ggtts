@@ -17,3 +17,4 @@ serde_json = { workspace = true, features = ["float_roundtrip"] }
 ggtts-fake = { workspace = true, features = ["plant"] }
 ggtts-qwen3-tts.workspace = true
 claxon.workspace = true
+jsonschema = { version = "0.60.2", default-features = false }

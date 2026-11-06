@@ -1,0 +1,25 @@
+[package]
+name = "ggtts-ggml-sys"
+description = "Raw, unsafe bindings to ggml at af97976, with ggml built from source by CMake (CPU)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+links = "ggml"
+# The ggml submodule is not part of the package; the crate is consumed from this workspace or by git.
+exclude = ["ggml/**"]
+
+[features]
+default = []
+# Build ggml from source with CMake (CPU, static) and link it, and expose the bindings. Off by default so a
+# plain `cargo build --workspace` neither needs the ggml submodule nor a C/C++ toolchain. See README.md.
+ggml = ["dep:cmake"]
+# Regenerate the bindings with bindgen at build time instead of using the committed ones. Needs libclang.
+# Required on targets other than x86_64-unknown-linux-gnu, for which no bindings are committed.
+bindgen = ["ggml", "dep:bindgen"]
+
+[build-dependencies]
+bindgen = { version = "0.71", optional = true }
+cmake = { version = "0.1", optional = true }

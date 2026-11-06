@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/ggtts-core",
+    "crates/ggtts-ggml-sys",
     "crates/ggtts-fake",
     "crates/ggtts-qwen3-tts",
     "crates/ggtts-cli",

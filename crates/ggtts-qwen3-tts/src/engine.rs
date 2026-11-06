@@ -11,6 +11,7 @@ use ggtts_core::profile::Profile;
 
 use crate::codec::{Decoder, Plant as DecoderPlant};
 use crate::cpu::Device;
+use crate::stream::IncrementalDecoder;
 use crate::talker::{language_id, FrameStop, Plant as TalkerPlant, Sampling, Talker};
 use crate::PROFILE;
 
@@ -83,6 +84,69 @@ impl Qwen3Tts {
             voice,
             language_id,
             trace,
+        })
+    }
+}
+
+impl Qwen3Tts {
+    /// Render one request with frame-level streaming: the talker hands each frame to an [`IncrementalDecoder`]
+    /// as it is generated, and `sink` gets each batch of ready samples with the number of frames generated so far.
+    /// `every` and `hold` are the decoder's (see [`crate::stream`]): at `hold = 32` the concatenated samples were
+    /// measured bit-identical to [`decode`](Engine::decode) of the same codes on CPU. Returns the codes, as
+    /// [`generate`](Engine::generate) would.
+    pub fn render_streamed(
+        &mut self,
+        req: &ChunkRequest<'_>,
+        every: usize,
+        hold: usize,
+        sink: &mut dyn FnMut(&[f32], usize),
+    ) -> Result<Generated, EngineError> {
+        let Self {
+            talker,
+            decoder,
+            voice,
+            language_id,
+            ..
+        } = self;
+        let mut inc = IncrementalDecoder::new(decoder, every, hold);
+        let mut failed: Option<EngineError> = None;
+        let mut frames = 0usize;
+        let mut hook = |codes: &[i32]| {
+            frames += 1;
+            if failed.is_some() {
+                return;
+            }
+            match inc.push(codes) {
+                Ok(Some(samples)) if !samples.is_empty() => sink(&samples, frames),
+                Ok(_) => {}
+                Err(e) => failed = Some(e),
+            }
+        };
+        let g = talker.generate_streamed(
+            req.text,
+            &voice.speaker,
+            *language_id,
+            req.seed,
+            voice.max_frames,
+            voice.sampling,
+            None,
+            Some(&mut hook),
+        )?;
+        if let Some(e) = failed {
+            return Err(e);
+        }
+        let tail = inc.finish()?;
+        if !tail.is_empty() {
+            sink(&tail, inc.frames());
+        }
+        let frames = g
+            .codes
+            .iter()
+            .map(|&c| u16::try_from(c).map_err(|_| EngineError(format!("codec token {c} out of range"))))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Generated {
+            codes: Codes { codebooks: 16, frames },
+            stop: g.stop,
         })
     }
 }

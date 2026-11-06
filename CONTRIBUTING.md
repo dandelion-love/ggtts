@@ -33,9 +33,19 @@ does not link against it.
 
 ## Workflow
 
-1. Fork, and branch from `main`.
-2. `cargo fmt`, `cargo clippy --workspace -- -D warnings` and `cargo test --workspace` must pass.
-3. Open a pull request that says what changed, why, which parity tests cover it, and what was not tested.
+Work meets on the `rc` branch before it reaches `main`.
+
+1. Branch from `rc`, and open your pull request **into `rc`**. Never base a pull request on another feature branch:
+   it would merge into that branch, not into `rc`.
+2. `cargo fmt`, `cargo clippy --workspace -- -D warnings` and `cargo test --workspace` must pass locally before you
+   push, and CI must be green on the pull request.
+3. The pull request says what changed, why, which parity tests cover it, and what was not tested.
 4. Commit subjects say what changed and what was found, not "fix" or "update".
+
+**Promotion.** `main` moves only by one reviewed pull request from `rc`. Hosted runners have no GPU, so before that
+pull request is merged, someone with a supported GPU runs `scripts/rc_gate.sh --ref origin/rc` and attaches the
+`rc-gate.json` it writes. The gate repeats CI's CPU steps at that ref, and it will run the GPU parity steps once an
+engine exists. Until then it records `"gpu": "not-run (no engine)"`, so a CPU pass is never read as a GPU result.
+Release tags are cut from `main`. Pre-release tags (`vX.Y.Z-rc.N`) may be cut from `rc`.
 
 By contributing you agree that your contribution is licensed under the MIT licence of this repository.

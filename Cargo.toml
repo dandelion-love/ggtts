@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ggtts-core",
+    "crates/ggtts-fake",
+    "crates/ggtts-cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/dandelion-love/ggtts"
+rust-version = "1.75"
+
+[workspace.dependencies]
+ggtts-core = { path = "crates/ggtts-core", version = "0.0.1" }

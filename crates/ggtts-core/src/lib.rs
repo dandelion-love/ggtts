@@ -1,0 +1,55 @@
+//! ggtts core.
+//!
+//! This crate will hold the parts every engine shares: the engine and backend interfaces, the long-text
+//! pipeline (chunking, a seed per chunk, trimming, joining, level), the instrument events and trace format,
+//! and the provenance manifest. In this skeleton it holds only the build identity.
+
+/// The ggtts version, from the workspace manifest.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The ggml source this build is pinned to.
+///
+/// Exact token parity with the reference runtime needs the same ggml kernels, so the pin is a commit, not a
+/// version range. It is the commit the reference runtime (qwen3-tts.cpp at `16bb5af`) builds against: ggml
+/// v0.16.0 plus 7 commits. Moving it is a deliberate change that re-checks the parity fixtures.
+pub mod ggml {
+    /// Upstream repository.
+    pub const REPOSITORY: &str = "https://github.com/ggml-org/ggml";
+    /// Full commit SHA of the pinned ggml.
+    pub const COMMIT: &str = "af97976c7810cdabb1863172f31c432dab767de7";
+    /// Human-readable position of the pin relative to ggml's release tags.
+    pub const DESCRIBE: &str = "v0.16.0+7";
+
+    /// The first seven characters of [`COMMIT`], as printed in versions and artifact names.
+    pub fn short() -> &'static str {
+        &COMMIT[..7]
+    }
+}
+
+/// One line per fact, as `--version` prints them.
+pub fn version_lines(binary: &str) -> [String; 2] {
+    [
+        format!("{binary} {VERSION}"),
+        format!("ggml {} ({}, {})", ggml::COMMIT, ggml::DESCRIBE, ggml::REPOSITORY),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ggml_pin_is_a_full_commit_sha() {
+        assert_eq!(ggml::COMMIT.len(), 40);
+        assert!(ggml::COMMIT.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+        assert_eq!(ggml::short(), "af97976");
+    }
+
+    #[test]
+    fn version_names_binary_and_pin() {
+        let [first, second] = version_lines("ggtts-render");
+        assert_eq!(first, format!("ggtts-render {VERSION}"));
+        assert!(second.contains(ggml::COMMIT));
+        assert!(second.contains(ggml::DESCRIBE));
+    }
+}

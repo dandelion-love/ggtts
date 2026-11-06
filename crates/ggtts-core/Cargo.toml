@@ -1,0 +1,11 @@
+[package]
+name = "ggtts-core"
+description = "ggtts core: the engine and backend interfaces, the long-text pipeline, instrument events and provenance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]

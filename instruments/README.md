@@ -26,6 +26,11 @@ The runner (ggtts#30) starts each instrument after the render as
 `ggtts_instrument.run()` parses that, records every `--KEY VALUE` as the effective configuration, and writes a
 `failed` envelope if `measure()` raises. A crash is always reported, never lost.
 
+To measure audio you already have (a kept render, a release sample, a recording) without rendering, use
+`ggtts-measure --audio IN.flac [--events E.jsonl] --report DIR` with the same instrument flags. It runs the same
+runner with the same config, report and exit codes, loads no engine, and hands the instruments copies, so the given
+file is never written.
+
 ## Tests
 
 `cargo test -p ggtts-core --test python_instruments` renders a recorded pipeline case on the fake engine. It hands

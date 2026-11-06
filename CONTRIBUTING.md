@@ -11,6 +11,12 @@ Thank you for looking. ggtts is young and its design is still under review, so o
   and reads a no-op as no change.
 * **Instruments never change output.** Code behind `--trace` reads values the engine already has. It must not draw
   from the sampler's random stream or reorder computation.
+* **The default is the most useful option for the person using it.** When a flag or mode has several values, the
+  default is the one most people running ggtts would want: levelled audio, a terminating sampler, the fast and correct
+  backend. A mode that exists to measure or test the engine is opt-in and named for what it proves: a parity stream, a
+  trace, an unlevelled read, a planted defect. Tests and probes ask for those modes by name, so a change to the default
+  never weakens a check. When you add an option, the pull request says which value is the default and why it is the most
+  useful one.
 * **Refused settings stay refused.** Some settings are known to stop generation from terminating, for example
   greedy decoding of the main sampler on Qwen3-TTS, or a disabled depth sampler. They need an explicit override,
   and the manifest records it. Do not lift a refusal without measurements.

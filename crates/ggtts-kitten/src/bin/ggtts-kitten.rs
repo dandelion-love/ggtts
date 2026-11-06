@@ -6,6 +6,8 @@
 //! ggtts-kitten parity --gguf FILE --ref DIR [--weights f32|ternary|ternary-f32head] [--threads N]
 //! ggtts-kitten step-parity --gguf FILE [--ref DIR] [--steps N] [--weights f32|ternary] [--threads N]
 //! ggtts-kitten tokcheck --tokenizer tokenizer.json --expect FILE
+//! ggtts-kitten block-parity --s3gguf FILE --ref DIR [--blocks 25,50] [--contexts 0,25,50,all] [--lookahead 3]
+//!                     [--plant seam-shift] [--threads N]
 //! ggtts-kitten render --gguf FILE --tokenizer tokenizer.json --reference REF.json --lines FILE --out-dir DIR
 //!                     --python PYTHON --script tools/kitten_ref.py [--seed N] [--threads N] [--max-tokens N]
 //!                     [--tokens-only 1]
@@ -470,6 +472,202 @@ fn flow_cmd(a: &Args) -> Result<bool, String> {
     Ok(ok)
 }
 
+/// `block-parity`: decode the recorded S3Gen case in blocks and compare with the batch decode (issue #25).
+///
+/// For each block size B (tokens) and left context C (tokens, or `all` for everything before), every block of B
+/// target tokens is decoded from the tokens `[start - C, end + lookahead)` with the prompt, the noise each frame has in
+/// the batch decode, and the frames of its own B tokens kept. The kept mel is stitched, vocoded with the recorded
+/// source, and compared with the batch decode of the same tokens, conditioning, noise and source, against the bars
+/// stated on the issue before measuring (mel relative L2 <= 1e-3, waveform SNR >= 40 dB).
+///
+/// The first row is the no-op: one block holding every token, which must read identical. `--plant seam-shift` shifts
+/// each block's kept frames by one, a seam defect the comparison must see. Returns true when the no-op is identical
+/// and, with the plant, when every planted row fails the bars.
+fn block_cmd(a: &Args) -> Result<bool, String> {
+    use ggtts_kitten::flow::{Flow, FlowRef, MEL};
+    use ggtts_kitten::{dsp, hift::Hift};
+    let threads: usize = a.or("threads", "4").parse().map_err(|_| "bad --threads")?;
+    let be = backend(a, threads)?;
+    let dir = PathBuf::from(a.get("ref")?);
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("meta.json")).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let ids = |k: &str| -> Vec<u32> {
+        meta[k]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as u32)
+            .collect()
+    };
+    let tokens = ids("tokens");
+    let r = FlowRef {
+        prompt_token: ids("prompt_token"),
+        prompt_feat: read_f32(&dir.join("prompt_feat.f32"))?,
+        embedding: read_f32(&dir.join("embedding.f32"))?,
+    };
+    let parse_list = |k: &str, d: &str| -> Result<Vec<String>, String> {
+        Ok(a.or(k, d).split(',').map(|s| s.trim().to_string()).collect())
+    };
+    let blocks: Vec<usize> = parse_list("blocks", "25,50")?
+        .iter()
+        .map(|s| s.parse().map_err(|_| format!("bad --blocks entry {s}")))
+        .collect::<Result<_, _>>()?;
+    let contexts: Vec<Option<usize>> = parse_list("contexts", "0,25,50,all")?
+        .iter()
+        .map(|s| {
+            if s == "all" {
+                Ok(None)
+            } else {
+                s.parse().map(Some).map_err(|_| format!("bad --contexts entry {s}"))
+            }
+        })
+        .collect::<Result<_, _>>()?;
+    let look: usize = a.or("lookahead", "3").parse().map_err(|_| "bad --lookahead")?;
+    let planted = match a.or("plant", "none") {
+        "none" => false,
+        "seam-shift" => true,
+        p => return Err(format!("unknown --plant {p}")),
+    };
+    let gguf = Gguf::open(Path::new(a.get("s3gguf")?))?;
+    let flow = Flow::load(&gguf, be.clone())?;
+    let hift = Hift::load(&gguf, be.clone())?;
+
+    let (n, p) = (tokens.len(), r.prompt_token.len());
+    let tn = 2 * (p + n);
+    let z = read_f32(&dir.join("z.f32"))?;
+    if z.len() != MEL * tn {
+        return Err(format!("z.f32 has {} values, the case needs {}", z.len(), MEL * tn));
+    }
+    let p_frames = r.prompt_feat.len() / MEL;
+    let src = read_f32(&dir.join("source.f32"))?;
+    let (spec, _) = dsp::stft(&src);
+
+    let t0 = Instant::now();
+    let (batch_mel, frames) = flow.mel(&tokens, &r, &z)?;
+    let batch_flow_s = t0.elapsed().as_secs_f64();
+    let t1 = Instant::now();
+    let batch_wav = hift.decode(&batch_mel, frames, &spec)?;
+    let voc_s = t1.elapsed().as_secs_f64();
+    let audio_s = batch_wav.len() as f64 / 24000.0;
+    println!(
+        "case: {n} target tokens, {p} prompt tokens, {frames} mel frames, {audio_s:.2}s audio; batch: flow {batch_flow_s:.2}s, \
+         vocoder {voc_s:.2}s (RTF {:.2})",
+        (batch_flow_s + voc_s) / audio_s
+    );
+    println!("bars (stated on the issue before measuring): mel rel L2 <= 1e-3, waveform SNR >= 40 dB");
+    println!(
+        "{:>6} {:>8} {:>6} {:>12} {:>14} {:>9} {:>11} {:>10} {:>7}  verdict",
+        "block", "context", "blocks", "mel rel L2", "worst frame", "SNR dB", "1st blk s", "flow s", "RTF"
+    );
+
+    // One configuration: the stitched mel, its timings.
+    let run = |b: usize, ctx: Option<usize>, plant: bool| -> Result<(Vec<f32>, f64, f64, usize), String> {
+        let mut stitched = vec![0f32; MEL * frames];
+        let (mut first_s, mut total_s, mut count) = (0.0, 0.0, 0);
+        let mut s = 0;
+        while s < n {
+            let e = (s + b).min(n);
+            // S3Gen's prompt mel is one frame longer than twice its tokens, so a window's first target frame is
+            // read as prompt: every block needs at least one token of left context to produce its first frame.
+            let lo = ctx.map_or(0, |c| s.saturating_sub(c.max(1)));
+            let hi = (e + look).min(n);
+            let win = &tokens[lo..hi];
+            let tw = 2 * (p + win.len());
+            // The noise each window frame has in the batch decode: the prompt's frames, then the window's.
+            let full = |f: usize| if f < 2 * p { f } else { f + 2 * lo };
+            let mut zw = vec![0f32; MEL * tw];
+            for ch in 0..MEL {
+                for f in 0..tw {
+                    zw[ch * tw + f] = z[ch * tn + full(f)];
+                }
+            }
+            let t = Instant::now();
+            let (mw, fw) = flow.mel(win, &r, &zw)?;
+            let dt = t.elapsed().as_secs_f64();
+            if count == 0 {
+                first_s = dt;
+            }
+            total_s += dt;
+            count += 1;
+            for k in 0..fw {
+                let g = full(p_frames + k);
+                if g < 2 * p + 2 * s || g >= 2 * p + 2 * e {
+                    continue;
+                }
+                let src_k = if plant { (k + 1).min(fw - 1) } else { k };
+                let bi = g - p_frames;
+                for ch in 0..MEL {
+                    stitched[ch * frames + bi] = mw[ch * fw + src_k];
+                }
+            }
+            s = e;
+        }
+        Ok((stitched, first_s, total_s, count))
+    };
+    let worst_frame = |m: &[f32]| -> f64 {
+        (0..frames)
+            .map(|f| {
+                let a: Vec<f32> = (0..MEL).map(|ch| m[ch * frames + f]).collect();
+                let b: Vec<f32> = (0..MEL).map(|ch| batch_mel[ch * frames + f]).collect();
+                parity::rel_l2(&a, &b)
+            })
+            .fold(0.0, f64::max)
+    };
+
+    let mut configs: Vec<(usize, Option<usize>, bool)> = vec![(n, None, false)];
+    for &b in &blocks {
+        for &c in &contexts {
+            configs.push((b, c, planted));
+        }
+    }
+    let mut ok = true;
+    for (i, (b, c, plant)) in configs.into_iter().enumerate() {
+        let (m, first_s, flow_s, count) = run(b, c, plant)?;
+        let e_mel = parity::rel_l2(&m, &batch_mel);
+        let wav = hift.decode(&m, frames, &spec)?;
+        let e_wav = parity::rel_l2(&wav, &batch_wav);
+        let snr = if e_wav == 0.0 {
+            f64::INFINITY
+        } else {
+            -20.0 * e_wav.log10()
+        };
+        let pass = e_mel <= 1e-3 && snr >= 40.0;
+        let label = if i == 0 {
+            if e_mel == 0.0 && wav == batch_wav {
+                "NO-OP IDENTICAL"
+            } else {
+                ok = false;
+                "NO-OP NOT IDENTICAL"
+            }
+        } else if plant {
+            if pass {
+                ok = false;
+                "PLANT NOT SEEN"
+            } else {
+                "planted seam seen"
+            }
+        } else if pass {
+            "PASS"
+        } else {
+            "FAIL"
+        };
+        println!(
+            "{:>6} {:>8} {:>6} {:>12.3e} {:>14.3e} {:>9.1} {:>11.2} {:>10.2} {:>7.2}  {label}",
+            b,
+            c.map_or("all".to_string(), |c| c.to_string()),
+            count,
+            e_mel,
+            worst_frame(&m),
+            snr,
+            first_s,
+            flow_s,
+            (flow_s + voc_s) / audio_s
+        );
+    }
+    Ok(ok)
+}
+
 fn cond_cmd(a: &Args) -> Result<bool, String> {
     use ggtts_kitten::condnet::{CondNets, Plant};
     use ggtts_kitten::refdsp;
@@ -722,6 +920,7 @@ fn main() -> ExitCode {
         "render" => render_cmd(&a),
         "hift-parity" => hift_cmd(&a),
         "decoder-parity" => flow_cmd(&a),
+        "block-parity" => block_cmd(&a),
         "cond-parity" => cond_cmd(&a),
         "prepare" => prepare_cmd(&a),
         "bench" => bench_cmd(&a),

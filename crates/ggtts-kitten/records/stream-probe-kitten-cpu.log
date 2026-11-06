@@ -1,0 +1,10 @@
+== build (cpu)
+model: 263b8e69682a4b31  ~/kitten-ref/cuda-probe/lm.gguf
+model: 54ad2c36c0b32278  ~/kitten-gguf/s3gen.gguf
+== kitten-tts-2 on cpu: story, chunk-level stream (~/work/ggtts-25/crates/ggtts-kitten/fixtures/story/lighthouse.txt)
+  batch: render 73.06 s for 21.76 s of audio, RTF 3.358, wall 80.60 s
+  stream: render 74.93 s for 21.76 s of audio, RTF 3.443, first audio at 28.90 s, wall 81.34 s
+  FLAC identical with and without --stream
+  ggtts-render: streamed 522240 samples before the level step, first audio at 28897 ms; level gain -3.3845 dB (the --out FLAC applies it)
+stream probe (kitten-tts-2, cpu): exit 0 (logs in ~/work/ggtts-25-probe)
+exit=0

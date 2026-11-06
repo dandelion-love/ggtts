@@ -187,6 +187,25 @@ The bars above were written before these numbers and are not moved by them.
   bit; 118 other tensors equal`. Every scale had an exact fp16. Planted on the real weights, `--plant group256`
   reads `READBACK FAIL: model.layers.0.mlp.down_proj.weight row 0: group 0: scale 0.20800781 read back, source
   absmax 0.15429688`, and `--plant absmean` reads the same row with scale `0.12902832`.
+* **Level 1 against Kitten's own packers (2026-11-06): PASS.** The readback above checks the GGUF against the bf16
+  source and Kitten's rule as this crate implements it. That is not the same as Kitten's packed values. Kitten
+  publishes no packed file: its packed form is whatever its exporter writes from the bf16 weights.
+  `tools/kitten_packed_check.py` runs that exporter's own code from a kitten-tts-2-cpp checkout at the pin: the
+  `TQ2_1` quantizer in its `gguf-py` (`gguf/quants.py`, class `TQ2_1`), which is the exporter's default, and
+  `pack_ternary_q4` (`tools/kitten-tts/export.py:13-27`), its `ternary-q4_0` output. It compares both with the
+  converted GGUF of Kitten `c93cb7c`:
+
+  | Comparison | Result |
+  |---|---|
+  | trits against Kitten's `TQ2_1` | 1,409,286,144 of 1,409,286,144 equal |
+  | per-128 fp16 scales against Kitten's `TQ2_1` | 11,010,048 of 11,010,048 bit-identical |
+  | `Q4_0` blocks against Kitten's `pack_ternary_q4` | 44,040,191 of 44,040,192 byte-identical |
+
+  The one `Q4_0` block that differs is a block of 32 zeros. Kitten's packer writes it a zero scale, and this
+  converter writes the scale of its 128-group. Both decode to 32 zeros.
+  The control: a GGUF converted with `--plant group256` reads `PACKED FAIL`. Its first finding is a trit of
+  `model.layers.0.mlp.down_proj.weight` (row 22, column 3328: 0 where Kitten has 1). About half the `Q4_0` blocks
+  differ.
 * **Level 2, f32 arm: PASS.** On 328 teacher-forced positions (a built-in voice's prefix, one fixed sentence, 24
   forced audio tokens), the worst hidden-state relative L2 over the 27 layers and the final norm is `1.755e-6`.
   The logits RMSE prints as `0.0000`, every one of 32 argmaxes is equal, and the speaker projection's relative L2
@@ -432,6 +451,9 @@ sgemm). Which kernel step introduces the `5.9e-4` is not yet found. Two notes on
 
 What a generated token on the CPU gets is therefore within cosine `0.9999995` of what the parity check measured.
 It is not identical. This is recorded as a failed bar on the CPU ternary arm, not explained away.
+`cpu_one_column_ternary_product_differs_pinned` in `tests/step_identity.rs` pins it as an expected failure: argmax
+15/16, cosine at least `0.999999`, and rel L2 between `1e-3` and `2e-3`. The test turns red if the gap closes or
+grows. Its cause is tracked in ggtts#21.
 
 Predictions for the next probe:
 * The single-token check passes on CUDA for both arms. On CUDA both paths now multiply f16 matrices at f32
@@ -486,6 +508,8 @@ Predictions for the probe after this change:
 | `src/bin/ggtts-kitten-convert.rs` | the converter's command line |
 | `src/bin/ggtts-kitten.rs` | `parity`, `tokcheck` and `render` (feature `ggml`) |
 | `tools/kitten_ref.py` | the PyTorch side: reference dumps, reference-clip preparation, the S3Gen bridge |
+| `tools/kitten_packed_check.py` | the converter's ternary matrices against Kitten's own packers (`TQ2_1` and `pack_ternary_q4`), numpy only |
+| `tests/step_identity.rs` | the single-token path against the batched one, and the pinned CPU ternary gap |
 
 The QAT export (`ternary_bf16.safetensors`, the whole LM in Kitten's key layout with every ternary-born linear as
 `quantize(master)` in bf16) is the same layout as Kitten's `lm/model.safetensors`, so one converter takes both; the

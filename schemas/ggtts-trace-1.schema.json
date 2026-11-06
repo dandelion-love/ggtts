@@ -6,7 +6,7 @@
   "type": "object",
   "required": ["ev"],
   "properties": {
-    "ev": { "enum": ["trace", "chunk_begin", "step", "chunk_end", "trim", "join", "end"] }
+    "ev": { "enum": ["trace", "chunk_begin", "step", "chunk_end", "trim", "emit", "join", "end"] }
   },
   "oneOf": [
     { "$ref": "#/$defs/trace" },
@@ -14,6 +14,7 @@
     { "$ref": "#/$defs/step" },
     { "$ref": "#/$defs/chunk_end" },
     { "$ref": "#/$defs/trim" },
+    { "$ref": "#/$defs/emit" },
     { "$ref": "#/$defs/join" },
     { "$ref": "#/$defs/end" }
   ],
@@ -122,8 +123,27 @@
         "end": { "$ref": "#/$defs/u64" }
       }
     },
+    "emit": {
+      "description": "A chunk's piece of the read handed to the stream, before the level step. Once per chunk, after its trim and before the next chunk_begin. Its t_ms is the hand-off time, which streaming's time to first audio uses.",
+      "type": "object",
+      "required": ["ev", "t_ms", "chunk", "start", "samples"],
+      "additionalProperties": false,
+      "properties": {
+        "ev": { "const": "emit" },
+        "t_ms": { "$ref": "#/$defs/t_ms" },
+        "chunk": { "$ref": "#/$defs/u32" },
+        "start": {
+          "description": "The piece's first sample in the read.",
+          "$ref": "#/$defs/u64"
+        },
+        "samples": {
+          "description": "The piece's length in samples: the chunk's kept audio and, unless it is the last chunk, the gap after it.",
+          "$ref": "#/$defs/u64"
+        }
+      }
+    },
     "join": {
-      "description": "Every chunk joined into the read. Once, after the last trim.",
+      "description": "Every chunk joined into the read. Once, after the last emit.",
       "type": "object",
       "required": ["ev", "t_ms", "chunks", "samples"],
       "additionalProperties": false,

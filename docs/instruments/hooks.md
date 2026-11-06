@@ -29,6 +29,7 @@ stream carries is an event instrument. A tensor hook is justified only by a valu
 | Per chunk | Draw ends | Event | `chunk_end` | Frames, stop reason (`eos`, `cap`, `abort`), the judge's seconds per character and verdict, wall-clock ms | Available |
 | Per chunk | Tokens | Event | The draw's `step` events, in frame order | Every frame's codebook-0 token (all codebooks at level 2) | Available (the fake engine) |
 | Per chunk | Trim | Event | `trim` | Lead and tail seconds cut from the kept draw, and the kept sample range | Available |
+| Per chunk | Hand-off to the stream | Event | `emit` | The chunk's piece of the read, before the level step: its first sample (`start`) and length (`samples`, the kept audio plus the gap after it unless it is the last chunk). Its `t_ms` is the hand-off time, which streaming's time to first audio uses | Available |
 | Per chunk | Chunk audio | Tensor | A tensor hook's `&[f32]` and sample rate | The kept draw's decoded samples before trimming | Planned |
 | Per render | Text | Event | `chunk_begin.text` of each chunk's draw 0, in chunk order | The text the engine was given, chunk by chunk | Available |
 | Per render | Join | Event | `join` | Chunks joined, samples, the level gain in dB | Available |
@@ -50,8 +51,10 @@ A render's stream is one JSON object per line, UTF-8, in this order:
    `chunk_begin`, then that draw's `step` events with `frame` rising from 0, then `chunk_end`.
    A chunk is redrawn only when the judge flags the draw, so most chunks have one draw.
 3. `trim`, once per chunk, after that chunk's last `chunk_end`. It describes the kept draw (the last one).
-4. `join`, once, after every chunk.
-5. `end`, once, last.
+4. `emit`, once per chunk, right after its `trim` and before the next chunk's `chunk_begin`: the chunk's piece
+   was handed to the stream.
+5. `join`, once, after every chunk.
+6. `end`, once, last.
 
 Every event carries `t_ms`, non-decreasing through the stream. `t_ms` and `chunk_end.ms` are the only fields that
 may differ between two runs of the same render with the same seed: replay and every comparison ignore them, and an
@@ -88,8 +91,10 @@ The header's `format` is the stream's version, `ggtts-trace/1` today. The schema
 [`schemas/ggtts-trace-1.schema.json`](../../schemas/ggtts-trace-1.schema.json); every line of every trace validates
 against it, and a test checks that on every recorded fake-engine render (`crates/ggtts-core/tests/trace_schema.rs`).
 
-- **Adding a field or an event is a new version.** The schema refuses fields it does not name, so a field added
-  without a schema change fails that test.
+- **Adding a field or an event is a new version.** The schema refuses fields and events it does not name, so one
+  added without a schema change fails that test, and every new event kind lands with its schema entry and its
+  row in this catalogue in the same change. `emit` is part of `ggtts-trace/1` as first published: streaming added
+  it before this schema existed, and the schema test caught it.
 - **Readers accept the current version and the one before it.** `trace::READS` lists the formats `trace::parse`
   accepts. When `ggtts-trace/2` is published, `READS` becomes `["ggtts-trace/2", "ggtts-trace/1"]`, and
   `ggtts-trace/1` is dropped only at `/3`. A test holds `READS` to that shape.

@@ -14,7 +14,16 @@ use ggtts_core::trace::{emit_header, parse, Event, Header, JsonlEvents, FORMAT};
 use ggtts_fake::{FakeEngine, Shape};
 use serde_json::{json, Map, Value};
 
-const EVENTS: [&str; 7] = ["trace", "chunk_begin", "step", "chunk_end", "trim", "join", "end"];
+const EVENTS: [&str; 8] = [
+    "trace",
+    "chunk_begin",
+    "step",
+    "chunk_end",
+    "trim",
+    "emit",
+    "join",
+    "end",
+];
 
 fn root() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
@@ -205,6 +214,11 @@ fn every_variant() -> Vec<Map<String, Value>> {
             start: 0,
             end: 24000,
         },
+        Event::Emit {
+            chunk: 0,
+            start: 0,
+            samples: 24000,
+        },
         Event::Join {
             chunks: 2,
             samples: 48000,
@@ -362,7 +376,8 @@ fn order_violation(lines: &[Map<String, Value>]) -> Option<String> {
         }
         t = now;
     }
-    // Between the header and join: per chunk, its draws (chunk_begin, steps with frame 0.., chunk_end), then trim.
+    // Between the header and join: per chunk, its draws (chunk_begin, steps with frame 0.., chunk_end), then trim,
+    // then emit.
     let body = &lines[1..lines.len() - 2];
     let (mut i, mut chunk) = (0, 0u64);
     while i < body.len() {
@@ -391,6 +406,10 @@ fn order_violation(lines: &[Map<String, Value>]) -> Option<String> {
         }
         if i >= body.len() || ev(&body[i]) != "trim" || u(&body[i], "chunk") != Some(chunk) {
             return Some(format!("chunk {chunk}'s draws are not followed by its trim"));
+        }
+        i += 1;
+        if i >= body.len() || ev(&body[i]) != "emit" || u(&body[i], "chunk") != Some(chunk) {
+            return Some(format!("chunk {chunk}'s trim is not followed by its emit"));
         }
         i += 1;
         chunk += 1;
@@ -442,6 +461,17 @@ fn events_arrive_in_the_documented_order_and_a_reorder_is_seen() {
             let mut l = lines.clone();
             let ce = l.iter().position(|m| m["ev"] == "chunk_end").unwrap();
             l.remove(ce);
+            l
+        }),
+        ("an emit before its trim", {
+            let mut l = lines.clone();
+            l.swap(trim, trim + 1);
+            l
+        }),
+        ("an emit dropped", {
+            let mut l = lines.clone();
+            let e = l.iter().position(|m| m["ev"] == "emit").unwrap();
+            l.remove(e);
             l
         }),
         ("the clock running backwards", {

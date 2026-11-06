@@ -15,6 +15,10 @@
 // feeds layer 1. It is named "layer0_out" and written as raw little-endian f32, [hidden_size, n_tokens].
 //
 // Usage: layer0_ref MODEL.gguf OUT.bin [--threads N] [--tokens T] [--seed S] [--iters N] [--warmup N]
+//                   [--device cpu|cuda]
+// --device cuda needs ggml built with GGML_CUDA=ON. It mirrors the reference on a GPU
+// (src/transformer/transformer_loader.cpp:244-266): the GPU backend first, a CPU backend after it, one scheduler over
+// both, and the weights and KV cache in the GPU backend's buffers.
 
 #include "ggml.h"
 #include "ggml-alloc.h"
@@ -187,9 +191,15 @@ int main(int argc, char ** argv) {
     const char * out_path = argv[2];
     int n_threads = 4, n_tokens = 16, iters = 0, warmup = 10;
     uint64_t seed = 20261106;
+    bool gpu = false;
     for (int i = 3; i + 1 < argc; i += 2) {
         std::string a = argv[i];
-        if (a == "--threads") n_threads = atoi(argv[i + 1]);
+        if (a == "--device") {
+            std::string d = argv[i + 1];
+            if (d == "cuda") gpu = true;
+            else if (d != "cpu") die("--device must be cpu or cuda");
+        }
+        else if (a == "--threads") n_threads = atoi(argv[i + 1]);
         else if (a == "--tokens") n_tokens = atoi(argv[i + 1]);
         else if (a == "--seed") seed = strtoull(argv[i + 1], nullptr, 10);
         else if (a == "--iters") iters = atoi(argv[i + 1]);
@@ -233,9 +243,17 @@ int main(int argc, char ** argv) {
     }
     Layer layer = { t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7], t[8], t[9], t[10] };
 
-    ggml_backend_t backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
-    if (!backend) die("no CPU backend");
-    ggml_backend_cpu_set_n_threads(backend, n_threads);
+    ggml_backend_t cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+    if (!cpu) die("no CPU backend");
+    ggml_backend_cpu_set_n_threads(cpu, n_threads);
+    ggml_backend_t backend = cpu;
+    if (gpu) {
+        backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr);
+        if (!backend) die("no GPU backend; is ggml built with GGML_CUDA=ON?");
+        fprintf(stderr, "layer0_ref: device %s\n", ggml_backend_dev_name(ggml_backend_get_device(backend)));
+    }
+    std::vector<ggml_backend_t> backends = { backend };
+    if (gpu) backends.push_back(cpu);
 
     ggml_backend_buffer_t wbuf = ggml_backend_alloc_ctx_tensors(wctx, backend);
     ggml_backend_buffer_set_usage(wbuf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
@@ -267,7 +285,7 @@ int main(int argc, char ** argv) {
     ggml_backend_buffer_t cbuf = ggml_backend_alloc_ctx_tensors(cctx, backend);
     ggml_backend_buffer_clear(cbuf, 0);
 
-    ggml_backend_sched_t sched = ggml_backend_sched_new(&backend, nullptr, 1, MAX_NODES, false, true);
+    ggml_backend_sched_t sched = ggml_backend_sched_new(backends.data(), nullptr, (int) backends.size(), MAX_NODES, false, true);
 
     std::vector<uint8_t> compute_meta(ggml_tensor_overhead() * MAX_NODES + ggml_graph_overhead_custom(MAX_NODES, false));
 
@@ -331,8 +349,8 @@ int main(int argc, char ** argv) {
         double sum = 0;
         for (double v : ms) sum += v;
         std::sort(ms.begin(), ms.end());
-        printf("timing lang=cpp threads=%d tokens=%d iters=%d mean_ms=%.4f median_ms=%.4f min_ms=%.4f\n",
-               n_threads, n_tokens, iters, sum / iters, ms[iters / 2], ms[0]);
+        printf("timing lang=cpp device=%s threads=%d tokens=%d iters=%d mean_ms=%.4f median_ms=%.4f min_ms=%.4f\n",
+               gpu ? "cuda" : "cpu", n_threads, n_tokens, iters, sum / iters, ms[iters / 2], ms[0]);
     }
 
     ggml_backend_sched_free(sched);
@@ -340,7 +358,8 @@ int main(int argc, char ** argv) {
     ggml_backend_buffer_free(wbuf);
     ggml_free(cctx);
     ggml_free(wctx);
-    ggml_backend_free(backend);
+    if (gpu) ggml_backend_free(backend);
+    ggml_backend_free(cpu);
     gguf_free(g);
     ggml_free(meta);
     return 0;

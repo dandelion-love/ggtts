@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds both sides on CPU, runs layer 0 of the talker through each, and checks:
+# Builds both sides, runs layer 0 of the talker through each, and checks:
 #   1. the Rust output is byte-identical to the C++ reference output;
 #   2. every planted defect on the Rust side makes it differ (so the check can fail);
 #   3. optionally (TIMING=1), 100 timed calls per side after warm-up, same thread count.
@@ -9,6 +9,11 @@
 #   MODEL          a local copy of the talker GGUF; it is checked against MODEL_SHA256 either way
 #   QWEN3_TTS_CPP  an existing qwen3-tts.cpp checkout at REF_COMMIT with its ggml submodule (default: cloned)
 #   THREADS        CPU threads for both sides (default 4)
+#   DEVICE         cpu (default) or cuda. cuda builds ggml with GGML_CUDA=ON in its own build directories and runs
+#                  both sides on the GPU, with a CPU backend behind it as the reference does
+#   CUDA_ARCH      CUDA architectures for DEVICE=cuda, cmake syntax (default 86)
+#   CUDACXX        nvcc for DEVICE=cuda (default: on PATH, else the newest /usr/local/cuda-*/bin/nvcc)
+#   GPU_WAIT_FILE  with DEVICE=cuda, wait while this file exists before using the GPU (e.g. a machine's busy marker)
 #   TIMING=1       also time both sides
 #   NICE           a prefix for the heavy commands, e.g. "nice -n 19"
 set -euo pipefail
@@ -17,7 +22,15 @@ here=$(cd "$(dirname "$0")" && pwd)
 WORK=${WORK:-$here/work}
 THREADS=${THREADS:-4}
 NICE=${NICE:-}
+DEVICE=${DEVICE:-cpu}
 mkdir -p "$WORK"
+case "$DEVICE" in cpu|cuda) ;; *) echo "DEVICE must be cpu or cuda" >&2; exit 2 ;; esac
+
+# bindgen needs clang's resource headers (stdbool.h). A pip-wheel libclang ships without them, so point clang at the
+# C compiler's own include directory unless the caller already set something.
+if [ -z "${BINDGEN_EXTRA_CLANG_ARGS:-}" ] && command -v gcc >/dev/null 2>&1; then
+    export BINDGEN_EXTRA_CLANG_ARGS="-I$(gcc -print-file-name=include)"
+fi
 
 # The published talker: Hugging Face jmtl/hk-cantonese-cc0-qwen3-tts-GGUF, tag v0.0.1 (commit below), CC-0 data.
 MODEL_URL=https://huggingface.co/jmtl/hk-cantonese-cc0-qwen3-tts-GGUF/resolve/5a7660276b52d9efeed92d1c87f218d7a296110a/qwen-talker-hk-cantonese-cc0-v0.0.1-q8_0.gguf
@@ -49,48 +62,76 @@ if [ "$ref_ggml" != "$GGML_COMMIT" ] || [ "$our_ggml" != "$GGML_COMMIT" ]; then
     exit 1
 fi
 
-# Both sides: Release, static, position-independent, CPU only, ggml's defaults for everything else.
-$NICE cmake -S "$here/reference" -B "$WORK/ref-build" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
-    -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DGGML_CUDA=OFF -DQWEN3_TTS_CPP="$QWEN3_TTS_CPP" > "$WORK/ref-config.log"
-$NICE cmake --build "$WORK/ref-build" -j "$THREADS" > "$WORK/ref-build.log"
+# Both sides: Release, static, position-independent, ggml's defaults for everything else. DEVICE=cuda adds
+# GGML_CUDA=ON and builds into its own directories, so the CPU build is never overwritten.
+build=$WORK/ref-build
+cuda_args=(-DGGML_CUDA=OFF)
+export CARGO_TARGET_DIR=$here/target
+if [ "$DEVICE" = cuda ]; then
+    nvcc=${CUDACXX:-$(command -v nvcc || ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)}
+    [ -x "$nvcc" ] || { echo "DEVICE=cuda: no nvcc found; set CUDACXX" >&2; exit 1; }
+    export CUDA_HOME=${CUDA_HOME:-$(dirname "$(dirname "$nvcc")")}
+    echo "nvcc: $nvcc ($("$nvcc" --version | sed -n 's/.*release \([0-9.]*\).*/\1/p')), architectures ${CUDA_ARCH:-86}"
+    build=$WORK/ref-build-cuda
+    cuda_args=(-DGGML_CUDA=ON -DCMAKE_CUDA_COMPILER="$nvcc" -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH:-86}")
+    export CARGO_TARGET_DIR=$here/target-cuda GGML_CUDA=1
+fi
+$NICE cmake -S "$here/reference" -B "$build" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON "${cuda_args[@]}" -DQWEN3_TTS_CPP="$QWEN3_TTS_CPP" > "$WORK/ref-config-$DEVICE.log"
+$NICE cmake --build "$build" -j "$THREADS" > "$WORK/ref-build-$DEVICE.log"
 # The Rust side links the reference build's own ggml archives and binds the reference tree's headers, so both
 # executables carry the same compiled ggml and only the graph-building code differs.
-export GGML_LIB_DIR=$WORK/ref-build/ggml/src GGML_SRC=$QWEN3_TTS_CPP/ggml
+export GGML_LIB_DIR=$build/ggml/src GGML_SRC=$QWEN3_TTS_CPP/ggml
 echo "one ggml build for both sides ($GGML_LIB_DIR):"
 (cd "$GGML_LIB_DIR" && sha256sum libggml.a libggml-cpu.a libggml-base.a)
-grep -E '^CXX_FLAGS' "$WORK/ref-build/ggml/src/CMakeFiles/ggml-cpu.dir/flags.make"
+[ "$DEVICE" = cuda ] && (cd "$GGML_LIB_DIR" && sha256sum ggml-cuda/libggml-cuda.a)
+grep -E '^CXX_FLAGS' "$build/ggml/src/CMakeFiles/ggml-cpu.dir/flags.make"
 (cd "$here" && $NICE cargo build --release --locked -j "$THREADS")
-echo "threads: $THREADS on both sides"
+echo "device: $DEVICE; threads: $THREADS on both sides"
 
-ref=$WORK/ref-build/layer0_ref
-rust=$here/target/release/layer0
+ref=$build/layer0_ref
+rust=$CARGO_TARGET_DIR/release/layer0
 hidden=2048
+dev=(--device "$DEVICE")
+out=$WORK/$DEVICE
+mkdir -p "$out"
 
-$NICE "$ref" "$MODEL" "$WORK/out-ref.bin" --threads "$THREADS"
-$NICE "$rust" "$MODEL" "$WORK/out-rust.bin" --threads "$THREADS"
-echo "rust vs reference:"
-python3 "$here/diff.py" "$WORK/out-ref.bin" "$WORK/out-rust.bin" "$hidden"
+if [ "$DEVICE" = cuda ] && [ -n "${GPU_WAIT_FILE:-}" ]; then
+    while [ -e "$GPU_WAIT_FILE" ]; do echo "waiting: $GPU_WAIT_FILE exists"; sleep 60; done
+fi
+
+$NICE "$ref" "$MODEL" "$out/out-ref.bin" --threads "$THREADS" "${dev[@]}"
+$NICE "$rust" "$MODEL" "$out/out-rust.bin" --threads "$THREADS" "${dev[@]}"
+echo "rust vs reference ($DEVICE):"
+python3 "$here/diff.py" "$out/out-ref.bin" "$out/out-rust.bin" "$hidden"
 
 # Not a plant: with text-only positions (the same p in all three M-RoPE sections) ggml's M-RoPE rotates exactly as
 # NEOX does, so this one is expected to stay identical. It is checked so a change in that equivalence is seen.
-$NICE "$rust" "$MODEL" "$WORK/out-rope-neox.bin" --threads "$THREADS" --plant rope-neox
+$NICE "$rust" "$MODEL" "$out/out-rope-neox.bin" --threads "$THREADS" "${dev[@]}" --plant rope-neox
 echo "rope-neox (expected identical on text-only positions) vs reference:"
-python3 "$here/diff.py" "$WORK/out-ref.bin" "$WORK/out-rope-neox.bin" "$hidden"
+python3 "$here/diff.py" "$out/out-ref.bin" "$out/out-rope-neox.bin" "$hidden"
 
 for plant in rope-normal swap-gate-up norm-order; do
-    $NICE "$rust" "$MODEL" "$WORK/out-$plant.bin" --threads "$THREADS" --plant "$plant"
+    $NICE "$rust" "$MODEL" "$out/out-$plant.bin" --threads "$THREADS" "${dev[@]}" --plant "$plant"
     echo "planted $plant vs reference:"
-    if python3 "$here/diff.py" "$WORK/out-ref.bin" "$WORK/out-$plant.bin" "$hidden"; then
+    if python3 "$here/diff.py" "$out/out-ref.bin" "$out/out-$plant.bin" "$hidden"; then
         echo "the planted $plant was not seen" >&2
         exit 1
     fi
 done
 echo "red as required: every planted defect is seen"
 
+# Informational: how far the GPU result is from the CPU one. Not a pass or fail; different kernels are expected to
+# round differently. Shown only when a CPU run of the same WORK exists.
+if [ "$DEVICE" = cuda ] && [ -f "$WORK/cpu/out-ref.bin" ]; then
+    echo "informational: reference on cuda vs reference on cpu:"
+    python3 "$here/diff.py" "$WORK/cpu/out-ref.bin" "$out/out-ref.bin" "$hidden" || true
+fi
+
 if [ "${TIMING:-0}" = 1 ]; then
     # Alternate the two sides so drift in machine load hits both.
     for round in 1 2 3; do
-        $NICE "$ref" "$MODEL" "$WORK/t.bin" --threads "$THREADS" --iters 100 --warmup 10 2>/dev/null
-        $NICE "$rust" "$MODEL" "$WORK/t.bin" --threads "$THREADS" --iters 100 --warmup 10 2>/dev/null
+        $NICE "$ref" "$MODEL" "$WORK/t.bin" --threads "$THREADS" "${dev[@]}" --iters 100 --warmup 10 2>/dev/null
+        $NICE "$rust" "$MODEL" "$WORK/t.bin" --threads "$THREADS" "${dev[@]}" --iters 100 --warmup 10 2>/dev/null
     done
 fi

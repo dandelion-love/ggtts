@@ -83,6 +83,23 @@ with a `BUILDINFO.json` and a build provenance attestation (`gh attestation veri
 with synthetic signals described by their generator, never as samples. `out-of-scope.json` names every recorded
 case the core does not implement and why, and the test summary lists them, so what is not covered is visible.
 
+## The Kitten-TTS 2 engine
+
+`crates/ggtts-kitten` runs [Kitten-TTS 2](https://huggingface.co/KittenML/kitten-tts-2) on ggml, on the CPU or CUDA:
+a 1.7B speech LM with ternary (BitNet-style) transformer weights, Chatterbox-Turbo's S3Gen decoder, and voice
+cloning from a reference clip, with no Python at run time. `ggtts-render` selects it from the GGUF's
+architecture (`kitten-tts-2`) and takes `--codec` for the decoder GGUF and `--voice` for a prepared reference.
+
+It reports the parity level `distribution` against Kitten's PyTorch path, with deterministic checks under it: the
+ternary weights survive conversion exactly; LM logits are within stated bars of float32 PyTorch; the S3Gen decode
+is at 89 dB SNR with recorded noise. It is `exact` against itself: the same inputs and seed give a byte-identical
+FLAC. What it needs, how to convert and render, and the measurements: [`crates/ggtts-kitten/README.md`](crates/ggtts-kitten/README.md)
+and [`DESIGN.md`](crates/ggtts-kitten/DESIGN.md).
+
+**The model's licence is not this repository's.** Kitten-TTS 2's weights are under the Stellon Labs Community
+License, and their outputs, including audio rendered here, must not be used to train any other model. No weights,
+GGUFs or rendered audio are kept in this repository.
+
 ## Licence
 
 MIT. Third-party sources and what is taken from each are listed in [`THIRD_PARTY.md`](THIRD_PARTY.md).

@@ -1,6 +1,6 @@
 [package]
 name = "ggtts-qwen3-tts"
-description = "The ggtts Qwen3-TTS engine. So far it declares the engine's protocol profile, story-v1/qwen3-tts"
+description = "The ggtts Qwen3-TTS engine: the story-v1/qwen3-tts profile, and with the ggml feature the codec decoder, talker and code predictor over ggml"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,5 +8,24 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+# The engine itself: builds and links ggml through ggtts-ggml-sys. Off by default, so the workspace builds without
+# the ggml submodule.
+ggml = ["ggtts-ggml-sys/ggml"]
+
 [dependencies]
 ggtts-core.workspace = true
+ggtts-ggml-sys = { path = "../ggtts-ggml-sys", version = "0.0.1" }
+serde_json.workspace = true
+
+[dev-dependencies]
+sha2 = "0.10"
+
+[[example]]
+name = "decode"
+required-features = ["ggml"]
+
+[[example]]
+name = "tokenize"
+required-features = ["ggml"]

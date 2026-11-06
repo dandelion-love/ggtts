@@ -8,6 +8,7 @@
 //!                     [--tokens-only 1]
 //! ```
 //!
+//! `prepare --s3gguf FILE --wav CLIP.wav --transcript TEXT --out REF.json` prepares a reference clip without Python.
 //! `tokcheck` compares the Rust tokenizer with the ids `tools/kitten_ref.py tokenize` wrote. `render` reads one
 //! text per line of `--lines`, generates each with the ternary LM on ggml, decodes it through the PyTorch S3Gen
 //! bridge, and writes `NN.flac` and `report.json` (timings and real-time factors) into `--out-dir`.
@@ -450,6 +451,144 @@ fn flow_cmd(a: &Args) -> Result<bool, String> {
     Ok(ok)
 }
 
+fn cond_cmd(a: &Args) -> Result<bool, String> {
+    use ggtts_kitten::condnet::{CondNets, Plant};
+    use ggtts_kitten::refdsp;
+    let threads: usize = a.or("threads", "4").parse().map_err(|_| "bad --threads")?;
+    let dir = PathBuf::from(a.get("ref")?);
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("meta.json")).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let ids = |k: &str| -> Vec<u32> {
+        meta[k]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as u32)
+            .collect()
+    };
+    let plant = match a.or("plant", "none") {
+        "none" => Plant::None,
+        "no-rope" => Plant::NoRope,
+        "no-batchnorm" => Plant::NoBatchNorm,
+        "no-abs" => Plant::NoAbs,
+        "no-preemphasis" => Plant::NoPreemphasis,
+        p => return Err(format!("unknown --plant {p}")),
+    };
+    let gguf = Gguf::open(Path::new(a.get("s3gguf")?))?;
+    let mut nets = CondNets::load(&gguf, threads)?;
+    nets.plant = plant;
+    let rd = |n: &str| read_f32(&dir.join(format!("{n}.f32")));
+    let agree = |x: &[u32], y: &[u32]| -> f64 {
+        let n = x.len().min(y.len());
+        let same = x.iter().zip(y).filter(|(p, q)| p == q).count();
+        same as f64 / n.max(1) as f64 * (n as f64 / x.len().max(y.len()).max(1) as f64)
+    };
+    let mut ok = true;
+    let mut bar = |name: &str, pass: bool, what: String| {
+        ok &= pass;
+        println!("{name:<32} {what:<44} {}", if pass { "pass" } else { "FAIL" });
+    };
+    let wav24 = rd("wav24")?;
+    let wav16 = rd("wav16")?;
+    let e = parity::rel_l2(&refdsp::resample(&wav24, 24000, 16000), &wav16);
+    bar("resample 24k -> 16k", e <= 1e-5, format!("rel L2 {e:.2e} (<= 1e-5)"));
+    let e = parity::rel_l2(&refdsp::mel24(&wav24), &rd("mel24")?);
+    bar(
+        "S3Gen prompt mel (24 kHz)",
+        e <= 1e-4,
+        format!("rel L2 {e:.2e} (<= 1e-4)"),
+    );
+    let e = parity::rel_l2(&nets.whisper_mel(&wav16), &rd("wmel")?);
+    bar("tokenizer log-mel", e <= 1e-4, format!("rel L2 {e:.2e} (<= 1e-4)"));
+    let fb = rd("fbank")?;
+    let e = parity::rel_l2(&refdsp::kaldi_fbank(&wav16, plant == Plant::NoPreemphasis), &fb);
+    bar("Kaldi fbank", e <= 1e-4, format!("rel L2 {e:.2e} (<= 1e-4)"));
+    let t0 = Instant::now();
+    let toks = nets.s3_tokens(&wav16)?;
+    let r = agree(&toks, &ids("prompt_tokens"));
+    bar(
+        "S3 tokens, PyTorch's 16 kHz",
+        r >= 0.98,
+        format!(
+            "{:.1}% equal of {} ({:.1}s) (>= 98%)",
+            r * 100.0,
+            toks.len(),
+            t0.elapsed().as_secs_f64()
+        ),
+    );
+    if let Some(w) = a.map.get("wav") {
+        let (raw, sr) = refdsp::read_wav(Path::new(w))?;
+        let e = parity::rel_l2(&raw, &rd("raw")?);
+        bar("WAV read", e <= 1e-7, format!("rel L2 {e:.2e} (<= 1e-7)"));
+        let lt = nets.s3_tokens(&refdsp::resample(&raw, sr, 16000))?;
+        let r = agree(&lt, &ids("lm_tokens"));
+        bar(
+            "S3 tokens, own resampling vs soxr",
+            r >= 0.90,
+            format!("{:.1}% equal of {} (>= 90%)", r * 100.0, lt.len()),
+        );
+    }
+    let t1 = Instant::now();
+    let xv = nets.xvector(&fb)?;
+    let cs = parity::cosine(&xv, &rd("xvector")?);
+    bar(
+        "CAMPPlus x-vector",
+        cs >= 0.9999,
+        format!("cosine {cs:.6} ({:.1}s) (>= 0.9999)", t1.elapsed().as_secs_f64()),
+    );
+    let t2 = Instant::now();
+    let py = nets.pyannote(&rd("pwav16")?)?;
+    let cs = parity::cosine(&py, &rd("pyannote")?);
+    bar(
+        "pyannote embedding",
+        cs >= 0.9999,
+        format!("cosine {cs:.6} ({:.1}s) (>= 0.9999)", t2.elapsed().as_secs_f64()),
+    );
+    println!(
+        "{} (plant: {plant:?})",
+        if ok {
+            "CONDITIONING PARITY PASS"
+        } else {
+            "CONDITIONING PARITY FAIL"
+        }
+    );
+    Ok(ok)
+}
+
+fn prepare_cmd(a: &Args) -> Result<bool, String> {
+    use ggtts_kitten::condnet::CondNets;
+    let threads: usize = a.or("threads", "4").parse().map_err(|_| "bad --threads")?;
+    let wav = PathBuf::from(a.get("wav")?);
+    let transcript = a.get("transcript")?.trim().to_string();
+    if transcript.is_empty() {
+        return Err("--transcript must not be empty".into());
+    }
+    let (samples, sr) = ggtts_kitten::refdsp::read_wav(&wav)?;
+    let gguf = Gguf::open(Path::new(a.get("s3gguf")?))?;
+    let nets = CondNets::load(&gguf, threads)?;
+    let t0 = Instant::now();
+    let p = nets.prepare(&samples, sr)?;
+    let j = serde_json::json!({
+        "transcript": transcript,
+        "reference_wav": wav.to_string_lossy(),
+        "reference_tokens": p.reference_tokens,
+        "embedding": p.embedding,
+        "s3gen": {"prompt_token": p.prompt_token, "prompt_feat": p.prompt_feat, "embedding": p.xvector},
+        "prepared_by": format!("ggtts-kitten {} (no Python)", ggtts_core::VERSION),
+    });
+    std::fs::write(a.get("out")?, serde_json::to_string(&j).unwrap()).map_err(|e| e.to_string())?;
+    println!(
+        "prepared {}: {} LM prompt tokens, {} S3Gen prompt tokens, {} mel frames, in {:.1}s",
+        wav.display(),
+        p.reference_tokens.len(),
+        p.prompt_token.len(),
+        p.prompt_feat.len() / 80,
+        t0.elapsed().as_secs_f64()
+    );
+    Ok(true)
+}
+
 fn text_of(lines: &[String], i: usize) -> &str {
     &lines[i]
 }
@@ -463,6 +602,8 @@ fn main() -> ExitCode {
         "render" => render_cmd(&a),
         "hift-parity" => hift_cmd(&a),
         "decoder-parity" => flow_cmd(&a),
+        "cond-parity" => cond_cmd(&a),
+        "prepare" => prepare_cmd(&a),
         _ => Err("usage: ggtts-kitten (parity|tokcheck|render) ...; see the source's header".into()),
     });
     match res {

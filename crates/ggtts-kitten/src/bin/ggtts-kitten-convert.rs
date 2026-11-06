@@ -3,7 +3,7 @@
 //! ```text
 //! ggtts-kitten-convert --repo DIR [--weights FILE] --out FILE.gguf [--plant group256|absmean]
 //! ggtts-kitten-convert --repo DIR [--weights FILE] --verify FILE.gguf
-//! ggtts-kitten-convert --s3gen s3gen_meanflow.safetensors --out FILE.gguf
+//! ggtts-kitten-convert --s3gen s3gen_meanflow.safetensors [--pyannote speaker/model.safetensors] --out FILE.gguf
 //! ```
 //!
 //! `--repo` is a Kitten-TTS 2 model directory (its `config.json` and `lm/config.json` are read). `--weights` is the
@@ -35,6 +35,7 @@ fn run() -> Result<bool, String> {
     let mut args = std::env::args().skip(1);
     let (mut repo, mut weights, mut out, mut verify_only, mut plant) = (None, None, None, None, None);
     let mut s3gen: Option<PathBuf> = None;
+    let mut pyannote: Option<PathBuf> = None;
     while let Some(a) = args.next() {
         let mut val = || args.next().ok_or(format!("{a} needs a value"));
         match a.as_str() {
@@ -44,6 +45,7 @@ fn run() -> Result<bool, String> {
             "--verify" => verify_only = Some(PathBuf::from(val()?)),
             "--plant" => plant = Some(val()?),
             "--s3gen" => s3gen = Some(PathBuf::from(val()?)),
+            "--pyannote" => pyannote = Some(PathBuf::from(val()?)),
             "--version" => {
                 println!("ggtts-kitten-convert {}", ggtts_core::VERSION);
                 return Ok(true);
@@ -54,9 +56,10 @@ fn run() -> Result<bool, String> {
     if let Some(src) = s3gen {
         let out = out.ok_or("--s3gen needs --out")?;
         let st = SafeTensors::open(&src)?;
-        let n = ggtts_kitten::s3convert::convert(&st, &out)?;
+        let py = pyannote.map(|p| SafeTensors::open(&p)).transpose()?;
+        let n = ggtts_kitten::s3convert::convert(&st, py.as_ref(), &out)?;
         println!(
-            "wrote {}: {n} S3Gen tensors (flow and vocoder, weight norm folded)",
+            "wrote {}: {n} tensors (S3Gen flow, vocoder, tokenizer and CAMPPlus; pyannote if given)",
             out.display()
         );
         return Ok(true);

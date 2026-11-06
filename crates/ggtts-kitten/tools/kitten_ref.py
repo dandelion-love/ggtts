@@ -308,6 +308,68 @@ def cmd_s3dump(a) -> int:
     return 0
 
 
+def cmd_conddump(a) -> int:
+    """Every stage of reference-clip preparation, for the Rust port's parity check."""
+    import torch
+    import torchaudio
+    import librosa
+    import soundfile as sf
+
+    low_priority(a.threads)
+    from kittenml.kittentts2.s3gen import S3GEN_SR, S3_SR, extract_feature, mel_spectrogram
+    from kittenml.kittentts2.speaker import SpeakerEncoder
+    from kittenml.kittentts2.vocoder import S3Codec, _load_decoder_reference
+
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    def put(name, t):
+        arr = t.detach().float().cpu().numpy() if torch.is_tensor(t) else np.asarray(t, np.float32)
+        np.asarray(arr, "<f4").tofile(out / f"{name}.f32")
+        return list(arr.shape)
+
+    repo = Path(a.repo)
+    config = load_config(repo)
+    codec = S3Codec(device="cpu")
+    s3 = codec.s3gen
+    shapes = {}
+    with torch.inference_mode():
+        raw, sr = sf.read(a.wav, dtype="float32", always_2d=True)
+        shapes["raw"] = put("raw", raw.mean(axis=1))
+        # S3Gen conditioning: librosa at 24 kHz, first 10 s, then torchaudio to 16 kHz.
+        wav24 = _load_decoder_reference(a.wav)[: 10 * S3GEN_SR]
+        shapes["wav24"] = put("wav24", wav24)
+        w24 = torch.from_numpy(wav24).float()[None]
+        shapes["mel24"] = put("mel24", mel_spectrogram(w24)[0].T)  # [frames, 80]
+        w16 = torchaudio.transforms.Resample(S3GEN_SR, S3_SR)(w24)
+        shapes["wav16"] = put("wav16", w16[0])
+        feat, _, _ = extract_feature(w16)
+        shapes["fbank"] = put("fbank", feat[0])  # [frames, 80], mean-normalised
+        xv = s3.speaker_encoder.inference(w16)
+        shapes["xvector"] = put("xvector", xv[0])
+        wmel = s3.tokenizer.log_mel_spectrogram(w16)
+        shapes["wmel"] = put("wmel", wmel[0])  # [128, frames]
+        toks, lens = s3.tokenizer(w16.float())
+        prompt_tokens = toks[0, : int(lens[0])].tolist()
+        # The LM prompt's tokens: librosa straight to 16 kHz (soxr), the whole clip.
+        lw16, _ = librosa.load(a.wav, sr=S3_SR, mono=True)
+        shapes["lwav16"] = put("lwav16", lw16)
+        ltoks, llens = s3.tokenizer(torch.from_numpy(lw16).float()[None])
+        lm_tokens = ltoks[0, : int(llens[0])].tolist()
+        # pyannote: soundfile, channel mean, torchaudio to 16 kHz, then the model (raw, before unit norm).
+        enc = SpeakerEncoder(repo / config.get("speaker_embedding", "speaker/model.safetensors"), device="cpu")
+        pw = torch.from_numpy(np.ascontiguousarray(raw.T)).float().mean(dim=0, keepdim=True)
+        if sr != 16000:
+            pw = torchaudio.functional.resample(pw, sr, 16000)
+        shapes["pwav16"] = put("pwav16", pw[0])
+        emb = enc._load()(pw.unsqueeze(0)).squeeze(0)
+        shapes["pyannote"] = put("pyannote", emb)
+    meta = {"sr": sr, "prompt_tokens": prompt_tokens, "lm_tokens": lm_tokens, "shapes": shapes}
+    (out / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    print(json.dumps(shapes))
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -337,6 +399,11 @@ def main() -> int:
     p.add_argument("--out", required=True, help="float32 little-endian samples at 24 kHz")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--threads", type=int, default=4)
+    p = sub.add_parser("conddump")
+    p.add_argument("--repo", required=True)
+    p.add_argument("--wav", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--threads", type=int, default=4)
     p = sub.add_parser("s3dump")
     p.add_argument("--reference", required=True)
     p.add_argument("--tokens", required=True, help="a JSON list of S3 token ids")
@@ -344,7 +411,7 @@ def main() -> int:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--threads", type=int, default=4)
     a = ap.parse_args()
-    return {"s3dump": cmd_s3dump, "logits": cmd_logits, "tokenize": cmd_tokenize, "reference": cmd_reference, "decode": cmd_decode}[a.cmd](a)
+    return {"conddump": cmd_conddump, "s3dump": cmd_s3dump, "logits": cmd_logits, "tokenize": cmd_tokenize, "reference": cmd_reference, "decode": cmd_decode}[a.cmd](a)
 
 
 if __name__ == "__main__":

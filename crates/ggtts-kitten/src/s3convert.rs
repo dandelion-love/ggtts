@@ -30,10 +30,44 @@ pub fn fold_weight_norm(g: &[f32], v: &[f32]) -> Vec<f32> {
     out
 }
 
-pub fn convert(st: &SafeTensors, out: &Path) -> Result<usize, String> {
-    let mut tensors = Vec::new();
+/// Tensors of one source under `prefix` (renamed with `rename`): weight norm folded, and every BatchNorm folded to
+/// `<bn>.bn_scale` and `<bn>.bn_shift` (`scale = weight / sqrt(running_var + 1e-5)`, `shift = bias - mean * scale`;
+/// weight 1 and bias 0 for a BatchNorm without affine parameters). Integer counters are skipped.
+fn collect(
+    st: &SafeTensors,
+    keep: &dyn Fn(&str) -> bool,
+    rename: &dyn Fn(&str) -> String,
+    tensors: &mut Vec<TensorOut>,
+) -> Result<(), String> {
+    let mut push = |name: String, dims: Vec<u64>, data: Vec<f32>| {
+        let dims = if dims.is_empty() { vec![1] } else { dims };
+        tensors.push(TensorOut {
+            name,
+            dims,
+            ty: GgmlType::F32,
+            data: data.iter().flat_map(|x| x.to_le_bytes()).collect(),
+        });
+    };
     for (name, info) in &st.tensors {
-        if !(name.starts_with("flow.") || name.starts_with("mel2wav.")) || name.ends_with(G) {
+        if !keep(name) || name.ends_with(G) || info.dtype == crate::safetensors::Dtype::I64 {
+            continue;
+        }
+        if let Some(bn) = name.strip_suffix(".running_mean") {
+            let mean = st.f32(name)?;
+            let var = st.f32(&format!("{bn}.running_var"))?;
+            let w = st
+                .f32(&format!("{bn}.weight"))
+                .unwrap_or_else(|_| vec![1.0; mean.len()]);
+            let b = st.f32(&format!("{bn}.bias")).unwrap_or_else(|_| vec![0.0; mean.len()]);
+            let scale: Vec<f32> = (0..mean.len())
+                .map(|i| (f64::from(w[i]) / (f64::from(var[i]) + 1e-5).sqrt()) as f32)
+                .collect();
+            let shift: Vec<f32> = (0..mean.len()).map(|i| b[i] - mean[i] * scale[i]).collect();
+            push(rename(&format!("{bn}.bn_scale")), vec![mean.len() as u64], scale);
+            push(rename(&format!("{bn}.bn_shift")), vec![mean.len() as u64], shift);
+            continue;
+        }
+        if name.ends_with(".running_var") {
             continue;
         }
         let (out_name, data) = if let Some(layer) = name.strip_suffix(V) {
@@ -42,14 +76,26 @@ pub fn convert(st: &SafeTensors, out: &Path) -> Result<usize, String> {
         } else {
             (name.clone(), st.f32(name)?)
         };
-        let dims: Vec<u64> = info.shape.iter().rev().map(|&d| d as u64).collect();
-        let dims = if dims.is_empty() { vec![1] } else { dims };
-        tensors.push(TensorOut {
-            name: out_name,
-            dims,
-            ty: GgmlType::F32,
-            data: data.iter().flat_map(|x| x.to_le_bytes()).collect(),
-        });
+        push(
+            rename(&out_name),
+            info.shape.iter().rev().map(|&d| d as u64).collect(),
+            data,
+        );
+    }
+    Ok(())
+}
+
+/// S3Gen (flow, vocoder, S3 tokenizer, CAMPPlus) and, when given, Kitten's pyannote speaker model (as `pyannote.*`).
+pub fn convert(st: &SafeTensors, pyannote: Option<&SafeTensors>, out: &Path) -> Result<usize, String> {
+    let mut tensors = Vec::new();
+    let keep = |n: &str| {
+        ["flow.", "mel2wav.", "tokenizer.", "speaker_encoder."]
+            .iter()
+            .any(|p| n.starts_with(p))
+    };
+    collect(st, &keep, &|n| n.to_string(), &mut tensors)?;
+    if let Some(p) = pyannote {
+        collect(p, &|_| true, &|n| format!("pyannote.{n}"), &mut tensors)?;
     }
     let mut kv = BTreeMap::new();
     kv.insert("general.architecture".to_string(), Value::Str(ARCH.into()));

@@ -145,6 +145,16 @@ impl Graph {
 
     /// Allocate, set the inputs, compute, and read the outputs back.
     pub fn run(&mut self, inputs: &[(T, &[f32])], outputs: &[T]) -> Result<Vec<Vec<f32>>, String> {
+        self.run_ints(inputs, &[], outputs)
+    }
+
+    /// [`Graph::run`] with `i32` inputs too (positions).
+    pub fn run_ints(
+        &mut self,
+        inputs: &[(T, &[f32])],
+        ints: &[(T, &[i32])],
+        outputs: &[T],
+    ) -> Result<Vec<Vec<f32>>, String> {
         unsafe {
             for &o in outputs {
                 g::ggml_set_output(o);
@@ -154,6 +164,16 @@ impl Graph {
                 return Err("ggml_gallocr_alloc_graph failed".into());
             }
             for (t, d) in inputs {
+                if g::ggml_nbytes(*t) != d.len() * 4 {
+                    return Err("decoder input size mismatch".into());
+                }
+                g::ggml_backend_tensor_set(*t, d.as_ptr().cast(), 0, d.len() * 4);
+            }
+            for (t, d) in ints {
+                // An input the graph never reads is never allocated, and setting it would abort.
+                if (**t).buffer.is_null() {
+                    continue;
+                }
                 if g::ggml_nbytes(*t) != d.len() * 4 {
                     return Err("decoder input size mismatch".into());
                 }

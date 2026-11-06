@@ -6,6 +6,8 @@
 //!   check that every ternary weight survives exactly.
 //! * [`ternary`]: Kitten's ternary rule and its `TQ2_0` storage on zero-padded 128-weight groups.
 
+#[cfg(feature = "ggml")]
+pub mod condnet;
 pub mod convert;
 pub mod dsp;
 #[cfg(feature = "ggml")]
@@ -19,6 +21,7 @@ pub mod hift;
 pub mod model;
 pub mod parity;
 pub mod prompt;
+pub mod refdsp;
 pub mod s3convert;
 pub mod safetensors;
 pub mod sampler;

@@ -57,11 +57,10 @@ the port matched, the engine's `decode` handed the codes to Kitten's own PyTorch
 
 **2026-11-06: the decode is ported, and the estimate was too high.** The vocoder and the flow run on ggml and
 meet level 3 (see Measured). PyTorch S3Gen stays available with `--decoder pytorch`, and every render's report names
-the decoder that made it. **What is still PyTorch:** reference conditioning. The clip's 24 kHz mel, its CAMPPlus
-x-vector, its S3 tokens (for S3Gen and for the LM prompt) and the 512-dim pyannote embedding (for `spk_proj`) are
-prepared once per clip by `tools/kitten_ref.py reference`, as kitten-tts-2-cpp's `prepare_reference.py` does.
-Porting those (a mel front end, CAMPPlus, the S3 tokenizer's encoder, the pyannote model) is the next decoder
-step.
+the decoder that made it. **Reference conditioning is ported too (2026-11-06).** `ggtts-kitten prepare` computes the clip's 24 kHz mel, CAMPPlus
+x-vector, S3 tokens and pyannote embedding without Python; `tools/kitten_ref.py reference` remains as the reference
+it is measured against. One documented difference: resampling is torchaudio's sinc everywhere, where Python uses
+soxr for the LM prompt's 16 kHz tokens (and for a clip not already at 24 kHz).
 
 ## The ternary type
 
@@ -153,6 +152,17 @@ tolerances fixed here, before any measurement:
    `exact` against itself: the same GGUF, text, seed, thread count and build give the same tokens, checked by a
    golden fixture of token ids on text written for the purpose.
 
+5. **Reference-clip preparation without Python** (bars written 2026-11-06, before the port was run). The parity
+   inputs are a 24 kHz clip and PyTorch's own intermediate signals, so each stage is measured on the same input:
+   * 24 kHz to 16 kHz resampling (torchaudio's sinc): relative L2 at most `1e-5`.
+   * S3Gen's 24 kHz prompt mel, the S3 tokenizer's log-mel, and Kaldi fbank: relative L2 at most `1e-4` each.
+   * S3 tokens on PyTorch's 16 kHz signal: at least 98% equal. On this port's own resampling against librosa's
+     soxr path, which the LM prompt uses in Python: at least 90% equal, because the resamplers differ.
+   * CAMPPlus x-vector and pyannote embedding: cosine at least `0.9999` each.
+   * **Planted faults:** no rotary embedding in the tokenizer (token agreement below 98%), unfolded BatchNorm in
+     CAMPPlus (cosine below the bar), no absolute value after pyannote's sinc filters (cosine below the bar), and no
+     pre-emphasis in the fbank (relative L2 above the bar). Each must turn its check red.
+
 ## Measured (2026-11-06, CPU, 4 threads, WSL Ubuntu on x86-64)
 
 The bars above were written before these numbers and are not moved by them.
@@ -219,6 +229,37 @@ The bars above were written before these numbers and are not moved by them.
   to PyTorch's. Against the PyTorch-decoded render of the same codes, it has the same length, RMS within 0.3 dB,
   and an amplitude-envelope correlation of 0.975-0.988 at 20 ms.
 
+* **Reference-clip preparation without Python (level 5): PASS.** `src/refdsp.rs` covers WAV reading, torchaudio's
+  sinc resampler, the Slaney mel filterbank, the 24 kHz prompt mel, the tokenizer's log-mel and Kaldi fbank.
+  `src/condnet.rs` runs the S3 tokenizer v2, CAMPPlus and pyannote's SincNet x-vector on ggml. On a built-in
+  voice's 10 s clip, measured against PyTorch's intermediate signals:
+
+  | Stage | Result | Bar |
+  |---|---|---|
+  | resampling | relative L2 `8.9e-8` | 1e-5 |
+  | prompt mel | relative L2 `2.9e-6` | 1e-4 |
+  | tokenizer log-mel | relative L2 `1.5e-6` | 1e-4 |
+  | fbank | relative L2 `5.1e-6` | 1e-4 |
+  | S3 tokens | 250 of 250 equal | 98% |
+  | LM-prompt tokens (own resampling against librosa's soxr) | 95.7% equal | 90% |
+  | CAMPPlus x-vector | cosine `1.000000` | 0.9999 |
+  | pyannote embedding | cosine `1.000000` | 0.9999 |
+
+  Each plant turned its check red:
+
+  | Plant | Result |
+  |---|---|
+  | no rotary embedding | tokens 32.0% equal |
+  | unfolded BatchNorm | x-vector cosine `0.0017` |
+  | no absolute value after the sinc filters | pyannote cosine `0.883` |
+  | no pre-emphasis | fbank relative L2 `0.175` |
+
+  `ggtts-kitten prepare` prepares the clip in 1.6 s. Against the Python-prepared reference, the S3Gen prompt tokens
+  are equal 250 of 250 and the LM-prompt tokens 242 of 253, the speaker vectors have cosine `0.99999996`
+  (pyannote) and `0.9999999998` (x-vector), and the prompt mel's relative L2 is `2.9e-6`. A render of the QAT
+  smoke checkpoint from that reference ran with no Python process at all: 13.88 s of audio at RTF 3.51 on a
+  busier machine.
+
 **The ternary arm's cosine gap: what I would try (not tried).** The measured cause is activation quantization:
 `Q8_K` per 128 real values, where kitten-tts-2-cpp's `TQ2_1`-on-AMX path quantizes per 32 (`Q8_0`) and reports a
 cosine above 0.999998. The cheapest fix is to store the ternary matrices as stock `Q4_0`. With `d` set to the group's
@@ -241,6 +282,7 @@ measured.
 | `src/parity.rs` | the parity measures and the bars above |
 | `src/s3convert.rs` | S3Gen's safetensors to a GGUF, weight norm folded |
 | `src/flow.rs` | the S3Gen flow on ggml: conformer encoder and meanflow estimator (feature `ggml`) |
+| `src/refdsp.rs`, `src/condnet.rs` | reference-clip preparation: resampling, mels, fbank; the S3 tokenizer, CAMPPlus, pyannote (feature `ggml`) |
 | `src/hift.rs`, `src/dsp.rs` | the HiFT vocoder on ggml (feature `ggml`) and its host-side source and STFT |
 | `src/bin/ggtts-kitten-convert.rs` | the converter's command line |
 | `src/bin/ggtts-kitten.rs` | `parity`, `tokcheck` and `render` (feature `ggml`) |

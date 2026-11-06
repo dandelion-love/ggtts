@@ -142,10 +142,12 @@ fn render(a: Args) -> Result<(), String> {
     let render_ms = t1.elapsed().as_millis();
     let path = write_flac(&out, &samples, rate).map_err(|e| format!("{}: {e}", out.display()))?;
     eprintln!(
-        "{BINARY}: wrote {} ({} samples at {rate} Hz) with {}; load {load_ms} ms, render {render_ms} ms",
+        "{BINARY}: wrote {} ({} samples at {rate} Hz) with {} on {}, parity {}; load {load_ms} ms, render {render_ms} ms",
         path.display(),
         samples.len(),
-        engine.info().family
+        engine.info().family,
+        engine.info().backend,
+        engine.info().parity
     );
     Ok(())
 }

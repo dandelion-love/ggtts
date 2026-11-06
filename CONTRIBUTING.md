@@ -56,8 +56,12 @@ Work meets on the `rc` branch before it reaches `main`.
 CI runs the desktop release builds, archive smoke tests, Android build and host binding tests together on the
 same-repository `rc` to `main` promotion PR. Other PRs run the specialized checks selected by
 `scripts/select_specialized_ci.py` for their changed paths; pushes skip these four jobs. A skip is not a pass.
-General checks still run, and the tag-triggered release workflow still builds its archives. CUDA compilation on
-promotion is separate from GPU runtime parity; the local promotion gate supplies the latter.
+The Linux and Windows ggml jobs and hosted CUDA compile use the same selector on ordinary PRs; a packaging-only
+workflow edit selects the archive tests, while changes to a specialized job select that job. Changes to the
+selector, unknown jobs or workflow-wide configuration conservatively select all. On pushes, ggml and CUDA still
+run; the four release and binding jobs are skipped. General checks still run, and the tag-triggered release
+workflow still builds its archives. CUDA compilation on promotion is separate from GPU runtime parity; the local
+promotion gate supplies the latter.
 
 **Promotion.** `main` moves only by one reviewed pull request from `rc`. Hosted runners have no GPU, so before that
 pull request is merged, someone with a supported GPU runs `scripts/rc_gate.sh --ref origin/rc --work /path/to/scratch`

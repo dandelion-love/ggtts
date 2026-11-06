@@ -5,6 +5,9 @@
 //! the redraw, the joins and the level), and FLAC output ([`flac`]). The instrument events, the trace format and
 //! the provenance manifest come next.
 //!
+//! The core holds the rules and no protocol number: the ceilings, the pause table, the judge bars and the level
+//! target come from the [`profile::Profile`] the engine declares.
+//!
 //! The pipeline reproduces a reference implementation rule for rule, oddities included, and is checked against
 //! its recorded cases in `fixtures/pipeline/` (`cargo test -p ggtts-core --test pipeline_cases`).
 
@@ -13,6 +16,7 @@ pub mod engine;
 pub mod flac;
 pub mod numeric;
 pub mod pipeline;
+pub mod profile;
 pub mod seed;
 pub mod text;
 

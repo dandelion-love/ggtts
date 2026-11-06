@@ -4,20 +4,25 @@
 //! integers, strings and hashes exactly, and the values the case file rounded at the same rounding. Cases the core
 //! does not implement are listed by name in `out-of-scope.json` and reported as such, never counted as passes.
 //!
-//! `planted_ceiling_44_turns_red` is the planted change: the same cases at a story ceiling of 44 must fail, and
-//! the failures must be named. Run with `--nocapture` to see the summary.
+//! Every protocol number comes from the profile the fake engine declares, `story-v1/qwen3-tts` by default.
+//! `planted_ceiling_44_turns_red` is the planted change, made in the profile: the same cases with the profile's
+//! story ceiling at 44 must fail, and the failures must be named. `a_second_profile_chunks_differently` shows the
+//! ceiling the core chunks at is the declared profile's. Run with `--nocapture` to see the summary.
 
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 
 use ggtts_core::audio::{downmix_stereo, judge, judge_f32, trim_edges, TrimInfo, Verdict};
+use ggtts_core::engine::Engine;
 use ggtts_core::flac::{to_i16, write_flac};
 use ggtts_core::numeric::{log10, mean_f64};
-use ggtts_core::pipeline::{render_story, RenderOptions, DEFAULT_REDRAW, EDGE_S, PASSAGE_CEILING, STORY_CEILING};
+use ggtts_core::pipeline::{plan_story, render_story, RenderOptions};
+use ggtts_core::profile::Profile;
 use ggtts_core::seed::{hex, seed_key, seed_of, sha256};
 use ggtts_core::text::{chunk, cjk_len, plan, read_text};
 use ggtts_fake::{signal, FakeEngine, Shape};
+use ggtts_qwen3_tts::PROFILE as QWEN3_TTS;
 use serde_json::Value;
 
 const FORMAT: &str = "ggtts-pipeline-cases/1";
@@ -87,24 +92,22 @@ fn verdict(v: Option<Verdict>) -> Value {
 }
 
 // ── defaults ─────────────────────────────────────────────────────────────────────────────────────────────────
-fn run_defaults(r: &mut Report, story_ceiling: usize) {
+fn run_defaults(r: &mut Report, p: &Profile) {
     let d = &load("defaults.json")["defaults"];
     let mut x = Diffs::default();
-    x.eq("story ceiling", story_ceiling as u64, u(&d["story_ceiling"]));
-    x.eq("passage ceiling", PASSAGE_CEILING as u64, u(&d["passage_ceiling"]));
-    x.eq("redraw", u64::from(DEFAULT_REDRAW), u(&d["redraw"]));
-    x.eq(
-        "seed salt",
-        RenderOptions::default().seed_salt.as_str(),
-        s(&d["seed_salt"]),
-    );
-    x.eq("edge cap", EDGE_S, f(&d["edge_s"]));
+    let opts = RenderOptions::for_profile(p);
+    x.eq("protocol", p.protocol, s(&load("defaults.json")["spec"]));
+    x.eq("story ceiling", p.story_ceiling as u64, u(&d["story_ceiling"]));
+    x.eq("passage ceiling", p.passage_ceiling as u64, u(&d["passage_ceiling"]));
+    x.eq("redraw", u64::from(opts.redraw), u(&d["redraw"]));
+    x.eq("seed salt", opts.seed_salt.as_str(), s(&d["seed_salt"]));
+    x.eq("edge cap", opts.edge_s, f(&d["edge_s"]));
     r.record("defaults".into(), x.0);
 }
 
 // ── chunks, read_text, seeds ─────────────────────────────────────────────────────────────────────────────────
-fn check_plan(x: &mut Diffs, label: &str, story_id: &str, paras: &[String], ceiling: usize, want: &Value) {
-    let got = plan(paras, ceiling);
+fn check_plan(x: &mut Diffs, p: &Profile, label: &str, story_id: &str, paras: &[String], ceiling: usize, want: &Value) {
+    let got = plan(p, paras, ceiling);
     let want = want["chunks"].as_array().unwrap();
     x.eq(&format!("{label}: chunk count"), got.len(), want.len());
     for (i, (g, w)) in got.iter().zip(want).enumerate() {
@@ -132,7 +135,7 @@ fn check_plan(x: &mut Diffs, label: &str, story_id: &str, paras: &[String], ceil
     }
 }
 
-fn run_chunks(r: &mut Report, story_ceiling: usize) {
+fn run_chunks(r: &mut Report, p: &Profile) {
     let v = load("chunks.json");
     for c in v["cases"].as_array().unwrap() {
         let id = s(&c["id"]);
@@ -140,7 +143,7 @@ fn run_chunks(r: &mut Report, story_ceiling: usize) {
         let paras = strings(&c["paragraphs"]);
 
         let mut x = Diffs::default();
-        let raw: Vec<Vec<(String, String)>> = paras.iter().map(|p| chunk(p, story_ceiling)).collect();
+        let raw: Vec<Vec<(String, String)>> = paras.iter().map(|t| chunk(p, t, p.story_ceiling)).collect();
         let want_raw: Vec<Vec<(String, String)>> = c["raw_chunks_story"]
             .as_array()
             .unwrap()
@@ -154,11 +157,11 @@ fn run_chunks(r: &mut Report, story_ceiling: usize) {
             })
             .collect();
         x.eq("chunk() pairs", raw, want_raw);
-        check_plan(&mut x, "story", story_id, &paras, story_ceiling, &c["story"]);
+        check_plan(&mut x, p, "story", story_id, &paras, p.story_ceiling, &c["story"]);
         r.record(format!("chunks/{id}/story"), x.0);
 
         let mut x = Diffs::default();
-        check_plan(&mut x, "passage", story_id, &paras, PASSAGE_CEILING, &c["passage"]);
+        check_plan(&mut x, p, "passage", story_id, &paras, p.passage_ceiling, &c["passage"]);
         r.record(format!("chunks/{id}/passage"), x.0);
     }
     for c in v["read_text"].as_array().unwrap() {
@@ -234,23 +237,23 @@ fn check_trim(x: &mut Diffs, got: &TrimInfo, want: &Value) {
     x.rounded("tail_silence_s", got.tail_silence_s, &want["tail_silence_s"], 3);
 }
 
-fn run_trim(r: &mut Report) {
+fn run_trim(r: &mut Report, p: &Profile) {
     let v = load("trim.json");
     for row in v["rows"].as_array().unwrap() {
         let (y, sr) = build_signal(&row["signal"]);
-        let got = trim_edges(&y, sr, f(&row["max_edge_s"]));
+        let got = trim_edges(p, &y, sr, f(&row["max_edge_s"]));
         let mut x = Diffs::default();
         check_trim(&mut x, &got, &row["info"]);
         r.record(format!("trim/{}", s(&row["name"])), x.0);
     }
 }
 
-fn run_judge(r: &mut Report) {
+fn run_judge(r: &mut Report, p: &Profile) {
     let v = load("judge.json");
     for row in v["rows"].as_array().unwrap() {
         let (y, sr) = build_signal(&row["signal"]);
         let text = s(&row["text"]);
-        let j = judge(&y, sr, text);
+        let j = judge(p, &y, sr, text);
         let mut x = Diffs::default();
         x.eq("verdict", verdict(j.verdict), row["verdict"].clone());
         x.rounded("s_per_char", j.s_per_char, &row["s_per_char"], 3);
@@ -327,7 +330,7 @@ fn check_level(x: &mut Diffs, read: &[f32], kept: &[f32], spans: &[(usize, usize
     x.eq("level.int16_first_nonzero", first, want_first);
 }
 
-fn run_render(r: &mut Report, story_ceiling: usize) {
+fn run_render(r: &mut Report, p: &Profile) {
     let v = load("render.json");
     for c in v["cases"].as_array().unwrap() {
         let id = s(&c["id"]);
@@ -353,12 +356,12 @@ fn run_render(r: &mut Report, story_ceiling: usize) {
                 )
             })
             .collect();
-        let mut engine = FakeEngine::new(script, shape);
-        let chunks = plan(&strings(&c["paragraphs"]), story_ceiling);
+        let mut engine = FakeEngine::with_profile(*p, script, shape);
+        let chunks = plan_story(engine.profile(), &strings(&c["paragraphs"]));
         let opts = RenderOptions {
             redraw: u(&c["redraw"]) as u32,
             seed_salt: s(&c["seed_salt"]).to_string(),
-            edge_s: EDGE_S,
+            ..RenderOptions::for_profile(engine.profile())
         };
         let read = match render_story(&mut engine, s(&c["story_id"]), &chunks, &opts) {
             Ok(read) => read,
@@ -435,7 +438,10 @@ fn run_render(r: &mut Report, story_ceiling: usize) {
     let mut x = Diffs::default();
     let (y, sr) = build_signal(&w["signal"]);
     let y: Vec<f32> = y.into_iter().map(|v| v as f32).collect();
-    let dir = std::env::temp_dir().join(format!("ggtts-flac-{}", std::process::id()));
+    // One directory per call: the tests run the suite in parallel, and each removes its directory at the end.
+    static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("ggtts-flac-{}-{run}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let written = write_flac(&dir.join(s(&w["asked_for"])), &y, sr).unwrap();
     x.eq(
@@ -474,15 +480,21 @@ fn run_render(r: &mut Report, story_ceiling: usize) {
 }
 
 // ── the suite ────────────────────────────────────────────────────────────────────────────────────────────────
-fn run_all(story_ceiling: usize) -> Report {
+/// Every case, with every protocol number read from `p`.
+fn run_all(p: &Profile) -> Report {
     let mut r = Report::default();
-    run_defaults(&mut r, story_ceiling);
-    run_chunks(&mut r, story_ceiling);
+    run_defaults(&mut r, p);
+    run_chunks(&mut r, p);
     run_seeds(&mut r);
-    run_trim(&mut r);
-    run_judge(&mut r);
-    run_render(&mut r, story_ceiling);
+    run_trim(&mut r, p);
+    run_judge(&mut r, p);
+    run_render(&mut r, p);
     r
+}
+
+/// The profile the fake engine declares by default.
+fn declared() -> Profile {
+    *FakeEngine::default().profile()
 }
 
 fn out_of_scope() -> Vec<String> {
@@ -518,7 +530,10 @@ fn summary(r: &Report, oos: &[String]) -> String {
 
 #[test]
 fn pipeline_cases() {
-    let r = run_all(STORY_CEILING);
+    let p = declared();
+    assert_eq!(p.name, "story-v1/qwen3-tts");
+    assert_eq!(p, QWEN3_TTS);
+    let r = run_all(&p);
     let oos = out_of_scope();
     let text = summary(&r, &oos);
     println!("{text}");
@@ -529,10 +544,15 @@ fn pipeline_cases() {
     assert!(r.failed.is_empty(), "{text}");
 }
 
-/// AC4's planted change: at a story ceiling of 44 the same cases must fail, by name.
+/// The planted change, made in the profile: with the profile's story ceiling at 44 the same cases must fail, by
+/// name.
 #[test]
 fn planted_ceiling_44_turns_red() {
-    let r = run_all(44);
+    let planted = Profile {
+        story_ceiling: 44,
+        ..declared()
+    };
+    let r = run_all(&planted);
     println!("{}", summary(&r, &[]));
     assert!(
         !r.failed.is_empty(),
@@ -550,7 +570,7 @@ fn planted_ceiling_44_turns_red() {
 /// A no-op must read as no change: the suite run twice gives the same verdicts.
 #[test]
 fn suite_is_deterministic() {
-    let (a, b) = (run_all(STORY_CEILING), run_all(STORY_CEILING));
+    let (a, b) = (run_all(&declared()), run_all(&declared()));
     assert_eq!(a.passed, b.passed);
     assert_eq!(
         a.failed.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
@@ -563,5 +583,89 @@ fn suite_is_deterministic() {
 fn judge_f32_matches_widened() {
     let y = signal::tone(1.0, 0.3, 0.5, 24_000);
     let wide: Vec<f64> = y.iter().map(|&v| f64::from(v)).collect();
-    assert_eq!(judge_f32(&y, 24_000, "今日好熱"), judge(&wide, 24_000, "今日好熱"));
+    let p = declared();
+    assert_eq!(
+        judge_f32(&p, &y, 24_000, "今日好熱"),
+        judge(&p, &wide, 24_000, "今日好熱")
+    );
 }
+
+/// A no-op must read as no change: the same numbers under another name pass every case.
+#[test]
+fn a_renamed_profile_passes_every_case() {
+    let renamed = Profile {
+        name: "story-v1/renamed",
+        ..declared()
+    };
+    let r = run_all(&renamed);
+    let names: Vec<&str> = r.failed.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(names.is_empty(), "a renamed profile failed: {names:?}");
+    assert_eq!(r.passed.len(), run_all(&declared()).passed.len());
+}
+
+/// A second architecture's numbers, for tests only: the same protocol rules at a story ceiling of 20.
+const SHORT_CEILING: Profile = Profile {
+    name: "story-v1/test-ceiling-20",
+    story_ceiling: 20,
+    ..QWEN3_TTS
+};
+
+/// The story chunks of every recorded case's paragraphs, planned with the profile `engine` declares.
+fn story_chunk_count(engine: &FakeEngine) -> usize {
+    let chunks = load("chunks.json");
+    let render = load("render.json");
+    chunks["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(render["cases"].as_array().unwrap())
+        .map(|c| plan_story(engine.profile(), &strings(&c["paragraphs"])).len())
+        .sum()
+}
+
+/// The ceiling the core chunks at is the declared profile's: an engine declaring a ceiling of 20 gets a different
+/// plan, and a different read, from the same text.
+#[test]
+fn a_second_profile_chunks_differently() {
+    let qwen = FakeEngine::default();
+    let short = FakeEngine::with_profile(SHORT_CEILING, HashMap::new(), HashMap::new());
+    let (n_qwen, n_short) = (story_chunk_count(&qwen), story_chunk_count(&short));
+    println!(
+        "story chunks over the recorded paragraphs: {} under {}, {} under {}",
+        n_qwen,
+        qwen.profile().name,
+        n_short,
+        short.profile().name
+    );
+    assert!(
+        n_short > n_qwen,
+        "a ceiling of 20 did not split more: {n_short} vs {n_qwen}"
+    );
+    assert_eq!((n_qwen, n_short), (QWEN3_CHUNKS, SHORT_CHUNKS));
+
+    // Through the whole story path: one paragraph, rendered by each engine, chunked by its own profile.
+    let paras = vec!["今日天氣好好，我哋一齊去公園散步，之後再去食飯，飲杯茶傾下偈。".to_string()];
+    let mut reads = Vec::new();
+    for mut engine in [qwen, short] {
+        let planned = plan_story(engine.profile(), &paras);
+        let opts = RenderOptions::for_profile(engine.profile());
+        let read = render_story(&mut engine, "profile-check", &planned, &opts).unwrap();
+        for ch in &planned {
+            let body = ch.text.chars().count() - ch.punct.chars().count();
+            assert!(
+                body <= engine.profile().story_ceiling,
+                "{body} over the ceiling: {}",
+                ch.text
+            );
+        }
+        reads.push((read.chunks.len(), read.samples.len()));
+    }
+    println!("one paragraph read: (chunks, samples) {reads:?}");
+    assert_eq!(reads[0].0, 1);
+    assert!(reads[1].0 > 1, "the short profile kept the paragraph whole: {reads:?}");
+    assert_ne!(reads[0].1, reads[1].1);
+}
+
+/// The measured story chunk counts over the recorded paragraphs, under each profile.
+const QWEN3_CHUNKS: usize = 44;
+const SHORT_CHUNKS: usize = 75;

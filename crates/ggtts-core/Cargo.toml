@@ -13,5 +13,6 @@ libm.workspace = true
 
 [dev-dependencies]
 ggtts-fake.workspace = true
+ggtts-qwen3-tts.workspace = true
 serde_json.workspace = true
 claxon.workspace = true

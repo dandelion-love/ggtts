@@ -1,10 +1,11 @@
 //! Edge trimming and the judge (render spec sections 5 and 6).
+//!
+//! The loudness threshold and the judge's bars come from the [`Profile`].
 
 use crate::numeric::{log10, mean_f64};
+use crate::profile::Profile;
 use crate::text::cjk_len;
 
-/// A frame is loud when its RMS is more than this many dB below the loudest frame's, strictly.
-pub const TOP_DB: f64 = 40.0;
 /// Added to every frame's RMS before the ratio, so a silent frame has a finite level.
 const RMS_EPS: f64 = 1e-12;
 
@@ -31,10 +32,11 @@ pub struct TrimInfo {
 /// Cap the silence at each end to `max_edge_s` seconds.
 ///
 /// Frames are 10 ms (`sr / 100` samples, the last one may be short). A frame is loud when
-/// `20 log10(rms / loudest) > -40`, strictly, with `1e-12` added to every RMS. Silence beyond the cap is cut, not
-/// removed outright: the kept audio starts `round(max_edge_s * sr)` samples before the first loud frame and ends
-/// as many after the last. Input is mono; see [`downmix_stereo`].
-pub fn trim_edges(y: &[f64], sr: u32, max_edge_s: f64) -> TrimInfo {
+/// `20 log10(rms / loudest) > -top_db`, strictly, with the profile's [`top_db`](Profile::top_db) and `1e-12` added
+/// to every RMS. Silence beyond the cap is cut, not removed outright: the kept audio starts
+/// `round(max_edge_s * sr)` samples before the first loud frame and ends as many after the last. Input is mono;
+/// see [`downmix_stereo`].
+pub fn trim_edges(profile: &Profile, y: &[f64], sr: u32, max_edge_s: f64) -> TrimInfo {
     let n = y.len();
     let srf = f64::from(sr);
     let raw_s = n as f64 / srf;
@@ -62,7 +64,10 @@ pub fn trim_edges(y: &[f64], sr: u32, max_edge_s: f64) -> TrimInfo {
         })
         .collect();
     let loudest = rms.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let loud: Vec<bool> = rms.iter().map(|&r| 20.0 * log10(r / loudest) > -TOP_DB).collect();
+    let loud: Vec<bool> = rms
+        .iter()
+        .map(|&r| 20.0 * log10(r / loudest) > -profile.top_db)
+        .collect();
     let (Some(first), Some(last)) = (loud.iter().position(|&b| b), loud.iter().rposition(|&b| b)) else {
         return TrimInfo {
             raw_s,
@@ -93,17 +98,17 @@ pub fn trim_edges(y: &[f64], sr: u32, max_edge_s: f64) -> TrimInfo {
 }
 
 /// [`trim_edges`] on float32 samples, which widen to float64 exactly.
-pub fn trim_edges_f32(y: &[f32], sr: u32, max_edge_s: f64) -> TrimInfo {
+pub fn trim_edges_f32(profile: &Profile, y: &[f32], sr: u32, max_edge_s: f64) -> TrimInfo {
     let wide: Vec<f64> = y.iter().map(|&x| f64::from(x)).collect();
-    trim_edges(&wide, sr, max_edge_s)
+    trim_edges(profile, &wide, sr, max_edge_s)
 }
 
 /// A functional failure the judge can name without a listener.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
-    /// Speech over [`RUNAWAY_SPC`] seconds per character.
+    /// Speech over the profile's [`runaway_spc`](Profile::runaway_spc) seconds per character.
     Runaway,
-    /// Speech under [`SILENT_SPC`] seconds per character.
+    /// Speech under the profile's [`silent_spc`](Profile::silent_spc) seconds per character.
     Silent,
 }
 
@@ -115,11 +120,6 @@ impl Verdict {
         }
     }
 }
-
-/// Above this many seconds of speech per character, a draw is a runaway (strict).
-pub const RUNAWAY_SPC: f64 = 0.60;
-/// Below this many seconds of speech per character, a draw is near-silent (strict).
-pub const SILENT_SPC: f64 = 0.07;
 
 /// The judge's character count: CJK characters plus a third of the ASCII letters and digits, at least one.
 pub fn judge_chars(text: &str) -> usize {
@@ -135,14 +135,14 @@ pub struct Judgement {
 }
 
 /// Judge one draw by its speech span: the loud frames' extent ([`trim_edges`] with no edge kept) over
-/// [`judge_chars`].
-pub fn judge(y: &[f64], sr: u32, text: &str) -> Judgement {
-    let edge = trim_edges(y, sr, 0.0);
+/// [`judge_chars`], against the profile's bars.
+pub fn judge(profile: &Profile, y: &[f64], sr: u32, text: &str) -> Judgement {
+    let edge = trim_edges(profile, y, sr, 0.0);
     let speech = (edge.end_sample - edge.start_sample) as f64 / f64::from(sr);
     let spc = speech / judge_chars(text) as f64;
-    let verdict = if spc > RUNAWAY_SPC {
+    let verdict = if spc > profile.runaway_spc {
         Some(Verdict::Runaway)
-    } else if spc < SILENT_SPC {
+    } else if spc < profile.silent_spc {
         Some(Verdict::Silent)
     } else {
         None
@@ -154,7 +154,7 @@ pub fn judge(y: &[f64], sr: u32, text: &str) -> Judgement {
 }
 
 /// [`judge`] on float32 samples.
-pub fn judge_f32(y: &[f32], sr: u32, text: &str) -> Judgement {
+pub fn judge_f32(profile: &Profile, y: &[f32], sr: u32, text: &str) -> Judgement {
     let wide: Vec<f64> = y.iter().map(|&x| f64::from(x)).collect();
-    judge(&wide, sr, text)
+    judge(profile, &wide, sr, text)
 }

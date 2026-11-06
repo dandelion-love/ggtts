@@ -1,0 +1,12 @@
+[package]
+name = "ggtts-qwen3-tts"
+description = "The ggtts Qwen3-TTS engine. So far it declares the engine's protocol profile, story-v1/qwen3-tts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ggtts-core.workspace = true

@@ -57,7 +57,7 @@ for t in decoder_identity:decoder_samples_are_bit_identical_to_the_reference \
          token_identity:codec_tokens_are_identical_to_the_reference; do
   check=${t%%:*} name=${t#*:}
   echo "== $check on CUDA"
-  run "$check" "$name" none
+  run "$check" "$name" none || status=1
   grep -E '^(IDENTICAL|DIFFERS) |identity \(' "$WORK/$check.none.log" || { echo "no result: $WORK/$check.none.log"; tail -5 "$WORK/$check.none.log"; }
   grep -q ', 0 differ' "$WORK/$check.none.log" || status=1
 done

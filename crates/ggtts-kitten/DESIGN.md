@@ -266,6 +266,11 @@ The bars above were written before these numbers and are not moved by them.
   smoke checkpoint from that reference ran with no Python process at all: 13.88 s of audio at RTF 3.51 on a
   busier machine.
 
+* **Level 4, through `ggtts-render` on CPU: PASS.** The LM is Q4_0 and the decoder and reference preparation run on
+  ggml. One line rendered twice with seed 1234 gave byte-identical FLACs (sha256 `9a71f26e...57b8`, 122 frames,
+  5.0 s). The same file came out again after the move to the backend scheduler. A three-paragraph story on the
+  story path also rendered twice byte-identical: 3 chunks, 27.18 s, sha256 `9026dc9f...b959`.
+
 **The ternary arm's cosine gap, closed by stock `Q4_0` (2026-11-06).** The measured cause was activation
 quantization: `Q8_K` over 128 real values. kitten-tts-2-cpp's `TQ2_1`-on-AMX path quantizes per 32 (`Q8_0`) and
 reports a cosine above 0.999998. `Q4_0` holds ternary weights exactly: each 32-weight block's `d` is the group's

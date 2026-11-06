@@ -294,7 +294,7 @@ jobs:
       - name: Planted, ggml built without NEON is refused
         run: |
           set -eu
-          GGML_CPU_ARM_ARCH=armv8-a+nosimd cargo ndk -t arm64-v8a --platform 24 build --release --locked -p ggtts-cli \
+          GGML_CPU_ARM_ARCH=armv8-a+nosimd cargo ndk -t arm64-v8a --platform 24 build --release --locked -p ggtts-cli -p ggtts-ggml-sys \
             --features ggtts-cli/ggml,ggtts-ggml-sys/bindgen --target-dir target-nosimd
           if scripts/android_build.sh check-neon target-nosimd/aarch64-linux-android/release/ggtts-render; then
             echo "::error::a build without NEON passed the NEON check"

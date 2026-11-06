@@ -6,7 +6,8 @@
 //!
 //! With the `ggml` feature: the model over ggml, ported from qwen3-tts.cpp at `16bb5af` op for op, so that on the
 //! CPU backend its outputs are bit-identical to the reference's. Each module names the reference file and lines it
-//! follows. [`codec::Decoder`] turns codec tokens into samples.
+//! follows. [`codec::Decoder`] turns codec tokens into samples, and [`stream::IncrementalDecoder`] does it frame by
+//! frame as the codes arrive.
 
 use ggtts_core::profile::Profile;
 
@@ -19,6 +20,8 @@ pub mod engine;
 pub mod fixtures;
 #[cfg(feature = "ggml")]
 pub mod gguf;
+#[cfg(feature = "ggml")]
+pub mod stream;
 #[cfg(feature = "ggml")]
 pub mod talker;
 pub mod tokenizer;

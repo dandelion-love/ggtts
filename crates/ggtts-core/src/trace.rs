@@ -19,6 +19,7 @@
 //! | `stop` | `eos`, `cap` or `abort`. |
 //! | `spc`, `verdict` | The judge's seconds per character and its verdict (`null` when clean). |
 //! | `emit` | A chunk's piece of the read (the chunk and its gap, before the level) was handed to the stream: its first sample `start` and its length `samples`. `t_ms` is when. |
+//! | `ms` (on `chunk_end`) | Wall-clock for the whole draw: `generate`, `decode` and the judge together, not generation alone. |
 //!
 //! The schema is what an engine must emit. It is not a claim that any field measures what its name says: an
 //! instrument is trusted only once it has been shown to detect a planted defect and to read a no-op as no change.
@@ -28,7 +29,8 @@ use std::time::Instant;
 
 use serde_json::{Map, Value};
 
-use crate::engine::{ChunkRequest, Codes, Engine, EngineError, Stop};
+use crate::audio::{judge_f32, trim_edges_f32};
+use crate::engine::{ChunkRequest, Codes, Engine, EngineError, Pcm, Stop};
 
 /// The trace format this module writes and reads.
 pub const FORMAT: &str = "ggtts-trace/1";
@@ -502,25 +504,15 @@ pub fn compare(recorded: &[Map<String, Value>], replayed: &[Map<String, Value>])
     None
 }
 
-/// The events replay regenerates: one chunk draw's `chunk_begin`, its `step`s and its `chunk_end`'s `frames` and
-/// `stop`. The judge's fields, the trim, the join and the end depend on the whole read and are checked by
-/// re-rendering it, not by replay.
+/// The events replay regenerates, all of each chunk's own: `chunk_begin`, the `step`s, `chunk_end` with the judge's
+/// `spc` and `verdict`, and the kept draw's `trim`. Each depends only on that chunk's tokens, its decoded samples and
+/// the profile, so replay can blame the decoder as well as the generator. `join` and `end` depend on the whole read
+/// (the gain is the read's) and are checked by re-rendering it, not by replay.
 fn engine_events(lines: &[Map<String, Value>]) -> Vec<Map<String, Value>> {
     lines
         .iter()
-        .filter_map(|m| match m["ev"].as_str() {
-            Some("chunk_begin") | Some("step") => Some(m.clone()),
-            Some("chunk_end") => {
-                let mut e = Map::new();
-                for k in ["ev", "chunk", "draw", "frames", "stop", "t_ms"] {
-                    if let Some(v) = m.get(k) {
-                        e.insert(k.into(), v.clone());
-                    }
-                }
-                Some(e)
-            }
-            _ => None,
-        })
+        .filter(|m| matches!(m["ev"].as_str(), Some("chunk_begin" | "step" | "chunk_end" | "trim")))
+        .cloned()
         .collect()
 }
 
@@ -543,8 +535,11 @@ fn u32_of(m: &Map<String, Value>, k: &str) -> Result<u32, TraceError> {
 }
 
 /// Replay a recorded trace on `engine`: each `chunk_begin`'s request (text, seed, chunk, draw) is generated again,
-/// in the recorded order, at the header's trace level, and the regenerated engine events are compared with the
-/// recorded ones field for field, ignoring the clock.
+/// in the recorded order, at the header's trace level, then decoded and judged; where the trace records a chunk's
+/// `trim`, the last regenerated draw of that chunk is trimmed again. The regenerated events are compared with the
+/// recorded ones field for field, ignoring the clock, so a decoder change is red as well as a generator change.
+///
+/// The trim keeps `edge_s` seconds: the header's `flags.edge_s` when the render set it, else the profile's.
 ///
 /// Pass a fresh engine built as the header names it: an engine with state (the fake's per-text draw count) only
 /// replays from the same starting state.
@@ -564,9 +559,35 @@ pub fn replay(engine: &mut dyn Engine, lines: &[Map<String, Value>]) -> Result<R
             )));
         }
     }
+    let profile = *engine.profile();
+    let edge_s = head
+        .get("flags")
+        .and_then(|f| f.get("edge_s"))
+        .and_then(Value::as_f64)
+        .unwrap_or(profile.edge_s);
     let mut rec = Recorder::new(level);
     let mut draws = 0;
-    for m in lines.iter().filter(|m| m["ev"] == "chunk_begin") {
+    let mut last: Option<(u32, Pcm)> = None;
+    for m in lines {
+        if m["ev"] == "trim" {
+            let chunk = u32_of(m, "chunk")?;
+            let pcm = match &last {
+                Some((c, pcm)) if *c == chunk => pcm,
+                _ => return Err(TraceError(format!("a trim for chunk {chunk} follows no draw of it"))),
+            };
+            let t = trim_edges_f32(&profile, &pcm.samples, pcm.sample_rate, edge_s);
+            rec.emit(Event::Trim {
+                chunk,
+                lead_s: t.lead_cut_s,
+                tail_s: t.tail_cut_s,
+                start: t.start_sample,
+                end: t.end_sample,
+            });
+            continue;
+        }
+        if m["ev"] != "chunk_begin" {
+            continue;
+        }
         let text = m
             .get("text")
             .and_then(Value::as_str)
@@ -581,7 +602,8 @@ pub fn replay(engine: &mut dyn Engine, lines: &[Map<String, Value>]) -> Result<R
             chunk: u32_of(m, "chunk")?,
             draw: u32_of(m, "draw")?,
         };
-        generate_chunk(engine, &req, &mut rec).map_err(|e| TraceError(format!("engine: {e}")))?;
+        let pcm = generate_chunk(engine, &req, &mut rec).map_err(|e| TraceError(format!("engine: {e}")))?;
+        last = Some((req.chunk, pcm));
         draws += 1;
     }
     let recorded = engine_events(lines);
@@ -593,13 +615,13 @@ pub fn replay(engine: &mut dyn Engine, lines: &[Map<String, Value>]) -> Result<R
     })
 }
 
-/// Generate one chunk draw with its `chunk_begin` and the engine's `step`s, and a `chunk_end` carrying what the
-/// engine alone knows (frames and stop). The pipeline emits its own `chunk_end` with the judge's fields instead.
+/// One chunk draw as the pipeline makes it: `chunk_begin`, the engine's `step`s, then decode and judge, and a
+/// `chunk_end` with the frames, stop and the judge's fields. The decoded samples, for the trim.
 fn generate_chunk(
     engine: &mut dyn Engine,
     req: &ChunkRequest<'_>,
     events: &mut dyn Events,
-) -> Result<crate::engine::Generated, EngineError> {
+) -> Result<Pcm, EngineError> {
     if events.level() > 0 {
         events.emit(Event::ChunkBegin {
             chunk: req.chunk,
@@ -611,18 +633,20 @@ fn generate_chunk(
     }
     let t0 = Instant::now();
     let g = engine.generate_traced(req, events)?;
+    let pcm = engine.decode(&g.codes)?;
+    let j = judge_f32(engine.profile(), &pcm.samples, pcm.sample_rate, req.text);
     if events.level() > 0 {
         events.emit(Event::ChunkEnd {
             chunk: req.chunk,
             draw: req.draw,
             frames: g.codes.n_frames() as u32,
             stop: g.stop,
-            spc: None,
-            verdict: None,
+            spc: Some(j.s_per_char),
+            verdict: j.verdict.map(|v| v.as_str()),
             ms: t0.elapsed().as_millis() as u64,
         });
     }
-    Ok(g)
+    Ok(pcm)
 }
 
 /// The first codec token that differs between an untraced and a traced generation.

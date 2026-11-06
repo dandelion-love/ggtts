@@ -17,6 +17,8 @@ pub mod cpu;
 pub mod fixtures;
 #[cfg(feature = "ggml")]
 pub mod gguf;
+#[cfg(feature = "ggml")]
+pub mod talker;
 pub mod tokenizer;
 
 /// `story-v1/qwen3-tts`: the story path's numbers for Qwen3-TTS (render spec sections 1 to 7).

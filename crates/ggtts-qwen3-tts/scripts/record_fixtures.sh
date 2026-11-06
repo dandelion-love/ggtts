@@ -45,7 +45,7 @@ fixture = {
     "text": text,
     "text_source": "written for this fixture set by a language model",
     "request": {"speaker": "hk_cantonese_speaker", "language": "zh", "seed": int(seed), "max_tokens": 1200,
-                "sampler": "the talker GGUF's generation defaults"},
+                "sampler": "the reference CLI defaults: temperature 0.9, top_k 50, top_p 1.0, repetition_penalty 1.05"},
     "reference": {"engine": "qwen3-tts.cpp", "commit": "16bb5afcd06311031c72a8488f8d59660dc2fb46",
                   "ggml": "af97976c7810cdabb1863172f31c432dab767de7", "backend": "cpu",
                   "threads": int(threads), "cpu": cpu, "repeated": True},

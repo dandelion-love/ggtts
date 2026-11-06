@@ -29,3 +29,7 @@ required-features = ["ggml"]
 [[example]]
 name = "tokenize"
 required-features = ["ggml"]
+
+[[example]]
+name = "generate"
+required-features = ["ggml"]

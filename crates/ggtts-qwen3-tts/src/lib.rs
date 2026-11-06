@@ -14,6 +14,8 @@ use ggtts_core::profile::Profile;
 pub mod codec;
 #[cfg(feature = "ggml")]
 pub mod cpu;
+#[cfg(feature = "ggml")]
+pub mod engine;
 pub mod fixtures;
 #[cfg(feature = "ggml")]
 pub mod gguf;

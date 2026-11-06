@@ -4,6 +4,8 @@
 //! ggtts-render --model M.gguf [--codec C.gguf] --out x.flac [--engine auto|qwen3-tts|kitten-tts-2|fake]
 //!              [--threads N] [--device cpu|cuda] [--trace trace.jsonl] [--voice REF.json]
 //!              [--stream FILE|- [--stream-format wav|s16le]] (--text "..." [--seed S] | --story story.txt)
+//!              [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE.yaml] [--require NAME]...
+//!              [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID]
 //! ```
 //!
 //! `--voice` is a reference voice for an engine that clones one; an engine that does not ignores it.
@@ -21,6 +23,15 @@
 //!
 //! `--engine fake` renders with the fake engine (a tone per chunk, no model), so the pipeline and the stream can be
 //! run end to end without one. `--model` is not needed for it.
+//!
+//! The instrument flags (see `ggtts_instruments::config`) run instruments on the finished render, which needs
+//! `--out`. Each runs in its own process, with its own log, a timeout and a crash boundary, and is passed the run's
+//! identity (`--run`, default the output's name and the time) and the render's (the output's name). The report goes
+//! to `--report` (default: the output's name with `.report`): one envelope per instrument, merged into `report.json`,
+//! `.md` and `.html`, plus `run.log`. An unknown instrument is refused before rendering. The exit is 0 when the FLAC
+//! is written and every `--require`d instrument is ok, 3 when the FLAC is written but the measurement is INCOMPLETE,
+//! and 2 when the render failed. `--on-instrument-error abort` skips the instruments after a failure; it never
+//! changes the FLAC or the exit code.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -39,7 +50,9 @@ mod gguf_arch;
 const BINARY: &str = "ggtts-render";
 const USAGE: &str = "usage: ggtts-render --model M.gguf [--codec C.gguf] --out x.flac \
 [--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N] [--device cpu|cuda] [--trace FILE] [--voice REF] \
-[--stream FILE|- [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE)\n       ggtts-render --version";
+[--stream FILE|- [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE) \
+[--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
+[--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID]\n       ggtts-render --version";
 
 #[derive(Default)]
 struct Args {
@@ -57,6 +70,11 @@ struct Args {
     voice: Option<PathBuf>,
     stream: Option<String>,
     stream_format: Option<String>,
+    instruments: ggtts_instruments::Flags,
+    /// Where the instruments' report goes.
+    report: Option<PathBuf>,
+    /// The run's identity, for every envelope.
+    run: Option<String>,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -64,7 +82,13 @@ fn parse(args: &[String]) -> Result<Args, String> {
     let mut it = args.iter();
     while let Some(flag) = it.next() {
         let mut value = || it.next().cloned().ok_or(format!("{flag} needs a value"));
+        if ggtts_instruments::Flags::NAMES.contains(&flag.as_str()) {
+            a.instruments.take(flag, value()?);
+            continue;
+        }
         match flag.as_str() {
+            "--report" => a.report = Some(value()?.into()),
+            "--run" => a.run = Some(value()?),
             "--model" => a.model = Some(value()?.into()),
             "--codec" => a.codec = Some(value()?.into()),
             "--out" | "-o" => a.out = Some(value()?.into()),
@@ -149,11 +173,24 @@ fn open_stream(a: &Args) -> Result<Option<StreamWriter<Box<dyn std::io::Write>>>
     Ok(Some(StreamWriter::new(w, container)))
 }
 
-fn render(a: Args) -> Result<(), String> {
+/// Render, then run the instruments. The exit code: 0, or 3 when a required instrument is not ok (the measurement is
+/// INCOMPLETE; the FLAC is written).
+fn render(a: Args) -> Result<u8, String> {
     let mut stream = open_stream(&a)?;
     if a.out.is_none() && stream.is_none() {
         return Err("--out is required (or --stream)".into());
     }
+    // Refuse a bad instrument config before spending the render on it.
+    let instruments = if a.instruments.any() {
+        if a.out.is_none() {
+            return Err("instruments measure the --out FLAC: give --out".into());
+        }
+        let c = a.instruments.resolve()?;
+        ggtts_instruments::runner::check(&c)?;
+        Some(c)
+    } else {
+        None
+    };
     let fake = a.engine.as_deref() == Some("fake");
     let model = match (&a.model, fake) {
         (Some(m), _) => m.clone(),
@@ -235,6 +272,7 @@ fn render(a: Args) -> Result<(), String> {
         _ => return Err("give exactly one of --text and --story".into()),
     };
     let render_ms = t1.elapsed().as_millis();
+    let mut written = None;
     if let Some(out) = &a.out {
         let path = write_flac(out, &samples, rate).map_err(|e| format!("{}: {e}", out.display()))?;
         eprintln!(
@@ -245,8 +283,51 @@ fn render(a: Args) -> Result<(), String> {
             engine.info().backend,
             engine.info().parity
         );
+        written = Some(path);
     }
-    Ok(())
+    let (Some(config), Some(path)) = (instruments, written) else {
+        return Ok(ggtts_instruments::runner::EXIT_OK);
+    };
+    let render_id = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("render")
+        .to_string();
+    let run_id = a.run.clone().unwrap_or_else(|| {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        format!("{render_id}-{secs}")
+    });
+    let inputs = ggtts_instruments::Inputs {
+        run: run_id,
+        render: render_id,
+        report_dir: a.report.clone().unwrap_or_else(|| path.with_extension("report")),
+        audio: path.clone(),
+        audio_seconds: (rate > 0).then(|| samples.len() as f64 / f64::from(rate)),
+        events: a.trace.clone(),
+        bin_dir: None,
+    };
+    let summary = ggtts_instruments::run(&config, &inputs)?;
+    for e in &summary.envelopes {
+        let why = e.error.as_ref().map_or(String::new(), |w| format!(": {w}"));
+        eprintln!(
+            "{BINARY}: instrument {} {}: {}{why}",
+            e.name,
+            e.version,
+            e.status.as_str()
+        );
+    }
+    eprintln!(
+        "{BINARY}: instrument report in {}; runner {} ms (budget {} ms)",
+        inputs.report_dir.display(),
+        summary.overhead.own_ms,
+        summary.overhead.budget_ms
+    );
+    if !summary.complete() {
+        eprintln!("{BINARY}: measurement INCOMPLETE: {}", summary.incomplete.join("; "));
+    }
+    Ok(summary.exit_code())
 }
 
 fn main() -> ExitCode {
@@ -263,11 +344,11 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some(_) => match parse(&args).and_then(render) {
-            Ok(()) => ExitCode::SUCCESS,
+            Ok(code) => ExitCode::from(code),
             Err(e) => {
                 eprintln!("error: {e}");
                 eprintln!("{USAGE}");
-                ExitCode::from(2)
+                ExitCode::from(ggtts_instruments::runner::EXIT_RENDER_FAILED)
             }
         },
     }

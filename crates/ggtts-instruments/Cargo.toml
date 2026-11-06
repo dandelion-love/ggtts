@@ -1,0 +1,22 @@
+[package]
+name = "ggtts-instruments"
+description = "ggtts instruments: the runner, its config (flags and YAML), isolation, logging and completeness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "ggtts-instrument-selftest"
+path = "src/bin/ggtts-instrument-selftest.rs"
+
+[dependencies]
+# The envelope, its validation and the merger are ggtts-core's (report.rs); this crate never defines a second one.
+ggtts-core.workspace = true
+serde_json.workspace = true
+yaml-rust2 = "0.13"
+
+[dev-dependencies]
+ggtts-fake.workspace = true

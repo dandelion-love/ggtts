@@ -82,8 +82,10 @@ smoke() {
         *) cp -r "$path" "$work/packed"; dir="$work/packed" ;;
     esac
     [ -n "${dir:-}" ] || { say "$path holds no directory"; return 1; }
-    exe="$dir/ggtts-render"
-    [ -f "$exe" ] || exe="$exe.exe"
+    # Git Bash's -f accepts an extensionless name for an existing .exe. Prefer
+    # the explicit Windows filename so BUILDINFO is checked against its real name.
+    exe="$dir/ggtts-render.exe"
+    [ -f "$exe" ] || exe="$dir/ggtts-render"
     [ -f "$exe" ] || { say "no ggtts-render in $path"; return 1; }
     printf 'Smoke\n今日天氣好好，我哋去公園行下。\n行完之後，去食飯。\n' > "$work/story.txt"
     set +e
@@ -101,8 +103,8 @@ smoke() {
     say "ok on $path: audio-levels ran from the packed instruments/ (exit 0, envelope ok)"
 
     # The same render, measured again by the packed ggtts-measure: the path that needs no render.
-    local measure="$dir/ggtts-measure"
-    [ -f "$measure" ] || measure="$measure.exe"
+    local measure="$dir/ggtts-measure.exe"
+    [ -f "$measure" ] || measure="$dir/ggtts-measure"
     [ -f "$measure" ] || { say "no ggtts-measure in $path"; return 1; }
     set +e
     (unset GGTTS_INSTRUMENTS_DIR; cd "$work" && "$measure" --audio out.flac --report measured \
@@ -117,8 +119,10 @@ smoke() {
     fi
     say "ok on $path: ggtts-measure measured the render from the packed instruments/ (exit 0, envelope ok)"
     if [ -f "$dir/BUILDINFO.json" ]; then
+        local binaries
+        binaries=$(sed -n 's/.*"binaries":[[:space:]]*\(\[[^]]*\]\).*/\1/p' "$dir/BUILDINFO.json")
         for b in "$(basename "$exe")" "$(basename "$measure")"; do
-            grep -q "\"binaries\": \[.*\"$b\"" "$dir/BUILDINFO.json" \
+            printf '%s\n' "$binaries" | grep -Fq "\"$b\"" \
                 || { say "BUILDINFO.json's binaries does not name $b"; return 1; }
         done
         say "ok on $path: BUILDINFO.json lists both binaries"

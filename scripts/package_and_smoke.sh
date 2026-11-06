@@ -2,33 +2,42 @@
 # Pack a ggtts release directory, and smoke-test that its script instruments run from it. One script, called by
 # ci.yml on every pull request (Linux and Windows) and by release.yml on every real archive before upload.
 #
-#   scripts/package_and_smoke.sh pack BINARY DIR    # DIR gets the binary, LICENSE, README.md and instruments/
+#   scripts/package_and_smoke.sh pack BINARY DIR    # DIR gets the binaries, LICENSE, README.md and instruments/
 #   scripts/package_and_smoke.sh smoke PATH         # PATH: a packed DIR, or a .tar.gz or .zip of one
 #
-# `pack` puts the script instruments where the runner looks first: instruments/ beside ggtts-render
+# `pack` takes BINARY (ggtts-render, with .exe on Windows) and the ggtts-measure built beside it, and refuses when
+# either is missing. It puts the script instruments where the runner looks first: instruments/ beside ggtts-render
 # (instruments/python/ggtts_instrument, instruments/templates, instruments/examples, the README and the template
-# instruments.yaml).
+# instruments.yaml). It prints the binaries it packed as a JSON list on stdout, for BUILDINFO's "binaries".
 #
 # `smoke` renders a short story on the fake engine through the packed binary with
 # `--instrument audio-levels --require audio-levels`, with GGTTS_INSTRUMENTS_DIR unset and the default interpreter
 # (GGTTS_PYTHON, else python3, python on Windows). It passes only on exit 0 and an `ok` envelope. Otherwise it exits
 # 1 and prints the runner's own reason: given a directory without instruments/, that is "instruments/ directory was
-# not found".
+# not found". It then measures that render again with the packed ggtts-measure, with the same instrument required,
+# and passes only on exit 0 and an `ok` envelope there too. When the directory has a BUILDINFO.json, its "binaries"
+# must name both binaries.
 set -euo pipefail
 
 say() { echo "package_and_smoke: $*" >&2; }
 root=$(cd "$(dirname "$0")/.." && pwd)
 
 pack() {
-    local bin=$1 dir=$2
+    local bin=$1 dir=$2 ext="" b list=""
+    case "$bin" in *.exe) ext=.exe ;; esac
     mkdir -p "$dir/instruments/python"
-    cp "$bin" "$dir/"
+    for b in ggtts-render ggtts-measure; do
+        [ -f "$(dirname "$bin")/$b$ext" ] || { say "no $b$ext beside $bin"; return 1; }
+        cp "$(dirname "$bin")/$b$ext" "$dir/"
+        list="$list${list:+,}\"$b$ext\""
+    done
     cp "$root/LICENSE" "$root/README.md" "$dir/"
     cp -r "$root/instruments/python/ggtts_instrument" "$dir/instruments/python/"
     cp -r "$root/instruments/templates" "$root/instruments/examples" "$root/instruments/README.md" \
         "$root/instruments/instruments.yaml" "$dir/instruments/"
     find "$dir/instruments" -name __pycache__ -prune -exec rm -rf {} +
     say "packed $dir"
+    echo "[$list]"
 }
 
 smoke() {
@@ -60,6 +69,30 @@ smoke() {
         return 1
     fi
     say "ok on $path: audio-levels ran from the packed instruments/ (exit 0, envelope ok)"
+
+    # The same render, measured again by the packed ggtts-measure: the path that needs no render.
+    local measure="$dir/ggtts-measure"
+    [ -f "$measure" ] || measure="$measure.exe"
+    [ -f "$measure" ] || { say "no ggtts-measure in $path"; return 1; }
+    set +e
+    (unset GGTTS_INSTRUMENTS_DIR; cd "$work" && "$measure" --audio out.flac --report measured \
+        --instrument audio-levels --require audio-levels) 2> "$work/measure-err.txt"
+    code=$?
+    set -e
+    status=$(sed -n 's/^ *"status": "\([a-z]*\)".*/\1/p' "$work/measured/instruments/audio-levels/envelope.json" 2>/dev/null | head -1)
+    if [ "$code" -ne 0 ] || [ "$status" != ok ]; then
+        say "FAILED on $path: ggtts-measure exit $code, audio-levels ${status:-without an envelope}"
+        cat "$work/measure-err.txt" >&2
+        return 1
+    fi
+    say "ok on $path: ggtts-measure measured the render from the packed instruments/ (exit 0, envelope ok)"
+    if [ -f "$dir/BUILDINFO.json" ]; then
+        for b in "$(basename "$exe")" "$(basename "$measure")"; do
+            grep -q "\"binaries\": \[.*\"$b\"" "$dir/BUILDINFO.json" \
+                || { say "BUILDINFO.json's binaries does not name $b"; return 1; }
+        done
+        say "ok on $path: BUILDINFO.json lists both binaries"
+    fi
 }
 
 case "${1:-}" in

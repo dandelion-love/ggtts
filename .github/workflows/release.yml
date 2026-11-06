@@ -27,8 +27,9 @@ jobs:
             exe: ".exe"
             archive: zip
             # the committed bindings are for x86_64 Linux only, so Windows generates its own
-            features: ggtts-cli/ggml,ggtts-ggml-sys/bindgen
+            features: ggtts-cli/bindgen
     runs-on: ${{ matrix.os }}
+    # CI's release-build job runs this matrix's build command on every PR; keep the two matrices the same.
     timeout-minutes: 30
     permissions:
       contents: read

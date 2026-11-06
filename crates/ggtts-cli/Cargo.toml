@@ -30,3 +30,7 @@ default = []
 ggml = ["ggtts-qwen3-tts/ggml", "ggtts-kitten/ggml"]
 # The CUDA backend as well, for --device cuda.
 cuda = ["ggml", "ggtts-qwen3-tts/cuda", "ggtts-kitten/cuda"]
+# The engines over ggml with bindings generated at build time, for targets with no committed bindings (everything but
+# x86_64 Linux, so the Windows release). Needs libclang. A feature of ggtts-cli, because `cargo build -p ggtts-cli`
+# cannot name a feature of a package it does not select.
+bindgen = ["ggml", "ggtts-qwen3-tts/bindgen"]

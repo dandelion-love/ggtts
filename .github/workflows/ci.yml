@@ -243,8 +243,12 @@ jobs:
       - run: rustup show active-toolchain || rustup toolchain install
       # The fake engine needs no ggml, so this builds without it; release.yml packs its ggml build with the same script.
       - run: cargo build --release --locked -p ggtts-cli
-      - name: Pack, as release.yml does
-        run: scripts/package_and_smoke.sh pack "target/release/ggtts-render${{ matrix.exe }}" dist/ggtts-ci
+      - name: Pack, as release.yml does (it must list both binaries)
+        run: |
+          set -eu
+          list=$(scripts/package_and_smoke.sh pack "target/release/ggtts-render${{ matrix.exe }}" dist/ggtts-ci)
+          echo "binaries: $list"
+          test "$list" = '["ggtts-render${{ matrix.exe }}","ggtts-measure${{ matrix.exe }}"]'
       - name: Smoke the packed directory (a shipped Python instrument runs from it)
         run: scripts/package_and_smoke.sh smoke dist/ggtts-ci
       - name: Planted, the same directory without instruments/ must fail, naming the missing directory
@@ -259,6 +263,18 @@ jobs:
           fi
           cat planted.err
           grep -F "instruments/ directory was not found" planted.err
+      - name: Planted, the same directory without ggtts-measure must fail, naming it
+        run: |
+          set -u
+          cp -r dist/ggtts-ci dist/planted-measure
+          rm -f dist/planted-measure/ggtts-measure${{ matrix.exe }}
+          if scripts/package_and_smoke.sh smoke dist/planted-measure 2> planted-measure.err; then
+            cat planted-measure.err
+            echo "::error::the smoke passed without ggtts-measure"
+            exit 1
+          fi
+          cat planted-measure.err
+          grep -F "no ggtts-measure in" planted-measure.err
 
   release-build:
     # The release's build step, run on every PR with the release's matrix, so a bad feature string or a build that

@@ -26,6 +26,35 @@ impl Device {
     }
 }
 
+/// The environment variable NVIDIA's libraries read to override TF32 tensor-core math; `0` disables it in cuBLAS.
+pub const TF32_OVERRIDE: &str = "NVIDIA_TF32_OVERRIDE";
+
+/// Ask cuBLAS for full f32 math, before this process's CUDA backend exists, unless the caller set the override.
+///
+/// ggml's CUDA backend puts every cuBLAS handle in TF32 tensor-op mode (`ggml/src/ggml-cuda/common.cuh:1478`,
+/// `cublasSetMathMode(..., CUBLAS_TF32_TENSOR_OP_MATH)`), so an f32 matrix product of more than 16 columns, which
+/// ggml hands to cuBLAS, rounds both operands to a 10-bit mantissa. Every convolution here is an f32 `im2col` and
+/// such a product, and so is attention over a prompt. ggml has no option for it at the pin; NVIDIA's override does.
+/// It is set before the backend is created, and ggml creates its cuBLAS handles lazily, at the first product.
+/// Whether cuBLAS honours a value set inside the process is measured, not assumed: `scripts/cuda_probe.sh` runs the
+/// decoder check once more with the override exported from the shell. A value the caller set is respected, so
+/// `NVIDIA_TF32_OVERRIDE=1` reproduces ggml's TF32 behaviour for comparison.
+fn disable_tf32() {
+    if std::env::var_os(TF32_OVERRIDE).is_none() {
+        // Before any CUDA or cuBLAS state exists, and before this crate starts a thread.
+        std::env::set_var(TF32_OVERRIDE, "0");
+    }
+}
+
+/// One line for a log: what this process asks of cuBLAS's TF32 math.
+pub fn tf32_note() -> String {
+    match std::env::var(TF32_OVERRIDE).as_deref() {
+        Ok("0") => format!("{TF32_OVERRIDE}=0: cuBLAS asked for full f32 products"),
+        Ok(v) => format!("{TF32_OVERRIDE}={v}: cuBLAS may use TF32"),
+        Err(_) => format!("{TF32_OVERRIDE} unset: cuBLAS uses TF32 (ggml's default)"),
+    }
+}
+
 /// The largest graph any Kitten graph builds, in nodes.
 pub const GRAPH_SIZE: usize = 16384;
 
@@ -50,7 +79,10 @@ impl Backend {
             };
             let backend = match device {
                 Device::Cpu => cpu(),
-                Device::Cuda => g::ggml_backend_init_by_type(g::GGML_BACKEND_DEVICE_TYPE_GPU, ptr::null()),
+                Device::Cuda => {
+                    disable_tf32();
+                    g::ggml_backend_init_by_type(g::GGML_BACKEND_DEVICE_TYPE_GPU, ptr::null())
+                }
             };
             if backend.is_null() {
                 return Err(format!(

@@ -90,6 +90,16 @@ fn parity_cmd(a: &Args) -> Result<bool, String> {
     let model = Model::load(&gguf, weights, be.clone())?;
     drop(gguf);
     eprintln!("loaded ({weights:?}) in {:.1}s", t0.elapsed().as_secs_f64());
+    println!(
+        "ternary matrices: {}",
+        if weights == Weights::F32 {
+            "dequantized to f32".to_string()
+        } else if model.ternary_f16 {
+            "exact f16 at f32 precision".to_string()
+        } else {
+            format!("{} through ggml's quantized kernels", model.layout.name())
+        }
+    );
     let hp = model.hp.clone();
 
     let spk_raw = read_f32(&dir.join("speaker_raw.f32"))?;
@@ -636,7 +646,11 @@ fn bench_cmd(a: &Args) -> Result<bool, String> {
 fn backend(a: &Args, threads: usize) -> Result<std::rc::Rc<ggtts_kitten::backend::Backend>, String> {
     let d = a.or("device", "cpu");
     let device = ggtts_kitten::backend::Device::parse(d).ok_or(format!("unknown --device {d}"))?;
-    ggtts_kitten::backend::Backend::new(device, threads)
+    let be = ggtts_kitten::backend::Backend::new(device, threads)?;
+    if device == ggtts_kitten::backend::Device::Cuda {
+        println!("{}", ggtts_kitten::backend::tf32_note());
+    }
+    Ok(be)
 }
 
 fn text_of(lines: &[String], i: usize) -> &str {

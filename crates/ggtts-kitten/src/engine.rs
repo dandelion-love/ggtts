@@ -333,13 +333,18 @@ impl KittenEngine {
                 );
             }
         }
+        let dev = match model.be.device {
+            Device::Cpu => "ggml-cpu",
+            Device::Cuda => "ggml-cuda",
+        };
         let lm = match model.weights {
-            crate::model::Weights::Ternary => "ggml-cpu LM (TQ2_0 ternary)",
-            _ => "ggml-cpu LM (f32)",
+            crate::model::Weights::F32 => format!("{dev} LM (f32)"),
+            _ if model.ternary_f16 => format!("{dev} LM (ternary as exact f16)"),
+            _ => format!("{dev} LM ({} ternary)", model.layout.name()),
         };
         let dec = match decoder {
-            Decoder::Ggml(_) => "ggml-cpu S3Gen decoder",
-            Decoder::PyTorch(_) => "PyTorch S3Gen decoder (bridge)",
+            Decoder::Ggml(_) => format!("{dev} S3Gen decoder"),
+            Decoder::PyTorch(_) => "PyTorch S3Gen decoder (bridge)".to_string(),
         };
         let backend = format!("{lm}; {dec}");
         Ok(KittenEngine {

@@ -107,8 +107,15 @@ fn run() -> Result<bool, String> {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let t1 = Instant::now();
-            let tok = std::fs::read_to_string(repo.join("lm").join("tokenizer.json")).ok();
-            let s = convert::convert(&st, &model, &lm, &source, &out, rule, strict, layout, tok.as_deref())?;
+            // Required: a GGUF without its tokenizer converts and verifies, and fails only later, in the renderer.
+            let tok_path = repo.join("lm").join("tokenizer.json");
+            let tok = std::fs::read_to_string(&tok_path).map_err(|e| {
+                format!(
+                    "{}: {e} (the tokenizer is embedded in the GGUF; ggtts-render refuses a GGUF without it)",
+                    tok_path.display()
+                )
+            })?;
+            let s = convert::convert(&st, &model, &lm, &source, &out, rule, strict, layout, Some(&tok))?;
             eprintln!(
                 "wrote {}: {} ternary matrices ({} weights) as {}, {} bf16, {} f32, {} bytes of tensors, in {:.1}s",
                 out.display(),

@@ -163,7 +163,8 @@ tolerances fixed here, before any measurement:
      CAMPPlus (cosine below the bar), no absolute value after pyannote's sinc filters (cosine below the bar), and no
      pre-emphasis in the fbank (relative L2 above the bar). Each must turn its check red.
 
-6. **CUDA** (bars written 2026-11-06, before any CUDA run). `--device cuda` runs every graph on the first CUDA
+6. **CUDA** (bars written 2026-11-06, before any CUDA run; the first run's failures and the changes they led to are
+   under "CUDA precision" below, and no bar moved). `--device cuda` runs every graph on the first CUDA
    device, with the CPU as the scheduler's fallback for ops CUDA lacks. It is held to the same bars as the CPU
    path: levels 1, 2, 3 and 5 against the same CPU PyTorch recordings, with the same plants red. Level 4 also holds
    on CUDA: the same seed must render a byte-identical FLAC twice. Matching the CPU render byte for byte is not
@@ -288,6 +289,95 @@ layout that passes. `--layout tq2_0` keeps the padded form. A planted group of 2
 through its parity arm gives RMSE `1.2201`, cosine `0.8327` and argmax `25/32`. Both are `ggml` stock types; nothing
 is patched.
 
+## CUDA precision (2026-11-06, written after the first CUDA probe and before the re-probe)
+
+The first run of `scripts/cuda_probe.sh` (RTX 3080 Ti, sm_86) passed the converter, the LM f32 arm, the vocoder alone
+and all of level 5, and failed three things. Its numbers, beside the CPU's:
+
+| Check | CPU | CUDA, first probe | Bar |
+|---|---|---|---|
+| LM f32 arm, worst hidden rel L2 | `1.755e-6` | `3.668e-4` | 1e-3 |
+| LM ternary arm (`Q4_0`): RMSE, min cosine, argmax | 0.0473, `0.9999091`, 32/32 | 0.0364, **`0.9998395`**, 32/32 | 0.06, 0.9999, 30 |
+| flow: final mel rel L2 | `2.9e-7` | `2.747e-4` | 1e-3 |
+| vocoder alone on PyTorch's mel: waveform SNR | 106.2 dB | 49.3 dB | 40 dB |
+| flow then vocoder: waveform SNR | 89.3 dB | **30.7 dB** | 40 dB |
+| render twice | byte-identical | not run: the probe's GGUF predated the embedded tokenizer | identical |
+
+**No bar is moved by this section.** The CPU bars and the CUDA bars stay as level 6 states them. What changes is how
+CUDA computes, and the predictions below are written before the re-probe that will test them.
+
+### What loses the precision, read from ggml at the pin
+
+Citations are `ggml/src/` at `af97976`. These were read, not measured op by op on the card.
+
+* **TF32 in every large f32 product.** ggml creates each cuBLAS handle in TF32 tensor-op mode
+  (`ggml-cuda/common.cuh:1478`, `cublasSetMathMode(..., CUBLAS_TF32_TENSOR_OP_MATH)`), and nothing at the pin turns it
+  off: `GGML_CUDA_FORCE_CUBLAS` and `GGML_CUDA_FORCE_MMQ` are CMake options that choose kernels
+  (`ggml-cuda/mmq.cu:268`, `:315`), and `GGML_CUDA_CUBLAS_COMPUTE_TYPE` chooses the compute type
+  (`ggml-cuda/ggml-cuda.cu:1549`), not the math mode. An f32 product of more than 16 columns goes to cuBLAS
+  (`ggml-cuda/ggml-cuda.cu:1752-1770`; `ggml-cuda/mmf.cu:176` refuses above 16), so both operands are rounded to a
+  10-bit mantissa (unit roundoff `2^-11`, about `4.9e-4`). Every convolution here is an f32 `im2col` and such a
+  product, and so is attention over a prompt. That is the size of the f32 arm's `3.7e-4` and the mel's `2.7e-4`,
+  against the CPU's `1e-6` and `3e-7`.
+* **The decoder chain multiplies the mel's error by about 118, on both backends.** On the CPU a mel at `2.9e-7`
+  gave a waveform error of `10^(-89.3/20)` = `3.4e-5`: a gain of 118. Applied to CUDA's mel, `118 × 2.75e-4` =
+  `3.2e-2`, or 29.8 dB; with the vocoder's own `3.4e-3` (49.3 dB) added, 29.7 dB. The probe measured 30.7 dB. So no
+  single op in the chain loses precision beyond TF32 everywhere: the vocoder's gain turns a mel well inside its bar
+  into a waveform outside its bar.
+  That also says the two level-3 bars are not consistent with each other. At its own bar (`1e-3`), a mel would give
+  about 18.6 dB end to end, and the 40 dB bar asks for a mel within about `8.5e-5`, twelve times inside the mel bar.
+  The CPU passed both only because its f32 is far inside both. This is recorded, not acted on: the bars stay, because
+  with TF32 off the chain should run near f32 on CUDA too. If the re-probe misses 40 dB with TF32 off, the bar question
+  is opened in a dated entry here before any further measurement.
+* **The ternary arm's activations are not coarser on CUDA for this check.** The 328-position forward sends each
+  `Q4_0` product to MMQ (`ggml-cuda/ggml-cuda.cu:1766`; on sm_86 `ggml-cuda/mmq.cu:307` selects it), whose tensor-core
+  path quantizes activations per 32 values to 8 bits with an fp16 scale (`ggml-cuda/quantize.cu:300-369`, layout
+  `DS4` for `Q4_0` at `ggml-cuda/mmq.cuh:65-67`) and subtracts `Q4_0`'s offset of 8 from the weight codes in integers
+  (`ggml-cuda/mmq.cuh:430-431`). That is the CPU's precision: `Q4_0` multiplies against `Q8_0`
+  (`ggml-cpu/ggml-cpu.c:230`), per 32 with an fp16 scale and the offset subtracted in integers
+  (`ggml-cpu/quants.c:247-248`). So "q8_1 against q8_0" is not the difference on this path. The arm's error is the
+  same 8-bit activation rounding on both backends, which the CPU clears by `9e-6` on a `1e-4` allowance, plus CUDA's
+  TF32 attention; CUDA's RMSE (0.0364) is in fact lower than the CPU's (0.0473), and its minimum cosine over 32
+  positions falls on the other side of the bar.
+* **Generation on CUDA has a worse path the check does not reach.** A product of at most 8 columns, which is every
+  generated token, goes to MMVQ (`ggml-cuda/ggml-cuda.cu:1762`, `ggml-cuda/mmvq.cuh:3`). There `Q4_0` applies its
+  offset as `d4 * (sumi * d8 - 8 * s8)` (`ggml-cuda/vecdotq.cuh:133`), where `s8` is the fp16-rounded sum of the
+  activations before quantization (`ggml-cuda/quantize.cu:37-51`). For a ternary weight (codes 7, 8 and 9) the two
+  terms nearly cancel, so each block's result carries eight times its summed activation-rounding error plus the
+  fp16 rounding of `s8`.
+
+### What changes on CUDA
+
+* **The ternary matrices are held as f16 and multiplied at f32 precision** (`Model::ternary_f16`). Each weight is a
+  trit times the block's fp16 scale, so f16 holds it exactly, and the loader checks the round trip row by row and
+  refuses otherwise. The products carry `GGML_PREC_F32`, which makes the cuBLAS path compute in f32
+  (`ggml-cuda/ggml-cuda.cu:1545`; without it an f16 matrix is computed in f16). A one-column product goes to the f32
+  vector kernel (`ggml-cuda/mmvf.cu:708`), 2 to 16 columns to `mmf` (f16 activations, f32 accumulation), more to
+  cuBLAS. The quantized kernels, MMVQ included, are no longer on the ternary path. The cost: the body takes 2.8 GB of
+  device memory instead of 0.8 GB, and a generated token reads about 3.5 times the bytes. The GGUF is unchanged, and
+  the CPU keeps `Q4_0` through ggml's quantized kernels.
+* **TF32 is off.** `Backend::new` sets `NVIDIA_TF32_OVERRIDE=0` before creating the CUDA backend, unless the caller
+  set it. That is NVIDIA's documented override of the cuBLAS math mode. ggml creates its cuBLAS handles lazily, at the
+  first product. Whether cuBLAS honours a value set inside the process is measured, not assumed, by two diagnostic
+  runs in the probe (below).
+* **The probe converts the LM fresh** into its work directory on every run, with the binaries it built, and refuses a
+  GGUF without the embedded tokenizer. The converter now refuses to convert when `lm/tokenizer.json` is missing,
+  instead of writing a GGUF that `ggtts-render` refuses later. `DEVICE=cpu STEPS=render` runs the conversion and the
+  render-twice step on the CPU, to check the probe's own render step without the card.
+
+### Predictions for the re-probe
+
+* LM f32 arm: worst hidden rel L2 well under `1e-4`, toward the CPU's `1e-6`.
+* LM ternary arm: close to the f32 arm, with the bf16 head as the main remaining difference; min cosine at least
+  `0.99999`, RMSE under `0.01`, argmax 32/32. The planted group of 256 stays red: it changes the weights, not the
+  arithmetic.
+* Flow: mel rel L2 under `1e-5`. Vocoder alone: above 80 dB. Flow then vocoder: above 60 dB.
+* Diagnostics, which never decide the probe's exit status: with `NVIDIA_TF32_OVERRIDE=1` exported (TF32 allowed),
+  flow then vocoder reads near the first probe's 30.7 dB, which shows the override is what changed it. With `=0`
+  exported, the same as the in-process run. If the in-process run fails and the exported one passes, cuBLAS read the
+  variable before the process set it, and the override moves to the process's start.
+* Render: two CUDA renders byte-identical.
+
 ## Layout
 
 | Path | What |
@@ -299,8 +389,8 @@ is patched.
 | `src/model.rs` | the ggml graph and KV-cache session (feature `ggml`) |
 | `src/prompt.rs`, `src/sampler.rs`, `src/tokenizer.rs` | the prompt, the sampler in PyTorch's order, the BPE |
 | `src/engine.rs` | `KittenEngine`, the `Engine` trait, and the PyTorch S3Gen bridge (feature `ggml`) |
-| `src/backend.rs` | the device (CPU, or CUDA with a CPU fallback) and the scheduler every graph runs through |
-| `scripts/cuda_probe.sh` | the CUDA parity probe: build, every check with `--device cuda`, the plants, a render twice |
+| `src/backend.rs` | the device (CPU, or CUDA with a CPU fallback and TF32 off) and the scheduler every graph runs through |
+| `scripts/cuda_probe.sh` | the CUDA parity probe: build, a fresh LM conversion, every check with `--device cuda`, the plants, TF32 diagnostics, a render twice |
 | `src/parity.rs` | the parity measures and the bars above |
 | `src/s3convert.rs` | S3Gen's safetensors to a GGUF, weight norm folded |
 | `src/flow.rs` | the S3Gen flow on ggml: conformer encoder and meanflow estimator (feature `ggml`) |

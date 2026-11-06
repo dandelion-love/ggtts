@@ -20,7 +20,7 @@ use std::rc::Rc;
 
 use ggtts_ggml_sys as g;
 
-use crate::backend::Backend;
+use crate::backend::{Backend, Device};
 use crate::convert::{ARCH, EMBED};
 use crate::gguf::{GgmlType, Gguf};
 use crate::safetensors::bf16_to_f32;
@@ -29,7 +29,9 @@ use crate::ternary::{Layout, GROUP};
 /// How the ternary matrices are held at run time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Weights {
-    /// Padded `TQ2_0`, ggml's ternary kernels with `Q8_K` activations; the head stays bf16. The runtime path.
+    /// The GGUF's ternary matrices as stored (`Q4_0` or padded `TQ2_0`), through ggml's quantized kernels on the
+    /// CPU; on CUDA, the same matrices held as exact f16 (see [`Model::ternary_f16`]). The head stays bf16. The
+    /// runtime path.
     Ternary,
     /// Every matrix dequantized to f32, the head included. The graph check.
     F32,
@@ -85,6 +87,12 @@ pub struct Model {
     spk_ln_b: Vec<f32>,
     /// The GGUF's metadata, for the token map and the sampler's defaults.
     pub meta: std::collections::BTreeMap<String, crate::gguf::Value>,
+    /// The ternary matrices are held as exact f16 and multiplied at f32 precision (`GGML_PREC_F32`), not run
+    /// through ggml's quantized kernels. True on CUDA for the ternary arms. ggml's CUDA quantized products quantize
+    /// the activations to 8 bits per 32 values, and the single-token kernel applies `Q4_0`'s offset of 8 through
+    /// an fp16 sum of the unquantized activations, which a ternary weight turns into a cancellation (DESIGN.md,
+    /// "CUDA precision"). The CPU keeps the quantized kernels, whose results are measured against their bars.
+    pub ternary_f16: bool,
 }
 
 impl Drop for Model {
@@ -150,7 +158,9 @@ impl Model {
             spk_ln_w: Vec::new(),
             spk_ln_b: Vec::new(),
             meta: gguf.kv.clone(),
+            ternary_f16: be.device == Device::Cuda && weights != Weights::F32,
         };
+        let ternary_f16 = model.ternary_f16;
         // Tensors first, in a no-alloc context; then one device buffer; then the bytes.
         let pending: RefCell<Vec<(*mut g::ggml_tensor, Vec<u8>)>> = RefCell::new(Vec::new());
         let load = |name: &str| -> Result<*mut g::ggml_tensor, String> {
@@ -158,6 +168,32 @@ impl Model {
             let cname = CString::new(name).unwrap();
             unsafe {
                 let out = match (t.ty, weights) {
+                    // On CUDA the ternary matrices are held as f16 (see `ternary_f16`). Every weight is a trit times
+                    // an fp16 block scale, so f16 holds it exactly; the round trip below proves it per row and
+                    // refuses otherwise rather than rounding.
+                    (GgmlType::TQ2_0 | GgmlType::Q4_0, Weights::Ternary | Weights::TernaryF32Head) if ternary_f16 => {
+                        let cols = t.dims[0] as usize / if t.ty == GgmlType::TQ2_0 { 2 } else { 1 };
+                        let rows = t.dims[1] as usize;
+                        let x = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_F16, cols as i64, rows as i64);
+                        let rb = layout.row_bytes(cols);
+                        let mut half = vec![0 as g::ggml_fp16_t; cols];
+                        let mut back = vec![0f32; cols];
+                        let mut bytes = Vec::with_capacity(cols * rows * 2);
+                        for r in 0..rows {
+                            let row = layout.dequantize_row(&data[r * rb..(r + 1) * rb], cols)?;
+                            g::ggml_fp32_to_fp16_row(row.as_ptr(), half.as_mut_ptr(), cols as i64);
+                            g::ggml_fp16_to_fp32_row(half.as_ptr(), back.as_mut_ptr(), cols as i64);
+                            if let Some(c) = (0..cols).find(|&c| back[c].to_bits() != row[c].to_bits()) {
+                                return Err(format!(
+                                    "{name} row {r} column {c}: {} has no exact f16 (read back {})",
+                                    row[c], back[c]
+                                ));
+                            }
+                            bytes.extend(half.iter().flat_map(|h| h.to_le_bytes()));
+                        }
+                        pending.borrow_mut().push((x, bytes));
+                        x
+                    }
                     (GgmlType::TQ2_0, Weights::Ternary | Weights::TernaryF32Head) => {
                         let x = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_TQ2_0, t.dims[0] as i64, t.dims[1] as i64);
                         pending.borrow_mut().push((x, data.to_vec()));
@@ -379,7 +415,8 @@ impl<'m> Session<'m> {
         let n_kv = pos0 + t;
         let (hd, nh, nkv) = (hp.head_dim as i64, hp.n_head as i64, hp.n_head_kv as i64);
         let ti = t as i64;
-        let padded = m.weights != Weights::F32 && m.layout == Layout::Tq2Pad;
+        let padded = m.weights != Weights::F32 && m.layout == Layout::Tq2Pad && !m.ternary_f16;
+        let f32_prec = m.ternary_f16;
         unsafe {
             let size = g::ggml_tensor_overhead() * GRAPH_SIZE + g::ggml_graph_overhead_custom(GRAPH_SIZE, false);
             let ctx = g::ggml_init(g::ggml_init_params {
@@ -404,16 +441,21 @@ impl<'m> Session<'m> {
                 ptr::null_mut()
             };
 
-            // A ternary matrix product: pad each 128-group of the input with 128 zeros first.
+            // A ternary matrix product: pad each 128-group of the input with 128 zeros first (padded TQ2_0). With
+            // f16 matrices, ask for f32 precision: without it CUDA's cuBLAS path computes an f16 matrix in f16.
             let mm = |w: *mut g::ggml_tensor, x: *mut g::ggml_tensor, n_in: i64| -> *mut g::ggml_tensor {
-                if padded {
+                let y = if padded {
                     let x3 = g::ggml_reshape_3d(ctx, x, GROUP as i64, n_in / GROUP as i64, ti);
                     let xp = g::ggml_pad(ctx, x3, GROUP as i32, 0, 0, 0);
                     let x2 = g::ggml_reshape_2d(ctx, xp, 2 * n_in, ti);
                     g::ggml_mul_mat(ctx, w, x2)
                 } else {
                     g::ggml_mul_mat(ctx, w, x)
+                };
+                if f32_prec {
+                    g::ggml_mul_mat_set_prec(y, g::GGML_PREC_F32);
                 }
+                y
             };
 
             let mut x = inp;

@@ -78,6 +78,9 @@ impl Reference {
     }
 }
 
+/// What [`PyDecoder::decode_many`] returns: each chunk's PCM, the S3Gen load time and each chunk's decode time.
+pub type Decoded = (Vec<Vec<f32>>, f64, Vec<f64>);
+
 /// The PyTorch S3Gen bridge: a Python with `kittenml`, and `tools/kitten_ref.py`.
 pub struct PyDecoder {
     pub python: PathBuf,
@@ -101,10 +104,41 @@ impl PyDecoder {
     }
 
     pub fn decode(&self, reference: &Path, codes: &[u16], seed: u64, tag: &str) -> Result<Vec<f32>, String> {
+        let (mut pcm, _) = self.run(reference, &serde_json::to_string(codes).unwrap(), 0, seed, tag)?;
+        Ok(pcm.remove(0))
+    }
+
+    /// Decode several chunks in one process, so S3Gen loads once. Returns the PCM of each, the load time and each
+    /// chunk's decode time, as the bridge measured them.
+    pub fn decode_many(&self, reference: &Path, chunks: &[Vec<u16>], seed: u64, tag: &str) -> Result<Decoded, String> {
+        let (pcm, report) = self.run(
+            reference,
+            &serde_json::to_string(chunks).unwrap(),
+            chunks.len(),
+            seed,
+            tag,
+        )?;
+        let load = report["load_s"].as_f64().unwrap_or(f64::NAN);
+        let each = report["decode_s"]
+            .as_array()
+            .map(|v| v.iter().filter_map(|x| x.as_f64()).collect())
+            .unwrap_or_default();
+        Ok((pcm, load, each))
+    }
+
+    /// `n == 0`: one chunk, written to `{tag}.pcm.f32`; otherwise `n` chunks, `{tag}.pcm.{i}.f32`.
+    fn run(
+        &self,
+        reference: &Path,
+        tokens_json: &str,
+        n: usize,
+        seed: u64,
+        tag: &str,
+    ) -> Result<(Vec<Vec<f32>>, serde_json::Value), String> {
         std::fs::create_dir_all(&self.workdir).map_err(|e| e.to_string())?;
         let tokens = self.workdir.join(format!("{tag}.tokens.json"));
         let out = self.workdir.join(format!("{tag}.pcm.f32"));
-        std::fs::write(&tokens, serde_json::to_string(codes).unwrap()).map_err(|e| e.to_string())?;
+        std::fs::write(&tokens, tokens_json).map_err(|e| e.to_string())?;
         let status = Command::new(&self.python)
             .env("CUDA_VISIBLE_DEVICES", "")
             .arg("-I")
@@ -129,10 +163,29 @@ impl PyDecoder {
                 String::from_utf8_lossy(&status.stderr)
             ));
         }
-        let b = std::fs::read(&out).map_err(|e| e.to_string())?;
-        Ok(b.chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect())
+        let stdout = String::from_utf8_lossy(&status.stdout);
+        let report: serde_json::Value = stdout
+            .lines()
+            .rev()
+            .find_map(|l| serde_json::from_str(l).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let paths: Vec<PathBuf> = if n == 0 {
+            vec![out]
+        } else {
+            (0..n)
+                .map(|i| self.workdir.join(format!("{tag}.pcm.{i}.f32")))
+                .collect()
+        };
+        let mut pcm = Vec::new();
+        for p in paths {
+            let b = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+            pcm.push(
+                b.chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect(),
+            );
+        }
+        Ok((pcm, report))
     }
 }
 

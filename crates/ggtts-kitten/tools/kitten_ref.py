@@ -183,16 +183,30 @@ def cmd_decode(a) -> int:
     low_priority(a.threads)
     from kittenml.kittentts2.vocoder import S3Codec
 
+    import time
+
     ref = json.loads(Path(a.reference).read_text(encoding="utf-8"))
     tokens = json.loads(Path(a.tokens).read_text(encoding="utf-8"))
-    torch.manual_seed(a.seed)
+    t0 = time.perf_counter()
     codec = S3Codec(device="cpu")
     cond = codec.reference_conditioning(ref["reference_wav"])
-    wav = codec.decode(cond, tokens)
-    if wav is None:
-        raise SystemExit("no valid audio tokens")
-    np.asarray(wav, "<f4").tofile(a.out)
-    print(json.dumps({"samples": int(len(wav)), "sample_rate": codec.sample_rate}))
+    load_s = time.perf_counter() - t0
+    # A list of lists decodes several chunks in one process, to `--out` with `.N` before the suffix.
+    batch = bool(tokens) and isinstance(tokens[0], list)
+    items = tokens if batch else [tokens]
+    seconds = []
+    for i, codes in enumerate(items):
+        torch.manual_seed(a.seed + i if batch else a.seed)
+        t1 = time.perf_counter()
+        wav = codec.decode(cond, codes)
+        seconds.append(time.perf_counter() - t1)
+        if wav is None:
+            raise SystemExit(f"chunk {i}: no valid audio tokens")
+        out = Path(a.out)
+        if batch:
+            out = out.with_name(f"{out.stem}.{i}{out.suffix}")
+        np.asarray(wav, "<f4").tofile(out)
+    print(json.dumps({"load_s": load_s, "decode_s": seconds, "sample_rate": codec.sample_rate}))
     return 0
 
 

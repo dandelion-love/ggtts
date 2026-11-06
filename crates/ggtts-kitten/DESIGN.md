@@ -176,8 +176,14 @@ The bars above were written before these numbers and are not moved by them.
   `speech_end`. The lines gave 116, 116 and 100 codes and 4.74 s, 4.74 s and 4.10 s of audio. The LM ran at
   15.8-16.3 tokens/s (25 are needed for real time), with a prefill of about 300 tokens in 3.2-3.3 s. That is an
   LM real-time factor of 2.22-2.28. The bridge's decode took 15.4-17.0 s per line, most of it loading S3Gen in a
-  new process each time, for a total real-time factor of 5.5-6.1. Nobody has listened to these renders and no
-  ASR has scored them.
+  new process each time, for a total real-time factor of 5.5-6.1. With every line decoded in one bridge process,
+  the same three lines from a reference prepared from a raw clip gave a real-time factor of 4.27 overall: 14.16 s
+  of audio, 38.0 s of LM at 12.1-12.6 tokens/s on a busier machine, and a 22.4 s bridge, of which 5.0 s was
+  loading S3Gen and 2.8-4.7 s per line decoding. Nobody has listened to these renders and no ASR has scored them.
+* **Reference from a clip:** `kitten_ref.py reference --wav --transcript` on a built-in voice's own clip
+  reproduces that voice's shipped S3 tokens (253 of 253) and speaker embedding (cosine 1.0000001).
+* **Level 4, self-determinism:** the same GGUF, lines, seed and thread count gave identical codes on separate
+  runs, three lines of three, and the clip render reproduced its codes again on its rerun.
 
 ## Layout
 

@@ -105,5 +105,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --title "ggtts $TAG" \
+          # A release-candidate tag (vX.Y.Z-rc.N, cut from rc) publishes as a pre-release and never becomes latest.
+          pre=()
+          case "$TAG" in *-rc.*) pre=(--prerelease --latest=false) ;; esac
+          gh release create "$TAG" dist/* "${pre[@]}" --repo "$GITHUB_REPOSITORY" --verify-tag --title "ggtts $TAG" \
             --notes "Built from ${GITHUB_SHA}. Each archive is named with the ggml commit it is pinned to and carries BUILDINFO.json. Verify one with: gh attestation verify <file> -R ${GITHUB_REPOSITORY}"

@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  check:
+    name: check (fmt, clippy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # rust-toolchain.toml pins the toolchain and its components; rustup installs it on first use.
+      - run: rustup show active-toolchain || rustup toolchain install
+      # A missing lockfile is resolved here so fmt and clippy still report, and the job fails at its last step.
+      - name: Cargo.lock is committed
+        run: |
+          if [ ! -f Cargo.lock ]; then
+            cargo generate-lockfile
+            echo "LOCK_MISSING=1" >> "$GITHUB_ENV"
+            echo "::error::Cargo.lock is not committed; the resolved lockfile follows"
+            cat Cargo.lock
+          fi
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Fail if Cargo.lock was missing
+        if: always()
+        run: test -z "${LOCK_MISSING:-}"
+
+  build-test:
+    name: build-test (${{ matrix.os }}, CPU)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: cargo build --workspace --locked
+      - name: Test (the pipeline cases print their summary)
+        run: cargo test --workspace --locked -- --nocapture
+      - run: cargo run --locked -p ggtts-cli --bin ggtts-render -- --version
+
+  planted-ceiling:
+    name: planted ceiling (44 must turn the pipeline cases red)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Plant a story ceiling of 44 in the source
+        run: |
+          set -eu
+          f=crates/ggtts-core/src/pipeline.rs
+          grep -q '^pub const STORY_CEILING: usize = 45;$' "$f"
+          sed -i 's/^pub const STORY_CEILING: usize = 45;$/pub const STORY_CEILING: usize = 44;/' "$f"
+          grep -n '^pub const STORY_CEILING' "$f"
+      - name: The pipeline cases must fail, and name what failed
+        run: |
+          set -u
+          if cargo test --locked -p ggtts-core --test pipeline_cases pipeline_cases -- --exact --nocapture > out.txt 2>&1; then
+            cat out.txt
+            echo "::error::the pipeline cases passed with the story ceiling at 44"
+            exit 1
+          fi
+          cat out.txt
+          grep -E 'pipeline cases: [0-9]+ passed, [1-9][0-9]* failed' out.txt
+          grep -F 'FAILED chunks/ceiling-exact/story' out.txt
+          grep -F 'FAILED render/arm-join-every-mark' out.txt
+          echo "red as required: the planted ceiling is seen"
+
+  cuda-compile:
+    name: cuda-compile (ggml at the pin, sm_86 and sm_89, no GPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: nvidia/cuda:12.6.3-devel-ubuntu22.04@sha256:d49bb8a4ff97fb5fe477947a3f02aa8c0a53eae77e11f00ec28618a0bcaa2ad1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the ggml pin from the source
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha=$(sed -n 's/^ *pub const COMMIT: &str = "\([0-9a-f]\{40\}\)";$/\1/p' crates/ggtts-core/src/lib.rs)
+          test ${#sha} -eq 40
+          echo "commit=$sha" >> "$GITHUB_OUTPUT"
+          echo "ggml pin: $sha"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ggml-org/ggml
+          ref: ${{ steps.pin.outputs.commit }}
+          path: ggml
+          persist-credentials: false
+      - name: Install the build tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cmake ninja-build git
+      - name: Configure (CUDA, sm_86 and sm_89)
+        run: |
+          cmake -S ggml -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="86;89" \
+            -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF
+      - name: Compile only (hosted runners have no GPU, so nothing runs)
+        run: cmake --build build -j 4
+      - name: Check both architectures are in the CUDA library
+        shell: bash
+        run: |
+          set -euo pipefail
+          lib=$(find build -name 'libggml-cuda.*' | head -n 1)
+          echo "library: $lib"
+          cuobjdump --list-elf "$lib" | tee elf.txt
+          grep -q 'sm_86' elf.txt
+          grep -q 'sm_89' elf.txt

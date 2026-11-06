@@ -1,8 +1,20 @@
 //! ggtts core.
 //!
-//! This crate will hold the parts every engine shares: the engine and backend interfaces, the long-text
-//! pipeline (chunking, a seed per chunk, trimming, joining, level), the instrument events and trace format,
-//! and the provenance manifest. In this skeleton it holds only the build identity.
+//! The parts every engine shares: the engine interface ([`engine`]), the long-text story path ([`text`] for
+//! reading and chunking, [`seed`] for the seed per chunk, [`audio`] for the judge and the trim, [`pipeline`] for
+//! the redraw, the joins and the level), and FLAC output ([`flac`]). The instrument events, the trace format and
+//! the provenance manifest come next.
+//!
+//! The pipeline reproduces a reference implementation rule for rule, oddities included, and is checked against
+//! its recorded cases in `fixtures/pipeline/` (`cargo test -p ggtts-core --test pipeline_cases`).
+
+pub mod audio;
+pub mod engine;
+pub mod flac;
+pub mod numeric;
+pub mod pipeline;
+pub mod seed;
+pub mod text;
 
 /// The ggtts version, from the workspace manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

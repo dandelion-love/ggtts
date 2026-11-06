@@ -1,0 +1,12 @@
+{
+ "format": "ggtts-pipeline-cases/1",
+ "spec": "story-v1",
+ "source": "exported from the reference long-text render's parity cases; texts are invented sentences",
+ "defaults": {
+  "story_ceiling": 45,
+  "passage_ceiling": 26,
+  "redraw": 0,
+  "seed_salt": "",
+  "edge_s": 0.12
+ }
+}

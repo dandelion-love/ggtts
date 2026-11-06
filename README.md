@@ -1,8 +1,9 @@
 # ggtts
 An instrumented text-to-speech engine on ggml, written in Rust: one engine per model architecture, a pluggable compute stack, and token-exact parity tests
 
-> **Status: skeleton.** The workspace builds and `ggtts-render --version` reports the ggml pin. Nothing renders
-> yet. The design is under review before engine code is written.
+> **Status: walking skeleton.** The long-text pipeline (chunking, a seed per chunk, the judge, trim, joins, level
+> and FLAC output) runs against a fake engine and passes the reference's recorded pipeline cases in CI, on Linux
+> and Windows. No model engine exists yet, so nothing real renders. `ggtts-render --version` reports the ggml pin.
 
 ## What it is
 
@@ -65,9 +66,21 @@ and hashes, never audio.
 ```sh
 cargo build
 cargo test
+cargo test -p ggtts-core --test pipeline_cases -- --nocapture   # the pipeline cases, with their summary
 cargo run -p ggtts-cli --bin ggtts-render -- --version
 ```
 
+`rust-toolchain.toml` pins the Rust toolchain. CI runs `cargo fmt`, `clippy -D warnings`, the tests on Linux and
+Windows, a planted change (the story chunk ceiling set to 44 must turn the pipeline cases red), and a compile-only
+CUDA build of ggml at the pin for sm_86 and sm_89. A tag `v*` builds release archives named with the ggml pin, each
+with a `BUILDINFO.json` and a build provenance attestation (`gh attestation verify <file> -R dandelion-love/ggtts`).
+
+## The pipeline cases
+
+`fixtures/pipeline/*.json` hold the reference implementation's recorded cases: text, numbers, decisions and hashes,
+with synthetic signals described by their generator, never as samples. `out-of-scope.json` names every recorded
+case the core does not implement and why, and the test summary lists them, so what is not covered is visible.
+
 ## Licence
 
-MIT. Third-party sources and what is taken from each will be listed in `THIRD_PARTY.md` as they are added.
+MIT. Third-party sources and what is taken from each are listed in [`THIRD_PARTY.md`](THIRD_PARTY.md).

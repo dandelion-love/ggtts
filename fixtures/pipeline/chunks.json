@@ -1,0 +1,856 @@
+{
+ "format": "ggtts-pipeline-cases/1",
+ "spec": "story-v1",
+ "source": "exported from the reference long-text render's parity cases; texts are invented sentences",
+ "cases": [
+  {
+   "id": "punct-cantonese",
+   "about": "every clause mark the splitter knows (，。、；：！？), full-width corner and curly quotes it does not split on, and merges that keep each clause's own mark",
+   "story_id": "punct-cantonese",
+   "paragraphs": [
+    "「你食咗飯未呀？」佢問我。我話：「仲未呀，等陣先食啦！」",
+    "今日好忙、好攰；聽日再傾。佢話“唔該晒”，然後就走咗。『真係？』"
+   ],
+   "raw_chunks_story": [
+    [
+     [
+      "「你食咗飯未呀？」佢問我。我話：「仲未呀，等陣先食啦！」",
+      ""
+     ]
+    ],
+    [
+     [
+      "今日好忙、好攰；聽日再傾。佢話“唔該晒”，然後就走咗。『真係？』",
+      ""
+     ]
+    ]
+   ],
+   "story": {
+    "ceiling": 45,
+    "chunks": [
+     {
+      "para": 0,
+      "text": "「你食咗飯未呀？」佢問我。我話：「仲未呀，等陣先食啦！」",
+      "punct": "",
+      "last_in_para": true,
+      "body_len": 28,
+      "seed_k0": 3104856810,
+      "seed_k1": 1497145113
+     },
+     {
+      "para": 1,
+      "text": "今日好忙、好攰；聽日再傾。佢話“唔該晒”，然後就走咗。『真係？』",
+      "punct": "",
+      "last_in_para": true,
+      "body_len": 32,
+      "seed_k0": 620793713,
+      "seed_k1": 3656074560
+     }
+    ]
+   },
+   "passage": {
+    "ceiling": 26,
+    "chunks": [
+     {
+      "para": 0,
+      "text": "「你食咗飯未呀？」佢問我。我話：「仲未呀，等陣先食啦！",
+      "punct": "！",
+      "last_in_para": true,
+      "body_len": 26,
+      "seed_k0": 2542185162,
+      "seed_k1": 4052598275
+     },
+     {
+      "para": 1,
+      "text": "今日好忙、好攰；聽日再傾。佢話“唔該晒”，然後就走咗。",
+      "punct": "。",
+      "last_in_para": false,
+      "body_len": 26,
+      "seed_k0": 2396508538,
+      "seed_k1": 871816923
+     },
+     {
+      "para": 1,
+      "text": "『真係？』",
+      "punct": "",
+      "last_in_para": true,
+      "body_len": 5,
+      "seed_k0": 26760709,
+      "seed_k1": 663684834
+     }
+    ]
+   }
+  },
+  {
+   "id": "ceiling-exact",
+   "about": "one clause of exactly the ceiling (45), and two clauses whose merge is exactly the ceiling counting the one-character joiner",
+   "story_id": "ceiling-exact",
+   "paragraphs": [
+    "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出。",
+    "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭，鬆真係好難得有咁嘅好天氣可以出嚟玩下次一定要。"
+   ],
+   "raw_chunks_story": [
+    [
+     [
+      "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出",
+      "。"
+     ]
+    ],
+    [
+     [
+      "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭，鬆真係好難得有咁嘅好天氣可以出嚟玩下次一定要",
+      "。"
+     ]
+    ]
+   ],
+   "story": {
+    "ceiling": 45,
+    "chunks": [
+     {
+      "para": 0,
+      "text": "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 45,
+      "seed_k0": 1985515854,
+      "seed_k1": 2824427511
+     },
+     {
+      "para": 1,
+      "text": "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭，鬆真係好難得有咁嘅好天氣可以出嚟玩下次一定要。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 45,
+      "seed_k0": 1463865261,
+      "seed_k1": 2777036956
+     }
+    ]
+   },
+   "passage": {
+    "ceiling": 26,
+    "chunks": [
+     {
+      "para": 0,
+      "text": "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 26,
+      "seed_k0": 1750529927,
+      "seed_k1": 3630737578
+     },
+     {
+      "para": 0,
+      "text": "服又好放鬆真係好難得有咁嘅好天氣可以出。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 19,
+      "seed_k0": 18663914,
+      "seed_k1": 3943552713
+     },
+     {
+      "para": 1,
+      "text": "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭，",
+      "punct": "，",
+      "last_in_para": false,
+      "body_len": 22,
+      "seed_k0": 3446668576,
+      "seed_k1": 3612092622
+     },
+     {
+      "para": 1,
+      "text": "鬆真係好難得有咁嘅好天氣可以出嚟玩下次一定要。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 22,
+      "seed_k0": 787502766,
+      "seed_k1": 1190350494
+     }
+    ]
+   }
+  },
+  {
+   "id": "ceiling-plus-one",
+   "about": "one clause of ceiling+1 (46) at the end of a paragraph: hard-cut at the ceiling, and the one-character remainder is under 4 characters, so it is DROPPED; and two clauses whose merge would be ceiling+1, which stay apart",
+   "story_id": "ceiling-plus-one",
+   "paragraphs": [
+    "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出嚟。",
+    "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭，鬆真係好難得有咁嘅好天氣可以出嚟玩下次一定要再。"
+   ],
+   "raw_chunks_story": [
+    [
+     [
+      "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出",
+      ""
+     ]
+    ],
+    [
+     [
+      "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭",
+      "，"
+     ],
+     [
+      "鬆真係好難得有咁嘅好天氣可以出嚟玩下次一定要再",
+      "。"
+     ]
+    ]
+   ],
+   "story": {
+    "ceiling": 45,
+    "chunks": [
+     {
+      "para": 0,
+      "text": "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出",
+      "punct": "",
+      "last_in_para": true,
+      "body_len": 45,
+      "seed_k0": 3206533341,
+      "seed_k1": 3561816315
+     },
+     {
+      "para": 1,
+      "text": "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭，",
+      "punct": "，",
+      "last_in_para": false,
+      "body_len": 22,
+      "seed_k0": 401138589,
+      "seed_k1": 67567686
+     },
+     {
+      "para": 1,
+      "text": "鬆真係好難得有咁嘅好天氣可以出嚟玩下次一定要再。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 23,
+      "seed_k0": 2813819763,
+      "seed_k1": 4172342421
+     }
+    ]
+   },
+   "passage": {
+    "ceiling": 26,
+    "chunks": [
+     {
+      "para": 0,
+      "text": "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 26,
+      "seed_k0": 3683386688,
+      "seed_k1": 621076348
+     },
+     {
+      "para": 0,
+      "text": "服又好放鬆真係好難得有咁嘅好天氣可以出嚟。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 20,
+      "seed_k0": 3201746837,
+      "seed_k1": 1318331690
+     },
+     {
+      "para": 1,
+      "text": "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭，",
+      "punct": "，",
+      "last_in_para": false,
+      "body_len": 22,
+      "seed_k0": 4062683158,
+      "seed_k1": 1710177999
+     },
+     {
+      "para": 1,
+      "text": "鬆真係好難得有咁嘅好天氣可以出嚟玩下次一定要再。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 23,
+      "seed_k0": 1556029707,
+      "seed_k1": 4223352923
+     }
+    ]
+   }
+  },
+  {
+   "id": "no-split-run",
+   "about": "120 characters with no split character: hard cuts every ceiling characters, the cut chunks carry no punctuation, and the last piece keeps the clause's mark",
+   "story_id": "no-split-run",
+   "paragraphs": [
+    "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出嚟玩下次一定要再約埋其他朋友一齊嚟食海鮮飲啤酒傾吓計慢慢等日落先返屋企返到屋企之後我哋仲煮咗一煲糖水大家坐喺梳化度一路飲一路睇電視講吓今日見到嘅嘢直到。"
+   ],
+   "raw_chunks_story": [
+    [
+     [
+      "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出",
+      ""
+     ],
+     [
+      "嚟玩下次一定要再約埋其他朋友一齊嚟食海鮮飲啤酒傾吓計慢慢等日落先返屋企返到屋企之後我哋仲煮",
+      ""
+     ],
+     [
+      "咗一煲糖水大家坐喺梳化度一路飲一路睇電視講吓今日見到嘅嘢直到",
+      "。"
+     ]
+    ]
+   ],
+   "story": {
+    "ceiling": 45,
+    "chunks": [
+     {
+      "para": 0,
+      "text": "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 45,
+      "seed_k0": 742967113,
+      "seed_k1": 234067590
+     },
+     {
+      "para": 0,
+      "text": "嚟玩下次一定要再約埋其他朋友一齊嚟食海鮮飲啤酒傾吓計慢慢等日落先返屋企返到屋企之後我哋仲煮",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 45,
+      "seed_k0": 2899152488,
+      "seed_k1": 2810966316
+     },
+     {
+      "para": 0,
+      "text": "咗一煲糖水大家坐喺梳化度一路飲一路睇電視講吓今日見到嘅嘢直到。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 30,
+      "seed_k0": 3533754123,
+      "seed_k1": 3446071902
+     }
+    ]
+   },
+   "passage": {
+    "ceiling": 26,
+    "chunks": [
+     {
+      "para": 0,
+      "text": "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 26,
+      "seed_k0": 402234789,
+      "seed_k1": 922786469
+     },
+     {
+      "para": 0,
+      "text": "服又好放鬆真係好難得有咁嘅好天氣可以出嚟玩下次一定要",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 26,
+      "seed_k0": 3801072374,
+      "seed_k1": 3125663126
+     },
+     {
+      "para": 0,
+      "text": "再約埋其他朋友一齊嚟食海鮮飲啤酒傾吓計慢慢等日落先返",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 26,
+      "seed_k0": 3684005673,
+      "seed_k1": 2593837155
+     },
+     {
+      "para": 0,
+      "text": "屋企返到屋企之後我哋仲煮咗一煲糖水大家坐喺梳化度一路",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 26,
+      "seed_k0": 1578647421,
+      "seed_k1": 538238560
+     },
+     {
+      "para": 0,
+      "text": "飲一路睇電視講吓今日見到嘅嘢直到。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 16,
+      "seed_k0": 61721643,
+      "seed_k1": 2277982564
+     }
+    ]
+   }
+  },
+  {
+   "id": "mixed-scripts",
+   "about": "CJK, Latin, digits and ASCII punctuation: ASCII , . ! ? are not split characters, a space counts toward the ceiling, and a long ASCII run is hard-cut mid-word",
+   "story_id": "mixed-scripts",
+   "paragraphs": [
+    "我今日用iPhone 15影咗300張相，仲上載咗去Google Photos度。",
+    "佢講: OK, see you at 3:30 p.m. tomorrow, don't be late again please!好唔好？",
+    "The quick brown fox jumps over the lazy dog while 3 cats watch from 2 windows nearby。"
+   ],
+   "raw_chunks_story": [
+    [
+     [
+      "我今日用iPhone 15影咗300張相，仲上載咗去Google Photos度",
+      "。"
+     ]
+    ],
+    [
+     [
+      "佢講: OK, see you at 3:30 p.m. tomorrow, don't ",
+      ""
+     ],
+     [
+      "be late again please!好唔好",
+      "？"
+     ]
+    ],
+    [
+     [
+      "The quick brown fox jumps over the lazy dog w",
+      ""
+     ],
+     [
+      "hile 3 cats watch from 2 windows nearby",
+      "。"
+     ]
+    ]
+   ],
+   "story": {
+    "ceiling": 45,
+    "chunks": [
+     {
+      "para": 0,
+      "text": "我今日用iPhone 15影咗300張相，仲上載咗去Google Photos度。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 40,
+      "seed_k0": 3940001491,
+      "seed_k1": 2543565605
+     },
+     {
+      "para": 1,
+      "text": "佢講: OK, see you at 3:30 p.m. tomorrow, don't ",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 45,
+      "seed_k0": 2607820349,
+      "seed_k1": 273867200
+     },
+     {
+      "para": 1,
+      "text": "be late again please!好唔好？",
+      "punct": "？",
+      "last_in_para": true,
+      "body_len": 24,
+      "seed_k0": 2294023587,
+      "seed_k1": 1684053788
+     },
+     {
+      "para": 2,
+      "text": "The quick brown fox jumps over the lazy dog w",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 45,
+      "seed_k0": 3106854242,
+      "seed_k1": 3749209124
+     },
+     {
+      "para": 2,
+      "text": "hile 3 cats watch from 2 windows nearby。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 39,
+      "seed_k0": 3964764335,
+      "seed_k1": 760233465
+     }
+    ]
+   },
+   "passage": {
+    "ceiling": 26,
+    "chunks": [
+     {
+      "para": 0,
+      "text": "我今日用iPhone 15影咗300張相，",
+      "punct": "，",
+      "last_in_para": false,
+      "body_len": 20,
+      "seed_k0": 2011773508,
+      "seed_k1": 2431524725
+     },
+     {
+      "para": 0,
+      "text": "仲上載咗去Google Photos度。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 19,
+      "seed_k0": 3960032464,
+      "seed_k1": 3833507967
+     },
+     {
+      "para": 1,
+      "text": "佢講: OK, see you at 3:30 p.",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 26,
+      "seed_k0": 2172309246,
+      "seed_k1": 39869406
+     },
+     {
+      "para": 1,
+      "text": "m. tomorrow, don't be late",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 26,
+      "seed_k0": 4049625119,
+      "seed_k1": 1127097611
+     },
+     {
+      "para": 1,
+      "text": " again please!好唔好？",
+      "punct": "？",
+      "last_in_para": true,
+      "body_len": 17,
+      "seed_k0": 718258842,
+      "seed_k1": 1093204866
+     },
+     {
+      "para": 2,
+      "text": "The quick brown fox jumps ",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 26,
+      "seed_k0": 3021097077,
+      "seed_k1": 4289129539
+     },
+     {
+      "para": 2,
+      "text": "over the lazy dog while 3 ",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 26,
+      "seed_k0": 2730414863,
+      "seed_k1": 573439256
+     },
+     {
+      "para": 2,
+      "text": "cats watch from 2 windows ",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 26,
+      "seed_k0": 3238536294,
+      "seed_k1": 3422308303
+     },
+     {
+      "para": 2,
+      "text": "nearby。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 6,
+      "seed_k0": 130121297,
+      "seed_k1": 3775032673
+     }
+    ]
+   }
+  },
+  {
+   "id": "short-and-empty",
+   "about": "a paragraph shorter than 4 characters vanishes; an empty clause (two marks in a row) is skipped and its mark is lost; leading and trailing spaces of a clause are stripped; …… is not a split character",
+   "story_id": "short-and-empty",
+   "paragraphs": [
+    "好。",
+    "真係？！唔係掛。",
+    "  前面有空格 ， 後面都有  。",
+    "佢諗咗好耐……終於開口講嘢。"
+   ],
+   "raw_chunks_story": [
+    [],
+    [
+     [
+      "真係？唔係掛",
+      "。"
+     ]
+    ],
+    [
+     [
+      "前面有空格，後面都有",
+      "。"
+     ]
+    ],
+    [
+     [
+      "佢諗咗好耐……終於開口講嘢",
+      "。"
+     ]
+    ]
+   ],
+   "story": {
+    "ceiling": 45,
+    "chunks": [
+     {
+      "para": 1,
+      "text": "真係？唔係掛。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 6,
+      "seed_k0": 2007386499,
+      "seed_k1": 904270199
+     },
+     {
+      "para": 2,
+      "text": "前面有空格，後面都有。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 10,
+      "seed_k0": 560884102,
+      "seed_k1": 1499038486
+     },
+     {
+      "para": 3,
+      "text": "佢諗咗好耐……終於開口講嘢。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 13,
+      "seed_k0": 3567234167,
+      "seed_k1": 3368126205
+     }
+    ]
+   },
+   "passage": {
+    "ceiling": 26,
+    "chunks": [
+     {
+      "para": 1,
+      "text": "真係？唔係掛。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 6,
+      "seed_k0": 2007386499,
+      "seed_k1": 904270199
+     },
+     {
+      "para": 2,
+      "text": "前面有空格，後面都有。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 10,
+      "seed_k0": 560884102,
+      "seed_k1": 1499038486
+     },
+     {
+      "para": 3,
+      "text": "佢諗咗好耐……終於開口講嘢。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 13,
+      "seed_k0": 3567234167,
+      "seed_k1": 3368126205
+     }
+    ]
+   }
+  },
+  {
+   "id": "unmarked-tail",
+   "about": "a final part with no mark after a split mark keeps no leading whitespace: the part is stripped before it is merged (a space after 。, as a passage's line break leaves one)",
+   "story_id": "unmarked-tail",
+   "paragraphs": [
+    "佢話好。 跟住就冇再講嘢",
+    "第一句講完。\n第二句冇標點"
+   ],
+   "raw_chunks_story": [
+    [
+     [
+      "佢話好。跟住就冇再講嘢",
+      ""
+     ]
+    ],
+    [
+     [
+      "第一句講完。第二句冇標點",
+      ""
+     ]
+    ]
+   ],
+   "story": {
+    "ceiling": 45,
+    "chunks": [
+     {
+      "para": 0,
+      "text": "佢話好。跟住就冇再講嘢",
+      "punct": "",
+      "last_in_para": true,
+      "body_len": 11,
+      "seed_k0": 2926007190,
+      "seed_k1": 2682365123
+     },
+     {
+      "para": 1,
+      "text": "第一句講完。第二句冇標點",
+      "punct": "",
+      "last_in_para": true,
+      "body_len": 12,
+      "seed_k0": 3668225994,
+      "seed_k1": 3384477232
+     }
+    ]
+   },
+   "passage": {
+    "ceiling": 26,
+    "chunks": [
+     {
+      "para": 0,
+      "text": "佢話好。跟住就冇再講嘢",
+      "punct": "",
+      "last_in_para": true,
+      "body_len": 11,
+      "seed_k0": 2926007190,
+      "seed_k1": 2682365123
+     },
+     {
+      "para": 1,
+      "text": "第一句講完。第二句冇標點",
+      "punct": "",
+      "last_in_para": true,
+      "body_len": 12,
+      "seed_k0": 3668225994,
+      "seed_k1": 3384477232
+     }
+    ]
+   }
+  },
+  {
+   "id": "min-length-4",
+   "about": "the drop filter at its bar: a chunk body of exactly 4 code points is KEPT and one of 3 is DROPPED; a final clause of ceiling+4 (49) keeps its 4-character remainder, one of ceiling+3 loses its 3",
+   "story_id": "min-length-4",
+   "paragraphs": [
+    "今日好熱。",
+    "好熱呀。",
+    "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出嚟玩下次。",
+    "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出嚟玩下。"
+   ],
+   "raw_chunks_story": [
+    [
+     [
+      "今日好熱",
+      "。"
+     ]
+    ],
+    [],
+    [
+     [
+      "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出",
+      ""
+     ],
+     [
+      "嚟玩下次",
+      "。"
+     ]
+    ],
+    [
+     [
+      "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出",
+      ""
+     ]
+    ]
+   ],
+   "story": {
+    "ceiling": 45,
+    "chunks": [
+     {
+      "para": 0,
+      "text": "今日好熱。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 4,
+      "seed_k0": 3688207786,
+      "seed_k1": 739799106
+     },
+     {
+      "para": 2,
+      "text": "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 45,
+      "seed_k0": 340355078,
+      "seed_k1": 2300012394
+     },
+     {
+      "para": 2,
+      "text": "嚟玩下次。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 4,
+      "seed_k0": 3196994617,
+      "seed_k1": 500694453
+     },
+     {
+      "para": 3,
+      "text": "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出",
+      "punct": "",
+      "last_in_para": true,
+      "body_len": 45,
+      "seed_k0": 1541924903,
+      "seed_k1": 1249820579
+     }
+    ]
+   },
+   "passage": {
+    "ceiling": 26,
+    "chunks": [
+     {
+      "para": 0,
+      "text": "今日好熱。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 4,
+      "seed_k0": 3688207786,
+      "seed_k1": 739799106
+     },
+     {
+      "para": 2,
+      "text": "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 26,
+      "seed_k0": 1303224313,
+      "seed_k1": 2048320220
+     },
+     {
+      "para": 2,
+      "text": "服又好放鬆真係好難得有咁嘅好天氣可以出嚟玩下次。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 23,
+      "seed_k0": 3522223306,
+      "seed_k1": 4200317821
+     },
+     {
+      "para": 3,
+      "text": "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 26,
+      "seed_k0": 2867771359,
+      "seed_k1": 2382168149
+     },
+     {
+      "para": 3,
+      "text": "服又好放鬆真係好難得有咁嘅好天氣可以出嚟玩下。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 22,
+      "seed_k0": 3275805156,
+      "seed_k1": 2626621709
+     }
+    ]
+   }
+  }
+ ],
+ "read_text": [
+  {
+   "id": "read-text",
+   "file_utf8": "\n\n  標題：一個故事  \n第一段，有空格喺前面同後面。  \n\n   \n  第二段。\n第三段冇標點\n\n",
+   "title": "標題：一個故事",
+   "paragraphs": [
+    "第一段，有空格喺前面同後面。",
+    "第二段。",
+    "第三段冇標點"
+   ]
+  }
+ ]
+}

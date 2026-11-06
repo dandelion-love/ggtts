@@ -11,7 +11,13 @@ version = "0.0.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/dandelion-love/ggtts"
-rust-version = "1.75"
+rust-version = "1.88"
 
 [workspace.dependencies]
 ggtts-core = { path = "crates/ggtts-core", version = "0.0.1" }
+ggtts-fake = { path = "crates/ggtts-fake", version = "0.0.1" }
+# One log10, pow and sin on every platform (a port of musl's libm), so a float result does not depend on the
+# platform's C library.
+libm = "0.2"
+serde_json = "1"
+claxon = "0.4"

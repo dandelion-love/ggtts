@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-linux
+            exe: ""
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-windows
+            exe: ".exe"
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Test before building the release
+        run: cargo test --workspace --locked
+      - run: cargo build --release --locked -p ggtts-cli
+      - name: Package, named with the ggml pin
+        id: pkg
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+          EXE: ${{ matrix.exe }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          src=crates/ggtts-core/src/lib.rs
+          commit=$(sed -n 's/^ *pub const COMMIT: &str = "\([0-9a-f]\{40\}\)";$/\1/p' "$src")
+          describe=$(sed -n 's/^ *pub const DESCRIBE: &str = "\(.*\)";$/\1/p' "$src")
+          test ${#commit} -eq 40
+          name="ggtts-${TAG}-${TARGET}-cpu-ggml-${commit:0:7}"
+          mkdir -p "dist/$name"
+          cp "target/release/ggtts-render${EXE}" "dist/$name/"
+          cp LICENSE README.md "dist/$name/"
+          cat > "dist/$name/BUILDINFO.json" <<EOF
+          {
+            "ggtts": "${TAG}",
+            "ggtts_commit": "${GITHUB_SHA}",
+            "ggml_commit": "${commit}",
+            "ggml_describe": "${describe}",
+            "rustc": "$(rustc -V)",
+            "target": "${TARGET}",
+            "features": ["cpu"],
+            "built_by": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          }
+          EOF
+          "dist/$name/ggtts-render${EXE}" --version | tee "dist/$name/VERSION.txt"
+          grep -q "$commit" "dist/$name/VERSION.txt"
+          cd dist
+          if [ "$ARCHIVE" = zip ]; then 7z a -tzip "$name.zip" "$name" >/dev/null; else tar -czf "$name.tar.gz" "$name"; fi
+          rm -rf "$name"
+          ls -l
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: attest and publish
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - run: ls -l dist
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --title "ggtts $TAG" \
+            --notes "Built from ${GITHUB_SHA}. Each archive is named with the ggml commit it is pinned to and carries BUILDINFO.json. Verify one with: gh attestation verify <file> -R ${GITHUB_REPOSITORY}"

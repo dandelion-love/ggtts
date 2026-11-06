@@ -10,3 +10,4 @@ publish = false
 
 [dependencies]
 ggtts-core.workspace = true
+libm.workspace = true

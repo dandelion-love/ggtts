@@ -148,6 +148,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
     Ok(a)
 }
 
+/// The model engines this binary can carry, by architecture name: `load_engine` has an arm for each, and
+/// `engine_lines` lists them when the build has them. `every_engine_has_a_load_arm` holds the two together.
+const ENGINES: &[&str] = &["qwen3-tts", "kitten-tts-2"];
+
 /// The engine for a model, by architecture name. One arm per engine; an engine left out of the build is reported,
 /// not hidden.
 fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, String> {
@@ -186,7 +190,7 @@ fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, St
                 .map(|e| Box::new(e) as Box<dyn Engine>)
         }
         #[cfg(not(feature = "ggml"))]
-        "qwen3-tts" | "kitten-tts-2" => {
+        name if ENGINES.contains(&name) => {
             let _ = (threads, model, &a.voice);
             Err("this build has no engines: rebuild with --features ggml".into())
         }
@@ -420,11 +424,7 @@ fn engine_lines() -> Vec<String> {
     if cfg!(feature = "cuda") {
         backends.push("cuda");
     }
-    let engines: &[&str] = if cfg!(feature = "ggml") {
-        &["qwen3-tts", "kitten-tts-2"]
-    } else {
-        &[]
-    };
+    let engines: &[&str] = if cfg!(feature = "ggml") { ENGINES } else { &[] };
     if engines.is_empty() {
         return vec!["engines: none (built without the ggml feature)".into()];
     }
@@ -459,5 +459,27 @@ fn main() -> ExitCode {
                 ExitCode::from(ggtts_instruments::runner::EXIT_RENDER_FAILED)
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every engine `--version` can list reaches its own arm in `load_engine`, never the unknown-architecture refusal.
+    #[test]
+    fn every_engine_has_a_load_arm() {
+        let a = Args::default();
+        let refused = |name: &str| {
+            load_engine(name, &a, Path::new("no-such-model.gguf"))
+                .err()
+                .unwrap_or_default()
+        };
+        for name in ENGINES {
+            let err = refused(name);
+            assert!(!err.is_empty(), "{name}: loaded with no model");
+            assert!(!err.starts_with("no engine for architecture"), "{name}: {err}");
+        }
+        assert!(refused("not-an-engine").starts_with("no engine for architecture"));
     }
 }

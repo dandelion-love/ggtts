@@ -63,6 +63,8 @@ jobs:
       - run: cargo run --locked -p ggtts-cli --bin ggtts-render -- --version
 
   ggml:
+    needs: specialized-selection
+    if: needs.specialized-selection.outputs.ggml == 'true'
     name: ggml (ubuntu-latest, CPU, ggml built from the submodule)
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -101,6 +103,8 @@ jobs:
         run: bash scripts/buildinfo_engines.sh target/debug/ggtts-render qwen3-tts kitten-tts-2
 
   ggml-windows:
+    needs: specialized-selection
+    if: needs.specialized-selection.outputs.ggml == 'true'
     # A probe, not a gate: it records whether the engines build and link on Windows (MSVC), and what breaks if not.
     # Its build steps may fail without failing the job; the job summary says which.
     name: ggml-windows (probe; reports, does not gate)
@@ -175,29 +179,9 @@ jobs:
           grep -F 'FAILED render/arm-join-every-mark' out.txt
           echo "red as required: the planted ceiling is seen"
 
-  cuda-selection:
-    name: Select CUDA compile (a skip is not GPU parity)
-    runs-on: ubuntu-latest
-    outputs:
-      run: ${{ steps.select.outputs.run }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - name: Test CUDA path selection
-        run: bash scripts/cuda_ci_decision.sh --self-test
-      - name: Select compile
-        id: select
-        env:
-          EVENT: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: bash scripts/cuda_ci_decision.sh "$EVENT" "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
-
   cuda-compile:
-    needs: cuda-selection
-    if: needs.cuda-selection.outputs.run == 'true' || (github.event_name == 'pull_request' && github.base_ref == 'main' && github.head_ref == 'rc' && github.event.pull_request.head.repo.full_name == github.repository)
+    needs: specialized-selection
+    if: needs.specialized-selection.outputs.cuda == 'true'
     name: cuda-compile (ggml at the pin, sm_86 and sm_89, no GPU)
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -251,6 +235,8 @@ jobs:
       binding: ${{ steps.select.outputs.binding }}
       android: ${{ steps.select.outputs.android }}
       release: ${{ steps.select.outputs.release }}
+      ggml: ${{ steps.select.outputs.ggml }}
+      cuda: ${{ steps.select.outputs.cuda }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

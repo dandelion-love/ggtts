@@ -98,10 +98,7 @@ jobs:
           cat err.txt
           grep -F 'not a GGUF file' err.txt
       - name: ggtts-render lists both engines (what the release's BUILDINFO is read from)
-        run: |
-          # PLANT (reverted in the next commit): rebuild without the ggml feature; the check must fail.
-          cargo build --locked -p ggtts-cli
-          bash scripts/buildinfo_engines.sh target/debug/ggtts-render qwen3-tts kitten-tts-2
+        run: bash scripts/buildinfo_engines.sh target/debug/ggtts-render qwen3-tts kitten-tts-2
 
   ggml-windows:
     # A probe, not a gate: it records whether the engines build and link on Windows (MSVC), and what breaks if not.

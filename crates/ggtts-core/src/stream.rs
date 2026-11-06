@@ -12,6 +12,15 @@
 //!
 //! The pieces of a story read come from [`render_story_streamed`](crate::pipeline::render_story_streamed), before
 //! the level step. [`first_sample_diff`] is the parity check between a stream and its batch read.
+//!
+//! **Two streams.** A listener gets the pieces levelled by [`FirstChunkLevel`]: the level step's own rule (gain to the
+//! profile's target over the loud samples, then the clip), with the gain taken from the FIRST piece and held for the
+//! read. The batch read's gain is known only after the last chunk; the first piece's is known the moment that piece
+//! leaves, so this adds no latency. A parity check asks for the RAW stream instead, the pieces before the level step,
+//! which is bit-exact to the batch read before its level step.
+
+use crate::pipeline::{apply_gain, level_gain};
+use crate::profile::Profile;
 
 use std::io::{self, Write};
 
@@ -117,6 +126,45 @@ impl<W: Write> StreamWriter<W> {
 
     pub fn into_inner(self) -> W {
         self.w
+    }
+}
+
+/// Levels a stream's pieces for a listener, with one gain fixed from the first piece.
+///
+/// Why the first piece and not a per-profile constant: the level step's gain is a property of the voice and the
+/// text, not of the engine (on the committed stories it is +3.96 dB for one Qwen3-TTS voice and -3.51 dB for one
+/// Kitten-TTS 2 voice), so a constant is right for one voice only. The first piece must be complete before anything
+/// is emitted anyway, so its gain costs no latency. If it has no sample above the floor, the gain is 1 (the samples
+/// pass unchanged, as [`level`](crate::pipeline::level) leaves such a read alone) until a piece that has one.
+#[derive(Debug, Clone)]
+pub struct FirstChunkLevel {
+    profile: Profile,
+    gain: Option<f64>,
+}
+
+impl FirstChunkLevel {
+    pub fn new(profile: &Profile) -> Self {
+        Self {
+            profile: *profile,
+            gain: None,
+        }
+    }
+
+    /// The gain held for the read, once a piece with a loud sample has set it.
+    pub fn gain(&self) -> Option<f64> {
+        self.gain
+    }
+
+    /// `samples` levelled with the read's gain, setting it from this piece if none is set yet.
+    pub fn apply(&mut self, samples: &[f32]) -> Vec<f32> {
+        if self.gain.is_none() {
+            self.gain = level_gain(&self.profile, samples);
+        }
+        let mut out = samples.to_vec();
+        if let Some(g) = self.gain {
+            apply_gain(&self.profile, &mut out, g);
+        }
+        out
     }
 }
 

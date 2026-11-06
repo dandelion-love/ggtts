@@ -5,7 +5,10 @@
 #   TALKER=<model.gguf> CODEC=<codec.gguf> WORK=<scratch dir> [DEVICE=cuda] scripts/stream_probe.sh
 #   ENGINE=kitten-tts-2 TALKER=<lm.gguf> CODEC=<s3gen.gguf> VOICE=<voice.json> WORK=<dir> scripts/stream_probe.sh
 #
-# Three story renders: batch, --stream --stream-raw (the parity stream: the FLAC must be identical), and --stream
+# FRAME=0 skips the frame-level table (Qwen only; about 20 minutes on CPU).
+#
+# Four story renders: batch; --stream --stream-raw (the parity stream: the FLAC must be identical); --stream at
+# --stream-level-seconds 0 (the first-chunk gain, for the latency the default hold costs); and --stream
 # (the listener's levelled stream: its loudness against the FLAC's, declared within 3 dB, and its clamped samples
 # against the FLAC's, declared at most max(16, 0.01%) more).
 #
@@ -82,19 +85,22 @@ render batch || { echo "batch render failed: $WORK/batch.log"; exit 1; }
 # The parity run asks for the raw stream by name; the listener's levelled stream is a third run.
 render stream --stream "$WORK/stream.wav" --stream-raw || { echo "stream render failed: $WORK/stream.log"; exit 1; }
 render level --stream "$WORK/level.wav" || { echo "levelled stream render failed: $WORK/level.log"; exit 1; }
+# The first-chunk mode, for the latency the default hold costs (#44).
+render level0 --stream "$WORK/level0.wav" --stream-level-seconds 0 \
+  || { echo "first-chunk stream render failed: $WORK/level0.log"; exit 1; }
 python3 - "$WORK" <<'PY' || status=1
 import re, sys
 work = sys.argv[1]
 def grab(name, pat):
     m = re.search(pat, open(f"{work}/{name}.log").read())
     return float(m.group(1)) if m else float("nan")
-for name in ("batch", "stream"):
+for name in ("batch", "stream", "level", "level0"):
     render_ms = grab(name, r"render (\d+) ms")
     samples = grab(name, r"\((\d+) samples at")
     rate = grab(name, r"samples at (\d+) Hz")
     audio = samples / rate
     line = f"  {name}: render {render_ms / 1e3:.2f} s for {audio:.2f} s of audio, RTF {render_ms / 1e3 / audio:.3f}"
-    if name == "stream":
+    if name != "batch":
         first = grab(name, r"first audio at (\d+) ms") / 1e3
         line += f", first audio at {first:.2f} s"
     print(line + f", wall {open(f'{work}/{name}.wall').read().strip()} s")
@@ -105,7 +111,7 @@ else
   echo "  FLAC DIFFERS with --stream"
   status=1
 fi
-grep -h "level gain" "$WORK/stream.log" "$WORK/level.log" | sed 's/^/  /'
+grep -h "level gain" "$WORK/stream.log" "$WORK/level.log" "$WORK/level0.log" | sed 's/^/  /'
 # The listener's stream against the FLAC: loudness (RMS over samples above the level floor, 1e-3) and peak. The
 # bound declared for it is 3 dB; ffmpeg decodes the FLAC, the WAV is read directly.
 python3 - "$WORK" <<'PY' || status=1
@@ -140,7 +146,7 @@ ok = abs(d) <= 3 and cs <= cf + allow and (cp > cf + allow or not near)
 sys.exit(0 if ok else 1)
 PY
 
-if [ "$engine" != qwen3-tts ]; then
+if [ "$engine" != qwen3-tts ] || [ "${FRAME:-1}" = 0 ]; then
   echo "stream probe ($engine, $device): exit $status (logs in $WORK)"
   exit $status
 fi

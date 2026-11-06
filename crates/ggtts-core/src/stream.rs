@@ -168,6 +168,101 @@ impl FirstChunkLevel {
     }
 }
 
+/// Levels a stream's pieces with one gain taken from at least the first `hold_s` seconds of audio.
+///
+/// Pieces are held back, whole and in order, until the held audio reaches `hold_s` seconds (always at least the
+/// first piece). The gain is then computed over everything held, by the level step's own rule, the held pieces leave
+/// levelled, and every later piece uses the same gain. A read shorter than `hold_s` is levelled at
+/// [`finish`](Self::finish), over all of it. `hold_s = 0` is [`FirstChunkLevel`]: the first piece sets the gain.
+///
+/// Why hold: a first chunk unlike the rest sets the wrong gain for the whole read (#44). A loud first chunk makes
+/// the stream too quiet; a quiet one makes it clamp every loud chunk after it. Holding more audio makes the gain
+/// closer to the read's, at the cost of first-audio latency, which is the listener's trade to make.
+#[derive(Debug, Clone)]
+pub struct StreamLevel {
+    profile: Profile,
+    hold_s: f64,
+    held: Vec<Vec<f32>>,
+    held_samples: usize,
+    rate: u32,
+    gain: Option<f64>,
+    decided: bool,
+}
+
+impl StreamLevel {
+    pub fn new(profile: &Profile, hold_s: f64) -> Self {
+        Self {
+            profile: *profile,
+            hold_s: hold_s.max(0.0),
+            held: Vec::new(),
+            held_samples: 0,
+            rate: 0,
+            gain: None,
+            decided: false,
+        }
+    }
+
+    /// The gain held for the read, once it is decided and the audio had a sample above the floor.
+    pub fn gain(&self) -> Option<f64> {
+        self.gain
+    }
+
+    /// Seconds of audio held when the gain was decided (or held now, before that).
+    pub fn held_seconds(&self) -> f64 {
+        if self.rate == 0 {
+            0.0
+        } else {
+            self.held_samples as f64 / f64::from(self.rate)
+        }
+    }
+
+    /// Take one piece; return the pieces ready to leave, levelled, in order. Empty while holding.
+    pub fn push(&mut self, samples: &[f32], rate: u32) -> Vec<Vec<f32>> {
+        if self.decided {
+            return vec![self.level(samples)];
+        }
+        if self.rate == 0 {
+            self.rate = rate;
+        }
+        self.held.push(samples.to_vec());
+        self.held_samples += samples.len();
+        if self.held_seconds() >= self.hold_s {
+            self.decide()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The end of the read: decide over whatever is held (a read shorter than `hold_s`) and release it.
+    pub fn finish(&mut self) -> Vec<Vec<f32>> {
+        if self.decided || self.held.is_empty() {
+            return Vec::new();
+        }
+        self.decide()
+    }
+
+    fn decide(&mut self) -> Vec<Vec<f32>> {
+        let all: Vec<f32> = self.held.iter().flatten().copied().collect();
+        self.gain = level_gain(&self.profile, &all);
+        if self.gain.is_none() {
+            // Nothing loud yet: release as is and decide on the next audio, as FirstChunkLevel does.
+            self.held_samples = 0;
+            return std::mem::take(&mut self.held);
+        }
+        self.decided = true;
+        let held = std::mem::take(&mut self.held);
+        held.iter().map(|p| self.level(p)).collect()
+    }
+
+    fn level(&self, samples: &[f32]) -> Vec<f32> {
+        let mut out = samples.to_vec();
+        if let Some(g) = self.gain {
+            apply_gain(&self.profile, &mut out, g);
+        }
+        out
+    }
+}
+
 /// The first index where `a` and `b` differ, bit for bit, or where one ends; `None` when they are identical.
 pub fn first_sample_diff(a: &[f32], b: &[f32]) -> Option<usize> {
     (0..a.len().max(b.len())).find(|&i| a.get(i).map(|x| x.to_bits()) != b.get(i).map(|x| x.to_bits()))

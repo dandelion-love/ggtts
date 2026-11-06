@@ -17,7 +17,8 @@
 //! default) or raw s16le after a one-line header. A story streams chunk by chunk, each piece as soon as its chunk
 //! is kept. Which stream:
 //!
-//! * **To listen: `--stream`.** Levelled with the level step's own rule, the gain taken from the first chunk and held
+//! * **To listen: `--stream`.** Levelled with the level step's own rule, one gain set from the first 10 s of audio
+//!   (`--stream-level-seconds`, held back until then; 0 takes the first chunk alone) and held
 //!   for the read (`stream::FirstChunkLevel`), so it adds no latency. Its loudness is close to the FLAC's but not
 //!   equal: the FLAC's gain is computed over the whole read, known only after the last chunk.
 //! * **To check parity: `--stream --stream-raw`.** The pieces before the level step, bit-exact to the batch read
@@ -36,7 +37,7 @@ use std::time::Instant;
 use ggtts_core::engine::{ChunkRequest, Engine};
 use ggtts_core::flac::write_flac;
 use ggtts_core::pipeline::{plan_story, render_story_streamed, RenderOptions};
-use ggtts_core::stream::{Container, FirstChunkLevel, StreamWriter};
+use ggtts_core::stream::{Container, StreamLevel, StreamWriter};
 use ggtts_core::text::read_text;
 use ggtts_core::trace::NullEvents;
 
@@ -46,13 +47,19 @@ mod gguf_arch;
 const BINARY: &str = "ggtts-render";
 const USAGE: &str = "usage: ggtts-render --model M.gguf [--codec C.gguf] --out x.flac \
 [--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N] [--device cpu|cuda] [--trace FILE] [--voice REF] \
-[--stream FILE|- [--stream-raw] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE)\n       ggtts-render --version";
+[--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] \
+(--text TEXT [--seed S] | --story FILE)\n       ggtts-render --version";
+
+/// Seconds of audio the listener's stream holds back to set its gain (#44). 0 takes the first chunk's alone.
+const DEFAULT_STREAM_LEVEL_SECONDS: f64 = 10.0;
 
 /// Which stream to ask for, printed by `--help`.
 const STREAMS: &str = concat!(
     "streams:\n",
-    "  --stream FILE|-             to listen: levelled as it is produced, with the first chunk's gain\n",
-    "                              (no added latency)\n",
+    "  --stream FILE|-             to listen: levelled as it is produced, with one gain set from the first\n",
+    "                              10 s of audio (held back until then)\n",
+    "  --stream-level-seconds S    how much audio sets that gain: more is closer to the FLAC's loudness,\n",
+    "                              less is earlier first audio; 0 = the first chunk alone (default 10)\n",
     "  --stream FILE --stream-raw  for parity checks: before the level step, bit-exact to the batch read;\n",
     "                              the FLAC is it times the gain printed at the end\n",
     "  --stream-format wav|s16le   wav (default: plays as it arrives) or raw s16le after a one-line header",
@@ -75,6 +82,7 @@ struct Args {
     stream: Option<String>,
     stream_format: Option<String>,
     stream_raw: bool,
+    stream_level_seconds: Option<f64>,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -96,6 +104,15 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--stream" => a.stream = Some(value()?),
             "--stream-format" => a.stream_format = Some(value()?),
             "--stream-raw" => a.stream_raw = true,
+            "--stream-level-seconds" => {
+                let v: f64 = value()?
+                    .parse()
+                    .map_err(|_| "--stream-level-seconds needs a number of seconds")?;
+                if !(v.is_finite() && v >= 0.0) {
+                    return Err("--stream-level-seconds must be 0 or more".into());
+                }
+                a.stream_level_seconds = Some(v);
+            }
             "--threads" | "-j" => a.threads = Some(value()?.parse().map_err(|_| "--threads needs an integer")?),
             other => return Err(format!("invalid argument: {other}")),
         }
@@ -159,8 +176,14 @@ fn open_stream(a: &Args) -> Result<Option<StreamWriter<Box<dyn std::io::Write>>>
         if a.stream_raw {
             return Err("--stream-raw needs --stream".into());
         }
+        if a.stream_level_seconds.is_some() {
+            return Err("--stream-level-seconds needs --stream".into());
+        }
         return Ok(None);
     };
+    if a.stream_raw && a.stream_level_seconds.is_some() {
+        return Err("--stream-level-seconds levels the stream, and --stream-raw does not: give one".into());
+    }
     let fmt = a.stream_format.as_deref().unwrap_or("wav");
     let container = Container::parse(fmt).ok_or(format!("--stream-format must be wav or s16le, not {fmt}"))?;
     let w: Box<dyn std::io::Write> = if dest == "-" {
@@ -220,7 +243,8 @@ fn render(a: Args) -> Result<(), String> {
             let profile = *engine.profile();
             let chunks = plan_story(&profile, &paragraphs);
             let mut first_audio_ms = None;
-            let mut leveller = FirstChunkLevel::new(&profile);
+            let hold_s = a.stream_level_seconds.unwrap_or(DEFAULT_STREAM_LEVEL_SECONDS);
+            let mut leveller = StreamLevel::new(&profile, hold_s);
             let raw = a.stream_raw;
             let read = render_story_streamed(
                 engine.as_mut(),
@@ -230,25 +254,40 @@ fn render(a: Args) -> Result<(), String> {
                 &mut NullEvents,
                 &mut |p| {
                     if let Some(w) = stream.as_mut() {
-                        first_audio_ms.get_or_insert(t1.elapsed().as_millis());
-                        // A failed write stops the render: nothing can receive the rest.
-                        if raw {
-                            w.write(p.samples, p.sample_rate)
+                        let ready = if raw {
+                            vec![p.samples.to_vec()]
                         } else {
-                            w.write(&leveller.apply(p.samples), p.sample_rate)
+                            leveller.push(p.samples, p.sample_rate)
+                        };
+                        for piece in ready {
+                            // First audio is the first WRITE: a held piece has not reached the listener.
+                            first_audio_ms.get_or_insert(t1.elapsed().as_millis());
+                            // A failed write stops the render: nothing can receive the rest.
+                            w.write(&piece, p.sample_rate).map_err(|e| e.to_string())?;
                         }
-                        .map_err(|e| e.to_string())?;
                     }
                     Ok(())
                 },
             )
             .map_err(|e| e.to_string())?;
+            if let Some(w) = stream.as_mut() {
+                // A read shorter than the hold leaves at the end, levelled over all of it.
+                for piece in leveller.finish() {
+                    first_audio_ms.get_or_insert(t1.elapsed().as_millis());
+                    w.write(&piece, read.sample_rate)
+                        .map_err(|e| format!("--stream: {e}"))?;
+                }
+            }
             if let Some(w) = &stream {
                 let db = |g: Option<f64>| g.map_or("none".to_string(), |g| format!("{:+.4} dB", 20.0 * g.log10()));
                 let what = if raw {
                     "before the level step".to_string()
                 } else {
-                    format!("levelled by the first chunk's gain {}", db(leveller.gain()))
+                    format!(
+                        "levelled by the gain of its first {:.1} s (--stream-level-seconds {hold_s}) {}",
+                        leveller.held_seconds(),
+                        db(leveller.gain())
+                    )
                 };
                 eprintln!(
                     "{BINARY}: streamed {} samples {what}, first audio at {} ms; the read's level gain {} \

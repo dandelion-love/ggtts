@@ -69,6 +69,11 @@ jobs:
           mkdir -p "dist/$name"
           cp "target/release/ggtts-render${EXE}" "dist/$name/"
           cp LICENSE README.md "dist/$name/"
+          # The script instruments, where the runner looks for them: instruments/ next to ggtts-render.
+          mkdir -p "dist/$name/instruments/python"
+          cp -r instruments/python/ggtts_instrument "dist/$name/instruments/python/"
+          cp -r instruments/templates instruments/examples instruments/README.md instruments/instruments.yaml "dist/$name/instruments/"
+          find "dist/$name/instruments" -name __pycache__ -prune -exec rm -rf {} +
           cat > "dist/$name/BUILDINFO.json" <<EOF
           {
             "ggtts": "${TAG}",
@@ -87,6 +92,13 @@ jobs:
           if [ "$ARCHIVE" = zip ]; then 7z a -tzip "$name.zip" "$name" >/dev/null; else tar -czf "$name.tar.gz" "$name"; fi
           rm -rf "$name"
           ls -l
+      - name: Smoke the archive (a shipped Python instrument runs from it; a planted missing instruments/ is reported)
+        run: |
+          set -euo pipefail
+          for a in dist/*.tar.gz dist/*.zip; do
+            [ -e "$a" ] || continue
+            scripts/smoke_release_archive.sh "$a"
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.target }}

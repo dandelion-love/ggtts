@@ -54,6 +54,12 @@ const USAGE: &str = "usage: ggtts-render --model M.gguf [--codec C.gguf] --out x
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
 [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID]\n       ggtts-render --version";
 
+/// Where `--help` says the script instruments are found.
+const INSTRUMENTS_HELP: &str = "\ninstruments: --instrument NAME runs a shipped instrument on the finished render \
+(instruments/instruments.yaml lists them).\nScript (Python) instruments are found in the instruments/ directory next to \
+ggtts-render (a release archive), or the nearest one above it (a source checkout); GGTTS_INSTRUMENTS_DIR overrides \
+that.\nThey run under GGTTS_PYTHON, else python3 (python on Windows).";
+
 #[derive(Default)]
 struct Args {
     model: Option<PathBuf>,
@@ -342,6 +348,7 @@ fn main() -> ExitCode {
         }
         Some("-h") | Some("--help") => {
             println!("{USAGE}");
+            println!("{INSTRUMENTS_HELP}");
             ExitCode::SUCCESS
         }
         Some(_) => match parse(&args).and_then(render) {

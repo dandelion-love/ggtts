@@ -96,6 +96,49 @@ jobs:
           cat err.txt
           grep -F 'not a GGUF file' err.txt
 
+  ggml-windows:
+    # A probe, not a gate: it records whether the engines build and link on Windows (MSVC), and what breaks if not.
+    # Its build steps may fail without failing the job; the job summary says which.
+    name: ggml-windows (probe; reports, does not gate)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    env:
+      # bindgen: the committed bindings are for x86_64 Linux only, so Windows generates its own.
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: git submodule update --init crates/ggtts-ggml-sys/ggml
+      - name: Build ggtts-render with the engines
+        id: build
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cargo build --locked -p ggtts-cli --features ggtts-cli/ggml,ggtts-ggml-sys/bindgen 2>&1 | tee build.log
+      - name: ggml links and computes
+        id: link
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        run: cargo test --locked -p ggtts-ggml-sys --features bindgen tests::links_and_runs_one_op -- --exact
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "### ggml on Windows (probe)"
+            echo "- build ggtts-render --features ggml: ${{ steps.build.outcome }}"
+            echo "- link test: ${{ steps.link.outcome }}"
+            if [ "${{ steps.build.outcome }}" != success ] && [ -f build.log ]; then
+              echo '```'
+              grep -E '^(error|warning: unused)|error[:\[]|LNK[0-9]+|undefined|unresolved|panicked' build.log | head -n 40
+              echo '```'
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
   planted-ceiling:
     name: planted ceiling (44 must turn the pipeline cases red)
     runs-on: ubuntu-latest

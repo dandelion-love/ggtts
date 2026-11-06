@@ -307,6 +307,53 @@ jobs:
       - name: The Kotlin binding on the host JVM (the runner's JDK and kotlinc)
         run: scripts/kotlin_binding_test.sh
 
+  android-arm64:
+    name: android-arm64 (cargo-ndk, ggml at the pin, NEON confirmed, with both checks planted)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      NDK_VERSION: "27.2.12479018"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup target add aarch64-linux-android
+      - name: cargo-ndk, pinned
+        run: cargo install cargo-ndk --version 3.5.4 --locked
+      - name: The NDK, pinned
+        run: |
+          set -eu
+          ndk="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
+          if [ ! -d "$ndk" ]; then
+            yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" > /dev/null
+          fi
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ndk" >> "$GITHUB_ENV"
+      - name: Fetch the ggml submodule at its pin
+        run: git submodule update --init crates/ggtts-ggml-sys/ggml
+      - name: Build for aarch64-linux-android; check the ggml pin and NEON in the kernels
+        run: scripts/android_build.sh build dist/android-arm64
+      - name: Planted, a wrong ggml pin is refused
+        run: |
+          if scripts/android_build.sh check-pin 0000000000000000000000000000000000000000; then
+            echo "::error::a wrong ggml pin was accepted"
+            exit 1
+          fi
+      - name: Planted, ggml built without NEON is refused
+        run: |
+          set -eu
+          GGML_CPU_ARM_ARCH=armv8-a+nosimd scripts/android_build.sh cargo-build "$PWD/target-nosimd"
+          if scripts/android_build.sh check-neon target-nosimd/aarch64-linux-android/release/ggtts-render; then
+            echo "::error::a build without NEON passed the NEON check"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-arm64
+          path: dist/android-arm64
+          if-no-files-found: error
+
   release-build:
     # The release's build step, run on every PR with the release's matrix, so a bad feature string or a build that
     # only breaks under --release fails here and not first at a tag (v0.1.0-rc.2 did). Keep the matrix the same as

@@ -21,6 +21,7 @@ version = "0.0.1"
 dependencies = [
  "claxon",
  "ggtts-fake",
+ "ggtts-qwen3-tts",
  "libm",
  "serde_json",
 ]
@@ -30,7 +31,15 @@ name = "ggtts-fake"
 version = "0.0.1"
 dependencies = [
  "ggtts-core",
+ "ggtts-qwen3-tts",
  "libm",
+]
+
+[[package]]
+name = "ggtts-qwen3-tts"
+version = "0.0.1"
+dependencies = [
+ "ggtts-core",
 ]
 
 [[package]]

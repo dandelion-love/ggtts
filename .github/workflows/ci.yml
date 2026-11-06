@@ -71,13 +71,13 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup show active-toolchain || rustup toolchain install
-      - name: Plant a story ceiling of 44 in the source
+      - name: Plant a story ceiling of 44 in the Qwen3-TTS profile
         run: |
           set -eu
-          f=crates/ggtts-core/src/pipeline.rs
-          grep -q '^pub const STORY_CEILING: usize = 45;$' "$f"
-          sed -i 's/^pub const STORY_CEILING: usize = 45;$/pub const STORY_CEILING: usize = 44;/' "$f"
-          grep -n '^pub const STORY_CEILING' "$f"
+          f=crates/ggtts-qwen3-tts/src/lib.rs
+          grep -q '^    story_ceiling: 45,$' "$f"
+          sed -i 's/^    story_ceiling: 45,$/    story_ceiling: 44,/' "$f"
+          grep -n '^    story_ceiling:' "$f"
       - name: The pipeline cases must fail, and name what failed
         run: |
           set -u

@@ -1,51 +1,25 @@
 //! The story path (render spec sections 2 to 7): chunk, seed per chunk, render, judge, redraw, trim, join, level.
 //!
-//! Every default here is part of the protocol `story-v1`. Changing one is a new protocol version, with a changed
-//! set of pipeline cases.
+//! Every number here comes from the engine's [`Profile`]. Changing one in a published profile is a new protocol
+//! version, with a changed set of pipeline cases.
 
 use crate::audio::{judge_f32, trim_edges_f32, Verdict};
 use crate::engine::{ChunkRequest, Engine, EngineError};
 use crate::numeric::{log10, mean_f32, pow};
+use crate::profile::Profile;
 use crate::seed::seed_of;
-use crate::text::PlannedChunk;
+use crate::text::{plan, PlannedChunk};
 
-/// The protocol these defaults define.
-pub const PROTOCOL: &str = "story-v1";
-/// The story path's chunk ceiling, in code points.
-pub const STORY_CEILING: usize = 45;
-/// The passage path's ceiling. Not a mode: a caller passes it explicitly.
-pub const PASSAGE_CEILING: usize = 26;
-/// Silence kept at each edge of a chunk after trimming, in seconds.
-pub const EDGE_S: f64 = 0.12;
-/// Redraws of a chunk the judge rejects. Zero: every chunk is its first draw, defects and all.
-pub const DEFAULT_REDRAW: u32 = 0;
-/// Extra pause after a paragraph's last chunk, in seconds.
-pub const PARA_EXTRA_S: f64 = 0.45;
-/// The read's loudness target: RMS over the samples above [`LEVEL_FLOOR`], in dBFS.
-pub const TARGET_RMS_DB: f64 = -20.0;
-/// Samples at or below this magnitude are not measured by the level step.
-pub const LEVEL_FLOOR: f32 = 1e-3;
-/// The level step clips to this magnitude.
-pub const CLIP: f64 = 0.999;
-
-/// The pause after a chunk, by the mark that ended it, in seconds (render spec section 7).
-pub fn pause_s(punct: &str) -> f64 {
-    match punct {
-        "，" => 0.20,
-        "、" => 0.16,
-        "：" => 0.30,
-        "；" => 0.32,
-        "。" | "！" => 0.48,
-        "？" => 0.50,
-        _ => 0.18,
-    }
+/// Chunk a story's paragraphs at the profile's [`story_ceiling`](Profile::story_ceiling).
+pub fn plan_story(profile: &Profile, paragraphs: &[String]) -> Vec<PlannedChunk> {
+    plan(profile, paragraphs, profile.story_ceiling)
 }
 
-/// The gap after a chunk, in samples: the pause, plus [`PARA_EXTRA_S`] at a paragraph end, times the rate,
-/// truncated.
-pub fn gap_samples(punct: &str, last_in_para: bool, sample_rate: u32) -> usize {
-    let extra = if last_in_para { PARA_EXTRA_S } else { 0.0 };
-    ((pause_s(punct) + extra) * f64::from(sample_rate)) as usize
+/// The gap after a chunk, in samples: the profile's pause for its mark, plus
+/// [`para_extra_s`](Profile::para_extra_s) at a paragraph end, times the rate, truncated.
+pub fn gap_samples(profile: &Profile, punct: &str, last_in_para: bool, sample_rate: u32) -> usize {
+    let extra = if last_in_para { profile.para_extra_s } else { 0.0 };
+    ((profile.pause_s(punct) + extra) * f64::from(sample_rate)) as usize
 }
 
 /// How a story is rendered.
@@ -59,12 +33,13 @@ pub struct RenderOptions {
     pub edge_s: f64,
 }
 
-impl Default for RenderOptions {
-    fn default() -> Self {
+impl RenderOptions {
+    /// The profile's defaults: its [`redraw`](Profile::redraw) and [`edge_s`](Profile::edge_s), and no salt.
+    pub fn for_profile(profile: &Profile) -> Self {
         Self {
-            redraw: DEFAULT_REDRAW,
+            redraw: profile.redraw,
             seed_salt: String::new(),
-            edge_s: EDGE_S,
+            edge_s: profile.edge_s,
         }
     }
 }
@@ -137,7 +112,8 @@ impl From<EngineError> for RenderError {
 
 /// Render one story: each chunk in order at its own seed, judged, redrawn up to `opts.redraw` times while the
 /// judge rejects it (the last draw is kept either way), trimmed to `opts.edge_s`, joined with the pause table,
-/// and levelled once for the whole read.
+/// and levelled once for the whole read. The judge, the pauses and the level read the engine's
+/// [`profile`](Engine::profile); plan the chunks with the same profile ([`plan_story`]).
 pub fn render_story(
     engine: &mut dyn Engine,
     story_id: &str,
@@ -147,6 +123,7 @@ pub fn render_story(
     if chunks.is_empty() {
         return Err(RenderError::Empty);
     }
+    let profile = *engine.profile();
     let mut clips: Vec<(Vec<f32>, u32)> = Vec::with_capacity(chunks.len());
     let mut records = Vec::with_capacity(chunks.len());
     for (i, c) in chunks.iter().enumerate() {
@@ -162,7 +139,7 @@ pub fn render_story(
             };
             let generated = engine.generate(&req)?;
             let pcm = engine.decode(&generated.codes)?;
-            let j = judge_f32(&pcm.samples, pcm.sample_rate, &c.text);
+            let j = judge_f32(&profile, &pcm.samples, pcm.sample_rate, &c.text);
             if k == 0 {
                 first = Some(j);
             }
@@ -174,7 +151,7 @@ pub fn render_story(
         }
         let (pcm, j, seed, k) = kept.expect("at least one draw");
         let first = first.expect("draw 0 ran");
-        let t = trim_edges_f32(&pcm.samples, pcm.sample_rate, opts.edge_s);
+        let t = trim_edges_f32(&profile, &pcm.samples, pcm.sample_rate, opts.edge_s);
         clips.push((pcm.samples[t.start_sample..t.end_sample].to_vec(), pcm.sample_rate));
         records.push(ChunkRecord {
             i,
@@ -197,11 +174,11 @@ pub fn render_story(
         samples.extend_from_slice(y);
         records[idx].span = (start, samples.len());
         if idx + 1 < n {
-            let gap = gap_samples(&c.punct, c.last_in_para, sample_rate);
+            let gap = gap_samples(&profile, &c.punct, c.last_in_para, sample_rate);
             samples.resize(samples.len() + gap, 0.0);
         }
     }
-    let gain = level(&mut samples);
+    let gain = level(&profile, &mut samples);
     Ok(Read {
         chunks: records,
         samples,
@@ -210,18 +187,20 @@ pub fn render_story(
     })
 }
 
-/// Level a read in place: one gain to [`TARGET_RMS_DB`] over the samples above [`LEVEL_FLOOR`], then a clip to
-/// ±[`CLIP`], rounded to float32. Returns the gain, or `None` (and leaves the read alone) when no sample is above
-/// the floor.
-pub fn level(read: &mut [f32]) -> Option<f64> {
-    let squares: Vec<f32> = read.iter().filter(|x| x.abs() > LEVEL_FLOOR).map(|x| x * x).collect();
+/// Level a read in place: one gain to the profile's [`target_rms_db`](Profile::target_rms_db) over the samples
+/// above its [`level_floor`](Profile::level_floor), then a clip to ±[`clip`](Profile::clip), rounded to float32.
+/// Returns the gain, or `None` (and leaves the read alone) when no sample is above the floor.
+pub fn level(profile: &Profile, read: &mut [f32]) -> Option<f64> {
+    let floor = profile.level_floor;
+    let squares: Vec<f32> = read.iter().filter(|x| x.abs() > floor).map(|x| x * x).collect();
     if squares.is_empty() {
         return None;
     }
     let rms = f64::from(mean_f32(&squares).sqrt());
-    let gain = pow(10.0, (TARGET_RMS_DB - 20.0 * log10(rms + 1e-9)) / 20.0);
+    let gain = pow(10.0, (profile.target_rms_db - 20.0 * log10(rms + 1e-9)) / 20.0);
+    let clip = profile.clip;
     for x in read.iter_mut() {
-        *x = (f64::from(*x) * gain).clamp(-CLIP, CLIP) as f32;
+        *x = (f64::from(*x) * gain).clamp(-clip, clip) as f32;
     }
     Some(gain)
 }

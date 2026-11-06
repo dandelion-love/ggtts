@@ -108,6 +108,8 @@ jobs:
     env:
       # bindgen: the committed bindings are for x86_64 Linux only, so Windows generates its own.
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      # Plain text, so the report can grep the build log.
+      CARGO_TERM_COLOR: never
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -119,7 +121,7 @@ jobs:
         continue-on-error: true
         run: |
           set -o pipefail
-          cargo build --locked -p ggtts-cli --features ggtts-cli/ggml,ggtts-ggml-sys/bindgen 2>&1 | tee build.log
+          cargo build --locked -p ggtts-cli -p ggtts-ggml-sys --features ggtts-cli/ggml,ggtts-ggml-sys/bindgen 2>&1 | tee build.log
       - name: ggml links and computes
         id: link
         if: steps.build.outcome == 'success'
@@ -134,7 +136,7 @@ jobs:
             echo "- link test: ${{ steps.link.outcome }}"
             if [ "${{ steps.build.outcome }}" != success ] && [ -f build.log ]; then
               echo '```'
-              grep -E '^(error|warning: unused)|error[:\[]|LNK[0-9]+|undefined|unresolved|panicked' build.log | head -n 40
+              grep -E '^(error|warning: unused)|error[:\[]|LNK[0-9]+|undefined|unresolved|panicked' build.log | head -n 40 || true
               echo '```'
             fi
           } | tee -a "$GITHUB_STEP_SUMMARY"

@@ -3,15 +3,19 @@
 //!
 //! Needs the published talker GGUF: `GGTTS_TALKER=<qwen-talker-...-q8_0.gguf> cargo test -p ggtts-qwen3-tts
 //! --features ggml --release --test token_identity -- --ignored --nocapture`. Without `GGTTS_TALKER` the test fails
-//! rather than passing quietly. `GGTTS_PLANT` (`rope-normal`, `sampler-off-by-one`) plants a defect, and the test
-//! must then fail. `GGTTS_ONLY=<name>` runs one fixture.
+//! rather than passing quietly. The talker runs with the thread count the fixtures were recorded with.
+//! `GGTTS_ONLY=<name>` runs one fixture.
+//!
+//! With the `plant` feature, the `planted::*` tests are the expected failures: each plants one defect and passes only
+//! if every fixture it runs then differs.
 #![cfg(feature = "ggml")]
 
 use std::path::{Path, PathBuf};
 
+use ggtts_core::engine::EngineError;
 use ggtts_qwen3_tts::cpu::Device;
-use ggtts_qwen3_tts::fixtures::Golden;
-use ggtts_qwen3_tts::talker::{language_id, Plant, Sampling, Talker};
+use ggtts_qwen3_tts::fixtures::{recorded_threads, Golden};
+use ggtts_qwen3_tts::talker::{language_id, Sampling, Talker};
 use sha2::{Digest, Sha256};
 
 /// `GGTTS_DEVICE`: `cpu` (the default) or `cuda`.
@@ -28,24 +32,25 @@ fn fixtures_dir() -> PathBuf {
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/cpu"))
 }
 
-#[test]
-#[ignore = "needs GGTTS_TALKER, the published talker GGUF"]
-fn codec_tokens_are_identical_to_the_reference() {
+/// What one pass over the fixtures found.
+struct Outcome {
+    same: usize,
+    differ: Vec<String>,
+}
+
+/// Generates every fixture's request with the talker `load` gives, prints one line per fixture and a summary line,
+/// and returns the fixtures that differ. Refuses a talker the fixtures were not recorded with.
+fn check(label: &str, load: impl FnOnce(&Path, i32, Device) -> Result<Talker, EngineError>) -> Outcome {
     let path = PathBuf::from(std::env::var("GGTTS_TALKER").expect("set GGTTS_TALKER to the talker GGUF"));
-    let plant = match std::env::var("GGTTS_PLANT").as_deref() {
-        Err(_) | Ok("") | Ok("none") => Plant::None,
-        Ok("rope-normal") => Plant::RopeNormal,
-        Ok("sampler-off-by-one") => Plant::SamplerOffByOne,
-        Ok(p) => panic!("unknown plant {p}"),
-    };
     let only = std::env::var("GGTTS_ONLY").ok();
     let goldens = Golden::load_all(&fixtures_dir()).unwrap();
     assert!(!goldens.is_empty());
+    let threads = recorded_threads(&goldens).unwrap();
     let mut h = Sha256::new();
     std::io::copy(&mut std::fs::File::open(&path).unwrap(), &mut h).unwrap();
     let talker_sha = format!("{:x}", h.finalize());
-    let mut talker = Talker::load_on(&path, 4, device(), plant).unwrap();
-    let (mut same, mut failed) = (0, Vec::new());
+    let mut talker = load(&path, threads, device()).unwrap();
+    let (mut same, mut differ) = (0, Vec::new());
     for gold in goldens.iter().filter(|g| only.as_deref().is_none_or(|o| o == g.name)) {
         assert_eq!(
             talker_sha, gold.talker_sha256,
@@ -87,10 +92,52 @@ fn codec_tokens_are_identical_to_the_reference() {
         if identical {
             same += 1;
         } else {
-            failed.push(gold.name.clone());
+            differ.push(gold.name.clone());
         }
     }
-    println!("token identity: {same} identical, {} differ", failed.len());
-    assert!(same + failed.len() > 0, "no fixture ran");
-    assert!(failed.is_empty(), "tokens differ from the reference on {failed:?}");
+    println!(
+        "token identity ({label}, {threads} threads): {same} identical, {} differ",
+        differ.len()
+    );
+    assert!(same + differ.len() > 0, "no fixture ran");
+    Outcome { same, differ }
+}
+
+#[test]
+#[ignore = "needs GGTTS_TALKER, the published talker GGUF"]
+fn codec_tokens_are_identical_to_the_reference() {
+    let o = check("no plant", Talker::load_on);
+    assert!(o.same > 0);
+    assert!(
+        o.differ.is_empty(),
+        "tokens differ from the reference on {:?}",
+        o.differ
+    );
+}
+
+/// The expected failures: each test passes only if its planted defect turns every fixture red.
+#[cfg(feature = "plant")]
+mod planted {
+    use super::*;
+    use ggtts_qwen3_tts::talker::Plant;
+
+    fn with(plant: Plant) -> Outcome {
+        check(&format!("planted {plant:?}"), |p, t, d| {
+            Talker::load_planted(p, t, d, plant)
+        })
+    }
+
+    #[test]
+    #[ignore = "needs GGTTS_TALKER, the published talker GGUF"]
+    fn rope_normal_is_seen() {
+        let o = with(Plant::RopeNormal);
+        assert_eq!(o.same, 0, "the planted rope left {} fixtures identical", o.same);
+    }
+
+    #[test]
+    #[ignore = "needs GGTTS_TALKER, the published talker GGUF"]
+    fn sampler_off_by_one_is_seen() {
+        let o = with(Plant::SamplerOffByOne);
+        assert_eq!(o.same, 0, "the planted sampler left {} fixtures identical", o.same);
+    }
 }

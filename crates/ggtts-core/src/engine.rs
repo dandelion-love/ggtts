@@ -17,7 +17,8 @@ pub struct EngineInfo {
     pub family: String,
     /// The compute backend, for example `ggml-cpu`, or `none`.
     pub backend: String,
-    /// The backend's parity level: `exact`, `distribution`, or `none` for a test engine.
+    /// The backend's parity level: `exact`, `distribution`, `unmeasured` for a backend whose parity has not been
+    /// measured yet, or `none` for a test engine.
     pub parity: String,
 }
 

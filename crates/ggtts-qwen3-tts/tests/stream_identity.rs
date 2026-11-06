@@ -17,6 +17,8 @@
 //! was declared and measured on CPU, and on CUDA the decoder projects the rest codebooks differently below 64 frames
 //! (`codec.rs`, `summed`), so a prefix shorter than 64 frames takes another path than the batch decode.
 //!
+//! The planted run needs the test-only `plant` feature; without it the planted row is left out.
+//!
 //! Needs the published codec GGUF: `GGTTS_CODEC=<qwen-tokenizer-12hz-q8_0.gguf> cargo test -p ggtts-qwen3-tts
 //! --features ggml --release --test stream_identity -- --ignored --nocapture`.
 #![cfg(feature = "ggml")]
@@ -26,7 +28,7 @@ use std::time::Instant;
 
 use ggtts_core::flac::to_i16;
 use ggtts_core::stream::first_sample_diff;
-use ggtts_qwen3_tts::codec::{Decoder, Plant};
+use ggtts_qwen3_tts::codec::Decoder;
 use ggtts_qwen3_tts::cpu::Device;
 use ggtts_qwen3_tts::fixtures::Golden;
 use ggtts_qwen3_tts::stream::{stream_codes, Context};
@@ -48,7 +50,7 @@ fn the_stream_matches_the_batch_decode_as_declared() {
     let d = std::env::var("GGTTS_DEVICE").unwrap_or_else(|_| "cpu".into());
     let device = Device::parse(&d).unwrap_or_else(|| panic!("GGTTS_DEVICE must be cpu or cuda, not {d}"));
     let gate = !device.is_cuda();
-    let mut dec = Decoder::load_on(&codec, 4, device, Plant::None).unwrap();
+    let mut dec = Decoder::load_on(&codec, 4, device).unwrap();
     let mut failures = Vec::new();
     for gold in &goldens {
         let n = gold.frames();
@@ -66,8 +68,9 @@ fn the_stream_matches_the_batch_decode_as_declared() {
             (4, 0, Context::Prefix),
             (12, 0, Context::Prefix),
             (n, 0, Context::Prefix),
-            (12, 0, Context::NewFramesOnly),
         ]);
+        #[cfg(feature = "plant")]
+        runs.push((12, 0, Context::NewFramesOnly));
         runs.dedup();
         for (every, hold, context) in runs {
             let t = Instant::now();
@@ -98,6 +101,7 @@ fn the_stream_matches_the_batch_decode_as_declared() {
                 continue;
             }
             let ok = match (context, hold) {
+                #[cfg(feature = "plant")]
                 (Context::NewFramesOnly, _) => diff.is_some(),
                 (_, 32) => diff.is_none(),
                 _ if every >= n => diff.is_none(),

@@ -36,7 +36,7 @@ status=0
 # Build first, so the GPU wait covers only GPU work.
 echo "== build ($device)"
 (cd "$root" && $nice cargo build -j 4 --release --locked -p ggtts-cli --features "ggtts-cli/$features" \
-  && $nice cargo test -j 4 --release --locked -p ggtts-qwen3-tts --features "$features" --test stream_identity --no-run) \
+  && $nice cargo test -j 4 --release --locked -p ggtts-qwen3-tts --features "$features plant" --test stream_identity --no-run) \
   > "$WORK/build.log" 2>&1 || { echo "build failed: $WORK/build.log" >&2; exit 2; }
 bin=$CARGO_TARGET_DIR/release/ggtts-render
 
@@ -85,7 +85,7 @@ grep -h "level gain" "$WORK/stream.log" | sed 's/^/  /'
 
 echo "== frame-level decoder on $device (tests/stream_identity.rs)"
 (cd "$root" && GGTTS_DEVICE=$device GGTTS_CODEC=$CODEC $nice cargo test -j 4 --release --locked -p ggtts-qwen3-tts \
-  --features "$features" --test stream_identity -- --ignored --nocapture) > "$WORK/frame.log" 2>&1 || status=1
+  --features "$features plant" --test stream_identity -- --ignored --nocapture) > "$WORK/frame.log" 2>&1 || status=1
 grep -E "^(\S+) +n=|test result" "$WORK/frame.log" || { echo "no result: $WORK/frame.log"; status=1; }
 
 echo "stream probe ($device): exit $status (logs in $WORK)"

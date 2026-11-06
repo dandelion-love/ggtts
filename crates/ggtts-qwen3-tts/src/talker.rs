@@ -61,19 +61,58 @@ impl Default for Sampling {
     }
 }
 
-/// A deliberate defect, for showing that the token identity check can fail. Never set outside a test.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Plant {
-    #[default]
-    None,
-    /// The talker's rope in normal (adjacent-pair) mode instead of M-RoPE.
-    RopeNormal,
-    /// The sampler's random stream starts one draw late.
-    SamplerOffByOne,
-    /// The frame hook of [`Talker::generate_streamed`] draws once from the sampler's stream after each frame, so
-    /// every later token moves. It fires only when a hook is passed: it exists to show that the hook's identity
-    /// check can see a hook that is not quiet.
-    FrameHookDraw,
+impl Sampling {
+    /// Refuses settings this engine will not run. A temperature at or below zero means greedy decoding (`argmax`)
+    /// for the talker and the code predictor alike, and on this model greedy decoding does not terminate: it runs
+    /// to the frame cap. Neither is a temperature that is not a finite number.
+    pub fn check(&self) -> Result<(), EngineError> {
+        if !(self.temperature.is_finite() && self.temperature > 0.0) {
+            return Err(err(format!(
+                "sampling temperature {} refused: it must be above 0, since greedy decoding does not terminate on \
+                 this model",
+                self.temperature
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "plant")]
+pub use planted::Plant;
+#[cfg(not(feature = "plant"))]
+use planted::Plant;
+
+mod planted {
+    /// A deliberate defect, for showing that the token identity check can fail. Public only with the `plant`
+    /// feature, which exists for the identity tests: a build without it cannot plant one.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    #[cfg_attr(not(feature = "plant"), allow(dead_code))]
+    pub enum Plant {
+        #[default]
+        None,
+        /// The talker's rope in normal (adjacent-pair) mode instead of M-RoPE.
+        RopeNormal,
+        /// The sampler's random stream starts one draw late.
+        SamplerOffByOne,
+        /// The frame hook of [`Talker::generate_streamed`](super::Talker::generate_streamed) draws once from the
+        /// sampler's stream after each frame, so every later token moves. It fires only when a hook is passed: it
+        /// exists to show that the hook's identity check can see a hook that is not quiet.
+        FrameHookDraw,
+    }
+
+    #[cfg(feature = "plant")]
+    impl Plant {
+        /// `none`, `rope-normal`, `sampler-off-by-one` or `frame-hook-draw`.
+        pub fn parse(s: &str) -> Option<Self> {
+            Some(match s {
+                "" | "none" => Self::None,
+                "rope-normal" => Self::RopeNormal,
+                "sampler-off-by-one" => Self::SamplerOffByOne,
+                "frame-hook-draw" => Self::FrameHookDraw,
+                _ => return None,
+            })
+        }
+    }
 }
 
 /// The reference CLI's language table (`src/main.cpp:679-689`): `auto` is -1, the rest are codec token ids.
@@ -273,15 +312,21 @@ fn f32_any(gguf: &Gguf, keys: &[&str], default: f32) -> f32 {
 
 impl Talker {
     pub fn load(path: &Path, threads: i32) -> Result<Self, EngineError> {
-        Self::load_planted(path, threads, Plant::None)
-    }
-
-    pub fn load_planted(path: &Path, threads: i32, plant: Plant) -> Result<Self, EngineError> {
-        Self::load_on(path, threads, Device::Cpu, plant)
+        Self::load_on(path, threads, Device::Cpu)
     }
 
     /// Loads onto `device`: the weights in its buffer, the caches and graphs on its backend.
-    pub fn load_on(path: &Path, threads: i32, device: Device, plant: Plant) -> Result<Self, EngineError> {
+    pub fn load_on(path: &Path, threads: i32, device: Device) -> Result<Self, EngineError> {
+        Self::load_with(path, threads, device, Plant::None)
+    }
+
+    /// [`load_on`](Self::load_on) with a planted defect, for the identity tests' expected failures.
+    #[cfg(feature = "plant")]
+    pub fn load_planted(path: &Path, threads: i32, device: Device, plant: Plant) -> Result<Self, EngineError> {
+        Self::load_with(path, threads, device, plant)
+    }
+
+    fn load_with(path: &Path, threads: i32, device: Device, plant: Plant) -> Result<Self, EngineError> {
         let gguf = Gguf::open(path)?;
         let hidden_size = u32_any(
             &gguf,
@@ -678,6 +723,7 @@ impl Talker {
         mut trace: Option<&mut Vec<FrameStop>>,
         mut on_frame: Option<&mut FrameHook<'_>>,
     ) -> Result<Generation, EngineError> {
+        sampling.check()?;
         let c = self.config.clone();
         let h = c.hidden_size as usize;
         let spk = self

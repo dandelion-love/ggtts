@@ -39,17 +39,40 @@ pub struct Config {
     pub rope_theta: f32,
 }
 
-/// A deliberate defect, for showing that the identity check can fail. Never set outside a test.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Plant {
-    #[default]
-    None,
-    /// The pre-transformer's rope in normal (adjacent-pair) mode instead of NEOX.
-    RopeNormal,
-    /// The snake activation's `1/(exp(beta) + 1e-9)` without the epsilon.
-    SnakeNoEpsilon,
-    /// The sliding window one frame narrower.
-    WindowOffByOne,
+#[cfg(feature = "plant")]
+pub use planted::Plant;
+#[cfg(not(feature = "plant"))]
+use planted::Plant;
+
+mod planted {
+    /// A deliberate defect, for showing that the identity check can fail. Public only with the `plant` feature,
+    /// which exists for the identity tests: a build without it cannot plant one.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    #[cfg_attr(not(feature = "plant"), allow(dead_code))]
+    pub enum Plant {
+        #[default]
+        None,
+        /// The pre-transformer's rope in normal (adjacent-pair) mode instead of NEOX.
+        RopeNormal,
+        /// The snake activation's `1/(exp(beta) + 1e-9)` without the epsilon.
+        SnakeNoEpsilon,
+        /// The sliding window one frame narrower.
+        WindowOffByOne,
+    }
+
+    #[cfg(feature = "plant")]
+    impl Plant {
+        /// `none`, `rope-normal`, `snake-no-epsilon` or `window-off-by-one`.
+        pub fn parse(s: &str) -> Option<Self> {
+            Some(match s {
+                "" | "none" => Self::None,
+                "rope-normal" => Self::RopeNormal,
+                "snake-no-epsilon" => Self::SnakeNoEpsilon,
+                "window-off-by-one" => Self::WindowOffByOne,
+                _ => return None,
+            })
+        }
+    }
 }
 
 #[derive(Default)]
@@ -153,15 +176,21 @@ fn err(msg: impl Into<String>) -> EngineError {
 impl Decoder {
     /// Loads the codec GGUF (the `tok_dec.*` tensors) with `threads` CPU threads.
     pub fn load(path: &Path, threads: i32) -> Result<Self, EngineError> {
-        Self::load_planted(path, threads, Plant::None)
-    }
-
-    pub fn load_planted(path: &Path, threads: i32, plant: Plant) -> Result<Self, EngineError> {
-        Self::load_on(path, threads, Device::Cpu, plant)
+        Self::load_on(path, threads, Device::Cpu)
     }
 
     /// Loads onto `device`: the weights in its buffer, the graphs on its scheduler.
-    pub fn load_on(path: &Path, threads: i32, device: Device, plant: Plant) -> Result<Self, EngineError> {
+    pub fn load_on(path: &Path, threads: i32, device: Device) -> Result<Self, EngineError> {
+        Self::load_with(path, threads, device, Plant::None)
+    }
+
+    /// [`load_on`](Self::load_on) with a planted defect, for the identity tests' expected failures.
+    #[cfg(feature = "plant")]
+    pub fn load_planted(path: &Path, threads: i32, device: Device, plant: Plant) -> Result<Self, EngineError> {
+        Self::load_with(path, threads, device, plant)
+    }
+
+    fn load_with(path: &Path, threads: i32, device: Device, plant: Plant) -> Result<Self, EngineError> {
         let gguf = Gguf::open(path)?;
         let config = Config {
             sample_rate: gguf.u32_or(

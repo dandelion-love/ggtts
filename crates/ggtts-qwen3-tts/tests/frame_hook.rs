@@ -7,6 +7,8 @@
 //! * `Qwen3Tts::render_streamed` at `every = 12, hold = 32`: the concatenated samples are bit-identical to the batch
 //!   decode of the same codes, and the first samples arrive before the talker has finished.
 //!
+//! The hook's own check needs the test-only `plant` feature.
+//!
 //! Needs both published GGUFs: `GGTTS_TALKER=<talker.gguf> GGTTS_CODEC=<codec.gguf> cargo test -p ggtts-qwen3-tts
 //! --features ggml --release --test frame_hook -- --ignored --nocapture`.
 #![cfg(feature = "ggml")]
@@ -18,6 +20,7 @@ use ggtts_core::stream::first_sample_diff;
 use ggtts_qwen3_tts::codec::Decoder;
 use ggtts_qwen3_tts::engine::{Qwen3Tts, Voice};
 use ggtts_qwen3_tts::fixtures::Golden;
+#[cfg(feature = "plant")]
 use ggtts_qwen3_tts::talker::{language_id, Plant, Sampling, Talker};
 
 fn env_path(name: &str) -> PathBuf {
@@ -31,6 +34,7 @@ fn goldens() -> Vec<Golden> {
 }
 
 /// Generate a fixture with a hook (or none); the returned codes and the frames the hook saw.
+#[cfg(feature = "plant")]
 fn run(talker: &mut Talker, gold: &Golden, hook: bool) -> (Vec<i32>, Vec<i32>) {
     let lang = language_id(&gold.language).unwrap();
     let mut seen = Vec::new();
@@ -51,11 +55,12 @@ fn run(talker: &mut Talker, gold: &Golden, hook: bool) -> (Vec<i32>, Vec<i32>) {
 }
 
 #[test]
+#[cfg(feature = "plant")]
 #[ignore = "needs GGTTS_TALKER, the published talker GGUF"]
 fn a_quiet_hook_changes_no_token_and_a_drawing_hook_is_red() {
     let path = env_path("GGTTS_TALKER");
     let mut talker = Talker::load(&path, 4).unwrap();
-    let mut planted = Talker::load_on(&path, 4, Default::default(), Plant::FrameHookDraw).unwrap();
+    let mut planted = Talker::load_planted(&path, 4, Default::default(), Plant::FrameHookDraw).unwrap();
     let mut failures = Vec::new();
     for gold in &goldens() {
         let (codes, seen) = run(&mut talker, gold, true);

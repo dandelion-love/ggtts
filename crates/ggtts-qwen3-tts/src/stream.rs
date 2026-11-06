@@ -37,7 +37,9 @@ pub enum Context {
     #[default]
     Prefix,
     /// A deliberate defect, for showing that the identity check can fail: only the frames not yet emitted, with no
-    /// left context, so every seam loses the overlap the convs and the attention need. Never set outside a test.
+    /// left context, so every seam loses the overlap the convs and the attention need. Only with the test-only
+    /// `plant` feature.
+    #[cfg(feature = "plant")]
     NewFramesOnly,
 }
 
@@ -128,6 +130,7 @@ impl<'d> IncrementalDecoder<'d> {
         let n = self.frames();
         let first = match self.context {
             Context::Prefix => 0,
+            #[cfg(feature = "plant")]
             Context::NewFramesOnly => self.emitted,
         };
         let pcm = self

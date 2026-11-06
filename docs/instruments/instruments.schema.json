@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/dandelion-love/ggtts/blob/main/docs/instruments/instruments.schema.json",
   "title": "ggtts-instruments/1",
-  "description": "Which instruments a ggtts run starts. Every key has a flag, and a flag overrides the file: --instruments FILE, --instrument NAME[,timeout_s=S][,command=PATH][,version=V][,needs_events=B][,arg.K=V], --require NAME, --on-instrument-error, --instrument-timeout.",
+  "description": "Which instruments a ggtts run starts. Every key has a flag, and a flag overrides the file: --instruments FILE, --instrument NAME[,timeout_s=S][,command=PATH][,version=V][,needs_events=B][,interpreter=PROG][,arg.K=V], --require NAME, --on-instrument-error, --instrument-timeout.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -55,6 +55,10 @@
           "type": "string"
         },
         "version": {
+          "type": "string"
+        },
+        "interpreter": {
+          "description": "Run the command (a script) with this program, e.g. python3. Windows cannot start a .py file directly.",
           "type": "string"
         },
         "needs_events": {

@@ -1,0 +1,39 @@
+# ggtts-render against the reference CLI, wall clock and stage times
+commit: 47c3a63a63756ca07737f235d99af8eb27f6db6f
+date: 2026-11-06T11:04:15Z
+cpu: 12th Gen Intel(R) Core(TM) i9-12900K; load before: 2.83 6.02 4.57
+reference: qwen3-tts-cli at 16bb5af
+case: bus; threads: 4; seed: 20260905; rounds: 11; nice: nice -n 19
+talker sha256: 33502b2035f97d7f458248d91e965a6800026549d382c5e8e300176027c70b67
+codec sha256: 7771c653aea5d26cdbf461cf00279b78e6c97af5f313da3a8cb3d2b61b837824
+
+round	order	tool	wall_ms	generate_ms	decode_ms	frames	samples
+1	ref-first	reference	21239	11893	6842	144	276480
+1	ref-first	ggtts-render	20444	11093	6652	144	276480
+2	ggtts-first	ggtts-render	20095	11242	6678	144	276480
+2	ggtts-first	reference	20494	10887	6861	144	276480
+3	ref-first	reference	19724	10868	6605	144	276480
+3	ref-first	ggtts-render	19646	11094	6812	144	276480
+4	ggtts-first	ggtts-render	19582	11197	6611	144	276480
+4	ggtts-first	reference	20788	11130	6679	144	276480
+5	ref-first	reference	19839	10873	6700	144	276480
+5	ref-first	ggtts-render	19771	11019	6557	144	276480
+6	ggtts-first	ggtts-render	20232	11253	6720	144	276480
+6	ggtts-first	reference	19604	10800	6587	144	276480
+7	ref-first	reference	19300	11054	6613	144	276480
+7	ref-first	ggtts-render	20248	11338	6761	144	276480
+8	ggtts-first	ggtts-render	19917	10941	6727	144	276480
+8	ggtts-first	reference	19698	11263	6874	144	276480
+9	ref-first	reference	20438	11447	6805	144	276480
+9	ref-first	ggtts-render	20266	11398	6697	144	276480
+10	ggtts-first	ggtts-render	20540	11564	6609	144	276480
+10	ggtts-first	reference	20963	11183	6615	144	276480
+11	ref-first	reference	20029	11029	6680	144	276480
+11	ref-first	ggtts-render	19466	11323	6610	144	276480
+
+load after: 3.96 4.30 4.24
+every run: 144 frames, 276480 samples, on both tools
+medians over 11 rounds:
+  wall clock, model load included: ggtts-render 20095 ms [19466-20540] against reference 20029 ms [19300-21239]: +0.3%
+  generate: ggtts-render 11242 ms [10941-11564] against reference 11054 ms [10800-11893]: +1.7%
+  decode: ggtts-render 6678 ms [6557-6812] against reference 6680 ms [6587-6874]: -0.0%

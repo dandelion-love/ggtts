@@ -1,10 +1,27 @@
 //! The Qwen3-TTS engine.
 //!
-//! The model, its sampler and its ggml graph arrive with the ggml engine. What exists now is the engine's protocol
-//! profile, [`PROFILE`]: the numbers the story path renders Qwen3-TTS output with. They are the reference
-//! implementation's `story-v1` defaults, and the pipeline cases in `fixtures/pipeline/` were recorded with them.
+//! Always present: the engine's protocol profile, [`PROFILE`], the numbers the story path renders Qwen3-TTS output
+//! with. They are the reference implementation's `story-v1` defaults, and the pipeline cases in `fixtures/pipeline/`
+//! were recorded with them.
+//!
+//! With the `ggml` feature: the model over ggml, ported from qwen3-tts.cpp at `16bb5af` op for op, so that on the
+//! CPU backend its outputs are bit-identical to the reference's. Each module names the reference file and lines it
+//! follows. [`codec::Decoder`] turns codec tokens into samples.
 
 use ggtts_core::profile::Profile;
+
+#[cfg(feature = "ggml")]
+pub mod codec;
+#[cfg(feature = "ggml")]
+pub mod cpu;
+#[cfg(feature = "ggml")]
+pub mod engine;
+pub mod fixtures;
+#[cfg(feature = "ggml")]
+pub mod gguf;
+#[cfg(feature = "ggml")]
+pub mod talker;
+pub mod tokenizer;
 
 /// `story-v1/qwen3-tts`: the story path's numbers for Qwen3-TTS (render spec sections 1 to 7).
 ///

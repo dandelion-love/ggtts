@@ -190,34 +190,25 @@ jobs:
     container:
       image: nvidia/cuda:12.6.3-devel-ubuntu22.04@sha256:d49bb8a4ff97fb5fe477947a3f02aa8c0a53eae77e11f00ec28618a0bcaa2ad1
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Read the ggml pin from the source
-        id: pin
-        shell: bash
-        run: |
-          set -euo pipefail
-          sha=$(sed -n 's/^ *pub const COMMIT: &str = "\([0-9a-f]\{40\}\)";$/\1/p' crates/ggtts-core/src/lib.rs)
-          test ${#sha} -eq 40
-          echo "commit=$sha" >> "$GITHUB_OUTPUT"
-          echo "ggml pin: $sha"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ggml-org/ggml
-          ref: ${{ steps.pin.outputs.commit }}
-          path: ggml
-          persist-credentials: false
       - name: Install the build tools
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl cmake g++ make git python3
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch the pinned ggml as the release does
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule update --init crates/ggtts-ggml-sys/ggml
+          pin=$(sed -n 's/^pub const GGML_COMMIT: &str = "\([0-9a-f]\{40\}\)";$/\1/p' crates/ggtts-ggml-sys/src/lib.rs)
+          test "$(git -C crates/ggtts-ggml-sys/ggml rev-parse HEAD)" = "$pin"
       - name: Build and smoke the release archive (no GPU on hosted runners)
         env:
           TAG: ci
-          GGML_SRC: ${{ github.workspace }}/ggml
         run: bash scripts/package_cuda_release.sh
 
   specialized-selection:

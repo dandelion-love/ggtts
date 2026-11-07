@@ -11,8 +11,8 @@
 //! `--voice` is a reference voice for an engine that clones one; an engine that does not ignores it.
 //! `--engine auto` (the default) picks the engine from the model's `general.architecture`. `--text` renders one
 //! request at one seed (default 20260905). `--story` reads a story file (title line, then one paragraph per line)
-//! and renders it on the core's story path. `--trace` writes the engine's per-step stop probabilities as JSON
-//! lines; it is read-only, so the FLAC is the same with or without it. Engines need the `ggml` feature (and
+//! and renders it on the core's story path. For stories `--trace` writes a complete ggtts-trace/1 event stream;
+//! tracing is read-only, so the FLAC is the same with or without it. Engines need the `ggml` feature (and
 //! `--device cuda` the `cuda` feature); without it only `--version` and the fake engine work.
 //!
 //! `--stream` writes the audio as it is produced, to a file or `-` for stdout, as a WAV of unknown length (the
@@ -52,7 +52,7 @@ use ggtts_core::flac::write_flac;
 use ggtts_core::pipeline::{plan_story, render_story_streamed, RenderOptions};
 use ggtts_core::stream::{Container, StreamLevel, StreamWriter};
 use ggtts_core::text::read_text;
-use ggtts_core::trace::NullEvents;
+use ggtts_core::trace::{emit_header, Events, Header, JsonlEvents, NullEvents};
 
 #[path = "../gguf_arch.rs"]
 mod gguf_arch;
@@ -164,7 +164,8 @@ fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, St
             let voice = ggtts_qwen3_tts::engine::Voice {
                 device: ggtts_qwen3_tts::cpu::Device::parse(device)
                     .ok_or(format!("--device must be cpu or cuda, not {device}"))?,
-                trace: a.trace.clone(),
+                // A story's --trace is the pipeline event stream, not the engine's legacy step-only file.
+                trace: if a.story.is_some() { None } else { a.trace.clone() },
                 ..Default::default()
             };
             ggtts_qwen3_tts::engine::Qwen3Tts::load(model, codec, threads, voice)
@@ -291,12 +292,27 @@ fn render(a: Args) -> Result<u8, String> {
             let hold_s = a.stream_level_seconds.unwrap_or(ggtts_core::stream::DEFAULT_HOLD_S);
             let mut leveller = StreamLevel::new(&profile, hold_s);
             let raw = a.stream_raw;
+            let mut trace = a
+                .trace
+                .as_ref()
+                .map(|path| {
+                    std::fs::File::create(path)
+                        .map(|file| JsonlEvents::new(file, 1))
+                        .map_err(|e| format!("--trace {}: {e}", path.display()))
+                })
+                .transpose()?;
+            let mut null = NullEvents;
+            let events: &mut dyn Events = match trace.as_mut() {
+                Some(writer) => writer,
+                None => &mut null,
+            };
+            emit_header(events, &Header::for_engine(engine.as_ref(), 1));
             let read = render_story_streamed(
                 engine.as_mut(),
                 &title,
                 &chunks,
                 &RenderOptions::for_profile(&profile),
-                &mut NullEvents,
+                events,
                 &mut |p| {
                     if let Some(w) = stream.as_mut() {
                         let ready = if raw {
@@ -315,6 +331,9 @@ fn render(a: Args) -> Result<u8, String> {
                 },
             )
             .map_err(|e| e.to_string())?;
+            if let Some(writer) = trace {
+                writer.finish().map_err(|e| format!("--trace: {e}"))?;
+            }
             if let Some(w) = stream.as_mut() {
                 // A read shorter than the hold leaves at the end, levelled over all of it.
                 for piece in leveller.finish() {

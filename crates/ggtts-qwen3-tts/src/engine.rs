@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm};
 use ggtts_core::hooks::{Hooks, Step, StopTrace, TensorHook, Wants};
 use ggtts_core::profile::Profile;
-use ggtts_core::trace::{Events, NullEvents};
+use ggtts_core::trace::{Event, Events, NullEvents};
 
 use crate::codec::Decoder;
 use crate::cpu::Device;
@@ -221,16 +221,37 @@ impl Engine for Qwen3Tts {
         self.generate_hooked(req, &mut NullEvents, &mut Hooks::new())
     }
 
+    fn generate_traced(&mut self, req: &ChunkRequest<'_>, events: &mut dyn Events) -> Result<Generated, EngineError> {
+        self.generate_hooked(req, events, &mut Hooks::new())
+    }
+
     fn generate_hooked(
         &mut self,
         req: &ChunkRequest<'_>,
-        _events: &mut dyn Events,
+        events: &mut dyn Events,
         hooks: &mut Hooks,
     ) -> Result<Generated, EngineError> {
-        let wants = wants_of(hooks, self.trace.is_some());
+        let tracing = events.level() > 0;
+        let wants = wants_of(hooks, self.trace.is_some() || tracing);
         let trace = &mut self.trace;
-        let mut on_step =
-            |frame, token, p_stop, logits: Option<&[f32]>| deliver(req, trace, hooks, frame, token, p_stop, logits);
+        let mut on_step = |frame, token, p_stop, logits: Option<&[f32]>| {
+            if tracing {
+                if let Ok(token) = u16::try_from(token) {
+                    events.emit(Event::Step {
+                        chunk: req.chunk,
+                        frame: frame as u32,
+                        token,
+                        p_stop,
+                        entropy: None,
+                        top1_p: None,
+                        rank: None,
+                        cb: None,
+                        cb_p: None,
+                    });
+                }
+            }
+            deliver(req, trace, hooks, frame, token, p_stop, logits);
+        };
         let g = self.talker.generate_streamed(
             req.text,
             &self.voice.speaker,

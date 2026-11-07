@@ -15,6 +15,94 @@ use serde_json::Value;
 const RENDER: &str = env!("CARGO_BIN_EXE_ggtts-render");
 const MEASURE: &str = env!("CARGO_BIN_EXE_ggtts-measure");
 
+#[test]
+fn report_input_alias_never_modifies_the_source() {
+    let Some(py) = python() else { return };
+    let d = scratch("input-alias");
+    let ins = Instruments::new(&d, py);
+    let source = flac(&d);
+    let report = d.join("report");
+    std::fs::create_dir_all(report.join("input")).unwrap();
+    let input = report.join("input").join("kept.flac");
+    std::fs::copy(&source, &input).unwrap();
+    let before = std::fs::read(&input).unwrap();
+    let output = measure(
+        &["--audio", input.to_str().unwrap(), "--report", report.to_str().unwrap()],
+        &["--instrument".into(), ins.flag("bytes")],
+    );
+    assert!(std::fs::read(&input).unwrap() == before, "input must not be modified");
+    assert_eq!(output.status.code(), Some(2), "existing report must be refused");
+}
+
+#[test]
+fn existing_report_with_hardlink_is_refused_without_modifying_input() {
+    let Some(py) = python() else { return };
+    let d = scratch("hardlink-alias");
+    let ins = Instruments::new(&d, py);
+    let input = flac(&d);
+    let before = std::fs::read(&input).unwrap();
+    let report = d.join("report");
+    std::fs::create_dir_all(report.join("input")).unwrap();
+    std::fs::hard_link(&input, report.join("input").join("kept.flac")).unwrap();
+    let output = measure(
+        &["--audio", input.to_str().unwrap(), "--report", report.to_str().unwrap()],
+        &["--instrument".into(), ins.flag("bytes")],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(std::fs::read(&input).unwrap() == before);
+}
+
+#[cfg(unix)]
+#[test]
+fn existing_report_with_symlink_is_refused_without_modifying_input() {
+    let Some(py) = python() else { return };
+    let d = scratch("symlink-alias");
+    let ins = Instruments::new(&d, py);
+    let input = flac(&d);
+    let before = std::fs::read(&input).unwrap();
+    let report = d.join("report");
+    std::fs::create_dir_all(report.join("input")).unwrap();
+    std::os::unix::fs::symlink(&input, report.join("input").join("kept.flac")).unwrap();
+    let output = measure(
+        &["--audio", input.to_str().unwrap(), "--report", report.to_str().unwrap()],
+        &["--instrument".into(), ins.flag("bytes")],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(std::fs::read(&input).unwrap() == before);
+}
+
+#[test]
+fn audio_and_events_with_same_filename_get_distinct_copies() {
+    let Some(py) = python() else { return };
+    let d = scratch("same-name");
+    let ins = Instruments::new(&d, py);
+    let audio = flac(&d);
+    let events_dir = d.join("events");
+    std::fs::create_dir_all(&events_dir).unwrap();
+    let events = events_dir.join("kept.flac");
+    std::fs::write(&events, b"test events").unwrap();
+    let report = d.join("report");
+    let output = measure(
+        &[
+            "--audio",
+            audio.to_str().unwrap(),
+            "--events",
+            events.to_str().unwrap(),
+            "--report",
+            report.to_str().unwrap(),
+        ],
+        &["--instrument".into(), ins.flag("bytes")],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(std::fs::read(report.join("input/audio/kept.flac")).unwrap() == std::fs::read(&audio).unwrap());
+    assert!(std::fs::read(report.join("input/events/kept.flac")).unwrap() == b"test events");
+}
+
 fn python() -> Option<String> {
     for exe in ["python3", "python"] {
         let ok = Command::new(exe)
@@ -202,7 +290,7 @@ fn the_given_file_is_never_written() {
         "the original must be byte-identical"
     );
     assert_eq!(
-        std::fs::read(rep.join("input").join("kept.flac")).unwrap(),
+        std::fs::read(rep.join("input").join("audio").join("kept.flac")).unwrap(),
         before,
         "the copy is restored too"
     );

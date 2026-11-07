@@ -19,6 +19,9 @@ class SelectionTest(unittest.TestCase):
             self.assertLess(install, checkout, file)
             self.assertIn(" git ", block[install:checkout], file)
             self.assertLess(checkout, submodule, file)
+            self.assertIn('safe.directory "$GITHUB_WORKSPACE"', block[checkout:submodule], file)
+            self.assertIn('safe.directory "$GITHUB_WORKSPACE/crates/ggtts-ggml-sys/ggml"',
+                          block[checkout:submodule], file)
 
     def test_event_and_path_rules(self):
         select = lambda paths: decide("pull_request", "rc", "feature", True, paths)

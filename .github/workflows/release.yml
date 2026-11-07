@@ -124,6 +124,8 @@ jobs:
           persist-credentials: false
       - name: Fetch the pinned ggml
         run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/crates/ggtts-ggml-sys/ggml"
           git submodule update --init crates/ggtts-ggml-sys/ggml
           pin=$(sed -n 's/^pub const GGML_COMMIT: &str = "\([0-9a-f]\{40\}\)";$/\1/p' crates/ggtts-ggml-sys/src/lib.rs)
           test "$(git -C crates/ggtts-ggml-sys/ggml rev-parse HEAD)" = "$pin"

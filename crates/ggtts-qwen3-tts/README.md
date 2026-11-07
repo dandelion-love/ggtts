@@ -1,8 +1,5 @@
 # ggtts-qwen3-tts
 
-For complete Qwen commands to render FLAC and listen to WAV or PCM streams, see the
-[rendering and streaming examples](../../README.md#render-and-listen-qwen-and-kitten).
-
 The Qwen3-TTS engine. Without features: the `story-v1/qwen3-tts` profile and the text tokenizer. With the `ggml`
 feature: the model on ggml's CPU backend, ported op for op from
 [qwen3-tts.cpp](https://github.com/Danmoreng/qwen3-tts.cpp) at `16bb5afcd06311031c72a8488f8d59660dc2fb46`, so that

@@ -4,6 +4,7 @@ set -euo pipefail
 : "${TAG:?set TAG}" "${GITHUB_SHA:?set GITHUB_SHA}"
 export GGML_CUDA_ARCH='86;89' GGML_PORTABLE=1
 export CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}
+export GGTTS_RELEASE_VERSION="$TAG"
 export CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL:-4}
 export PATH="$CUDA_HOME/bin:$PATH"
 cargo build --release --locked -p ggtts-cli --features ggtts-cli/cuda
@@ -46,4 +47,4 @@ EOF
 grep -q "$commit" "dist/$name/VERSION.txt"
 (cd dist && bash ../scripts/package_and_smoke.sh archive "$name" tar.gz)
 rm -rf "dist/$name"
-bash scripts/package_and_smoke.sh smoke "dist/$name.tar.gz"
+bash scripts/package_and_smoke.sh smoke "dist/$name.tar.gz" "$TAG"

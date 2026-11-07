@@ -52,6 +52,7 @@ jobs:
       - name: Build ggtts-render with both engines (Qwen3-TTS, Kitten-TTS 2) on ggml
         env:
           LIBCLANG_PATH: ${{ runner.os == 'Windows' && 'C:\Program Files\LLVM\bin' || '' }}
+          GGTTS_RELEASE_VERSION: ${{ github.ref_name }}
         run: cargo build --release --locked -p ggtts-cli --features "${{ matrix.features }}"
       - name: Package, named with the ggml pin
         id: pkg
@@ -94,11 +95,13 @@ jobs:
           rm -rf "$name"
           ls -l
       - name: Smoke the archive (a shipped Python instrument runs from it; a planted missing instruments/ is reported)
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           for a in dist/*.tar.gz dist/*.zip; do
             [ -e "$a" ] || continue
-            scripts/package_and_smoke.sh smoke "$a"
+            scripts/package_and_smoke.sh smoke "$a" "$TAG"
           done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

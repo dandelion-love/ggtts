@@ -1,5 +1,8 @@
 # ggtts-kitten: the Kitten-TTS 2 engine
 
+For complete Kitten commands to render FLAC and listen to WAV or PCM streams, see the
+[rendering and streaming examples](../../README.md#render-and-listen-qwen-and-kitten).
+
 [Kitten-TTS 2](https://huggingface.co/KittenML/kitten-tts-2) on ggml. It is a 1.7B Qwen3 speech language model
 whose 196 transformer linears are ternary (BitNet-style: one of `{-s, 0, +s}`, one scale per 128 weights), plus
 Chatterbox-Turbo's S3Gen decoder. It clones a voice from a short reference clip and its transcript. The language

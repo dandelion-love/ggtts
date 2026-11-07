@@ -108,7 +108,8 @@ driver and the CUDA 12.6 runtime and cuBLAS libraries installed on the host and 
 these libraries are not bundled. Never add CUDA's `stubs` directory to the runtime library path. NVIDIA documents
 the [driver requirements](https://docs.nvidia.com/cuda/archive/12.6.3/cuda-toolkit-release-notes/index.html) and
 [GPU compute capabilities](https://developer.nvidia.com/cuda/gpus). Run with `--device cuda`. Windows releases are
-CPU-only. The hosted release smoke test exercises the packaged fake engine without a GPU; actual GPU inference
+CPU-only. The CUDA release does not include NCCL for multi-GPU communication. The hosted release smoke test exercises
+the packaged fake engine without a GPU; actual GPU inference
 requires a separate test on a GPU-equipped host.
 
 ## The pipeline cases

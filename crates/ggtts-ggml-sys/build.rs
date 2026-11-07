@@ -75,6 +75,9 @@ mod with_ggml {
         let mut cfg = cmake::Config::new(src);
         if env::var_os("GGML_PORTABLE").is_some() {
             cfg.define("GGML_NATIVE", "OFF");
+            // The release does not ship or link NCCL. Do not let a build host's
+            // installed NCCL silently add unresolved multi-GPU symbols.
+            cfg.define("GGML_CUDA_NCCL", "OFF");
         }
         if target.contains("android") {
             cfg.define("GGML_OPENMP", "OFF");

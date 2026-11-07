@@ -70,7 +70,12 @@ mod with_ggml {
     fn build_ggml(src: &Path) {
         let target = env::var("TARGET").unwrap();
         println!("cargo:rerun-if-env-changed=GGML_CPU_ARM_ARCH");
+        println!("cargo:rerun-if-env-changed=GGML_PORTABLE");
+        println!("cargo:rerun-if-env-changed=GGML_CUDA_ARCH");
         let mut cfg = cmake::Config::new(src);
+        if env::var_os("GGML_PORTABLE").is_some() {
+            cfg.define("GGML_NATIVE", "OFF");
+        }
         if target.contains("android") {
             cfg.define("GGML_OPENMP", "OFF");
         }

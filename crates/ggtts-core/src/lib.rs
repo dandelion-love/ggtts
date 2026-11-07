@@ -26,8 +26,11 @@ pub mod stream;
 pub mod text;
 pub mod trace;
 
-/// The ggtts version, from the workspace manifest.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The release tag embedded at build time, or the workspace version for ordinary local builds.
+pub const VERSION: &str = match option_env!("GGTTS_RELEASE_VERSION") {
+    Some(version) if !version.is_empty() => version,
+    _ => env!("CARGO_PKG_VERSION"),
+};
 
 /// The ggml source this build is pinned to.
 ///

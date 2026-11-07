@@ -98,9 +98,19 @@ cargo run -p ggtts-cli --bin ggtts-render -- --version
 ```
 
 `rust-toolchain.toml` pins the Rust toolchain. CI runs `cargo fmt`, `clippy -D warnings`, the tests on Linux and
-Windows, a planted change (the story chunk ceiling set to 44 must turn the pipeline cases red), and a compile-only
-CUDA build of ggml at the pin for sm_86 and sm_89. A tag `v*` builds release archives named with the ggml pin, each
+Windows, and a planted change (the story chunk ceiling set to 44 must turn the pipeline cases red). Selected changes
+also build and smoke the CUDA archive without a GPU. A tag `v*` builds release archives named with the ggml pin, each
 with a `BUILDINFO.json` and a build provenance attestation (`gh attestation verify <file> -R dandelion-love/ggtts`).
+
+Linux releases also include a separate `x86_64-linux-cuda` archive. It includes CUDA code for NVIDIA compute
+capabilities 8.6 and 8.9; other GPU architectures are not covered by the tested release. It requires an NVIDIA
+driver and the CUDA 12.6 runtime and cuBLAS libraries installed on the host and discoverable by the dynamic loader;
+these libraries are not bundled. Never add CUDA's `stubs` directory to the runtime library path. NVIDIA documents
+the [driver requirements](https://docs.nvidia.com/cuda/archive/12.6.3/cuda-toolkit-release-notes/index.html) and
+[GPU compute capabilities](https://developer.nvidia.com/cuda/gpus). Run with `--device cuda`. Windows releases are
+CPU-only. The CUDA release does not include NCCL for multi-GPU communication. The hosted release smoke test exercises
+the packaged fake engine without a GPU; actual GPU inference
+requires a separate test on a GPU-equipped host.
 
 ## The pipeline cases
 

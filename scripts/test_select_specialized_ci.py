@@ -4,16 +4,33 @@ import subprocess
 import tempfile
 import unittest
 
-from select_specialized_ci import JOBS, decide, workflow_changes
+from select_specialized_ci import JOBS, decide, workflow_changes, workflow_sections
 
 
 class SelectionTest(unittest.TestCase):
+    def test_cuda_checkout_has_git_and_initializes_submodule(self):
+        root = Path(__file__).resolve().parent.parent
+        for file, job in (("ci.yml", "cuda-compile"), ("release.yml", "cuda-build")):
+            text = (root / ".github" / "workflows" / file).read_text()
+            block = workflow_sections(text)[1][job]
+            install = block.index("apt-get install")
+            checkout = block.index("uses: actions/checkout@")
+            submodule = block.index("git submodule update --init")
+            self.assertLess(install, checkout, file)
+            self.assertIn(" git ", block[install:checkout], file)
+            self.assertLess(checkout, submodule, file)
+            self.assertIn('safe.directory "$GITHUB_WORKSPACE"', block[checkout:submodule], file)
+            self.assertIn('safe.directory "$GITHUB_WORKSPACE/crates/ggtts-ggml-sys/ggml"',
+                          block[checkout:submodule], file)
+
     def test_event_and_path_rules(self):
         select = lambda paths: decide("pull_request", "rc", "feature", True, paths)
         self.assertEqual(select(["docs/readme.md"]), set())
         self.assertEqual(select(["android/demo.kt"]), {"android", "binding"})
         self.assertEqual(select(["scripts/package_and_smoke.sh"]), {"package"})
-        self.assertEqual(select([".github/workflows/release.yml"]), {"package", "release"})
+        self.assertEqual(select(["scripts/check_release_version.py"]), {"package"})
+        self.assertEqual(select([".github/workflows/release.yml"]), {"package", "release", "cuda"})
+        self.assertEqual(select(["scripts/package_cuda_release.sh"]), {"package", "release", "cuda"})
         self.assertEqual(select(["scripts/buildinfo_engines.sh"]), {"ggml", "release"})
         self.assertEqual(select(["crates/ggtts-qwen3-tts/src/lib.rs"]), {"binding", "android", "release", "ggml", "cuda"})
         for path in (".github/workflows/ci.yml", "scripts/select_specialized_ci.py",

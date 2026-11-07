@@ -76,12 +76,12 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None):
             selected.update(("android", "binding"))
         if path.startswith(("scripts/kotlin_binding_test.sh",)):
             selected.add("binding")
-        if path.startswith(("scripts/package_and_smoke.sh", "instruments/", "fixtures/")):
+        if path.startswith(("scripts/package_and_smoke.sh", "scripts/check_release_version.py", "instruments/", "fixtures/")):
             selected.add("package")
         if path == "scripts/buildinfo_engines.sh":
             selected.update(("ggml", "release"))
-        if path == ".github/workflows/release.yml":
-            selected.update(("package", "release"))
+        if path in (".github/workflows/release.yml", "scripts/package_cuda_release.sh"):
+            selected.update(("package", "release", "cuda"))
     return selected
 
 

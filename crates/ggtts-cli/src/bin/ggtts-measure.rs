@@ -12,7 +12,8 @@
 //! command is refused and no instrument runs.
 //!
 //! * **It loads no engine.** Nothing here constructs one, and no model file is read.
-//! * **It never writes to the given files.** The instruments get copies under `<report>/input/`. The runner's own
+//! * **It never writes to the given files.** The report directory must not already exist. The instruments get copies
+//!   under separate `<report>/input/audio/` and `<report>/input/events/` directories. The runner's own
 //!   check catches an instrument that writes to the copy (`failed`, the copy restored), and the originals' hashes are
 //!   compared before and after the run.
 //! * **The ids default as ggtts-render's do:** the render is the audio's file stem, and the run is `<render>-<secs>`.
@@ -26,7 +27,8 @@ use ggtts_instruments::runner::{input_file, EXIT_RENDER_FAILED};
 const BINARY: &str = "ggtts-measure";
 const USAGE: &str = "usage: ggtts-measure --audio IN.flac [--events E.jsonl] [--render ID] [--run ID] --report DIR \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
-[--on-instrument-error continue|abort] [--instrument-timeout S]";
+[--on-instrument-error continue|abort] [--instrument-timeout S]\n\
+  --report DIR must not already exist";
 
 #[derive(Default)]
 struct Args {
@@ -105,10 +107,23 @@ fn measure(a: Args) -> Result<u8, String> {
         .map(|p| input_file(p))
         .collect();
 
+    // A reused report can contain source files, symlinks or hard links at any output path.
+    // Reserve a fresh directory atomically before writing anything into it.
+    if let Some(parent) = report.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    fs::create_dir(&report).map_err(|e| format!("--report {} must be a new directory: {e}", report.display()))?;
     let input_dir = report.join("input");
-    fs::create_dir_all(&input_dir).map_err(|e| format!("{}: {e}", input_dir.display()))?;
-    let audio_copy = copy_into(&audio, &input_dir)?;
-    let events_copy = a.events.as_deref().map(|e| copy_into(e, &input_dir)).transpose()?;
+    let audio_dir = input_dir.join("audio");
+    fs::create_dir_all(&audio_dir).map_err(|e| format!("{}: {e}", audio_dir.display()))?;
+    let audio_copy = copy_into(&audio, &audio_dir)?;
+    let events_copy = if let Some(events) = a.events.as_deref() {
+        let events_dir = input_dir.join("events");
+        fs::create_dir_all(&events_dir).map_err(|e| format!("{}: {e}", events_dir.display()))?;
+        Some(copy_into(events, &events_dir)?)
+    } else {
+        None
+    };
     let render = a.render.clone().unwrap_or_else(|| {
         audio
             .file_stem()

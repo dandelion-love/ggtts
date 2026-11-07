@@ -35,6 +35,39 @@ fn goldens() -> Vec<Golden> {
     g
 }
 
+#[test]
+#[ignore = "needs GGTTS_TALKER and GGTTS_CODEC, the published GGUFs"]
+fn event_trace_emits_steps_without_changing_tokens_or_audio() {
+    let (talker, codec) = (env_path("GGTTS_TALKER"), env_path("GGTTS_CODEC"));
+    let gold = goldens().remove(0);
+    let voice = Voice {
+        speaker: gold.speaker.clone(),
+        language: gold.language.clone(),
+        max_frames: gold.max_tokens as i32,
+        ..Default::default()
+    };
+    let req = ChunkRequest {
+        text: &gold.text,
+        seed: gold.seed,
+        chunk: 0,
+        draw: 0,
+    };
+    let mut engine = Qwen3Tts::load(&talker, &codec, 4, voice).unwrap();
+    let plain = engine.generate(&req).unwrap();
+    let mut events = ggtts_core::trace::Recorder::new(1);
+    let traced = engine.generate_traced(&req, &mut events).unwrap();
+    assert!(plain.codes.frames == traced.codes.frames, "trace changed tokens");
+    let a = engine.decode(&plain.codes).unwrap();
+    let b = engine.decode(&traced.codes).unwrap();
+    assert!(a.samples == b.samples, "trace changed audio");
+    // The talker also reports the EOS step and any non-audio thinking steps.
+    assert!(events.lines.len() >= traced.codes.n_frames());
+    assert!(events
+        .lines
+        .iter()
+        .all(|line| line["ev"] == "step" && line["p_stop"].is_number()));
+}
+
 /// Generate a fixture with a hook (or none); the returned codes and the frames the hook saw.
 #[cfg(feature = "plant")]
 fn run(talker: &mut Talker, gold: &Golden, hook: bool) -> (Vec<i32>, Vec<i32>) {

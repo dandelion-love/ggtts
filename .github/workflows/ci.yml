@@ -25,6 +25,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Test release publication decisions
+        run: bash scripts/test_publish_release.sh
       # rust-toolchain.toml pins the toolchain and its components; rustup installs it on first use.
       - run: rustup show active-toolchain || rustup toolchain install
       # A missing lockfile is resolved here so fmt and clippy still report, and the job fails at its last step.

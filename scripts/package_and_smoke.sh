@@ -4,7 +4,7 @@
 #
 #   scripts/package_and_smoke.sh pack BINARY DIR    # DIR gets the binaries, LICENSE, README.md and instruments/
 #   scripts/package_and_smoke.sh archive DIR zip|tar.gz   # DIR.zip or DIR.tar.gz beside DIR, as released
-#   scripts/package_and_smoke.sh smoke PATH         # PATH: a packed DIR, or a .tar.gz or .zip of one
+#   scripts/package_and_smoke.sh smoke PATH [TAG]   # unpack; if TAG is set, check both binaries and BUILDINFO
 #
 # `archive` is the one way an archive is made, by release.yml and by ci.yml's package-smoke alike, so a PR smokes
 # the same kind of file a release ships: 7z for a .zip where it exists (windows-latest), else zip, else Python's
@@ -62,7 +62,7 @@ archive() {
 }
 
 smoke() {
-    local path=$1 work dir exe code abs
+    local path=$1 expected_tag=${2:-} work dir exe code abs
     work=$(mktemp -d)
     trap 'rm -rf "$work"' RETURN
     case "$path" in
@@ -82,6 +82,9 @@ smoke() {
         *) cp -r "$path" "$work/packed"; dir="$work/packed" ;;
     esac
     [ -n "${dir:-}" ] || { say "$path holds no directory"; return 1; }
+    if [ -n "$expected_tag" ]; then
+        python3 "$root/scripts/check_release_version.py" "$dir" "$expected_tag"
+    fi
     # Git Bash's -f accepts an extensionless name for an existing .exe. Prefer
     # the explicit Windows filename so BUILDINFO is checked against its real name.
     exe="$dir/ggtts-render.exe"
@@ -132,6 +135,6 @@ smoke() {
 case "${1:-}" in
     pack) pack "$2" "$3" ;;
     archive) archive "$2" "$3" ;;
-    smoke) smoke "$2" ;;
-    *) echo "usage: $0 pack BINARY DIR | archive DIR zip|tar.gz | smoke PATH" >&2; exit 2 ;;
+    smoke) smoke "$2" "${3:-}" ;;
+    *) echo "usage: $0 pack BINARY DIR | archive DIR zip|tar.gz | smoke PATH [TAG]" >&2; exit 2 ;;
 esac

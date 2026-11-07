@@ -28,6 +28,7 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(select(["docs/readme.md"]), set())
         self.assertEqual(select(["android/demo.kt"]), {"android", "binding"})
         self.assertEqual(select(["scripts/package_and_smoke.sh"]), {"package"})
+        self.assertEqual(select(["scripts/check_release_version.py"]), {"package"})
         self.assertEqual(select([".github/workflows/release.yml"]), {"package", "release", "cuda"})
         self.assertEqual(select(["scripts/package_cuda_release.sh"]), {"package", "release", "cuda"})
         self.assertEqual(select(["scripts/buildinfo_engines.sh"]), {"ggml", "release"})

@@ -1,0 +1,42 @@
+[package]
+name = "ggtts-qwen3-tts"
+description = "The ggtts Qwen3-TTS engine: the story-v1/qwen3-tts profile, and with the ggml feature the codec decoder, talker and code predictor over ggml"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = []
+# The engine itself: builds and links ggml through ggtts-ggml-sys. Off by default, so the workspace builds without
+# the ggml submodule.
+ggml = ["ggtts-ggml-sys/ggml"]
+# The CUDA backend as well (Device::Cuda).
+cuda = ["ggml", "ggtts-ggml-sys/cuda"]
+# Generate the ggml bindings at build time (ggtts-ggml-sys/bindgen): needed off x86_64 Linux. Needs libclang.
+bindgen = ["ggml", "ggtts-ggml-sys/bindgen"]
+# Test-only: the planted defects (`codec::Plant`, `talker::Plant`, `load_planted`) the identity tests use to show
+# that each check can fail. A build without it has no way to plant one.
+plant = ["ggml"]
+
+[dependencies]
+ggtts-core.workspace = true
+ggtts-ggml-sys = { path = "../ggtts-ggml-sys", version = "0.0.1" }
+serde_json.workspace = true
+
+[dev-dependencies]
+sha2 = "0.10"
+
+[[example]]
+name = "decode"
+required-features = ["ggml"]
+
+[[example]]
+name = "tokenize"
+required-features = ["ggml"]
+
+[[example]]
+name = "generate"
+required-features = ["ggml"]

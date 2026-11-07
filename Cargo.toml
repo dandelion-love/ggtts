@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ggtts-core",
+    "crates/ggtts-ggml-sys",
+    "crates/ggtts-fake",
+    "crates/ggtts-qwen3-tts",
+    "crates/ggtts-cli",
+    "crates/ggtts-ffi",
+    "crates/ggtts-instruments",
+    "crates/ggtts-kitten",
+    "instruments/templates/rust/event",
+    "instruments/templates/rust/tensor",
+]
+# A spike with its own workspace; it builds ggml and needs libclang, so the main CI jobs leave it out.
+exclude = ["spike/layer0"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/dandelion-love/ggtts"
+rust-version = "1.88"
+
+[workspace.dependencies]
+ggtts-core = { path = "crates/ggtts-core", version = "0.0.1" }
+ggtts-fake = { path = "crates/ggtts-fake", version = "0.0.1" }
+ggtts-instruments = { path = "crates/ggtts-instruments", version = "0.0.1" }
+ggtts-qwen3-tts = { path = "crates/ggtts-qwen3-tts", version = "0.0.1" }
+# One log10, pow and sin on every platform (a port of musl's libm), so a float result does not depend on the
+# platform's C library.
+libm = "0.2"
+serde_json = "1"
+claxon = "0.4"

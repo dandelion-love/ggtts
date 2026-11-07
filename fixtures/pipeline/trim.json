@@ -1,0 +1,306 @@
+{
+ "format": "ggtts-pipeline-cases/1",
+ "spec": "story-v1",
+ "source": "exported from the reference long-text render's parity cases; texts are invented sentences",
+ "rows": [
+  {
+   "name": "tone-0.3-2.0-0.5-cap-0.12",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 2.0,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "max_edge_s": 0.12,
+   "info": {
+    "raw_s": 2.8,
+    "trimmed_s": 2.24,
+    "lead_cut_s": 0.18,
+    "tail_cut_s": 0.38,
+    "lead_silence_s": 0.3,
+    "tail_silence_s": 0.5,
+    "start_sample": 4320,
+    "end_sample": 58080,
+    "raw_samples": 67200
+   }
+  },
+  {
+   "name": "tone-0.3-2.0-0.5-cap-0.15",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 2.0,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "max_edge_s": 0.15,
+   "info": {
+    "raw_s": 2.8,
+    "trimmed_s": 2.3,
+    "lead_cut_s": 0.15,
+    "tail_cut_s": 0.35,
+    "lead_silence_s": 0.3,
+    "tail_silence_s": 0.5,
+    "start_sample": 3600,
+    "end_sample": 58800,
+    "raw_samples": 67200
+   }
+  },
+  {
+   "name": "tone-0.3-2.0-0.5-cap-0.0",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 2.0,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "max_edge_s": 0.0,
+   "info": {
+    "raw_s": 2.8,
+    "trimmed_s": 2.0,
+    "lead_cut_s": 0.3,
+    "tail_cut_s": 0.5,
+    "lead_silence_s": 0.3,
+    "tail_silence_s": 0.5,
+    "start_sample": 7200,
+    "end_sample": 55200,
+    "raw_samples": 67200
+   }
+  },
+  {
+   "name": "tone-0.3-2.0-0.5-cap-1.0",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 2.0,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "max_edge_s": 1.0,
+   "info": {
+    "raw_s": 2.8,
+    "trimmed_s": 2.8,
+    "lead_cut_s": 0.0,
+    "tail_cut_s": 0.0,
+    "lead_silence_s": 0.3,
+    "tail_silence_s": 0.5,
+    "start_sample": 0,
+    "end_sample": 67200,
+    "raw_samples": 67200
+   }
+  },
+  {
+   "name": "tone-0.05-1.0-0.05-cap-0.12",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.05,
+    "speech_s": 1.0,
+    "tail_s": 0.05,
+    "sample_rate": 24000
+   },
+   "max_edge_s": 0.12,
+   "info": {
+    "raw_s": 1.1,
+    "trimmed_s": 1.1,
+    "lead_cut_s": 0.0,
+    "tail_cut_s": 0.0,
+    "lead_silence_s": 0.05,
+    "tail_silence_s": 0.05,
+    "start_sample": 0,
+    "end_sample": 26400,
+    "raw_samples": 26400
+   }
+  },
+  {
+   "name": "tone-0.0-1.0-0.0-cap-0.12",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.0,
+    "speech_s": 1.0,
+    "tail_s": 0.0,
+    "sample_rate": 24000
+   },
+   "max_edge_s": 0.12,
+   "info": {
+    "raw_s": 1.0,
+    "trimmed_s": 1.0,
+    "lead_cut_s": 0.0,
+    "tail_cut_s": 0.0,
+    "lead_silence_s": 0.0,
+    "tail_silence_s": 0.0,
+    "start_sample": 0,
+    "end_sample": 24000,
+    "raw_samples": 24000
+   }
+  },
+  {
+   "name": "stereo-downmix",
+   "signal": {
+    "kind": "stereo-cancel"
+   },
+   "max_edge_s": 0.12,
+   "info": {
+    "raw_s": 3.6,
+    "trimmed_s": 3.34,
+    "lead_cut_s": 0.18,
+    "tail_cut_s": 0.08,
+    "lead_silence_s": 0.3,
+    "tail_silence_s": 0.2,
+    "start_sample": 4320,
+    "end_sample": 84480,
+    "raw_samples": 86400
+   }
+  },
+  {
+   "name": "empty",
+   "signal": {
+    "kind": "empty"
+   },
+   "max_edge_s": 0.12,
+   "info": {
+    "raw_s": 0.0,
+    "trimmed_s": 0.0,
+    "lead_cut_s": 0.0,
+    "tail_cut_s": 0.0,
+    "lead_silence_s": 0.0,
+    "tail_silence_s": 0.0,
+    "start_sample": 0,
+    "end_sample": 0,
+    "raw_samples": 0
+   }
+  },
+  {
+   "name": "cap-0.29-at-24k",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 2.0,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "max_edge_s": 0.29,
+   "info": {
+    "raw_s": 2.8,
+    "trimmed_s": 2.58,
+    "lead_cut_s": 0.01,
+    "tail_cut_s": 0.21,
+    "lead_silence_s": 0.3,
+    "tail_silence_s": 0.5,
+    "start_sample": 240,
+    "end_sample": 62160,
+    "raw_samples": 67200
+   }
+  },
+  {
+   "name": "sr-22050",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 2.0,
+    "tail_s": 0.5,
+    "sample_rate": 22050
+   },
+   "max_edge_s": 0.12,
+   "info": {
+    "raw_s": 2.8,
+    "trimmed_s": 2.245,
+    "lead_cut_s": 0.179,
+    "tail_cut_s": 0.375,
+    "lead_silence_s": 0.299,
+    "tail_silence_s": 0.499,
+    "start_sample": 3954,
+    "end_sample": 53466,
+    "raw_samples": 61740
+   }
+  },
+  {
+   "name": "two-gaps",
+   "signal": {
+    "kind": "concat",
+    "parts": [
+     {
+      "kind": "tone",
+      "lead_s": 0.3,
+      "speech_s": 0.5,
+      "tail_s": 0.0,
+      "sample_rate": 24000
+     },
+     {
+      "kind": "tone",
+      "lead_s": 0.3,
+      "speech_s": 0.5,
+      "tail_s": 0.0,
+      "sample_rate": 24000
+     },
+     {
+      "kind": "tone",
+      "lead_s": 0.6,
+      "speech_s": 0.5,
+      "tail_s": 0.5,
+      "sample_rate": 24000
+     }
+    ]
+   },
+   "max_edge_s": 0.12,
+   "info": {
+    "raw_s": 3.2,
+    "trimmed_s": 2.64,
+    "lead_cut_s": 0.18,
+    "tail_cut_s": 0.38,
+    "lead_silence_s": 0.3,
+    "tail_silence_s": 0.5,
+    "start_sample": 4320,
+    "end_sample": 67680,
+    "raw_samples": 76800
+   }
+  },
+  {
+   "name": "frame-at-exactly-minus-40dB",
+   "signal": {
+    "kind": "dc",
+    "edge": 0.009999999999009997,
+    "edge_n": 240,
+    "middle": 1.0,
+    "middle_n": 480,
+    "sample_rate": 24000
+   },
+   "max_edge_s": 0.0,
+   "info": {
+    "raw_s": 0.04,
+    "trimmed_s": 0.02,
+    "lead_cut_s": 0.01,
+    "tail_cut_s": 0.01,
+    "lead_silence_s": 0.01,
+    "tail_silence_s": 0.01,
+    "start_sample": 240,
+    "end_sample": 720,
+    "raw_samples": 960
+   }
+  },
+  {
+   "name": "frame-at-minus-39.99dB",
+   "signal": {
+    "kind": "dc",
+    "edge": 0.010011519555381687,
+    "edge_n": 240,
+    "middle": 1.0,
+    "middle_n": 480,
+    "sample_rate": 24000
+   },
+   "max_edge_s": 0.0,
+   "info": {
+    "raw_s": 0.04,
+    "trimmed_s": 0.04,
+    "lead_cut_s": 0.0,
+    "tail_cut_s": 0.0,
+    "lead_silence_s": 0.0,
+    "tail_silence_s": 0.0,
+    "start_sample": 0,
+    "end_sample": 960,
+    "raw_samples": 960
+   }
+  }
+ ]
+}

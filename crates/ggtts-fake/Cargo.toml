@@ -1,0 +1,18 @@
+[package]
+name = "ggtts-fake"
+description = "A fake ggtts engine: scripted, deterministic output for testing the pipeline and the instruments without a model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ggtts-core.workspace = true
+ggtts-qwen3-tts.workspace = true
+libm.workspace = true
+
+[features]
+# A planted instrument that draws from the sampler's stream, for the trace-identity check's own test.
+plant = []

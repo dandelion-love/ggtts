@@ -1,0 +1,460 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, rc]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  check:
+    name: check (fmt, clippy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test release publication decisions
+        run: bash scripts/test_publish_release.sh
+      # rust-toolchain.toml pins the toolchain and its components; rustup installs it on first use.
+      - run: rustup show active-toolchain || rustup toolchain install
+      # A missing lockfile is resolved here so fmt and clippy still report, and the job fails at its last step.
+      - name: Cargo.lock is committed
+        run: |
+          if [ ! -f Cargo.lock ]; then
+            cargo generate-lockfile
+            echo "LOCK_MISSING=1" >> "$GITHUB_ENV"
+            echo "::error::Cargo.lock is not committed; the resolved lockfile follows"
+            cat Cargo.lock
+          fi
+      - run: cargo fmt --all --check
+      - name: cargo clippy (runs even when fmt fails, so one run reports both)
+        if: success() || failure()
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Fail if Cargo.lock was missing
+        if: always()
+        run: test -z "${LOCK_MISSING:-}"
+
+  build-test:
+    name: build-test (${{ matrix.os }}, CPU)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: cargo build --workspace --locked
+      - name: Test (the pipeline cases print their summary)
+        run: cargo test --workspace --locked -- --nocapture
+      - run: cargo run --locked -p ggtts-cli --bin ggtts-render -- --version
+
+  ggml:
+    needs: specialized-selection
+    if: needs.specialized-selection.outputs.ggml == 'true'
+    name: ggml (ubuntu-latest, CPU, ggml built from the submodule)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Fetch the ggml submodule at its pin
+        run: |
+          set -eu
+          git submodule update --init crates/ggtts-ggml-sys/ggml
+          pin=$(sed -n 's/^pub const GGML_COMMIT: &str = "\([0-9a-f]\{40\}\)";$/\1/p' crates/ggtts-ggml-sys/src/lib.rs)
+          test "$(git -C crates/ggtts-ggml-sys/ggml rev-parse HEAD)" = "$pin"
+          echo "ggml submodule at $pin"
+      - name: cargo clippy with the engines (ggml built by cargo with CMake)
+        run: cargo clippy --workspace --all-targets --features ggtts-cli/ggml --locked -- -D warnings
+      - name: cargo clippy with the test-only plant feature (the planted defects and their expected-failure tests), and the binding with its engines and JNI layer
+        run: cargo clippy --workspace --all-targets --features ggtts-cli/ggml,ggtts-qwen3-tts/plant,ggtts-ffi/ggml,ggtts-ffi/jni,ggtts-ffi/plant --locked -- -D warnings
+      - name: Test with the engines (the identity checks need model files and stay opt-in, so they report ignored)
+        run: cargo test --workspace --features ggtts-cli/ggml --locked -- --nocapture
+      - name: ggml links and computes (one ggml_add through the bindings)
+        run: cargo test --locked -p ggtts-ggml-sys --features ggml tests::links_and_runs_one_op -- --exact
+      - name: ggtts-render refuses a file that is not a model
+        run: |
+          set -u
+          cargo build --locked -p ggtts-cli --features ggml
+          printf 'not a model' > not-a-model.gguf
+          if target/debug/ggtts-render --model not-a-model.gguf --out x.flac --text hi 2> err.txt; then
+            echo "::error::ggtts-render accepted a file that is not a GGUF"
+            exit 1
+          fi
+          cat err.txt
+          grep -F 'not a GGUF file' err.txt
+      - name: ggtts-render lists both engines (what the release's BUILDINFO is read from)
+        run: bash scripts/buildinfo_engines.sh target/debug/ggtts-render qwen3-tts kitten-tts-2
+
+  ggml-windows:
+    needs: specialized-selection
+    if: needs.specialized-selection.outputs.ggml == 'true'
+    # A probe, not a gate: it records whether the engines build and link on Windows (MSVC), and what breaks if not.
+    # Its build steps may fail without failing the job; the job summary says which.
+    name: ggml-windows (probe; reports, does not gate)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    env:
+      # bindgen: the committed bindings are for x86_64 Linux only, so Windows generates its own.
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      # Plain text, so the report can grep the build log.
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: git submodule update --init crates/ggtts-ggml-sys/ggml
+      - name: Build ggtts-render with the engines
+        id: build
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cargo build --locked -p ggtts-cli -p ggtts-ggml-sys --features ggtts-cli/ggml,ggtts-ggml-sys/bindgen 2>&1 | tee build.log
+      - name: ggml links and computes
+        id: link
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        run: cargo test --locked -p ggtts-ggml-sys --features bindgen tests::links_and_runs_one_op -- --exact
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "### ggml on Windows (probe)"
+            echo "- build ggtts-render --features ggml: ${{ steps.build.outcome }}"
+            echo "- link test: ${{ steps.link.outcome }}"
+            if [ "${{ steps.build.outcome }}" != success ] && [ -f build.log ]; then
+              echo '```'
+              grep -E '^(error|warning: unused)|error[:\[]|LNK[0-9]+|undefined|unresolved|panicked' build.log | head -n 40 || true
+              echo '```'
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  planted-ceiling:
+    name: planted ceiling (44 must turn the pipeline cases red)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Plant a story ceiling of 44 in the Qwen3-TTS profile
+        run: |
+          set -eu
+          f=crates/ggtts-qwen3-tts/src/lib.rs
+          grep -q '^    story_ceiling: 45,$' "$f"
+          sed -i 's/^    story_ceiling: 45,$/    story_ceiling: 44,/' "$f"
+          grep -n '^    story_ceiling:' "$f"
+      - name: The pipeline cases must fail, and name what failed
+        run: |
+          set -u
+          if cargo test --locked -p ggtts-core --test pipeline_cases pipeline_cases -- --exact --nocapture > out.txt 2>&1; then
+            cat out.txt
+            echo "::error::the pipeline cases passed with the story ceiling at 44"
+            exit 1
+          fi
+          cat out.txt
+          grep -E 'pipeline cases: [0-9]+ passed, [1-9][0-9]* failed' out.txt
+          grep -F 'FAILED chunks/ceiling-exact/story' out.txt
+          grep -F 'FAILED render/arm-join-every-mark' out.txt
+          echo "red as required: the planted ceiling is seen"
+
+  cuda-compile:
+    needs: specialized-selection
+    if: needs.specialized-selection.outputs.cuda == 'true'
+    name: cuda-compile (ggml at the pin, sm_86 and sm_89, no GPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: nvidia/cuda:12.6.3-devel-ubuntu22.04@sha256:d49bb8a4ff97fb5fe477947a3f02aa8c0a53eae77e11f00ec28618a0bcaa2ad1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the ggml pin from the source
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha=$(sed -n 's/^ *pub const COMMIT: &str = "\([0-9a-f]\{40\}\)";$/\1/p' crates/ggtts-core/src/lib.rs)
+          test ${#sha} -eq 40
+          echo "commit=$sha" >> "$GITHUB_OUTPUT"
+          echo "ggml pin: $sha"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ggml-org/ggml
+          ref: ${{ steps.pin.outputs.commit }}
+          path: ggml
+          persist-credentials: false
+      - name: Install the build tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cmake ninja-build git
+      - name: Configure (CUDA, sm_86 and sm_89)
+        run: |
+          cmake -S ggml -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="86;89" \
+            -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF
+      - name: Compile only (hosted runners have no GPU, so nothing runs)
+        run: cmake --build build -j 4
+      - name: Check both architectures are in the CUDA library
+        shell: bash
+        run: |
+          set -euo pipefail
+          lib=$(find build -name 'libggml-cuda.*' | head -n 1)
+          echo "library: $lib"
+          cuobjdump --list-elf "$lib" | tee elf.txt
+          grep -q 'sm_86' elf.txt
+          grep -q 'sm_89' elf.txt
+
+  specialized-selection:
+    name: Select release and binding checks (a skip is not a pass)
+    runs-on: ubuntu-latest
+    outputs:
+      package: ${{ steps.select.outputs.package }}
+      binding: ${{ steps.select.outputs.binding }}
+      android: ${{ steps.select.outputs.android }}
+      release: ${{ steps.select.outputs.release }}
+      ggml: ${{ steps.select.outputs.ggml }}
+      cuda: ${{ steps.select.outputs.cuda }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Test specialized selection
+        run: python3 scripts/test_select_specialized_ci.py
+      - name: Select checks
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: python3 scripts/select_specialized_ci.py >> "$GITHUB_OUTPUT"
+
+  package-smoke:
+    needs: specialized-selection
+    if: needs.specialized-selection.outputs.package == 'true'
+    name: package-smoke (${{ matrix.os }}; script instruments run from a packed release directory, and a planted missing instruments/ is red)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            exe: ""
+            archive: tar.gz
+          - os: windows-latest
+            exe: ".exe"
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      # The fake engine needs no ggml, so this builds without it; release.yml packs its ggml build with the same script.
+      - run: cargo build --release --locked -p ggtts-cli
+      - name: Pack, as release.yml does (it must list both binaries)
+        run: |
+          set -eu
+          list=$(scripts/package_and_smoke.sh pack "target/release/ggtts-render${{ matrix.exe }}" dist/ggtts-ci)
+          echo "binaries: $list"
+          test "$list" = '["ggtts-render${{ matrix.exe }}","ggtts-measure${{ matrix.exe }}"]'
+          # Match the release's metadata, so the archive smoke reaches the same check.
+          printf '{"binaries": %s}\n' "$list" > dist/ggtts-ci/BUILDINFO.json
+      - name: Smoke the packed directory (a shipped Python instrument runs from it)
+        run: scripts/package_and_smoke.sh smoke dist/ggtts-ci
+      - name: Archive it as release.yml does (a .zip on windows) and smoke the archive by its relative path
+        run: |
+          set -eu
+          (cd dist && ../scripts/package_and_smoke.sh archive ggtts-ci ${{ matrix.archive }})
+          scripts/package_and_smoke.sh smoke dist/ggtts-ci.${{ matrix.archive }}
+      - name: Planted, an archive with an incorrect BUILDINFO binary must fail
+        run: |
+          set -eu
+          for missing in render measure; do
+            cp -r dist/ggtts-ci "dist/info-$missing"
+            if [ "$missing" = render ]; then
+              printf '{"binaries": ["ggtts-renderXexe","ggtts-measure${{ matrix.exe }}"]}\n' > "dist/info-$missing/BUILDINFO.json"
+            else
+              printf '{"binaries": ["ggtts-render${{ matrix.exe }}","ggtts-measureXexe"]}\n' > "dist/info-$missing/BUILDINFO.json"
+            fi
+            (cd dist && ../scripts/package_and_smoke.sh archive "info-$missing" ${{ matrix.archive }})
+            if scripts/package_and_smoke.sh smoke "dist/info-$missing.${{ matrix.archive }}" 2> info.err; then
+              echo "::error::incorrect BUILDINFO passed for ggtts-$missing"
+              exit 1
+            fi
+            cat info.err
+            grep -F "BUILDINFO.json's binaries does not name ggtts-$missing" info.err
+          done
+      - name: Planted, a missing archive must fail, naming it
+        run: |
+          set -u
+          if scripts/package_and_smoke.sh smoke dist/absent.${{ matrix.archive }} 2> absent.err; then
+            cat absent.err
+            echo "::error::the smoke passed on a missing archive"
+            exit 1
+          fi
+          cat absent.err
+          grep -F "no such archive: dist/absent.${{ matrix.archive }}" absent.err
+      - name: Planted, the same directory without instruments/ must fail, naming the missing directory
+        run: |
+          set -u
+          cp -r dist/ggtts-ci dist/planted
+          rm -rf dist/planted/instruments
+          if scripts/package_and_smoke.sh smoke dist/planted 2> planted.err; then
+            cat planted.err
+            echo "::error::the smoke passed without instruments/"
+            exit 1
+          fi
+          cat planted.err
+          grep -F "instruments/ directory was not found" planted.err
+      - name: Planted, the same directory without ggtts-measure must fail, naming it
+        run: |
+          set -u
+          cp -r dist/ggtts-ci dist/planted-measure
+          rm -f dist/planted-measure/ggtts-measure${{ matrix.exe }}
+          if scripts/package_and_smoke.sh smoke dist/planted-measure 2> planted-measure.err; then
+            cat planted-measure.err
+            echo "::error::the smoke passed without ggtts-measure"
+            exit 1
+          fi
+          cat planted-measure.err
+          grep -F "no ggtts-measure in" planted-measure.err
+
+  binding:
+    needs: specialized-selection
+    if: needs.specialized-selection.outputs.binding == 'true'
+    name: binding (the C-ABI with the planted panic, and the Kotlin binding on the host JVM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: The C-ABI on the host, with the planted panic caught at the boundary
+        run: cargo test --locked -p ggtts-ffi --features plant -- --nocapture
+      - name: The Kotlin binding on the host JVM (the runner's JDK and kotlinc)
+        run: scripts/kotlin_binding_test.sh
+
+  android-arm64:
+    needs: specialized-selection
+    if: needs.specialized-selection.outputs.android == 'true'
+    name: android-arm64 (cargo-ndk, ggml at the pin, NEON confirmed, with both checks planted)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      NDK_VERSION: "27.2.12479018"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup target add aarch64-linux-android
+      - name: cargo-ndk, pinned
+        run: cargo install cargo-ndk --version 3.5.4 --locked
+      - name: The NDK, pinned
+        run: |
+          set -eu
+          ndk="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
+          if [ ! -d "$ndk" ]; then
+            yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" > /dev/null
+          fi
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ndk" >> "$GITHUB_ENV"
+      - name: Fetch the ggml submodule at its pin
+        run: git submodule update --init crates/ggtts-ggml-sys/ggml
+      - name: Build for aarch64-linux-android; check the ggml pin and NEON in the kernels
+        run: scripts/android_build.sh build dist/android-arm64
+      - name: Planted, a wrong ggml pin is refused
+        run: |
+          if scripts/android_build.sh check-pin 0000000000000000000000000000000000000000; then
+            echo "::error::a wrong ggml pin was accepted"
+            exit 1
+          fi
+      - name: Planted, ggml built without NEON is refused
+        run: |
+          set -eu
+          GGML_CPU_ARM_ARCH=armv8-a+nosimd scripts/android_build.sh cargo-build "$PWD/target-nosimd"
+          if scripts/android_build.sh check-neon target-nosimd/aarch64-linux-android/release/ggtts-render; then
+            echo "::error::a build without NEON passed the NEON check"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-arm64
+          path: dist/android-arm64
+          if-no-files-found: error
+
+  release-build:
+    needs: specialized-selection
+    if: needs.specialized-selection.outputs.release == 'true'
+    # Selected PRs and the rc-to-main promotion use the release matrix; the first step refuses drift.
+    name: release-build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-linux
+            features: ggtts-cli/ggml
+          - os: windows-latest
+            target: x86_64-windows
+            features: ggtts-cli/bindgen
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The release matrix carries the same target and features
+        env:
+          TARGET: ${{ matrix.target }}
+          FEATURES: ${{ matrix.features }}
+        run: |
+          set -euo pipefail
+          # The line after "target: <this target>" in release.yml that sets features, read without a YAML parser.
+          got=$(awk -v t="target: ${TARGET}" '$0 ~ t {f=1} f && /^ *features:/ {sub(/^ *features: */, ""); print; exit}' \
+            .github/workflows/release.yml)
+          echo "release.yml features for ${TARGET}: ${got:-<none>}"
+          test "$got" = "$FEATURES"
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: git submodule update --init crates/ggtts-ggml-sys/ggml
+      - name: Build ggtts-render exactly as release.yml does
+        env:
+          LIBCLANG_PATH: ${{ runner.os == 'Windows' && 'C:\Program Files\LLVM\bin' || '' }}
+        run: cargo build --release --locked -p ggtts-cli --features "${{ matrix.features }}"

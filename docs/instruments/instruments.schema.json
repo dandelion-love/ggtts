@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dandelion-love/ggtts/blob/main/docs/instruments/instruments.schema.json",
+  "title": "ggtts-instruments/1",
+  "description": "Which instruments a ggtts run starts. Every key has a flag, and a flag overrides the file: --instruments FILE, --instrument NAME[,timeout_s=S][,command=PATH][,version=V][,needs_events=B][,interpreter=PROG][,arg.K=V], --require NAME, --on-instrument-error, --instrument-timeout.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "const": "ggtts-instruments/1"
+    },
+    "on_error": {
+      "description": "After an instrument fails or times out: continue (the default) runs the rest; abort marks the rest skipped. The render's output is kept either way.",
+      "enum": ["continue", "abort"]
+    },
+    "timeout_s": {
+      "description": "Seconds each instrument may run before it is killed and recorded as timeout. Default 60.",
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "require": {
+      "description": "The instruments the measurement depends on. Any of them missing, failed, timed out, skipped or invalid makes the measurement INCOMPLETE (exit 3), never a pass. Flag: --require NAME.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/name" },
+      "uniqueItems": true
+    },
+    "instruments": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/name" },
+          { "$ref": "#/$defs/entry" }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "name": {
+      "description": "A shipped instrument's name, also its report directory.",
+      "type": "string",
+      "pattern": "^[a-z0-9-]+$"
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/$defs/name" },
+        "timeout_s": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "command": {
+          "description": "An instrument of your own: the program to start. Needs version.",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "interpreter": {
+          "description": "Run the command (a script) with this program, e.g. python3. Windows cannot start a .py file directly.",
+          "type": "string"
+        },
+        "needs_events": {
+          "description": "It needs the run's event stream; without one, or with a truncated one (no end event), it is skipped.",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Passed to the instrument as --KEY VALUE.",
+          "type": "object",
+          "additionalProperties": {
+            "type": ["string", "number", "boolean"]
+          }
+        }
+      },
+      "dependentRequired": {
+        "command": ["version"]
+      }
+    }
+  }
+}

@@ -1,0 +1,287 @@
+{
+ "format": "ggtts-pipeline-cases/1",
+ "spec": "story-v1",
+ "source": "exported from the reference long-text render's parity cases; texts are invented sentences",
+ "rows": [
+  {
+   "name": "normal",
+   "text": "今日天氣好好，我哋去公園行下啦。",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 3.5,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "cjk_len": 14,
+   "verdict": null,
+   "s_per_char": 0.25
+  },
+  {
+   "name": "runaway",
+   "text": "今日天氣好好，我哋去公園行下啦。",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 9.8,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "cjk_len": 14,
+   "verdict": "runaway",
+   "s_per_char": 0.7
+  },
+  {
+   "name": "near-silence",
+   "text": "今日天氣好好，我哋去公園行下啦。",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 0.5,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "cjk_len": 14,
+   "verdict": "silent",
+   "s_per_char": 0.036
+  },
+  {
+   "name": "at-runaway-bar",
+   "text": "今日天氣好好，我哋去公園行下啦。",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 8.4,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "cjk_len": 14,
+   "verdict": null,
+   "s_per_char": 0.6
+  },
+  {
+   "name": "just-over-runaway-bar",
+   "text": "今日天氣好好，我哋去公園行下啦。",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 8.41,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "cjk_len": 14,
+   "verdict": "runaway",
+   "s_per_char": 0.601
+  },
+  {
+   "name": "at-silent-bar",
+   "text": "今日天氣好好，我哋去公園行下啦。",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 0.98,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "cjk_len": 14,
+   "verdict": "silent",
+   "s_per_char": 0.07
+  },
+  {
+   "name": "just-under-silent-bar",
+   "text": "今日天氣好好，我哋去公園行下啦。",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 0.97,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "cjk_len": 14,
+   "verdict": "silent",
+   "s_per_char": 0.069
+  },
+  {
+   "name": "mixed-script-count",
+   "text": "我用iPhone 15打電話。",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 1.75,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "cjk_len": 5,
+   "verdict": null,
+   "s_per_char": 0.25
+  },
+  {
+   "name": "ext-b-count",
+   "text": "我哋搭𨋢上去。",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 1.5,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "cjk_len": 6,
+   "verdict": null,
+   "s_per_char": 0.25
+  },
+  {
+   "name": "no-cjk-no-alnum",
+   "text": "……！",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 0.4,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "cjk_len": 0,
+   "verdict": null,
+   "s_per_char": 0.4
+  },
+  {
+   "name": "ascii-digits",
+   "text": "我住喺3樓302號房。",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 1.0,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "cjk_len": 6,
+   "verdict": null,
+   "s_per_char": 0.143
+  },
+  {
+   "name": "ascii-letters",
+   "text": "我買咗部iPad。",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 1.0,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "cjk_len": 4,
+   "verdict": null,
+   "s_per_char": 0.2
+  },
+  {
+   "name": "full-width-digits",
+   "text": "我住喺３樓３０２號房。",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 1.0,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "cjk_len": 6,
+   "verdict": null,
+   "s_per_char": 0.167
+  },
+  {
+   "name": "ascii-punct",
+   "text": "好!!!???...",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 1.0,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "cjk_len": 1,
+   "verdict": "runaway",
+   "s_per_char": 1.0
+  },
+  {
+   "name": "spc-exactly-0.60",
+   "text": "好",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 0.6,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "verdict": null,
+   "s_per_char": 0.6
+  },
+  {
+   "name": "spc-exactly-0.07",
+   "text": "好",
+   "signal": {
+    "kind": "tone",
+    "lead_s": 0.3,
+    "speech_s": 0.07,
+    "tail_s": 0.5,
+    "sample_rate": 24000
+   },
+   "verdict": null,
+   "s_per_char": 0.07
+  }
+ ],
+ "cjk_len": [
+  {
+   "codepoint": "U+33FF",
+   "cjk_len": 0
+  },
+  {
+   "codepoint": "U+3400",
+   "cjk_len": 1
+  },
+  {
+   "codepoint": "U+4DFF",
+   "cjk_len": 1
+  },
+  {
+   "codepoint": "U+4E00",
+   "cjk_len": 1
+  },
+  {
+   "codepoint": "U+9FA5",
+   "cjk_len": 1
+  },
+  {
+   "codepoint": "U+9FA6",
+   "cjk_len": 1
+  },
+  {
+   "codepoint": "U+9FFF",
+   "cjk_len": 1
+  },
+  {
+   "codepoint": "U+A000",
+   "cjk_len": 0
+  },
+  {
+   "codepoint": "U+1FFFF",
+   "cjk_len": 0
+  },
+  {
+   "codepoint": "U+20000",
+   "cjk_len": 1
+  },
+  {
+   "codepoint": "U+2A6DF",
+   "cjk_len": 1
+  },
+  {
+   "codepoint": "U+2A6E0",
+   "cjk_len": 1
+  },
+  {
+   "codepoint": "U+2FFFF",
+   "cjk_len": 1
+  },
+  {
+   "codepoint": "U+30000",
+   "cjk_len": 0
+  }
+ ]
+}

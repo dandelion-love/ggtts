@@ -1,0 +1,24 @@
+# ggtts instruments: copy this file, uncomment what you want, and pass it with --instruments FILE.
+# Every key has a flag (--instrument NAME,KEY=VALUE, --on-instrument-error, --instrument-timeout), and a flag
+# overrides the file. Schema: docs/instruments/instruments.schema.json.
+format: ggtts-instruments/1
+on_error: continue   # or abort: the render's output is kept either way
+timeout_s: 60        # per instrument, unless its entry sets timeout_s
+require: []          # instruments the measurement depends on: any not ok makes it INCOMPLETE (exit 3)
+instruments:
+  # selftest: the runner's own check: counts the run's events and audio bytes; arg mode=crash|hang|bad-envelope|tamper plants a failure
+  # - {name: selftest, args: {mode: ok}}
+  # p-stop-early: per step: frames whose stop probability rose early, before the chunk's last frames (template)
+  # - p-stop-early
+  # draws: per chunk: draws, redraws and the judge's verdicts (template)
+  # - draws
+  # edge-trim: per chunk: the lead and tail seconds trimmed from each kept draw (template)
+  # - edge-trim
+  # render-totals: per render: frames, seconds and chunks, and truncated when the stream has no end (template)
+  # - render-totals
+  # audio-levels: the rendered audio: peak and RMS level (template)
+  # - audio-levels
+  # internal-pauses: the rendered audio: silences inside the speech, between its first and last loud frame (example)
+  # - internal-pauses
+  # An instrument of your own: a program that takes --events, --audio, --envelope, --name and its args.
+  # - {name: mine, command: /path/to/mine, version: '0.1', timeout_s: 30}

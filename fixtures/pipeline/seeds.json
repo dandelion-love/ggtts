@@ -1,0 +1,61 @@
+{
+ "format": "ggtts-pipeline-cases/1",
+ "spec": "story-v1",
+ "source": "exported from the reference long-text render's parity cases; texts are invented sentences",
+ "rows": [
+  {
+   "story": "story-a",
+   "i": 0,
+   "text": "今日天氣好好，我哋去公園行下啦。",
+   "k": 0,
+   "salt": "",
+   "sha256_key": "story-a|0|今日天氣好好，我哋去公園行下啦。|0",
+   "seed": 2216382137
+  },
+  {
+   "story": "story-a",
+   "i": 0,
+   "text": "今日天氣好好，我哋去公園行下啦。",
+   "k": 1,
+   "salt": "",
+   "sha256_key": "story-a|0|今日天氣好好，我哋去公園行下啦。|1",
+   "seed": 3730102238
+  },
+  {
+   "story": "story-a",
+   "i": 0,
+   "text": "今日天氣好好，我哋去公園行下啦。",
+   "k": 4,
+   "salt": "",
+   "sha256_key": "story-a|0|今日天氣好好，我哋去公園行下啦。|4",
+   "seed": 416100522
+  },
+  {
+   "story": "story-a",
+   "i": 1,
+   "text": "今日天氣好好，我哋去公園行下啦。",
+   "k": 0,
+   "salt": "",
+   "sha256_key": "story-a|1|今日天氣好好，我哋去公園行下啦。|0",
+   "seed": 1211423658
+  },
+  {
+   "story": "story-b",
+   "i": 0,
+   "text": "今日天氣好好，我哋去公園行下啦。",
+   "k": 0,
+   "salt": "",
+   "sha256_key": "story-b|0|今日天氣好好，我哋去公園行下啦。|0",
+   "seed": 4247300389
+  },
+  {
+   "story": "story-a",
+   "i": 0,
+   "text": "今日天氣好好，我哋去公園行下啦。",
+   "k": 0,
+   "salt": "draw2",
+   "sha256_key": "story-a|0|今日天氣好好，我哋去公園行下啦。|0|draw2",
+   "seed": 637501722
+  }
+ ]
+}

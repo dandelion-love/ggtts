@@ -1,0 +1,87 @@
+{
+ "format": "ggtts-pipeline-cases/1",
+ "spec": "story-v1",
+ "source": "exported from the reference long-text render's parity cases; texts are invented sentences",
+ "cases": [
+  {
+   "file": "defaults",
+   "id": "ceilings/chunk-lower-bound",
+   "reason": "the passage chunker's lower bound (14) is accepted and never read"
+  },
+  {
+   "file": "defaults",
+   "id": "ceilings/escalation-ceiling",
+   "reason": "the passage path's re-chunking escalation is not ported"
+  },
+  {
+   "file": "defaults",
+   "id": "cli-defaults/passage-retry",
+   "reason": "the passage path's retry policy (retry_seed) is not ported"
+  },
+  {
+   "file": "seeds",
+   "id": "seed-tts-api-retry",
+   "reason": "the passage path's retry_seed is not ported (decision 4)"
+  },
+  {
+   "file": "trim",
+   "id": "silence_report",
+   "reason": "the edge-and-gap silence report feeds only the passage defect check, not ported"
+  },
+  {
+   "file": "judge",
+   "id": "judge-durations/defects",
+   "reason": "the passage path's defects() verdicts on the same clips"
+  },
+  {
+   "file": "bounds",
+   "id": "bound-defects",
+   "reason": "the passage path's defects() check is not ported (decision 4)"
+  },
+  {
+   "file": "bounds",
+   "id": "bound-defects-rms",
+   "reason": "the passage path's defects() check is not ported (decision 4)"
+  },
+  {
+   "file": "bounds",
+   "id": "bound-defects-calibrated",
+   "reason": "the passage path's defects() check is not ported (decision 4)"
+  },
+  {
+   "file": "bounds",
+   "id": "bound-defects-one-past",
+   "reason": "the passage path's defects() check is not ported (decision 4)"
+  },
+  {
+   "file": "serve",
+   "id": "serve-render-story",
+   "reason": "the reference runtime's process protocol; a real engine's concern (ggml engine story)"
+  },
+  {
+   "file": "serve",
+   "id": "serve-tts-api",
+   "reason": "the reference runtime's process protocol; a real engine's concern (ggml engine story)"
+  },
+  {
+   "file": "serve",
+   "id": "serve-stereo-reply",
+   "reason": "the reference runtime's process protocol; a real engine's concern (ggml engine story)"
+  },
+  {
+   "file": "serve",
+   "id": "fallback-render-story",
+   "reason": "the reference runtime's process protocol; a real engine's concern (ggml engine story)"
+  },
+  {
+   "file": "serve",
+   "id": "fallback-tts-api",
+   "reason": "the reference runtime's process protocol; a real engine's concern (ggml engine story)"
+  },
+  {
+   "file": "kitten",
+   "id": "kitten-text",
+   "reason": "the Kitten-TTS family arrives in its own story"
+  }
+ ]
+}

@@ -1,0 +1,20 @@
+[package]
+name = "ggtts-core"
+description = "ggtts core: the engine and backend interfaces, the long-text pipeline, instrument events and provenance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+libm.workspace = true
+# float_roundtrip: a trace is compared field for field after a write and a read, so every f64 must survive both.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+
+[dev-dependencies]
+ggtts-fake = { workspace = true, features = ["plant"] }
+ggtts-qwen3-tts.workspace = true
+claxon.workspace = true
+jsonschema = { version = "0.60.2", default-features = false }

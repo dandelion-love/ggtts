@@ -1,0 +1,791 @@
+{
+ "format": "ggtts-pipeline-cases/1",
+ "spec": "story-v1",
+ "source": "exported from the reference long-text render's parity cases; texts are invented sentences",
+ "cases": [
+  {
+   "id": "arm-first-draw",
+   "about": "the default: every chunk is its first draw, a runaway is kept and reported; joins and spans in samples",
+   "story_id": "arm-first-draw",
+   "paragraphs": [
+    "今日天氣好好，我哋去公園行下啦。",
+    "公園有好多人；有啲喺度跑步：有啲坐低食嘢！你想唔想去？"
+   ],
+   "ceiling": 45,
+   "redraw": 0,
+   "seed_salt": "",
+   "script": {
+    "今日天氣好好，我哋去公園行下啦。": [
+     9.8,
+     3.0
+    ]
+   },
+   "shape": {},
+   "engine_calls": [
+    {
+     "text": "今日天氣好好，我哋去公園行下啦。",
+     "seed": 481932625,
+     "speech_s": 9.8,
+     "amplitude_scale": 1.0
+    },
+    {
+     "text": "公園有好多人；有啲喺度跑步：有啲坐低食嘢！你想唔想去？",
+     "seed": 2798058631,
+     "speech_s": 5.75,
+     "amplitude_scale": 0.5
+    }
+   ],
+   "result": {
+    "title": "title",
+    "chunks": [
+     {
+      "i": 0,
+      "text": "今日天氣好好，我哋去公園行下啦。",
+      "seed": 481932625,
+      "redraws": 0,
+      "first_draw_defect": "runaway",
+      "final_defect": "runaway",
+      "s_per_char": 0.7,
+      "first_s_per_char": 0.7,
+      "span": [
+       0,
+       240960
+      ]
+     },
+     {
+      "i": 1,
+      "text": "公園有好多人；有啲喺度跑步：有啲坐低食嘢！你想唔想去？",
+      "seed": 2798058631,
+      "redraws": 0,
+      "first_draw_defect": null,
+      "final_defect": null,
+      "s_per_char": 0.25,
+      "first_s_per_char": 0.25,
+      "span": [
+       263280,
+       407040
+      ]
+     }
+    ],
+    "seconds": 16.96,
+    "sr": 24000,
+    "first_draw_defects": 1,
+    "final_defects": 1,
+    "read_samples": 407040,
+    "level": {
+     "read_rms_dbfs": -19.9855,
+     "read_peak": 0.166117,
+     "engine_rms_dbfs": -14.8659,
+     "applied_gain_db": -5.1196,
+     "int16_sha256": "642962fd342ea641b627af27ff6ee1b77965a29ef14ff90b64edf10b91429a4b",
+     "int16_peak_per_span": [
+      5443,
+      2722
+     ],
+     "int16_first_nonzero": [
+      313,
+      626,
+      936,
+      1243,
+      1546,
+      1844
+     ]
+    }
+   }
+  },
+  {
+   "id": "arm-demo-redraw",
+   "about": "--redraw 4 (published demos only): the runaway first draw is re-drawn at seed k=1 and kept once clean",
+   "story_id": "arm-demo-redraw",
+   "paragraphs": [
+    "今日天氣好好，我哋去公園行下啦。",
+    "公園有好多人；有啲喺度跑步：有啲坐低食嘢！你想唔想去？"
+   ],
+   "ceiling": 45,
+   "redraw": 4,
+   "seed_salt": "",
+   "script": {
+    "今日天氣好好，我哋去公園行下啦。": [
+     9.8,
+     3.0
+    ]
+   },
+   "shape": {},
+   "engine_calls": [
+    {
+     "text": "今日天氣好好，我哋去公園行下啦。",
+     "seed": 1796556400,
+     "speech_s": 9.8,
+     "amplitude_scale": 1.0
+    },
+    {
+     "text": "今日天氣好好，我哋去公園行下啦。",
+     "seed": 858381556,
+     "speech_s": 3.0,
+     "amplitude_scale": 1.0
+    },
+    {
+     "text": "公園有好多人；有啲喺度跑步：有啲坐低食嘢！你想唔想去？",
+     "seed": 807715449,
+     "speech_s": 5.75,
+     "amplitude_scale": 0.5
+    }
+   ],
+   "result": {
+    "title": "title",
+    "chunks": [
+     {
+      "i": 0,
+      "text": "今日天氣好好，我哋去公園行下啦。",
+      "seed": 858381556,
+      "redraws": 1,
+      "first_draw_defect": "runaway",
+      "final_defect": null,
+      "s_per_char": 0.214,
+      "first_s_per_char": 0.7,
+      "span": [
+       0,
+       77760
+      ]
+     },
+     {
+      "i": 1,
+      "text": "公園有好多人；有啲喺度跑步：有啲坐低食嘢！你想唔想去？",
+      "seed": 807715449,
+      "redraws": 0,
+      "first_draw_defect": null,
+      "final_defect": null,
+      "s_per_char": 0.25,
+      "first_s_per_char": 0.25,
+      "span": [
+       100080,
+       243840
+      ]
+     }
+    ],
+    "seconds": 10.16,
+    "sr": 24000,
+    "first_draw_defects": 1,
+    "final_defects": 0,
+    "read_samples": 243840,
+    "level": {
+     "read_rms_dbfs": -20.0,
+     "read_peak": 0.198203,
+     "engine_rms_dbfs": -16.3998,
+     "applied_gain_db": -3.6002,
+     "int16_sha256": "4521fe45ee124be00e360e51d266d2f2f7859d1bca6edde48ff9c3e011507197",
+     "int16_peak_per_span": [
+      6495,
+      3247
+     ],
+     "int16_first_nonzero": [
+      374,
+      746,
+      1117,
+      1483,
+      1845,
+      2200
+     ]
+    }
+   }
+  },
+  {
+   "id": "arm-redraw-exhausted",
+   "about": "--redraw 2 where every draw is near-silent: the LAST draw is kept and reported as the final defect",
+   "story_id": "arm-redraw-exhausted",
+   "paragraphs": [
+    "今日天氣好好，我哋去公園行下啦。",
+    "公園有好多人；有啲喺度跑步：有啲坐低食嘢！你想唔想去？"
+   ],
+   "ceiling": 45,
+   "redraw": 2,
+   "seed_salt": "",
+   "script": {
+    "今日天氣好好，我哋去公園行下啦。": [
+     0.3,
+     0.3,
+     0.3
+    ]
+   },
+   "shape": {},
+   "engine_calls": [
+    {
+     "text": "今日天氣好好，我哋去公園行下啦。",
+     "seed": 303044682,
+     "speech_s": 0.3,
+     "amplitude_scale": 1.0
+    },
+    {
+     "text": "今日天氣好好，我哋去公園行下啦。",
+     "seed": 1950088189,
+     "speech_s": 0.3,
+     "amplitude_scale": 1.0
+    },
+    {
+     "text": "今日天氣好好，我哋去公園行下啦。",
+     "seed": 1172791641,
+     "speech_s": 0.3,
+     "amplitude_scale": 1.0
+    },
+    {
+     "text": "公園有好多人；有啲喺度跑步：有啲坐低食嘢！你想唔想去？",
+     "seed": 2654984215,
+     "speech_s": 5.75,
+     "amplitude_scale": 0.5
+    }
+   ],
+   "result": {
+    "title": "title",
+    "chunks": [
+     {
+      "i": 0,
+      "text": "今日天氣好好，我哋去公園行下啦。",
+      "seed": 1172791641,
+      "redraws": 2,
+      "first_draw_defect": "silent",
+      "final_defect": "silent",
+      "s_per_char": 0.021,
+      "first_s_per_char": 0.021,
+      "span": [
+       0,
+       12960
+      ]
+     },
+     {
+      "i": 1,
+      "text": "公園有好多人；有啲喺度跑步：有啲坐低食嘢！你想唔想去？",
+      "seed": 2654984215,
+      "redraws": 0,
+      "first_draw_defect": null,
+      "final_defect": null,
+      "s_per_char": 0.25,
+      "first_s_per_char": 0.25,
+      "span": [
+       35280,
+       179040
+      ]
+     }
+    ],
+    "seconds": 7.46,
+    "sr": 24000,
+    "first_draw_defects": 1,
+    "final_defects": 1,
+    "read_samples": 179040,
+    "level": {
+     "read_rms_dbfs": -20.0,
+     "read_peak": 0.263256,
+     "engine_rms_dbfs": -18.8651,
+     "applied_gain_db": -1.1349,
+     "int16_sha256": "f1c64129b30691e2ff6bab9c33333416d500bd9064c13875d92c4a64c9ee30c9",
+     "int16_peak_per_span": [
+      8626,
+      4313
+     ],
+     "int16_first_nonzero": [
+      497,
+      991,
+      1483,
+      1970,
+      2450,
+      2922
+     ]
+    }
+   }
+  },
+  {
+   "id": "arm-join-every-mark",
+   "about": "a ten-chunk read whose boundaries carry every pause in the table mid-paragraph (，、：；。！？), a hard cut (mark \"\"), a paragraph end (+0.45 s), and a final chunk whose gap is dropped; each gap is the next span's start minus this one's end",
+   "story_id": "arm-join-every-mark",
+   "paragraphs": [
+    "朝早六點鐘我哋就已經起身準備好晒所有行山要用嘅嘢，包括水樽毛巾帽仔同埋一大袋喺街市買返嚟嘅新鮮生果、阿媽仲特登煮咗一大煲紅豆沙俾我哋帶住喺路上慢慢飲：可惜去到山腳先至發覺原來條路因為要維修已經封閉咗；我哋唯有喺附近再搵過第二條比較少人行嘅舊路上山頂。點知行到一半突然落起大雨嚟大家即刻衝入去涼亭避雨！你估吓我哋喺個涼亭入面等咗幾耐先至終於等到雨停呢？雨停之後成座山都好似洗過一樣啲樹葉綠到發光空氣又清新到不得了我哋企喺度深呼吸咗好幾下先至繼續慢慢行。落山嗰陣大家都好攰但係個個都好開心講住下次再嚟",
+    "返到屋企我即刻沖涼瞓覺。"
+   ],
+   "ceiling": 45,
+   "redraw": 0,
+   "seed_salt": "",
+   "script": {},
+   "shape": {},
+   "engine_calls": [
+    {
+     "text": "朝早六點鐘我哋就已經起身準備好晒所有行山要用嘅嘢，",
+     "seed": 2056887871,
+     "speech_s": 6.0,
+     "amplitude_scale": 1.0
+    },
+    {
+     "text": "包括水樽毛巾帽仔同埋一大袋喺街市買返嚟嘅新鮮生果、",
+     "seed": 335235955,
+     "speech_s": 6.0,
+     "amplitude_scale": 0.5
+    },
+    {
+     "text": "阿媽仲特登煮咗一大煲紅豆沙俾我哋帶住喺路上慢慢飲：",
+     "seed": 2650369041,
+     "speech_s": 6.0,
+     "amplitude_scale": 1.0
+    },
+    {
+     "text": "可惜去到山腳先至發覺原來條路因為要維修已經封閉咗；",
+     "seed": 3171567912,
+     "speech_s": 6.0,
+     "amplitude_scale": 0.5
+    },
+    {
+     "text": "我哋唯有喺附近再搵過第二條比較少人行嘅舊路上山頂。",
+     "seed": 192088038,
+     "speech_s": 6.0,
+     "amplitude_scale": 1.0
+    },
+    {
+     "text": "點知行到一半突然落起大雨嚟大家即刻衝入去涼亭避雨！",
+     "seed": 1167617506,
+     "speech_s": 6.0,
+     "amplitude_scale": 0.5
+    },
+    {
+     "text": "你估吓我哋喺個涼亭入面等咗幾耐先至終於等到雨停呢？",
+     "seed": 113495517,
+     "speech_s": 6.0,
+     "amplitude_scale": 1.0
+    },
+    {
+     "text": "雨停之後成座山都好似洗過一樣啲樹葉綠到發光空氣又清新到不得了我哋企喺度深呼吸咗好幾下先至繼",
+     "seed": 1843441065,
+     "speech_s": 11.25,
+     "amplitude_scale": 0.5
+    },
+    {
+     "text": "續慢慢行。落山嗰陣大家都好攰但係個個都好開心講住下次再嚟",
+     "seed": 3816908986,
+     "speech_s": 6.75,
+     "amplitude_scale": 1.0
+    },
+    {
+     "text": "返到屋企我即刻沖涼瞓覺。",
+     "seed": 2669999155,
+     "speech_s": 2.75,
+     "amplitude_scale": 0.5
+    }
+   ],
+   "result": {
+    "title": "title",
+    "chunks": [
+     {
+      "i": 0,
+      "text": "朝早六點鐘我哋就已經起身準備好晒所有行山要用嘅嘢，",
+      "seed": 2056887871,
+      "redraws": 0,
+      "first_draw_defect": null,
+      "final_defect": null,
+      "s_per_char": 0.25,
+      "first_s_per_char": 0.25,
+      "span": [
+       0,
+       149760
+      ]
+     },
+     {
+      "i": 1,
+      "text": "包括水樽毛巾帽仔同埋一大袋喺街市買返嚟嘅新鮮生果、",
+      "seed": 335235955,
+      "redraws": 0,
+      "first_draw_defect": null,
+      "final_defect": null,
+      "s_per_char": 0.25,
+      "first_s_per_char": 0.25,
+      "span": [
+       154560,
+       304320
+      ]
+     },
+     {
+      "i": 2,
+      "text": "阿媽仲特登煮咗一大煲紅豆沙俾我哋帶住喺路上慢慢飲：",
+      "seed": 2650369041,
+      "redraws": 0,
+      "first_draw_defect": null,
+      "final_defect": null,
+      "s_per_char": 0.25,
+      "first_s_per_char": 0.25,
+      "span": [
+       308160,
+       457920
+      ]
+     },
+     {
+      "i": 3,
+      "text": "可惜去到山腳先至發覺原來條路因為要維修已經封閉咗；",
+      "seed": 3171567912,
+      "redraws": 0,
+      "first_draw_defect": null,
+      "final_defect": null,
+      "s_per_char": 0.25,
+      "first_s_per_char": 0.25,
+      "span": [
+       465120,
+       614880
+      ]
+     },
+     {
+      "i": 4,
+      "text": "我哋唯有喺附近再搵過第二條比較少人行嘅舊路上山頂。",
+      "seed": 192088038,
+      "redraws": 0,
+      "first_draw_defect": null,
+      "final_defect": null,
+      "s_per_char": 0.25,
+      "first_s_per_char": 0.25,
+      "span": [
+       622560,
+       772320
+      ]
+     },
+     {
+      "i": 5,
+      "text": "點知行到一半突然落起大雨嚟大家即刻衝入去涼亭避雨！",
+      "seed": 1167617506,
+      "redraws": 0,
+      "first_draw_defect": null,
+      "final_defect": null,
+      "s_per_char": 0.25,
+      "first_s_per_char": 0.25,
+      "span": [
+       783840,
+       933600
+      ]
+     },
+     {
+      "i": 6,
+      "text": "你估吓我哋喺個涼亭入面等咗幾耐先至終於等到雨停呢？",
+      "seed": 113495517,
+      "redraws": 0,
+      "first_draw_defect": null,
+      "final_defect": null,
+      "s_per_char": 0.25,
+      "first_s_per_char": 0.25,
+      "span": [
+       945120,
+       1094880
+      ]
+     },
+     {
+      "i": 7,
+      "text": "雨停之後成座山都好似洗過一樣啲樹葉綠到發光空氣又清新到不得了我哋企喺度深呼吸咗好幾下先至繼",
+      "seed": 1843441065,
+      "redraws": 0,
+      "first_draw_defect": null,
+      "final_defect": null,
+      "s_per_char": 0.25,
+      "first_s_per_char": 0.25,
+      "span": [
+       1106880,
+       1382640
+      ]
+     },
+     {
+      "i": 8,
+      "text": "續慢慢行。落山嗰陣大家都好攰但係個個都好開心講住下次再嚟",
+      "seed": 3816908986,
+      "redraws": 0,
+      "first_draw_defect": null,
+      "final_defect": null,
+      "s_per_char": 0.25,
+      "first_s_per_char": 0.25,
+      "span": [
+       1386960,
+       1554720
+      ]
+     },
+     {
+      "i": 9,
+      "text": "返到屋企我即刻沖涼瞓覺。",
+      "seed": 2669999155,
+      "redraws": 0,
+      "first_draw_defect": null,
+      "final_defect": null,
+      "s_per_char": 0.25,
+      "first_s_per_char": 0.25,
+      "span": [
+       1569840,
+       1641600
+      ]
+     }
+    ],
+    "seconds": 68.4,
+    "sr": 24000,
+    "first_draw_defects": 0,
+    "final_defects": 0,
+    "read_samples": 1641600,
+    "level": {
+     "read_rms_dbfs": -19.9855,
+     "read_peak": 0.179661,
+     "engine_rms_dbfs": -15.5466,
+     "applied_gain_db": -4.4388,
+     "int16_sha256": "72b521eb81c061cac2ceb2b94980d0ce233cab47a57d37b28e4a4322ce9896c0",
+     "int16_peak_per_span": [
+      5887,
+      2943,
+      5887,
+      2943,
+      5887,
+      2943,
+      5887,
+      2943,
+      5887,
+      2943
+     ],
+     "int16_first_nonzero": [
+      339,
+      677,
+      1012,
+      1344,
+      1672,
+      1994
+     ]
+    }
+   }
+  },
+  {
+   "id": "arm-clip",
+   "about": "a quiet draw (amplitude 0.02) carrying a +-0.5 click pair: the read's gain lifts the clicks past +-0.999, so the clip decides their value",
+   "story_id": "arm-clip",
+   "paragraphs": [
+    "今日天氣好好，我哋去公園行下啦。"
+   ],
+   "ceiling": 45,
+   "redraw": 0,
+   "seed_salt": "",
+   "script": {},
+   "shape": {
+    "今日天氣好好，我哋去公園行下啦。": {
+     "amplitude_scale": 0.06666666666666667,
+     "spike": 0.5
+    }
+   },
+   "engine_calls": [
+    {
+     "text": "今日天氣好好，我哋去公園行下啦。",
+     "seed": 2811877606,
+     "speech_s": 3.5,
+     "amplitude_scale": 0.06666666666666667
+    }
+   ],
+   "result": {
+    "title": "title",
+    "chunks": [
+     {
+      "i": 0,
+      "text": "今日天氣好好，我哋去公園行下啦。",
+      "seed": 2811877606,
+      "redraws": 0,
+      "first_draw_defect": null,
+      "final_defect": null,
+      "s_per_char": 0.25,
+      "first_s_per_char": 0.25,
+      "span": [
+       0,
+       89760
+      ]
+     }
+    ],
+    "seconds": 3.74,
+    "sr": 24000,
+    "first_draw_defects": 0,
+    "final_defects": 0,
+    "read_samples": 89760,
+    "level": {
+     "read_rms_dbfs": -20.2342,
+     "read_peak": 0.999,
+     "engine_rms_dbfs": -36.7229,
+     "applied_gain_db": 16.4887,
+     "int16_sha256": "9cee659769bfac01000804e1cc7c77053d2245dd612ddb2870950e48e4148367",
+     "int16_peak_per_span": [
+      32734
+     ],
+     "int16_first_nonzero": [
+      259,
+      517,
+      773,
+      1026,
+      1276,
+      1522
+     ]
+    }
+   }
+  },
+  {
+   "id": "arm-all-quiet",
+   "about": "every sample of the read at or under 1e-3 (amplitude 0.0009): no sample is measured, so the gain is 1 and the read is returned as joined",
+   "story_id": "arm-all-quiet",
+   "paragraphs": [
+    "今日天氣好好，我哋去公園行下啦。"
+   ],
+   "ceiling": 45,
+   "redraw": 0,
+   "seed_salt": "",
+   "script": {},
+   "shape": {
+    "今日天氣好好，我哋去公園行下啦。": {
+     "amplitude_scale": 0.003
+    }
+   },
+   "engine_calls": [
+    {
+     "text": "今日天氣好好，我哋去公園行下啦。",
+     "seed": 685544664,
+     "speech_s": 3.5,
+     "amplitude_scale": 0.003
+    }
+   ],
+   "result": {
+    "title": "title",
+    "chunks": [
+     {
+      "i": 0,
+      "text": "今日天氣好好，我哋去公園行下啦。",
+      "seed": 685544664,
+      "redraws": 0,
+      "first_draw_defect": null,
+      "final_defect": null,
+      "s_per_char": 0.25,
+      "first_s_per_char": 0.25,
+      "span": [
+       0,
+       89760
+      ]
+     }
+    ],
+    "seconds": 3.74,
+    "sr": 24000,
+    "first_draw_defects": 0,
+    "final_defects": 0,
+    "read_samples": 89760,
+    "level": {
+     "read_rms_dbfs": null,
+     "read_peak": 0.0009,
+     "engine_rms_dbfs": null,
+     "applied_gain_db": null,
+     "int16_sha256": "70ad4787c67f4ad23731cb6a0554cce945e2fd9a23920d8a5478a4fb136adb18",
+     "int16_peak_per_span": [
+      29
+     ],
+     "int16_first_nonzero": [
+      2,
+      3,
+      5,
+      7,
+      8,
+      10
+     ]
+    }
+   }
+  },
+  {
+   "id": "arm-rate-mismatch",
+   "about": "the first chunk comes back at 16 kHz and the second at 24 kHz: the read takes the FIRST chunk's rate for the gaps and the seconds, with no resampling and no check; at 16 kHz the paragraph gap (0.48 + 0.45) x 16000 is 14879.999... in float64 and int() truncates it to 14879",
+   "story_id": "arm-rate-mismatch",
+   "paragraphs": [
+    "今日天氣好好，我哋去公園行下啦。",
+    "公園有好多人，有啲坐低食嘢。"
+   ],
+   "ceiling": 45,
+   "redraw": 0,
+   "seed_salt": "",
+   "script": {},
+   "shape": {
+    "今日天氣好好，我哋去公園行下啦。": {
+     "sample_rate": 16000
+    }
+   },
+   "engine_calls": [
+    {
+     "text": "今日天氣好好，我哋去公園行下啦。",
+     "seed": 2098141992,
+     "speech_s": 3.5,
+     "amplitude_scale": 1.0
+    },
+    {
+     "text": "公園有好多人，有啲坐低食嘢。",
+     "seed": 3533584194,
+     "speech_s": 3.0,
+     "amplitude_scale": 0.5
+    }
+   ],
+   "result": {
+    "title": "title",
+    "chunks": [
+     {
+      "i": 0,
+      "text": "今日天氣好好，我哋去公園行下啦。",
+      "seed": 2098141992,
+      "redraws": 0,
+      "first_draw_defect": null,
+      "final_defect": null,
+      "s_per_char": 0.25,
+      "first_s_per_char": 0.25,
+      "span": [
+       0,
+       59840
+      ]
+     },
+     {
+      "i": 1,
+      "text": "公園有好多人，有啲坐低食嘢。",
+      "seed": 3533584194,
+      "redraws": 0,
+      "first_draw_defect": null,
+      "final_defect": null,
+      "s_per_char": 0.25,
+      "first_s_per_char": 0.25,
+      "span": [
+       74719,
+       152479
+      ]
+     }
+    ],
+    "seconds": 9.53,
+    "sr": 16000,
+    "first_draw_defects": 0,
+    "final_defects": 0,
+    "read_samples": 152479,
+    "level": {
+     "read_rms_dbfs": -19.9918,
+     "read_peak": 0.185633,
+     "engine_rms_dbfs": -15.8307,
+     "applied_gain_db": -4.1612,
+     "int16_sha256": "71ee2237dac6207cd61c03704245ec21fe48fdea2bad09123562eeae009d3afb",
+     "int16_peak_per_span": [
+      6083,
+      3041
+     ],
+     "int16_first_nonzero": [
+      525,
+      1046,
+      1559,
+      2060,
+      2547,
+      3014
+     ]
+    }
+   }
+  }
+ ],
+ "write_flac": {
+  "id": "write-flac",
+  "signal": {
+   "kind": "tone",
+   "lead_s": 0.3,
+   "speech_s": 0.5,
+   "tail_s": 0.5,
+   "sample_rate": 24000
+  },
+  "asked_for": "read.wav",
+  "written": "read.flac",
+  "format": "FLAC",
+  "subtype": "PCM_16",
+  "sample_rate": 24000,
+  "channels": 1,
+  "frames": 31200,
+  "int16_peak": 9830
+ }
+}

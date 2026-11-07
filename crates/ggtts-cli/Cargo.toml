@@ -1,0 +1,40 @@
+[package]
+name = "ggtts-cli"
+description = "The ggtts command-line tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "ggtts-render"
+path = "src/bin/ggtts-render.rs"
+
+[[bin]]
+name = "ggtts-measure"
+path = "src/bin/ggtts-measure.rs"
+
+[dependencies]
+ggtts-core.workspace = true
+ggtts-instruments.workspace = true
+ggtts-qwen3-tts.workspace = true
+ggtts-kitten = { path = "../ggtts-kitten" }
+ggtts-fake.workspace = true
+
+[dev-dependencies]
+claxon.workspace = true
+serde_json.workspace = true
+
+[features]
+default = []
+# The engines over ggml. Off by default, so the workspace builds without the ggml submodule; ggtts-render then
+# only reports its version.
+ggml = ["ggtts-qwen3-tts/ggml", "ggtts-kitten/ggml"]
+# The CUDA backend as well, for --device cuda.
+cuda = ["ggml", "ggtts-qwen3-tts/cuda", "ggtts-kitten/cuda"]
+# The engines over ggml with bindings generated at build time, for targets with no committed bindings (everything but
+# x86_64 Linux, so the Windows release). Needs libclang. A feature of ggtts-cli, because `cargo build -p ggtts-cli`
+# cannot name a feature of a package it does not select.
+bindgen = ["ggml", "ggtts-qwen3-tts/bindgen"]

@@ -184,9 +184,9 @@ jobs:
   cuda-compile:
     needs: specialized-selection
     if: needs.specialized-selection.outputs.cuda == 'true'
-    name: cuda-compile (ggml at the pin, sm_86 and sm_89, no GPU)
+    name: cuda-compile (release archive, sm_86 and sm_89, no GPU)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     container:
       image: nvidia/cuda:12.6.3-devel-ubuntu22.04@sha256:d49bb8a4ff97fb5fe477947a3f02aa8c0a53eae77e11f00ec28618a0bcaa2ad1
     steps:
@@ -211,23 +211,14 @@ jobs:
       - name: Install the build tools
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cmake ninja-build git
-      - name: Configure (CUDA, sm_86 and sm_89)
-        run: |
-          cmake -S ggml -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="86;89" \
-            -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF
-      - name: Compile only (hosted runners have no GPU, so nothing runs)
-        run: cmake --build build -j 4
-      - name: Check both architectures are in the CUDA library
-        shell: bash
-        run: |
-          set -euo pipefail
-          lib=$(find build -name 'libggml-cuda.*' | head -n 1)
-          echo "library: $lib"
-          cuobjdump --list-elf "$lib" | tee elf.txt
-          grep -q 'sm_86' elf.txt
-          grep -q 'sm_89' elf.txt
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl cmake g++ make git python3
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Build and smoke the release archive (no GPU on hosted runners)
+        env:
+          TAG: ci
+          GGML_SRC: ${{ github.workspace }}/ggml
+        run: bash scripts/package_cuda_release.sh
 
   specialized-selection:
     name: Select release and binding checks (a skip is not a pass)

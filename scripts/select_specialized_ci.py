@@ -80,8 +80,8 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None):
             selected.add("package")
         if path == "scripts/buildinfo_engines.sh":
             selected.update(("ggml", "release"))
-        if path == ".github/workflows/release.yml":
-            selected.update(("package", "release"))
+        if path in (".github/workflows/release.yml", "scripts/package_cuda_release.sh"):
+            selected.update(("package", "release", "cuda"))
     return selected
 
 

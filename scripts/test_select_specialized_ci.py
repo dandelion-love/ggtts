@@ -13,7 +13,8 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(select(["docs/readme.md"]), set())
         self.assertEqual(select(["android/demo.kt"]), {"android", "binding"})
         self.assertEqual(select(["scripts/package_and_smoke.sh"]), {"package"})
-        self.assertEqual(select([".github/workflows/release.yml"]), {"package", "release"})
+        self.assertEqual(select([".github/workflows/release.yml"]), {"package", "release", "cuda"})
+        self.assertEqual(select(["scripts/package_cuda_release.sh"]), {"package", "release", "cuda"})
         self.assertEqual(select(["scripts/buildinfo_engines.sh"]), {"ggml", "release"})
         self.assertEqual(select(["crates/ggtts-qwen3-tts/src/lib.rs"]), {"binding", "android", "release", "ggml", "cuda"})
         for path in (".github/workflows/ci.yml", "scripts/select_specialized_ci.py",

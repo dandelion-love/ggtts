@@ -40,7 +40,7 @@ class SelectionTest(unittest.TestCase):
                          {"package", "release", "cuda"})
         self.assertEqual(decide("pull_request", "main", "rc", True, []), set(JOBS))
         self.assertEqual(decide("pull_request", "main", "rc", False, ["docs/x"]), set())
-        self.assertEqual(decide("push", "", "", True, ["Cargo.lock"]), {"ggml", "cuda"})
+        self.assertEqual(decide("push", "", "", True, ["Cargo.lock"]), set())
 
     def test_report_provenance_does_not_select_unrelated_release_builds(self):
         paths = ["crates/ggtts-cli/src/bin/ggtts-measure.rs", "crates/ggtts-cli/src/bin/ggtts-render.rs",

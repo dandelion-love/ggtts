@@ -73,7 +73,8 @@ def workflow_changes(before, after):
 
 def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None):
     if event != "pull_request":
-        return {"ggml", "cuda"}
+        # A merge to rc already had its PR checks; the full matrix runs on promotion.
+        return set()
     if base_ref == "main" and head_ref == "rc" and same_repo:
         return set(JOBS)
     selected = set()

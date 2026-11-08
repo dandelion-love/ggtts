@@ -25,6 +25,7 @@ MEASUREMENT_PATHS = {
     "crates/ggtts-core/tests/report.rs",
     "crates/ggtts-instruments/src/runner.rs",
     "crates/ggtts-instruments/tests/runner.rs",
+    "crates/ggtts-instruments/tests/no_change.rs",
 }
 
 

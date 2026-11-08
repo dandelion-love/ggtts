@@ -12,7 +12,7 @@ import math
 
 from ggtts_instrument import read_audio, run
 
-NAME, VERSION = "internal-pauses", "0.1.0"
+NAME, VERSION = "internal-pauses", "0.2.0"
 
 
 def silent_frames(samples, rate, floor_dbfs, frame_s=0.01):
@@ -23,11 +23,11 @@ def silent_frames(samples, rate, floor_dbfs, frame_s=0.01):
     for i in range(0, len(samples) - n + 1, n):
         f = samples[i:i + n]
         out.append(math.sqrt(sum(x * x for x in f) / n) < floor)
-    return out, frame_s
+    return out, n / rate
 
 
 def pauses(samples, rate, floor_dbfs, min_pause_s):
-    """The internal silences longer than `min_pause_s`, in seconds, in order."""
+    """The internal silences at least `min_pause_s`, in seconds, in order."""
     silent, frame_s = silent_frames(samples, rate, floor_dbfs)
     voiced = [i for i, s in enumerate(silent) if not s]
     if not voiced:
@@ -37,14 +37,14 @@ def pauses(samples, rate, floor_dbfs, min_pause_s):
         if s:
             run_len += 1
         else:
-            if run_len * frame_s > min_pause_s:
+            if run_len and run_len * frame_s >= min_pause_s:
                 found.append(run_len * frame_s)
             run_len = 0
     return found
 
 
 def measure(ctx, env):
-    min_pause_s = ctx.number("min_pause_s", 1.5)
+    min_pause_s = ctx.number("min_pause_s", 1.0)
     floor = ctx.number("floor_dbfs", -40.0)
     if not ctx.audio:
         raise ValueError("--audio is required")

@@ -57,7 +57,7 @@ def main():
             audio, rate = sf.read(path, dtype="float64")
             report = out / (engine + "-" + name + "-report")
             cmd = [str(args.measure.resolve()), "--audio", str(path), "--report", str(report),
-                   "--instrument", "audio-levels", "--instrument", "internal-pauses",
+                   "--instrument", "audio-levels", "--instrument", "internal-pauses,arg.min_pause_s=1.5",
                    "--require", "audio-levels", "--require", "internal-pauses"]
             proc = subprocess.run(cmd, env=env, text=True, capture_output=True)
             if proc.returncode:

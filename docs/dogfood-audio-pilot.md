@@ -19,7 +19,9 @@ ggtts sources were at `2e7eca7259339062cb650a9c296a18ae7c975324` on `rc`; the `g
 
 The lab level function rounds to 0.01 dB and adds a small numerical floor; on these nonzero clips its peak and whole-file RMS agree with ggtts to the displayed precision. This is `room_stats`' whole-file RMS, not the lab recording harness's speech-only RMS. Zero pauses is represented as `null` for ggtts's longest pause and `0.0` for the lab's; that difference is expected, not a discrepancy in count.
 
-For comparison the lab's `gap_min_s` was set to 1.5 s, matching the ggtts instrument's default duration threshold. The lab's operational default is 0.25 s. Thresholds still differ: ggtts uses an **absolute** -40 dBFS 10 ms frame threshold and counts runs strictly longer than 1.5 s; the lab uses 40 dB below the **loudest frame** and includes runs at least 1.5 s. Boundaries, short gaps and quiet audio can therefore disagree. These two examples do not establish equivalence.
+For this recorded run the lab's `gap_min_s` was set to 1.5 s, matching the then-current ggtts 0.1.0 default duration threshold. The lab's operational default is 0.25 s. In that run ggtts used an **absolute** -40 dBFS 10 ms frame threshold and counted runs strictly longer than 1.5 s; the lab uses 40 dB below the **loudest frame** and includes runs at least 1.5 s. Boundaries, short gaps and quiet audio can therefore disagree. These two examples do not establish equivalence.
+
+The current pilot script explicitly requests a 1.5 s threshold. Instrument 0.2.0 includes gaps exactly at the threshold and defaults to 1.0 s; use the recorded 0.1.0 revision to reproduce the original strict boundary behavior. Neither version uses the lab's relative level threshold.
 
 ## Controls and limitations
 
@@ -28,7 +30,7 @@ For comparison the lab's `gap_min_s` was set to 1.5 s, matching the ggtts instru
 - Inserting two seconds of zeros midway increased the pause count from zero to one in both tools on each clip, with a 2.00 s longest gap. It demonstrates detection of this coarse plant only.
 - A missing `--audio` was rejected with exit 2 and no report directory. This is an input error, distinct from exit 3 for a rendered or supplied input whose required measurement is incomplete.
 - The first run used system Python without `soundfile`. Both instruments rejected the lab-written predictive FLAC controls and the measurement returned incomplete. Selecting the lab environment via `GGTTS_PYTHON` made the same controls readable. Python with `soundfile` is required for those files; the built-in fallback only decodes ggtts's FLAC subset.
-- The instrument envelopes currently assert `provenance.audio = trimmed` even for existing files whose trim state was not supplied. The inputs here have **unknown** trim state. This provenance defect is tracked in [#91](https://github.com/dandelion-love/ggtts/issues/91); do not treat those envelope fields as proof of trimming.
+- The instrument envelopes from this run asserted `provenance.audio = trimmed` even though the files' trim state was not supplied. The inputs here have **unknown** trim state. [#91](https://github.com/dandelion-love/ggtts/issues/91) corrected that behavior for later runs; do not treat the old envelope fields as proof of trimming.
 
 ## Reproduce
 

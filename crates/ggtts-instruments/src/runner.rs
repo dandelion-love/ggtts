@@ -75,6 +75,8 @@ pub struct Inputs {
     pub report_dir: PathBuf,
     /// The render's audio.
     pub audio: PathBuf,
+    /// The known trim state of the audio, or Unknown when the caller cannot establish it.
+    pub audio_state: AudioState,
     /// Its length in seconds, for the overhead's real-time factor.
     pub audio_seconds: Option<f64>,
     /// The run's event stream, when it has one.
@@ -281,7 +283,7 @@ pub fn run(config: &Config, inputs: &Inputs) -> Result<RunSummary, String> {
             log: Some(log_rel.clone()),
             error: Some(why),
         };
-        let (env, exit, ms) = if aborted {
+        let (mut env, exit, ms) = if aborted {
             let why = "skipped: an earlier instrument failed and on_error is abort".to_string();
             (made(Status::Skipped, why), "not started".to_string(), 0)
         } else if let (true, Some((status, problem))) = (needs_events, &events_problem) {
@@ -290,6 +292,12 @@ pub fn run(config: &Config, inputs: &Inputs) -> Result<RunSummary, String> {
         } else {
             one(config, entry, inputs, &bin_dir, &dir, &log_rel, &made)
         };
+        // The caller owns the input and its provenance; do not let an instrument invent its trim state.
+        // Event-only instruments retain n/a. The merged report contains v2 envelopes, including accepted v1 inputs.
+        env.format = FORMAT.into();
+        if env.provenance.audio != AudioState::NotApplicable || env.hooks.iter().any(|h| h == "artifact.audio") {
+            env.provenance.audio = inputs.audio_state;
+        }
         instruments_ms += ms;
         let _ = fs::create_dir_all(&dir);
         let env_path = dir.join("envelope.json");

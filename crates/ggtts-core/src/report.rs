@@ -1,4 +1,4 @@
-//! The report envelope `ggtts-report/1`, and the merger that turns a run's envelopes into one report.
+//! The report envelope `ggtts-report/2`, and the merger that turns a run's envelopes into one report.
 //!
 //! Every instrument writes one envelope. It says:
 //! - who it is: name, version and identity;
@@ -16,7 +16,7 @@
 //!   but `ok`, makes the measurement INCOMPLETE: never a pass, never a zero. A metric the instrument could not
 //!   compute is `null`, not 0.
 //!
-//! [`validate`] is the runtime check. The published schema, `schemas/ggtts-report-1.schema.json`, says the same for
+//! [`validate`] is the runtime check. The published schema, `schemas/ggtts-report-2.schema.json`, says the same for
 //! instruments in other languages, and `tests/report.rs` holds the two in agreement on every valid case and every
 //! planted defect.
 //!
@@ -30,10 +30,10 @@ use std::path::Path;
 use serde_json::{json, Map, Value};
 
 /// The envelope and report format this module writes.
-pub const FORMAT: &str = "ggtts-report/1";
+pub const FORMAT: &str = "ggtts-report/2";
 
 /// The formats [`validate`] accepts: the current one first, then at most the one before it.
-pub const READS: &[&str] = &[FORMAT];
+pub const READS: &[&str] = &[FORMAT, "ggtts-report/1"];
 
 /// How an instrument ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -106,6 +106,8 @@ impl Direction {
 pub enum AudioState {
     Raw,
     Trimmed,
+    /// Audio was measured but its trim state was not established.
+    Unknown,
     /// The instrument measured no audio.
     NotApplicable,
 }
@@ -115,6 +117,7 @@ impl AudioState {
         match self {
             AudioState::Raw => "raw",
             AudioState::Trimmed => "trimmed",
+            AudioState::Unknown => "unknown",
             AudioState::NotApplicable => "n/a",
         }
     }
@@ -314,7 +317,7 @@ impl<'v, 'w> Check<'v, 'w> {
     }
 }
 
-/// Check one envelope against `ggtts-report/1`. Every reason it fails, not only the first.
+/// Check one envelope against a supported report version. Every reason it fails, not only the first.
 pub fn validate(v: &Value) -> Result<Envelope, Vec<String>> {
     let mut why = Vec::new();
     let Some(mut c) = Check::new("", v, &mut why, "an envelope") else {
@@ -383,6 +386,11 @@ pub fn validate(v: &Value) -> Result<Envelope, Vec<String>> {
 
     let identity = id_v.and_then(|v| identity(v, &mut why));
     let provenance = prov_v.and_then(|v| provenance(v, &mut why));
+    if format.as_deref() == Some("ggtts-report/1")
+        && provenance.as_ref().is_some_and(|p| p.audio == AudioState::Unknown)
+    {
+        why.push("provenance: unknown audio state requires ggtts-report/2".into());
+    }
     let mut metrics = Vec::new();
     for (i, x) in metric_values.iter().enumerate() {
         if let Some(m) = metric(&format!("metrics[{i}]: "), x, &mut why) {
@@ -465,9 +473,10 @@ fn provenance(v: &Value, why: &mut Vec<String>) -> Option<Provenance> {
     let audio = match c.m.get("audio").and_then(Value::as_str) {
         Some("raw") => Some(AudioState::Raw),
         Some("trimmed") => Some(AudioState::Trimmed),
+        Some("unknown") => Some(AudioState::Unknown),
         Some("n/a") => Some(AudioState::NotApplicable),
         _ => {
-            c.fail("`audio` must be \"raw\", \"trimmed\" or \"n/a\"".into());
+            c.fail("`audio` must be \"raw\", \"trimmed\", \"unknown\" or \"n/a\"".into());
             None
         }
     };
@@ -851,6 +860,8 @@ impl Report {
             .iter()
             .map(|e| {
                 let mut o = e.envelope.to_json();
+                // A v2 aggregate normalizes accepted v1 entries to the current envelope format.
+                o["format"] = json!(FORMAT);
                 o["source"] = json!(e.source);
                 if !e.invalid.is_empty() {
                     o["invalid"] = json!(e.invalid);

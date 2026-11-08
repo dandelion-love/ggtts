@@ -404,6 +404,11 @@ fn render(a: Args) -> Result<u8, String> {
         render: render_id,
         report_dir: a.report.clone().unwrap_or_else(|| path.with_extension("report")),
         audio: path.clone(),
+        audio_state: if a.story.is_some() {
+            ggtts_core::report::AudioState::Trimmed
+        } else {
+            ggtts_core::report::AudioState::Raw
+        },
         audio_seconds: (rate > 0).then(|| samples.len() as f64 / f64::from(rate)),
         events: a.trace.clone(),
         bin_dir: None,

@@ -9,7 +9,13 @@ An instrument measures a render without changing it. This folder holds what you 
 | `examples/python/internal-pauses/` | A worked example: silences inside the speech of a rendered read |
 
 The hook points and what each one carries are in [`docs/instruments/hooks.md`](../docs/instruments/hooks.md). The
-envelope every instrument writes is `ggtts-report/1` (`schemas/ggtts-report-1.schema.json`).
+envelope every instrument writes is `ggtts-report/2` (`schemas/ggtts-report-2.schema.json`); the runner also reads
+`ggtts-report/1` and normalizes it into the current merged report. Older v1-only readers cannot read v2 reports.
+
+For existing audio, `ggtts-measure --audio-state raw|trimmed|unknown` records the caller's knowledge; the default is
+`unknown`. The flag does not modify the audio or verify the claim. `ggtts-render --text` reports `raw` and its story
+pipeline reports `trimmed`. Event-only instruments use `n/a`. Standalone audio instruments without a runner report
+`unknown`. A v1 `n/a` remains `n/a`; old reports do not prove an audio file was trimmed.
 
 ## Write a Python instrument
 

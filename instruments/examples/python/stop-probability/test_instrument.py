@@ -79,10 +79,13 @@ class StopTest(unittest.TestCase):
             del seed[1]["seed"]
             frames = trace()
             del frames[4]["frames"]
+            duplicate = trace()
+            duplicate[-1:-1] = trace()[1:5]
             truncated = trace()[:-1]
             for name, lines, status in (("lost", no_terminal, "skipped"), ("missing", missing, "skipped"),
                                         ("old", unmarked, "skipped"), ("kitten", kitten, "skipped"),
                                         ("seed", seed, "skipped"), ("frames", frames, "skipped"),
+                                        ("duplicate", duplicate, "skipped"),
                                         ("truncated", truncated, "truncated")):
                 result, rows = invoke(d, name, lines)
                 self.assertEqual(result["status"], status, name)

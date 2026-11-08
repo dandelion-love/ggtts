@@ -88,7 +88,8 @@ def run(measure, name, version, hooks, audio_state="n/a", argv=None):
 
     `measure` fills `env` (an `Envelope`) and may set its status. If it raises, the envelope is written `failed`
     with the exception's last line in `error` and the traceback on standard error, so the runner's log has it.
-    Returns the process exit code: 0 when the envelope says `ok`, 1 otherwise.
+    Returns 0 for a successfully produced `ok`, `skipped`, or `truncated` envelope, so the runner can retain
+    its reason and partial results. A failed instrument still exits 1.
     """
     ctx = parse_args(argv, default_name=name)
     env = Envelope(ctx.name, version, ctx.run, ctx.instrument, hooks, ctx.config, audio_state)
@@ -106,4 +107,4 @@ def run(measure, name, version, hooks, audio_state="n/a", argv=None):
         env.doc["metrics"], env.doc["artifacts"] = [], []
         env.status("failed", "invalid envelope: %s" % e)
         env.write(ctx.envelope)
-    return 0 if env.doc["status"] == "ok" else 1
+    return 0 if env.doc["status"] in ("ok", "skipped", "truncated") else 1

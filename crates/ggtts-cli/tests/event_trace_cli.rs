@@ -2,6 +2,87 @@ use std::path::Path;
 use std::process::Command;
 
 #[test]
+fn required_step_measurement_reports_missing_data_without_changing_audio() {
+    let root = std::env::temp_dir().join(format!("ggtts-step-input-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let story = root.join("story.txt");
+    std::fs::write(&story, "A short story\nThe quick fox crosses the field.").unwrap();
+    let audio = root.join("audio.flac");
+    let trace = root.join("events.jsonl");
+    let instruments = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments");
+    let render = Command::new(env!("CARGO_BIN_EXE_ggtts-render"))
+        .args(["--engine", "fake", "--story"])
+        .arg(&story)
+        .arg("--out")
+        .arg(&audio)
+        .arg("--trace")
+        .arg(&trace)
+        .output()
+        .unwrap();
+    assert!(render.status.success(), "{}", String::from_utf8_lossy(&render.stderr));
+    let original = std::fs::read(&audio).unwrap();
+    let instrumented_audio = root.join("instrumented.flac");
+    let instrumented_trace = root.join("instrumented.jsonl");
+    let instrumented_report = root.join("instrumented-report");
+    let instrumented = Command::new(env!("CARGO_BIN_EXE_ggtts-render"))
+        .env("GGTTS_INSTRUMENTS_DIR", &instruments)
+        .args(["--engine", "fake", "--story"])
+        .arg(&story)
+        .arg("--out")
+        .arg(&instrumented_audio)
+        .arg("--trace")
+        .arg(&instrumented_trace)
+        .arg("--report")
+        .arg(&instrumented_report)
+        .args(["--instrument", "p-stop-early", "--require", "p-stop-early"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        instrumented.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&instrumented.stderr)
+    );
+    assert_eq!(std::fs::read(&instrumented_audio).unwrap(), original);
+    let run = |events: &Path, report: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_ggtts-measure"))
+            .env("GGTTS_INSTRUMENTS_DIR", &instruments)
+            .arg("--audio")
+            .arg(&audio)
+            .arg("--events")
+            .arg(events)
+            .arg("--report")
+            .arg(report)
+            .args(["--instrument", "p-stop-early", "--require", "p-stop-early"])
+            .output()
+            .unwrap()
+    };
+    let valid = root.join("valid-report");
+    let ok = run(&trace, &valid);
+    assert_eq!(ok.status.code(), Some(0), "{}", String::from_utf8_lossy(&ok.stderr));
+    let missing = root.join("missing.jsonl");
+    let lines = std::fs::read_to_string(&trace).unwrap();
+    let without_steps: String = lines
+        .lines()
+        .filter(|line| !line.contains("\"ev\":\"step\""))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    std::fs::write(&missing, without_steps).unwrap();
+    let report = root.join("missing-report");
+    let result = run(&missing, &report);
+    assert_eq!(
+        result.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let log = std::fs::read_to_string(report.join("run.log")).unwrap();
+    assert!(log.contains("p_stop data is unavailable"), "{log}");
+    assert_eq!(std::fs::read(&audio).unwrap(), original);
+}
+
+#[test]
 fn story_trace_reaches_required_event_instrument_without_changing_audio() {
     let root = std::env::temp_dir().join(format!("ggtts-event-cli-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);

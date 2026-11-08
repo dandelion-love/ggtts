@@ -272,4 +272,21 @@ mod tests {
         assert_eq!(missing["required"][0]["present"], false);
         assert!(!missing.to_string().contains("missing-private-name"));
     }
+
+    #[test]
+    fn preserves_sibling_order() {
+        let mut input = report("timeout", false);
+        let mut sibling = input["instruments"][0].clone();
+        sibling["name"] = json!("second-private");
+        sibling["identity"]["instrument"] = json!("second-private-id");
+        sibling["status"] = json!("failed");
+        input["instruments"].as_array_mut().unwrap().push(sibling);
+        input["summary"]["failed"] = json!(1);
+        let out = export(&input).unwrap();
+        assert_eq!(out["instruments"][0]["status"], "timeout");
+        assert_eq!(out["instruments"][1]["status"], "failed");
+        assert_eq!(out["instruments"][0]["instrument"], 1);
+        assert_eq!(out["instruments"][1]["instrument"], 2);
+        assert!(!out.to_string().contains("private"));
+    }
 }

@@ -100,6 +100,12 @@ pub const CATALOGUE: &[Known] = &[
         "optional CPU ASR character error against a local reference; not a quality verdict",
         false,
     ),
+    python(
+        "asr-qwen",
+        "examples/python/asr-qwen/instrument.py",
+        "offline CPU Qwen3-ASR character error rate against a local reference",
+        false,
+    ),
 ];
 
 pub fn find(name: &str) -> Option<&'static Known> {

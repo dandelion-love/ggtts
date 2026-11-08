@@ -475,11 +475,11 @@ fn the_overhead_is_logged_against_the_budget_stated_before_measuring() {
     let paragraphs = long_prose();
     let (dir, inputs) = setup_with("overhead", &paragraphs);
     let mut c = Config::default();
-    // Every shipped instrument: the selftest binary and the Python templates and example, unless Python is skipped on
-    // purpose (GGTTS_SKIP_PYTHON=1, as the Python instrument suites honour).
+    // ASR needs a local model and reference not supplied by this overhead fixture.
+    // Python instruments are also excluded if GGTTS_SKIP_PYTHON is set.
     let skip_python = std::env::var_os("GGTTS_SKIP_PYTHON").is_some();
     for k in ggtts_instruments::catalogue::CATALOGUE {
-        if k.name == "asr-sensevoice" {
+        if matches!(k.name, "asr-sensevoice" | "asr-qwen") {
             continue; // Requires an explicitly provisioned model and reference.
         }
         if k.interpreter.is_none() || !skip_python {
@@ -487,6 +487,7 @@ fn the_overhead_is_logged_against_the_budget_stated_before_measuring() {
         }
     }
     let s = run(&c, &inputs).unwrap();
+    eprintln!("asr-sensevoice and asr-qwen excluded: no local model/reference supplied");
     assert!(
         s.envelopes.iter().all(|e| e.status == Status::Ok
             || (e.name == "loudness-ends" && e.status == Status::Skipped && e.error.is_some())),

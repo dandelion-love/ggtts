@@ -88,6 +88,12 @@ pub const CATALOGUE: &[Known] = &[
         "voiced pitch median and 5th-to-95th percentile range using the lab's Pitchy detector",
         false,
     ),
+    python(
+        "loudness-ends",
+        "examples/python/loudness-ends/instrument.py",
+        "relative loud and soft ends over pYIN-voiced speech-core frames",
+        false,
+    ),
 ];
 
 pub fn find(name: &str) -> Option<&'static Known> {

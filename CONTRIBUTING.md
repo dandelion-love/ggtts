@@ -57,11 +57,18 @@ CI runs the desktop release builds, archive smoke tests, Android build and host 
 same-repository `rc` to `main` promotion PR. Other PRs run the specialized checks selected by
 `scripts/select_specialized_ci.py` for their changed paths; pushes skip these four jobs. A skip is not a pass.
 The Linux and Windows ggml jobs and hosted CUDA compile use the same selector on ordinary PRs; a packaging-only
-workflow edit selects the archive tests, while changes to a specialized job select that job. Changes to the
-selector, unknown jobs or workflow-wide configuration conservatively select all. On pushes, ggml and CUDA still
-run; the four release and binding jobs are skipped. General checks still run, and the tag-triggered release
+workflow edit selects the archive tests, while changes to a specialized job select that job. Unknown jobs or
+workflow-wide configuration conservatively select all. Selector changes run their dedicated tests; other changed
+paths select their own jobs. On pushes, ggml and CUDA still run; the four release and binding jobs are skipped.
+General checks still run, and the tag-triggered release
 workflow still builds its archives. CUDA compilation on promotion is separate from GPU runtime parity; the local
 promotion gate supplies the latter.
+
+For the explicitly listed generic measurement and report paths in the selector, ordinary PRs run the standard
+Linux and Windows CPU checks and, for CLI or runner edits, package smoke. They do not automatically build the CUDA,
+Android or full release binaries. This trades earlier feature-specific compilation for a lighter PR: those builds
+remain mandatory on the promotion PR, and unrelated engine or unclassified crate changes still select specialized
+checks. Selector tests exercise the promotion and path decisions without building the full matrix on that PR.
 
 **Promotion.** `main` moves only by one reviewed pull request from `rc`. Hosted runners have no GPU, so before that
 pull request is merged, someone with a supported GPU runs `scripts/rc_gate.sh --ref origin/rc --work /path/to/scratch`

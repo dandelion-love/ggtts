@@ -6,8 +6,11 @@ use serde_json::json;
 
 #[test]
 fn separate_export_preserves_original_and_refuses_bad_inputs() {
-    let dir = std::env::temp_dir().join(format!("ggtts-export-{}-{}", std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+    let dir = std::env::temp_dir().join(format!(
+        "ggtts-export-{}-{}",
+        std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+    ));
     std::fs::create_dir(&dir).unwrap();
     let source = dir.join("private-path.json");
     let output = dir.join("share.json");
@@ -16,7 +19,14 @@ fn separate_export_preserves_original_and_refuses_bad_inputs() {
         "provenance":{"config":{"text":"private-transcript"},"ggtts":null,"engine":null,"backend":null,
             "model_sha256":null,"seeds":[],"inputs":[],"audio":"trimmed"},
         "hooks":[],"status":"timeout","metrics":[],"artifacts":[],"log":"private-log","error":"private-error"});
-    let report = merge("private-run", &[Input { source:"private-source".into(), text:env.to_string() }], &["asr-private"]);
+    let report = merge(
+        "private-run",
+        &[Input {
+            source: "private-source".into(),
+            text: env.to_string(),
+        }],
+        &["asr-private"],
+    );
     let original = report.to_json().to_string();
     std::fs::write(&source, &original).unwrap();
     let exe = env!("CARGO_BIN_EXE_ggtts-report-export");

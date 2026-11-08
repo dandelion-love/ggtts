@@ -3,7 +3,10 @@
 The runner's `report.json`, `report.md`, `report.html`, `run.log`, and each
 instrument envelope, log and artifact are private. They may contain paths,
 references, transcripts or secrets. This command creates a separate JSON file;
-it never overwrites a destination or modifies the original:
+it never overwrites a destination or modifies the original. Publication uses a
+same-directory hard link and refuses if that operation is unavailable. An
+interrupted process may leave a temporary file containing only the sanitized
+output; remove it if present:
 
 ```sh
 cargo run -p ggtts-instruments --bin ggtts-report-export -- private/report.json shareable.json

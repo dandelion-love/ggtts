@@ -11,14 +11,23 @@ use serde_json::{json, Value};
 fn fields(v: &Value, required: &[&str], optional: &[&str]) -> Result<(), ()> {
     let m = v.as_object().ok_or(())?;
     if required.iter().any(|k| !m.contains_key(*k))
-        || m.keys().any(|k| !required.contains(&k.as_str()) && !optional.contains(&k.as_str()))
-    { return Err(()); }
+        || m.keys()
+            .any(|k| !required.contains(&k.as_str()) && !optional.contains(&k.as_str()))
+    {
+        return Err(());
+    }
     Ok(())
 }
 
 fn export(v: &Value) -> Result<Value, ()> {
-    fields(v, &["format", "run", "measurement", "summary", "completeness", "instruments"], &[])?;
-    if v["format"] != FORMAT || v["run"].as_str().filter(|s| !s.is_empty()).is_none() { return Err(()); }
+    fields(
+        v,
+        &["format", "run", "measurement", "summary", "completeness", "instruments"],
+        &[],
+    )?;
+    if v["format"] != FORMAT || v["run"].as_str().filter(|s| !s.is_empty()).is_none() {
+        return Err(());
+    }
     let entries = v["instruments"].as_array().ok_or(())?;
     let reqs = v["completeness"].as_array().ok_or(())?;
     let mut counts: BTreeMap<&str, u64> = Status::ALL.into_iter().map(|s| (s.as_str(), 0)).collect();
@@ -28,14 +37,29 @@ fn export(v: &Value) -> Result<Value, ()> {
     for entry in entries {
         let mut raw = entry.clone();
         let object = raw.as_object_mut().ok_or(())?;
-        if object.remove("source").and_then(|v| v.as_str().map(str::to_owned)).is_none() { return Err(()); }
+        if object
+            .remove("source")
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .is_none()
+        {
+            return Err(());
+        }
         let invalid = object.remove("invalid");
         let env = validate(&raw).map_err(|_| ())?;
-        if env.identity.run != v["run"] || identities.contains(&env.identity.instrument) { return Err(()); }
+        if env.identity.run != v["run"] || identities.contains(&env.identity.instrument) {
+            return Err(());
+        }
         identities.push(env.identity.instrument.clone());
-        if invalid.is_some() != (env.status == Status::Invalid) { return Err(()); }
+        if invalid.is_some() != (env.status == Status::Invalid) {
+            return Err(());
+        }
         if let Some(x) = invalid {
-            if x.as_array().filter(|a| !a.is_empty() && a.iter().all(Value::is_string)).is_none() { return Err(()); }
+            if x.as_array()
+                .filter(|a| !a.is_empty() && a.iter().all(Value::is_string))
+                .is_none()
+            {
+                return Err(());
+            }
         }
         *counts.get_mut(env.status.as_str()).ok_or(())? += 1;
         let next = names.len() + 1;
@@ -44,18 +68,28 @@ fn export(v: &Value) -> Result<Value, ()> {
         for m in &env.metrics {
             // Names and units are not inherently safe strings. Only this reviewed
             // pair is currently exportable; new metrics require policy review.
-            if m.name != "character_error_rate" || m.unit != "1" { return Err(()); }
+            if m.name != "character_error_rate" || m.unit != "1" {
+                return Err(());
+            }
             metrics.push(json!({"name":m.name,"unit":m.unit,"value":m.value,
                 "direction":m.direction.as_str(),"interval":m.interval,"chunk":m.chunk,
                 "render_scoped":m.render.is_some()}));
         }
-        records.push(json!({"instrument":id,"status":env.status.as_str(),"audio":env.provenance.audio.as_str(),
+        records.push(
+            json!({"instrument":id,"status":env.status.as_str(),"audio":env.provenance.audio.as_str(),
             "model_sha256":env.provenance.model_sha256,
             "input_sha256":env.provenance.inputs.iter().map(|i| &i.sha256).collect::<Vec<_>>(),
-            "artifact_sha256":env.artifacts.iter().map(|i| &i.sha256).collect::<Vec<_>>(),"metrics":metrics}));
+            "artifact_sha256":env.artifacts.iter().map(|i| &i.sha256).collect::<Vec<_>>(),"metrics":metrics}),
+        );
     }
     let summary = v["summary"].as_object().ok_or(())?;
-    if summary.len() != counts.len() || counts.iter().any(|(k,n)| summary.get(*k).and_then(Value::as_u64) != Some(*n)) { return Err(()); }
+    if summary.len() != counts.len()
+        || counts
+            .iter()
+            .any(|(k, n)| summary.get(*k).and_then(Value::as_u64) != Some(*n))
+    {
+        return Err(());
+    }
     let mut required = Vec::new();
     let mut all_met = true;
     for req in reqs {
@@ -66,28 +100,58 @@ fn export(v: &Value) -> Result<Value, ()> {
         let valid = found.iter().all(|e| e.get("invalid").is_none());
         let present = !found.is_empty();
         let met = present && valid && statuses.iter().all(|s| *s == "ok");
-        if req["present"] != present || req["valid"] != valid || req["met"] != met || req["statuses"] != json!(statuses) { return Err(()); }
+        if req["present"] != present || req["valid"] != valid || req["met"] != met || req["statuses"] != json!(statuses)
+        {
+            return Err(());
+        }
         let next = names.len() + 1;
         let id = *names.entry(name.to_owned()).or_insert(next);
         required.push(json!({"instrument":id,"present":present,"valid":valid,"statuses":statuses,"met":met}));
         all_met &= met;
     }
-    if v["measurement"] != if all_met { "complete" } else { "incomplete" } { return Err(()); }
-    Ok(json!({"format":"ggtts-shareable-report/1","measurement":v["measurement"],
+    if v["measurement"] != if all_met { "complete" } else { "incomplete" } {
+        return Err(());
+    }
+    Ok(
+        json!({"format":"ggtts-shareable-report/1","measurement":v["measurement"],
         "summary":counts,"required":required,"instruments":records,
-        "omitted":["identifiers","paths","configuration","logs","error details","unreviewed provenance"]}))
+        "omitted":["identifiers","paths","configuration","logs","error details","unreviewed provenance"]}),
+    )
 }
 
 fn run() -> Result<(), ()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if args.len() != 2 { return Err(()); }
+    if args.len() != 2 {
+        return Err(());
+    }
     let input = std::fs::read(Path::new(&args[0])).map_err(|_| ())?;
     let value: Value = serde_json::from_slice(&input).map_err(|_| ())?;
     let out = export(&value)?;
     let encoded = serde_json::to_vec_pretty(&out).map_err(|_| ())?;
-    let mut file = OpenOptions::new().write(true).create_new(true).open(Path::new(&args[1])).map_err(|_| ())?;
-    file.write_all(&encoded).map_err(|_| ())?;
-    Ok(())
+    publish(Path::new(&args[1]), &encoded)
+}
+
+// Publish only after the full report is written. The hard link is an atomic,
+// no-clobber operation in the destination directory; unsupported filesystems
+// refuse rather than falling back to a potentially partial destination.
+fn publish(destination: &Path, encoded: &[u8]) -> Result<(), ()> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let parent = destination
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| ())?.as_nanos();
+    let temporary = parent.join(format!(".ggtts-export-{}-{stamp}.tmp", std::process::id()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|_| ())?;
+    let result = file.write_all(encoded).and_then(|_| file.sync_all());
+    drop(file);
+    let result = result.and_then(|_| std::fs::hard_link(&temporary, destination));
+    let _ = std::fs::remove_file(&temporary);
+    result.map_err(|_| ())
 }
 
 fn main() {
@@ -112,7 +176,10 @@ mod tests {
             "metrics":[{"name":"character_error_rate","unit":"1","value":0.25,"direction":"neutral","render":"private-render"}],
             "artifacts":[{"path":"private-artifact","type":"private-type","sha256":"c".repeat(64)}],
             "log":"private-log","error":"private-error"});
-        let i = Input { source:"private-source".into(), text:e.to_string() };
+        let i = Input {
+            source: "private-source".into(),
+            text: e.to_string(),
+        };
         merge("private-run", &[i], if required { &["sensitive-name"] } else { &[] }).to_json()
     }
 
@@ -123,8 +190,13 @@ mod tests {
             let before = input.to_string();
             let out = export(&input).unwrap();
             let text = out.to_string();
-            for secret in ["private", "sensitive-name", "secret-version"] { assert!(!text.contains(secret)); }
-            assert_eq!(out["measurement"], if status == "ok" {"complete"} else {"incomplete"});
+            for secret in ["private", "sensitive-name", "secret-version"] {
+                assert!(!text.contains(secret));
+            }
+            assert_eq!(
+                out["measurement"],
+                if status == "ok" { "complete" } else { "incomplete" }
+            );
             assert_eq!(out["instruments"][0]["metrics"][0]["value"], 0.25);
             assert_eq!(before, input.to_string());
         }
@@ -133,11 +205,61 @@ mod tests {
     #[test]
     fn rejects_unknown_fields_metrics_and_false_completeness() {
         let input = report("failed", true);
-        let mut x = input.clone(); x["instruments"][0]["private-extra"] = json!("secret"); assert!(export(&x).is_err());
-        let mut x = input.clone(); x["instruments"][0]["metrics"][0]["unit"] = json!("private-unit"); assert!(export(&x).is_err());
-        let mut x = input.clone(); x["measurement"] = json!("complete"); assert!(export(&x).is_err());
-        let mut x = input.clone(); x["summary"]["failed"] = json!(0); assert!(export(&x).is_err());
-        let mut x = input; x["instruments"][0]["status"] = json!("mystery"); assert!(export(&x).is_err());
+        let mut x = input.clone();
+        x["instruments"][0]["private-extra"] = json!("secret");
+        assert!(export(&x).is_err());
+        let mut x = input.clone();
+        x["instruments"][0]["metrics"][0]["unit"] = json!("private-unit");
+        assert!(export(&x).is_err());
+        let mut x = input.clone();
+        x["measurement"] = json!("complete");
+        assert!(export(&x).is_err());
+        let mut x = input.clone();
+        x["summary"]["failed"] = json!(0);
+        assert!(export(&x).is_err());
+        let mut x = input;
+        x["instruments"][0]["status"] = json!("mystery");
+        assert!(export(&x).is_err());
+    }
+
+    #[test]
+    fn refuses_missing_unknown_and_inconsistent_fields() {
+        let input = report("ok", true);
+        for key in ["run", "instruments", "summary", "completeness", "measurement"] {
+            let mut x = input.clone();
+            x.as_object_mut().unwrap().remove(key);
+            assert!(export(&x).is_err());
+        }
+        let mut x = input.clone();
+        x["unexpected"] = json!("private");
+        assert!(export(&x).is_err());
+        let mut x = input.clone();
+        x["instruments"][0]["provenance"]["extra"] = json!("private");
+        assert!(export(&x).is_err());
+        let mut x = input.clone();
+        x["completeness"][0]["met"] = json!(false);
+        assert!(export(&x).is_err());
+        let mut x = input;
+        x["instruments"][0]["identity"]["run"] = json!("other");
+        assert!(export(&x).is_err());
+    }
+
+    #[test]
+    fn publication_never_clobbers_and_leaves_no_temporary_file_on_error() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let dir = std::env::temp_dir().join(format!(
+            "ggtts-export-publish-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let destination = dir.join("report.json");
+        std::fs::write(&destination, "original").unwrap();
+        assert!(publish(&destination, b"replacement").is_err());
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "original");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        assert!(publish(&dir.join("missing").join("report.json"), b"data").is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -150,5 +272,4 @@ mod tests {
         assert_eq!(missing["required"][0]["present"], false);
         assert!(!missing.to_string().contains("missing-private-name"));
     }
-
 }

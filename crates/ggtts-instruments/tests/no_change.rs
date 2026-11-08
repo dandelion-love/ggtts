@@ -114,9 +114,10 @@ fn fake_engine_available_catalogue_preserves_tokens_and_samples_and_sees_a_sampl
     let before = sha256(&std::fs::read(&audio).unwrap());
     let mut config = Config::default();
     assert!(CATALOGUE.iter().any(|item| item.name == "loudness-ends"));
+    assert!(CATALOGUE.iter().any(|item| item.name == "asr-qwen"));
     for item in CATALOGUE {
-        if item.name == "loudness-ends" {
-            continue; // Optional pYIN is not installed on ordinary CI; do not count it as a passed proof.
+        if matches!(item.name, "loudness-ends" | "asr-qwen") {
+            continue; // Optional pYIN and ASR inputs are not provided; neither is a passed proof.
         }
         config.apply_instrument_flag(item.name).unwrap();
         config.require.push(item.name.to_string());
@@ -140,7 +141,7 @@ fn fake_engine_available_catalogue_preserves_tokens_and_samples_and_sees_a_sampl
         "instruments did not all report OK: {:?}",
         result.incomplete
     );
-    assert_eq!(result.envelopes.len() + 1, CATALOGUE.len());
+    assert_eq!(result.envelopes.len() + 2, CATALOGUE.len());
     let schema_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/ggtts-report-2.schema.json");
     let schema: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(schema_path).unwrap()).unwrap();
     let validator = jsonschema::validator_for(&schema).expect("the published report schema compiles");
@@ -167,9 +168,9 @@ fn fake_engine_available_catalogue_preserves_tokens_and_samples_and_sees_a_sampl
         "the sample-mutation plant must make the identity check red"
     );
     println!(
-        "fake backend; seed derived from no-change-fixture; {} instruments; loudness-ends not run; sample plant detected; \
+        "fake backend; seed derived from no-change-fixture; {} instruments; loudness-ends and asr-qwen not run; sample plant detected; \
               does not establish full-catalogue, real-model/GPU identity, timing, or external-artifact safety",
-        CATALOGUE.len() - 1
+        CATALOGUE.len() - 2
     );
     std::fs::remove_dir_all(root).unwrap();
 }

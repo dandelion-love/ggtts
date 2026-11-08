@@ -156,7 +156,12 @@ fn each_event_instrument_preserves_real_qwen_tokens_and_samples() {
     std::fs::write(&events, lines.join("\n") + "\n").unwrap();
     let audio = write_flac(&root.join("audio"), &samples, rate).unwrap();
     let audio_sha = sha256(&std::fs::read(&audio).unwrap());
+    assert!(CATALOGUE.iter().any(|item| item.name == "asr-qwen"));
     for item in CATALOGUE {
+        if item.name == "asr-qwen" {
+            println!("instrument=asr-qwen status=not-run reason=no-local-model-or-reference");
+            continue;
+        }
         let mut config = Config::default();
         config.apply_instrument_flag(item.name).unwrap();
         config.require.push(item.name.to_string());
@@ -185,7 +190,7 @@ fn each_event_instrument_preserves_real_qwen_tokens_and_samples() {
     }
     println!(
         "backend={backend}; build={}; story=no-change-fixture; seeds={seeds:?}; tokens_sha256={}; \
-              samples_sha256={}; limits: event instruments run after generation; no timing or external-artifact \
+              samples_sha256={}; limits: asr-qwen not run; event instruments run after generation; no timing or external-artifact \
               identity; no cross-backend parity",
         env!("CARGO_PKG_VERSION"),
         hex(&tokens),

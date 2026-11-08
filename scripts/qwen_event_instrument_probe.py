@@ -37,6 +37,12 @@ def catalogue():
     return names
 
 
+def selected_instruments(names):
+    # This probe supplies no ASR model or reference. The excluded entry is not a pass.
+    excluded = [name for name in names if name == "asr-qwen"]
+    return [name for name in names if name not in excluded], excluded
+
+
 def require_identical(audio_a, audio_b, tokens_a, tokens_b, seeds_a, seeds_b):
     if audio_a != audio_b or tokens_a != tokens_b or seeds_a != seeds_b:
         raise AssertionError("tracing plus event instruments changed FLAC, codebook-0 trace, or draw seeds")
@@ -56,7 +62,7 @@ def main():
     work.mkdir(parents=True, exist_ok=False)
     story = work / "story.txt"
     story.write_text("No-change fixture\n小朋友喺海邊砌咗一座好大嘅沙堡。\n", encoding="utf-8")
-    names = catalogue()
+    names, excluded = selected_instruments(catalogue())
     env = dict(os.environ, GGTTS_INSTRUMENTS_DIR=str(ROOT / "instruments"))
     common = [str(binary), "--engine", "qwen3-tts", "--device", args.device, "--model", str(talker),
               "--codec", str(codec), "--story", str(story)]
@@ -87,10 +93,11 @@ def main():
     if report.get("measurement") != "complete":
         raise AssertionError("required instrument report is not complete")
     summary = {"device": args.device, "talker_sha256": TALKER_SHA, "codec_sha256": CODEC_SHA,
-               "render_sha256": sha(binary), "instruments": names, "seeds": seeds_a, "step_count": len(a),
+               "render_sha256": sha(binary), "instruments": names, "excluded_instruments": excluded,
+               "seeds": seeds_a, "step_count": len(a),
                "codebook0_sha256": hashlib.sha256(json.dumps(a, separators=(",", ":")).encode()).hexdigest(),
                "flac_sha256": audio_a, "report_format": report.get("format"),
-               "limits": "One fixture; codebook 0 only; event instruments execute after generation; "
+               "limits": "One fixture; unconfigured ASR excluded; codebook 0 only; event instruments execute after generation; "
                          "no timing or external-artifact identity; no cross-backend parity."}
     (work / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2))

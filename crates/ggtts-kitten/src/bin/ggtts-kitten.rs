@@ -8,15 +8,15 @@
 //! ggtts-kitten tokcheck --tokenizer tokenizer.json --expect FILE
 //! ggtts-kitten block-parity --s3gguf FILE --ref DIR [--blocks 25,50] [--contexts 0,25,50,all] [--lookahead 3]
 //!                     [--plant seam-shift] [--threads N]
-//! ggtts-kitten render --gguf FILE --tokenizer tokenizer.json --reference REF.json --lines FILE --out-dir DIR
+//! ggtts-kitten render --gguf FILE [--tokenizer tokenizer.json] --reference REF.json --lines FILE --out-dir DIR
 //!                     --python PYTHON --script tools/kitten_ref.py [--seed N] [--threads N] [--max-tokens N]
-//!                     [--tokens-only 1]
+//!                     [--tokens-only 1] [--weights ternary|f32]
 //! ```
 //!
 //! `prepare --s3gguf FILE --wav CLIP.wav --transcript TEXT --out REF.json` prepares a reference clip without Python.
 //! `tokcheck` compares the Rust tokenizer with the ids `tools/kitten_ref.py tokenize` wrote. `render` reads one
-//! text per line of `--lines`, generates each with the ternary LM on ggml, decodes it through the PyTorch S3Gen
-//! bridge, and writes `NN.flac` and `report.json` (timings and real-time factors) into `--out-dir`.
+//! text per line of `--lines`, generates each with either the native quantized or f32-dequantized LM on ggml,
+//! decodes it with S3Gen, and writes `NN.flac` and `report.json` (timings and real-time factors) into `--out-dir`.
 //!
 //! `parity` runs the teacher-forced forward pass on the inputs `tools/kitten_ref.py logits` recorded in `DIR`
 //! and compares the hidden state after every layer and the logits with PyTorch's, against the arm's bar.
@@ -200,12 +200,25 @@ fn render_cmd(a: &Args) -> Result<bool, String> {
         .filter(|l| !l.is_empty())
         .map(String::from)
         .collect();
+    if lines.is_empty() {
+        return Err("no nonempty input lines".into());
+    }
+    let weights = match a.or("weights", "ternary") {
+        "ternary" => Weights::Ternary,
+        "f32" => Weights::F32,
+        other => return Err(format!("unknown --weights {other}")),
+    };
     let t0 = Instant::now();
     let gguf = Gguf::open(Path::new(a.get("gguf")?))?;
-    let model = Model::load(&gguf, Weights::Ternary, be.clone())?;
+    let tok = if let Some(path) = a.map.get("tokenizer") {
+        Tokenizer::open(Path::new(path))?
+    } else {
+        let json = gguf.str("kitten.tokenizer.json")?;
+        Tokenizer::from_json(json)?
+    };
+    let model = Model::load(&gguf, weights, be.clone())?;
     drop(gguf);
     let load_s = t0.elapsed().as_secs_f64();
-    let tok = Tokenizer::open(Path::new(a.get("tokenizer")?))?;
     let reference = Reference::open(Path::new(a.get("reference")?))?;
     let py = PyDecoder {
         python: PathBuf::from(a.or("python", "")),
@@ -315,7 +328,7 @@ fn render_cmd(a: &Args) -> Result<bool, String> {
     let info = eng.info().clone();
     let full = serde_json::json!({
         "engine": {"family": info.family, "backend": info.backend, "parity": info.parity},
-        "ggtts": ggtts_core::VERSION, "ggml": ggtts_core::ggml::COMMIT, "threads": threads, "load_s": load_s,
+        "ggtts": ggtts_core::VERSION, "ggml": ggtts_core::ggml::COMMIT, "threads": threads, "weights": a.or("weights", "ternary"), "load_s": load_s,
         "lines": report,
     });
     std::fs::write(

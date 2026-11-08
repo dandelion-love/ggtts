@@ -73,6 +73,9 @@ class TestInstrument(unittest.TestCase):
         with self.assertRaises(ValueError):
             instrument.measure(self.ctx(), FakeEnvelope())
         (self.model / 'model.safetensors').write_bytes(b'x')
+        self.audio.unlink()
+        with self.assertRaises(ValueError):
+            instrument.measure(self.ctx(), FakeEnvelope())
         self.audio.write_bytes(b'bad')
         with self.assertRaises(ValueError):
             instrument.measure(self.ctx(), FakeEnvelope())
@@ -108,6 +111,15 @@ class TestInstrument(unittest.TestCase):
         self.assertEqual(calls['device_map'], 'cpu')
         self.assertTrue(calls['local_files_only'])
         self.assertEqual(calls['threads'], 4)
+
+    def test_malformed_recognizer_output_fails_closed(self):
+        torch = SimpleNamespace(float32='f32', set_num_threads=lambda n: None)
+        for result in ([], [{}], [SimpleNamespace(text=None)], [SimpleNamespace(text=12)]):
+            model = SimpleNamespace(transcribe=lambda *args, **kwargs: result)
+            factory = SimpleNamespace(from_pretrained=lambda *args, **kwargs: model)
+            with patch.dict(sys.modules, {'torch': torch, 'qwen_asr': SimpleNamespace(Qwen3ASRModel=factory)}):
+                with self.assertRaisesRegex(RuntimeError, 'invalid output'):
+                    instrument.transcribe(self.model, self.audio)
 
 
 if __name__ == '__main__':

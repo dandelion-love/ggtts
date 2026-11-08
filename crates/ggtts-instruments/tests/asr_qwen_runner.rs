@@ -38,6 +38,104 @@ fn config(wrapper: &Path, model: &Path, reference: &Path, required: bool, timeou
     c
 }
 
+fn sense_wrapper(path: &Path, script: &Path) {
+    let source = format!(
+        "import runpy,sys,types\nclass M:\n def __init__(self,**kw): pass\n def generate(self,**kw): return [{{'text':'abcdef'}}]\nsys.modules['funasr']=types.SimpleNamespace(AutoModel=M)\nrunpy.run_path({:?},run_name='__main__')\n",
+        script.to_string_lossy()
+    );
+    std::fs::write(path, source).unwrap();
+}
+
+#[test]
+fn two_asr_instruments_stack_without_chaining_or_changing_audio() {
+    let root = std::env::temp_dir().join(format!("ggtts-asr-stack-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let qmodel = root.join("qmodel");
+    let smodel = root.join("smodel");
+    std::fs::create_dir_all(&qmodel).unwrap();
+    std::fs::create_dir_all(&smodel).unwrap();
+    std::fs::write(qmodel.join("config.json"), "{}").unwrap();
+    std::fs::write(qmodel.join("model.safetensors"), b"synthetic").unwrap();
+    for file in [
+        "model.pt",
+        "config.yaml",
+        "am.mvn",
+        "tokens.json",
+        "chn_jpn_yue_eng_ko_spectok.bpe.model",
+    ] {
+        std::fs::write(smodel.join(file), b"synthetic").unwrap();
+    }
+    let reference = root.join("reference.txt");
+    std::fs::write(&reference, "abcdef").unwrap();
+    let audio = ggtts_core::flac::write_flac(&root.join("audio"), &[0.1; 2400], 24000).unwrap();
+    let before = std::fs::read(&audio).unwrap();
+    let inputs = Inputs {
+        run: "test".into(),
+        render: "r".into(),
+        report_dir: root.join("report"),
+        audio: audio.clone(),
+        audio_state: AudioState::Trimmed,
+        audio_seconds: Some(0.1),
+        events: None,
+        bin_dir: None,
+        instruments_dir: Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../instruments")),
+    };
+    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../instruments/examples/python");
+    let qw = root.join("qwrapper.py");
+    let sw = root.join("swrapper.py");
+    wrapper(
+        &qw,
+        &base.join("asr-qwen/instrument.py"),
+        "return [types.SimpleNamespace(text='abc')]",
+    );
+    sense_wrapper(&sw, &base.join("asr-sensevoice/instrument.py"));
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let qflag = format!(
+        "asr-qwen,command={},interpreter={python},arg.model_dir={},arg.reference_file={}",
+        qw.display(),
+        qmodel.display(),
+        reference.display()
+    );
+    let sflag = format!(
+        "asr-sensevoice,command={},interpreter={python},arg.model_dir={},arg.reference_file={}",
+        sw.display(),
+        smodel.display(),
+        reference.display()
+    );
+    assert!(Config::default().instruments.is_empty());
+    let mut qonly = Config::default();
+    qonly.apply_instrument_flag(&qflag).unwrap();
+    qonly.apply_require_flag("asr-qwen").unwrap();
+    let q = run(&qonly, &inputs).unwrap();
+    assert_eq!(q.exit_code(), EXIT_OK, "{:?}", q.envelopes);
+    assert_eq!(q.envelopes[0].metrics[0].value, Some(0.5));
+    let mut sonly = Config::default();
+    sonly.apply_instrument_flag(&sflag).unwrap();
+    sonly.apply_require_flag("asr-sensevoice").unwrap();
+    let s = run(&sonly, &inputs).unwrap();
+    assert_eq!(s.exit_code(), EXIT_OK, "{:?}", s.envelopes);
+    assert_eq!(s.envelopes[0].metrics[0].value, Some(0.0));
+    // Repeat the same stack as a no-op, then reverse it; both still consume the same input.
+    for flags in [[&sflag, &qflag], [&sflag, &qflag], [&qflag, &sflag]] {
+        let mut stacked = Config::default();
+        for flag in flags {
+            stacked.apply_instrument_flag(flag).unwrap();
+        }
+        stacked.apply_require_flag("asr-qwen").unwrap();
+        stacked.apply_require_flag("asr-sensevoice").unwrap();
+        let result = run(&stacked, &inputs).unwrap();
+        assert_eq!(result.exit_code(), EXIT_OK, "{:?}", result.envelopes);
+        assert_eq!(result.envelopes[0].name, flags[0].split(',').next().unwrap());
+        assert_eq!(result.envelopes[1].name, flags[1].split(',').next().unwrap());
+        let qstack = result.envelopes.iter().find(|e| e.name == "asr-qwen").unwrap();
+        let sstack = result.envelopes.iter().find(|e| e.name == "asr-sensevoice").unwrap();
+        assert_eq!(qstack.metrics, q.envelopes[0].metrics);
+        assert_eq!(sstack.metrics, s.envelopes[0].metrics);
+        assert_eq!(std::fs::read(&audio).unwrap(), before);
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn completed_audio_is_unchanged_and_failures_respect_requirement() {
     let root = std::env::temp_dir().join(format!("ggtts-asr-qwen-runner-{}", std::process::id()));

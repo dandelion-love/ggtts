@@ -306,10 +306,32 @@ fn render_with_loader(
     if a.timing_report.as_ref().is_some_and(|p| p.exists()) {
         return Err("--timing-report must be a new file".into());
     }
-    let mut stream = open_stream(&a)?;
-    if a.out.is_none() && stream.is_none() {
+    if a.out.is_none() && a.stream.is_none() {
         return Err("--out is required (or --stream)".into());
     }
+    // Reject universally invalid input before probing the model's architecture.
+    // Ceiling-dependent validation follows once the engine profile is known.
+    let story_input = match (&a.text, &a.story) {
+        (Some(text), None) => {
+            if text.chars().all(ggtts_core::text::is_strip_space) {
+                return Err("text is empty".into());
+            }
+            ggtts_core::text::validate_speech(text).map_err(|e| e.to_string())?;
+            None
+        }
+        (None, Some(story)) => {
+            let contents = std::fs::read_to_string(story).map_err(|e| format!("{}: {e}", story.display()))?;
+            let (title, paragraphs) = read_text(&contents);
+            if paragraphs.is_empty() {
+                return Err("the story has no chunk to render".into());
+            }
+            for paragraph in &paragraphs {
+                ggtts_core::text::validate_speech(paragraph).map_err(|e| e.to_string())?;
+            }
+            Some((title, paragraphs))
+        }
+        _ => return Err("give exactly one of --text or --story".into()),
+    };
     // Refuse a bad instrument config before spending the render on it.
     let instruments = if a.instruments.any() {
         if a.out.is_none() {
@@ -331,6 +353,24 @@ fn render_with_loader(
         None | Some("auto") => gguf_arch::architecture(&model).map_err(|e| format!("{}: {e}", model.display()))?,
         Some(e) => e.to_string(),
     };
+    // Validate and plan before opening output files or loading model weights.
+    let preplanned = if let Some((title, paragraphs)) = story_input {
+        let profile = match name.as_str() {
+            "fake" => *ggtts_fake::FakeEngine::default().profile(),
+            "qwen3-tts" => ggtts_qwen3_tts::PROFILE,
+            #[cfg(feature = "ggml")]
+            "kitten-tts-2" => ggtts_kitten::engine::PROFILE,
+            _ => return Err(format!("no available profile for architecture {name:?}")),
+        };
+        let chunks = plan_story(&profile, &paragraphs).map_err(|e| e.to_string())?;
+        if chunks.is_empty() {
+            return Err("the story has no chunk to render".into());
+        }
+        Some((title, chunks))
+    } else {
+        None
+    };
+    let mut stream = open_stream(&a)?;
     let t0 = Instant::now();
     let mut engine = loader(&name, &a, &model)?;
     let load_ms = t0.elapsed().as_millis();
@@ -383,11 +423,9 @@ fn render_with_loader(
             );
             (pcm.samples, pcm.sample_rate)
         }
-        (None, Some(story)) => {
-            let contents = std::fs::read_to_string(story).map_err(|e| format!("{}: {e}", story.display()))?;
-            let (title, paragraphs) = read_text(&contents);
+        (None, Some(_story)) => {
+            let (title, chunks) = preplanned.expect("story was planned before loading");
             let profile = *engine.profile();
-            let chunks = plan_story(&profile, &paragraphs);
             let mut timing = StreamTiming::default();
             let mut level_ns = 0u128;
             let hold_s = a.stream_level_seconds.unwrap_or(ggtts_core::stream::DEFAULT_HOLD_S);

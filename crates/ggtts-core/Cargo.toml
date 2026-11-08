@@ -9,6 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+unicode-general-category = "1.1"
 libm.workspace = true
 # float_roundtrip: a trace is compared field for field after a write and a read, so every f64 must survive both.
 serde_json = { workspace = true, features = ["float_roundtrip"] }

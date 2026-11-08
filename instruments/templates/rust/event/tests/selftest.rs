@@ -21,7 +21,7 @@ fn dir(name: &str) -> PathBuf {
 fn trace() -> Vec<Map<String, Value>> {
     let mut e = FakeEngine::default();
     let paragraphs = vec!["今日天氣好好，我哋去公園行下。".to_string(), "聽日再傾。".to_string()];
-    let chunks = plan_story(e.profile(), &paragraphs);
+    let chunks = plan_story(e.profile(), &paragraphs).unwrap();
     let opts = RenderOptions::for_profile(e.profile());
     let mut w = JsonlEvents::new(Vec::new(), 1);
     emit_header(&mut w, &Header::for_engine(&e, 1));

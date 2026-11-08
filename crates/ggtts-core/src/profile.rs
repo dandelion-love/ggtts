@@ -22,7 +22,7 @@ pub struct Profile {
     pub story_ceiling: usize,
     /// The passage path's ceiling. Not a mode: a caller passes it explicitly.
     pub passage_ceiling: usize,
-    /// A chunk whose text (without its mark) is shorter than this many code points is dropped.
+    /// Historical profile minimum; retained for compatibility, but no longer drops short text.
     pub min_chunk_chars: usize,
     /// The clause marks the chunker splits on.
     pub split_marks: &'static [char],
@@ -59,12 +59,20 @@ pub struct Profile {
 }
 
 impl Profile {
-    /// The pause after a chunk ended by `punct`, in seconds: the first matching row of
-    /// [`pauses`](Self::pauses), else [`default_pause_s`](Self::default_pause_s).
+    /// Use the first recognized punctuation in a retained multi-mark suffix;
+    /// unknown suffixes use the default pause.
     pub fn pause_s(&self, punct: &str) -> f64 {
-        self.pauses
-            .iter()
-            .find(|(mark, _)| *mark == punct)
-            .map_or(self.default_pause_s, |&(_, s)| s)
+        if let Some((_, seconds)) = self.pauses.iter().find(|(mark, _)| *mark == punct) {
+            return *seconds;
+        }
+        for ch in punct.chars() {
+            if let Some((_, seconds)) = self.pauses.iter().find(|(mark, _)| {
+                let mut chars = mark.chars();
+                chars.next() == Some(ch) && chars.next().is_none()
+            }) {
+                return *seconds;
+            }
+        }
+        self.default_pause_s
     }
 }

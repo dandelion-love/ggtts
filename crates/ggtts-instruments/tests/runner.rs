@@ -54,7 +54,7 @@ fn render_bytes(dir: &Path, paragraphs: &[String]) -> Vec<u8> {
     let read = render_story(
         &mut engine,
         "story",
-        &plan_story(&profile, paragraphs),
+        &plan_story(&profile, paragraphs).unwrap(),
         &RenderOptions::for_profile(&profile),
     )
     .unwrap();
@@ -75,7 +75,7 @@ fn setup_with(tag: &str, paragraphs: &[String]) -> (PathBuf, Inputs) {
     let read = render_story_traced(
         &mut engine,
         "story",
-        &plan_story(&profile, paragraphs),
+        &plan_story(&profile, paragraphs).unwrap(),
         &RenderOptions::for_profile(&profile),
         &mut rec,
     )

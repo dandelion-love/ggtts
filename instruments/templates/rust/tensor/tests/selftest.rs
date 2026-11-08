@@ -57,7 +57,7 @@ fn a_clean_draw_reads_no_early_stop() {
 /// Render the story with the hook; the read and the summary.
 fn hooked() -> (Vec<f32>, ggtts_instrument_tensor_template::Summary) {
     let mut e = FakeEngine::default();
-    let chunks = plan_story(e.profile(), &paragraphs());
+    let chunks = plan_story(e.profile(), &paragraphs()).unwrap();
     let opts = RenderOptions::for_profile(e.profile());
     let (hook, out) = EarlyStop::new(0.5);
     let mut h = Hooks::new();
@@ -72,7 +72,7 @@ fn hooked() -> (Vec<f32>, ggtts_instrument_tensor_template::Summary) {
 #[test]
 fn the_same_seed_renders_identically_with_and_without_the_hook() {
     let mut e = FakeEngine::default();
-    let chunks = plan_story(e.profile(), &paragraphs());
+    let chunks = plan_story(e.profile(), &paragraphs()).unwrap();
     let opts = RenderOptions::for_profile(e.profile());
     let plain = render_story(&mut e, "template", &chunks, &opts).unwrap();
     let (samples, summary) = hooked();

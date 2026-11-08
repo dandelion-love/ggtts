@@ -84,7 +84,7 @@ fn traces(level: u8) -> Vec<(String, Vec<Map<String, Value>>)> {
                 .map(|p| p.as_str().unwrap().to_string())
                 .collect();
             let mut engine = FakeEngine::new(script, shape);
-            let chunks = plan_story(engine.profile(), &paragraphs);
+            let chunks = plan_story(engine.profile(), &paragraphs).unwrap();
             let opts = RenderOptions {
                 redraw: c["redraw"].as_u64().unwrap() as u32,
                 seed_salt: c["seed_salt"].as_str().unwrap().to_string(),

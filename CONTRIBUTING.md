@@ -36,6 +36,25 @@ Thank you for looking. ggtts is young and its design is still under review, so o
 * No audio in the repository. Fixtures hold text, seeds, token ids, numbers and hashes.
 * No personal data. Do not name real people as voices.
 
+## Instrument contributions
+
+An instrument contribution names the hooks and input artifacts it reads and documents what its result can and cannot
+establish. Supply a self-test with a planted defect of the kind it claims to detect and a no-op that reads as no
+change. The self-test must actually run in the existing test suite, validate the emitted envelope against the current
+report contract, and leave a log with the outcome. A crash, missing required input or unsupported measurement must
+remain visible as a non-OK result; never replace a missing value with zero. For an event instrument, test a truncated
+event stream as well. Out-of-process instruments must not modify their inputs; in-process tensor hooks are trusted
+and have the narrower isolation described in the instrument documentation.
+
+Version an instrument when its behavior, defaults or metric meaning changes; document whether existing comparisons
+remain valid. The report schema's format version changes when a previously valid reader cannot safely read a new
+envelope. Preserve the previous schema and make the current reader accept the previous version. Adding a metric to
+the metrics list does not change the report format. Any version change must include compatibility and rejection tests.
+
+The local promotion gate currently does not prove that every instrument leaves a real model's tokens and audio
+unchanged; that proof is tracked in #34. A fake-engine test does not establish the same property for real decoder
+or GPU execution. Token/audio equality also says nothing about timing or external artifacts.
+
 ## Ported code
 
 Code ported from another project keeps its licence notice, names the file, line range and commit it came from in a

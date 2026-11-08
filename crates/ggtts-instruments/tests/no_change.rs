@@ -1,6 +1,8 @@
 //! The ordinary CI proof uses the fake engine only. It does not establish real-model or GPU identity.
-//! Event instruments run after rendering; this checks the real runner, its full catalogue, and the artifacts it
-//! handles. The planted sample mutation is a test double for a bad observer, not a real in-process tensor hook.
+//! Event instruments run after rendering; this checks the real runner, its standard-CI catalogue subset, and the
+//! artifacts it handles. The pYIN-dependent loudness instrument is explicitly excluded here: promotion requires
+//! every instrument, including loudness, with its dependencies installed. The planted sample mutation is a test
+//! double for a bad observer, not a real in-process tensor hook.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -84,7 +86,7 @@ fn sample_bytes(samples: &[f32]) -> Vec<u8> {
 }
 
 #[test]
-fn fake_engine_catalogue_preserves_tokens_and_samples_and_sees_a_sample_plant() {
+fn fake_engine_available_catalogue_preserves_tokens_and_samples_and_sees_a_sample_plant() {
     let root = std::env::temp_dir().join(format!("ggtts-no-change-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
@@ -114,7 +116,11 @@ fn fake_engine_catalogue_preserves_tokens_and_samples_and_sees_a_sample_plant() 
     let audio = write_flac(&root.join("audio"), &samples, rate).unwrap();
     let before = sha256(&std::fs::read(&audio).unwrap());
     let mut config = Config::default();
+    assert!(CATALOGUE.iter().any(|item| item.name == "loudness-ends"));
     for item in CATALOGUE {
+        if item.name == "loudness-ends" {
+            continue; // Optional pYIN is not installed on ordinary CI; do not count it as a passed proof.
+        }
         let flag = if item.name == "render-timing" {
             "render-timing,arg.stage_only=true"
         } else {
@@ -142,7 +148,7 @@ fn fake_engine_catalogue_preserves_tokens_and_samples_and_sees_a_sample_plant() 
         "instruments did not all report OK: {:?}",
         result.incomplete
     );
-    assert_eq!(result.envelopes.len(), CATALOGUE.len());
+    assert_eq!(result.envelopes.len() + 1, CATALOGUE.len());
     let schema_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/ggtts-report-2.schema.json");
     let schema: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(schema_path).unwrap()).unwrap();
     let validator = jsonschema::validator_for(&schema).expect("the published report schema compiles");
@@ -169,9 +175,9 @@ fn fake_engine_catalogue_preserves_tokens_and_samples_and_sees_a_sample_plant() 
         "the sample-mutation plant must make the identity check red"
     );
     println!(
-        "fake backend; seed derived from no-change-fixture; {} event instruments; sample plant detected; \
-              does not establish real-model/GPU identity, timing, or external-artifact safety",
-        CATALOGUE.len()
+        "fake backend; seed derived from no-change-fixture; {} instruments; loudness-ends not run; sample plant detected; \
+              does not establish full-catalogue, real-model/GPU identity, timing, or external-artifact safety",
+        CATALOGUE.len() - 1
     );
     std::fs::remove_dir_all(root).unwrap();
 }

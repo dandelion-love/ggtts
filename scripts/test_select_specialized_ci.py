@@ -202,6 +202,20 @@ class SelectionTest(unittest.TestCase):
             with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
                 main()
                 self.assertEqual(stdout.getvalue().count("=true"), len(JOBS))
+    def test_pitch_catalogue_and_package_changes_do_not_select_engine_archives(self):
+        paths = ["crates/ggtts-instruments/src/catalogue.rs", "crates/ggtts-core/tests/python_instruments.rs",
+                 "instruments/examples/python/pitch-range/instrument.py", "instruments/vendor/pitchy-4.1.0/index.js",
+                 "scripts/package_and_smoke.sh", "scripts/select_specialized_ci.py"]
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"package"})
+        self.assertEqual(decide("pull_request", "main", "rc", True, paths), set(JOBS))
+
+    def test_loudness_catalogue_changes_do_not_select_engine_archives(self):
+        paths = ["crates/ggtts-instruments/src/catalogue.rs", "crates/ggtts-core/tests/python_instruments.rs",
+                 "crates/ggtts-instruments/tests/no_change.rs", "crates/ggtts-instruments/tests/runner.rs",
+                 "instruments/examples/python/loudness-ends/instrument.py", "instruments/instruments.yaml",
+                 "scripts/test_qwen_event_instrument_probe.py"]
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"package"})
+        self.assertEqual(decide("pull_request", "main", "rc", True, paths), set(JOBS))
 
     def test_workflow_job_changes(self):
         base = "name: CI\njobs:\n  package-smoke:\n    run: old\n  cuda-compile:\n    run: same\n  ggml:\n    run: same\n"

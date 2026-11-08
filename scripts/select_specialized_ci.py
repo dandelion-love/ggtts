@@ -49,6 +49,8 @@ MEASUREMENT_PATHS = {
     "crates/ggtts-cli/tests/no_change_real.rs",
     "crates/ggtts-core/src/report.rs",
     "crates/ggtts-core/tests/report.rs",
+    "crates/ggtts-core/tests/python_instruments.rs",
+    "crates/ggtts-instruments/src/catalogue.rs",
     "crates/ggtts-instruments/src/runner.rs",
     "crates/ggtts-instruments/tests/runner.rs",
     "crates/ggtts-instruments/tests/no_change.rs",

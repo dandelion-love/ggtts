@@ -22,5 +22,9 @@ instruments:
   # - audio-levels
   # internal-pauses: the rendered audio: silences inside the speech, between its first and last loud frame (example)
   # - internal-pauses
+  # pitch-range: voiced pitch median and 5th-to-95th percentile range using the lab's Pitchy detector
+  # - pitch-range
+  # loudness-ends: relative loud and soft ends over pYIN-voiced speech-core frames
+  # - loudness-ends
   # An instrument of your own: a program that takes --events, --audio, --envelope, --name and its args.
   # - {name: mine, command: /path/to/mine, version: '0.1', timeout_s: 30}

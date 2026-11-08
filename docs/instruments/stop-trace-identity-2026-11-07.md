@@ -73,4 +73,30 @@ python3 scripts/qwen_event_instrument_probe.py --render /path/to/ggtts-render \
 
 Use `--device cuda` and an independently built CUDA renderer for the CUDA run. The selftest executable must be
 beside the renderer, and Python must be available for the script instruments. The output directory contains
-generated audio and logs; keep it outside the repository. This probe has not been wired into the promotion gate.
+generated audio and logs; keep it outside the repository. This codebook-0 probe is not the promotion gate.
+
+## Full-codebook per-instrument proof and gate
+
+The promotion gate invokes a separate local test, `each_event_instrument_preserves_real_qwen_tokens_and_samples`.
+It verifies the published model hashes, compares hashes of **all** generated codec-token vectors and decoded float
+samples with tracing off and on, then runs each catalogue event instrument separately as required and verifies the
+audio is unchanged. Event instruments run after generation; the test does not imply they were in-process hooks.
+The gate also runs the real `StopTrace` identity test above and a test-only hook-boundary logit-corruption plant.
+The latter is simulated corruption when an observer requests logits; the public Rust hook receives an immutable
+view, so this is not a claim that safe Rust can mutate it. With the simulated plant off, the observer was identical;
+with it on, the token comparison detected the corruption.
+
+An end-to-end invocation of the **instrument proof component**, using the same model hashes and host described above,
+passed its CPU and CUDA build, per-instrument, stop-trace and logit-plant steps. The story's derived seed was
+`1519829812`. Each backend reported all seven event instruments OK and each left the FLAC unchanged:
+
+| Backend | Full-token vector SHA-256 | Decoded float-sample SHA-256 | Logit plant |
+|---|---|---|---|
+| CPU | `c1116a860d3d5a566a4a65f6712626da1db64ab6394e3939c0ab3d58bf1c2445` | `ed5daaf2dc72ef7e1200da047acd35b296e9e40c9c916696009415a57d9aaa46` | detected; quiet observer identical |
+| CUDA | `ec1cc2ff38d158bba181eefaa713c3a1a163b87a3f8bb4bf8cc89afefe6034f1` | `de930207a376b8db6c95d68bdb50760d4bf6af00cb6873398c35e1edc4196940` | detected; quiet observer identical |
+
+Hashes cover framed token-vector bytes, including draw seed, codebook count and vector length, and little-endian
+float bit patterns. They compare runs **within** a backend, not between backends. The CPU proof component built
+ggml from the pinned checkout; CUDA used the prebuilt libraries whose provenance limit is noted above. Logs remain
+in `/tmp/ggtts-instrument-gate-UsvPnk` on the test machine. This invocation did not rerun the other promotion-gate
+engine parity probes, so it is not a complete promotion pass or a substitute for the final exact-commit gate run.

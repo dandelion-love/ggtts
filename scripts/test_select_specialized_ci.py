@@ -56,6 +56,8 @@ class SelectionTest(unittest.TestCase):
                                 ["crates/ggtts-instruments/tests/no_change.rs"]), {"package"})
         self.assertEqual(decide("pull_request", "rc", "feature", True,
                                 ["crates/ggtts-qwen3-tts/tests/frame_hook.rs"]), set())
+        self.assertEqual(decide("pull_request", "rc", "feature", True,
+                                ["crates/ggtts-cli/tests/no_change_real.rs"]), {"package"})
 
     def test_workflow_job_changes(self):
         base = "name: CI\njobs:\n  package-smoke:\n    run: old\n  cuda-compile:\n    run: same\n  ggml:\n    run: same\n"

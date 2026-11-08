@@ -16,12 +16,16 @@ spec.loader.exec_module(gate)
 class GateTest(unittest.TestCase):
     def test_result_never_promotes_missing_or_failed_gpu(self):
         cpu = dict.fromkeys(("fmt", "clippy", "build", "test"), "pass")
-        self.assertEqual(gate.evaluate(cpu, {"qwen": {"status": "pass"}, "kitten": {"status": "pass"}}), "pass")
-        self.assertEqual(gate.evaluate(cpu, {"qwen": {"status": "pass"}, "kitten": {"status": "incomplete"}}), "incomplete")
-        self.assertEqual(gate.evaluate(cpu, {"qwen": {"status": "fail"}, "kitten": {"status": "pass"}}), "fail")
-        self.assertEqual(gate.evaluate(cpu, {"qwen": {"status": "pass"}}), "incomplete")
+        proof = {"cpu": {"status": "pass"}, "cuda": {"status": "pass"}}
+        self.assertEqual(gate.evaluate(cpu, {"qwen": {"status": "pass"}, "kitten": {"status": "pass"}}, proof), "pass")
+        self.assertEqual(gate.evaluate(cpu, {"qwen": {"status": "pass"}, "kitten": {"status": "incomplete"}}, proof), "incomplete")
+        self.assertEqual(gate.evaluate(cpu, {"qwen": {"status": "fail"}, "kitten": {"status": "pass"}}, {}), "fail")
+        self.assertEqual(gate.evaluate(cpu, {"qwen": {"status": "pass"}}, proof), "incomplete")
+        self.assertEqual(gate.evaluate(cpu, {"qwen": {"status": "pass"}, "kitten": {"status": "pass"}}, {}), "incomplete")
+        self.assertEqual(gate.evaluate(cpu, {"qwen": {"status": "pass"}, "kitten": {"status": "pass"}},
+                                       {"cpu": {"status": "pass"}, "cuda": {"status": "fail"}}), "fail")
         cpu["fmt"] = "fail"
-        self.assertEqual(gate.evaluate(cpu, {"qwen": {"status": "pass"}, "kitten": {"status": "pass"}}), "fail")
+        self.assertEqual(gate.evaluate(cpu, {"qwen": {"status": "pass"}, "kitten": {"status": "pass"}}, proof), "fail")
 
     def test_hash_changes_on_file_or_name_change(self):
         with tempfile.TemporaryDirectory() as d:
@@ -66,7 +70,10 @@ class GateTest(unittest.TestCase):
                 args = ["rc_gate.py", "--work", str(root / "scratch"), "--out", str(root / "report.json")]
                 with patch.dict(os.environ, run_env, clear=True), patch.object(gate.sys, "argv", args), \
                      patch.object(gate.subprocess, "check_output", side_effect=output), \
-                     patch.object(gate, "command", side_effect=command), contextlib.redirect_stdout(io.StringIO()):
+                     patch.object(gate, "command", side_effect=command), \
+                     patch.object(gate, "instrument_proof", return_value={"cpu": {"status": "pass"},
+                                                                           "cuda": {"status": "pass"}}), \
+                     contextlib.redirect_stdout(io.StringIO()):
                     code = gate.main()
                 return code, json.loads((root / "report.json").read_text())
             code, report = run_case(missing=True)

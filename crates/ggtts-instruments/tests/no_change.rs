@@ -135,6 +135,19 @@ fn fake_engine_catalogue_preserves_tokens_and_samples_and_sees_a_sample_plant() 
         result.incomplete
     );
     assert_eq!(result.envelopes.len(), CATALOGUE.len());
+    let schema_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/ggtts-report-2.schema.json");
+    let schema: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(schema_path).unwrap()).unwrap();
+    let validator = jsonschema::validator_for(&schema).expect("the published report schema compiles");
+    for envelope in &result.envelopes {
+        assert!(
+            validator.is_valid(&envelope.to_json()),
+            "{} produced an envelope outside the published schema",
+            envelope.name
+        );
+    }
+    let mut invalid = result.envelopes[0].to_json();
+    invalid["status"] = serde_json::json!("planted-invalid");
+    assert!(!validator.is_valid(&invalid), "schema must reject an invalid status");
     assert_eq!(
         before,
         sha256(&std::fs::read(audio).unwrap()),
@@ -156,20 +169,22 @@ fn fake_engine_catalogue_preserves_tokens_and_samples_and_sees_a_sample_plant() 
 }
 
 #[test]
-fn real_probe_comparison_plants_and_model_refusal_are_tested_without_a_model() {
+fn promotion_gate_and_real_probe_controls_are_tested_without_a_model() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let result = std::process::Command::new(ggtts_instruments::runner::default_python())
-        .current_dir(root)
-        .args([
-            "-m",
-            "unittest",
-            "discover",
-            "-s",
-            "scripts",
-            "-p",
-            "test_qwen_event_instrument_probe.py",
-        ])
-        .output()
-        .unwrap();
-    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    for pattern in [
+        "test_qwen_event_instrument_probe.py",
+        "test_instrument_promotion_gate.py",
+        "test_rc_gate.py",
+    ] {
+        let result = std::process::Command::new(ggtts_instruments::runner::default_python())
+            .current_dir(&root)
+            .args(["-m", "unittest", "discover", "-s", "scripts", "-p", pattern])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{pattern}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
 }

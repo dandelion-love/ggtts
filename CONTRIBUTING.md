@@ -78,8 +78,12 @@ version, CUDA and the model/reference inputs documented at the top of each engin
 Set their environment variables before running; the gate assigns separate `WORK` and `CARGO_TARGET_DIR` directories
 under the persistent scratch directory. Use `--wait-file` for a busy GPU. The report identifies the commit, model
 and fixture hashes, device, probe commands and logs. External CUDA library build provenance must be checked separately.
-The probes compare each engine to its own reference; they do not prove CPU and GPU outputs identical, nor the
-instrument no-change proof in #34. A pass applies only to the recorded commit.
+The probes compare each engine to its own reference; they do not prove CPU and GPU outputs identical. The gate also
+requires the pinned Qwen v0.0.1 talker and codec to pass the instrument identity tests on CPU and CUDA: full codec
+tokens and decoded samples, every shipped event instrument, the `StopTrace` hook, and a test-only hook-boundary logit
+mutation that must be detected. The CPU check builds ggml from the pinned checkout; CUDA uses the Qwen reference's
+prebuilt ggml libraries. Missing inputs, a wrong model hash, a failed check, or a filtered test that never ran cannot
+pass. These checks do not establish timing or external-artifact identity. A pass applies only to the recorded commit.
 Release tags are cut from `main`. Pre-release tags (`vX.Y.Z-rc.N`) may be cut from `rc`.
 
 By contributing you agree that your contribution is licensed under the MIT licence of this repository.

@@ -21,6 +21,7 @@ MEASUREMENT_PATHS = {
     "crates/ggtts-cli/src/bin/ggtts-measure.rs",
     "crates/ggtts-cli/src/bin/ggtts-render.rs",
     "crates/ggtts-cli/tests/measure_cli.rs",
+    "crates/ggtts-cli/tests/no_change_real.rs",
     "crates/ggtts-core/src/report.rs",
     "crates/ggtts-core/tests/report.rs",
     "crates/ggtts-instruments/src/runner.rs",

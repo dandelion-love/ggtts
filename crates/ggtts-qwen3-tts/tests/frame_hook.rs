@@ -17,6 +17,8 @@
 use std::path::{Path, PathBuf};
 
 use ggtts_core::engine::{ChunkRequest, Engine};
+#[cfg(feature = "plant")]
+use ggtts_core::hooks::Wants;
 use ggtts_core::hooks::{Hooks, StopTrace};
 use ggtts_core::stream::first_sample_diff;
 use ggtts_qwen3_tts::codec::Decoder;
@@ -137,6 +139,61 @@ fn stop_trace_tensor_hook_preserves_real_tokens_and_samples() {
         plain_audio.samples.len(),
         hex(&token_bytes),
         hex(&sample_bytes)
+    );
+}
+
+#[test]
+#[cfg(feature = "plant")]
+#[ignore = "needs pinned GGTTS_TALKER; GGTTS_DEVICE selects cpu or cuda"]
+fn a_hook_boundary_logit_mutation_is_detected_on_real_qwen() {
+    let talker = env_path("GGTTS_TALKER");
+    let backend = std::env::var("GGTTS_DEVICE").unwrap_or_else(|_| "cpu".into());
+    let device = ggtts_qwen3_tts::cpu::Device::parse(&backend).expect("GGTTS_DEVICE must be cpu or cuda");
+    let gold = goldens().remove(0);
+    let run = |talker: &mut Talker, observe: bool| {
+        let mut seen = 0usize;
+        let mut callback = |_: i32, _: i32, _: Option<f64>, logits: Option<&[f32]>| {
+            assert!(logits.is_some());
+            seen += 1;
+        };
+        let wants = Wants {
+            logits: true,
+            p_stop: false,
+        };
+        let result = talker
+            .generate_streamed(
+                &gold.text,
+                &gold.speaker,
+                language_id(&gold.language).unwrap(),
+                gold.seed,
+                gold.max_tokens as i32,
+                Sampling::default(),
+                if observe { Some((wants, &mut callback)) } else { None },
+                None,
+            )
+            .unwrap();
+        (result.codes, seen)
+    };
+    let mut normal = Talker::load_on(&talker, 4, device).unwrap();
+    let (base, _) = run(&mut normal, false);
+    let (observed, seen) = run(&mut normal, true);
+    assert!(!base.is_empty() && seen > 0);
+    assert_eq!(base, observed, "a read-only logit observer changed tokens");
+    drop(normal);
+    let mut planted = Talker::load_planted(&talker, 4, device, Plant::HookLogitMutation).unwrap();
+    let (plant_off, _) = run(&mut planted, false);
+    let (plant_on, plant_seen) = run(&mut planted, true);
+    assert_eq!(base, plant_off, "the plant fired without an observer");
+    assert!(plant_seen > 0);
+    assert_ne!(
+        base, plant_on,
+        "the identity comparison missed a hook-boundary logit mutation"
+    );
+    println!(
+        "backend={backend}; seed={}; observer_steps={seen}; quiet=identical; \
+              logit_mutation=detected; plant_without_observer=identical; \
+              limit: simulated corruption at the hook boundary, not safe Rust mutating its immutable view",
+        gold.seed
     );
 }
 

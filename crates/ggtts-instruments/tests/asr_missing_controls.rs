@@ -19,8 +19,8 @@ fn missing_reference_and_output_respect_requirement_and_on_error() {
     let missing_ref = root.join("absent-reference.txt");
     let python = if cfg!(windows) { "python" } else { "python3" };
     let wrapper = root.join("fake-asr.py");
-    let instrument = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../instruments/examples/python/asr-qwen/instrument.py");
+    let instrument =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../instruments/examples/python/asr-qwen/instrument.py");
     std::fs::write(
         &wrapper,
         format!(

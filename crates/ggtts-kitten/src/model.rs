@@ -5,8 +5,9 @@
 //! `repeat_kv` and ggml's broadcast both do), the output projection, a residual; RMSNorm, SwiGLU, a residual. The
 //! head is the tied bf16 embedding.
 //!
-//! The ternary matrices are padded `TQ2_0` (see [`crate::ternary`]), so every activation that enters one is padded
-//! the same way first: `[n, T]` viewed as `[128, n / 128, T]`, padded to `[256, n / 128, T]` with zeros. With
+//! For padded `TQ2_0` (see [`crate::ternary`]), every activation entering a ternary matrix is padded the same way:
+//! `[n, T]` viewed as `[128, n / 128, T]`, padded to `[256, n / 128, T]` with zeros. `TQ1_0` uses unpadded groups
+//! of 256 weights and is experimental and CPU-only. With
 //! [`Weights::F32`] the matrices are dequantized to f32 at load instead, which isolates the graph from the
 //! arithmetic for the parity check.
 //!
@@ -29,7 +30,7 @@ use crate::ternary::{Layout, GROUP};
 /// How the ternary matrices are held at run time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Weights {
-    /// The GGUF's ternary matrices as stored (`Q4_0` or padded `TQ2_0`), through ggml's quantized kernels on the
+    /// The GGUF's ternary matrices as stored (`Q4_0`, padded `TQ2_0`, or experimental `TQ1_0`), through ggml's quantized kernels on the
     /// CPU; on CUDA, the same matrices held as exact f16 (see [`Model::ternary_f16`]). The head stays bf16. The
     /// runtime path.
     Ternary,
@@ -112,12 +113,162 @@ fn f32s(b: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+/// Reject malformed TQ1 models before passing dimensions to ggml's unsafe constructors.
+fn validate_tq1_shapes(gguf: &Gguf, hp: &Hparams) -> Result<(), String> {
+    if hp.n_layer == 0
+        || hp.n_layer > gguf.tensors.len() / 9
+        || hp.n_embd == 0
+        || hp.n_ff == 0
+        || hp.n_head == 0
+        || hp.n_head_kv == 0
+        || hp.head_dim == 0
+        || hp.n_vocab == 0
+        || hp.spk_dim == 0
+        || hp.n_head % hp.n_head_kv != 0
+        || !hp.eps.is_finite()
+        || hp.eps <= 0.0
+        || !hp.rope_base.is_finite()
+        || hp.rope_base <= 0.0
+    {
+        return Err("invalid TQ1 model hyperparameters".into());
+    }
+    let q = hp.n_head.checked_mul(hp.head_dim).ok_or("attention shape overflow")?;
+    let kv = hp
+        .n_head_kv
+        .checked_mul(hp.head_dim)
+        .ok_or("attention shape overflow")?;
+    let check = |name: &str, ty: GgmlType, dims: &[usize]| -> Result<(), String> {
+        let (t, _) = gguf.tensor(name)?;
+        if t.ty != ty || t.dims != dims.iter().map(|&d| d as u64).collect::<Vec<_>>() {
+            return Err(format!("{name}: unexpected tensor type or dimensions"));
+        }
+        Ok(())
+    };
+    for l in 0..hp.n_layer {
+        let p = |s: &str| format!("model.layers.{l}.{s}.weight");
+        for (name, dims) in [
+            ("self_attn.q_proj", [hp.n_embd, q]),
+            ("self_attn.k_proj", [hp.n_embd, kv]),
+            ("self_attn.v_proj", [hp.n_embd, kv]),
+            ("self_attn.o_proj", [q, hp.n_embd]),
+            ("mlp.gate_proj", [hp.n_embd, hp.n_ff]),
+            ("mlp.up_proj", [hp.n_embd, hp.n_ff]),
+            ("mlp.down_proj", [hp.n_ff, hp.n_embd]),
+        ] {
+            check(&p(name), GgmlType::TQ1_0, &dims)?;
+        }
+        for name in ["input_layernorm", "post_attention_layernorm"] {
+            check(&p(name), GgmlType::F32, &[hp.n_embd])?;
+        }
+        for name in ["self_attn.q_norm", "self_attn.k_norm"] {
+            check(&p(name), GgmlType::F32, &[hp.head_dim])?;
+        }
+    }
+    check("model.norm.weight", GgmlType::F32, &[hp.n_embd])?;
+    check(EMBED, GgmlType::BF16, &[hp.n_embd, hp.n_vocab])?;
+    check("spk_proj.0.weight", GgmlType::F32, &[hp.spk_dim, hp.n_embd])?;
+    for name in ["spk_proj.0.bias", "spk_proj.1.weight", "spk_proj.1.bias"] {
+        check(name, GgmlType::F32, &[hp.n_embd])?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tq1_shape_tests {
+    use super::*;
+    use crate::gguf::TensorIn;
+    use std::collections::BTreeMap;
+
+    fn fixture() -> (Gguf, Hparams) {
+        let hp = Hparams {
+            n_layer: 1,
+            n_embd: 256,
+            n_ff: 512,
+            n_head: 2,
+            n_head_kv: 1,
+            head_dim: 128,
+            n_vocab: 32,
+            eps: 1e-5,
+            rope_base: 10000.0,
+            spk_dim: 64,
+        };
+        let mut tensors = BTreeMap::new();
+        let mut add = |name: &str, ty, dims: Vec<u64>| {
+            tensors.insert(
+                name.to_string(),
+                TensorIn {
+                    dims,
+                    ty,
+                    start: 0,
+                    len: 0,
+                },
+            );
+        };
+        for (name, dims) in [
+            ("self_attn.q_proj", [256, 256]),
+            ("self_attn.k_proj", [256, 128]),
+            ("self_attn.v_proj", [256, 128]),
+            ("self_attn.o_proj", [256, 256]),
+            ("mlp.gate_proj", [256, 512]),
+            ("mlp.up_proj", [256, 512]),
+            ("mlp.down_proj", [512, 256]),
+        ] {
+            add(&format!("model.layers.0.{name}.weight"), GgmlType::TQ1_0, dims.to_vec());
+        }
+        for name in ["input_layernorm", "post_attention_layernorm"] {
+            add(&format!("model.layers.0.{name}.weight"), GgmlType::F32, vec![256]);
+        }
+        for name in ["self_attn.q_norm", "self_attn.k_norm"] {
+            add(&format!("model.layers.0.{name}.weight"), GgmlType::F32, vec![128]);
+        }
+        add("model.norm.weight", GgmlType::F32, vec![256]);
+        add(EMBED, GgmlType::BF16, vec![256, 32]);
+        add("spk_proj.0.weight", GgmlType::F32, vec![64, 256]);
+        for name in ["spk_proj.0.bias", "spk_proj.1.weight", "spk_proj.1.bias"] {
+            add(name, GgmlType::F32, vec![256]);
+        }
+        (
+            Gguf {
+                bytes: vec![],
+                kv: BTreeMap::new(),
+                tensors,
+                order: vec![],
+            },
+            hp,
+        )
+    }
+
+    #[test]
+    fn rejects_wrong_type_shape_missing_tensor_and_hyperparameters() {
+        let (mut g, mut hp) = fixture();
+        assert!(validate_tq1_shapes(&g, &hp).is_ok());
+        let q = g.tensors.get_mut("model.layers.0.self_attn.q_proj.weight").unwrap();
+        q.dims[1] += 1;
+        assert!(validate_tq1_shapes(&g, &hp).is_err());
+        g.tensors
+            .get_mut("model.layers.0.self_attn.q_proj.weight")
+            .unwrap()
+            .dims[1] -= 1;
+        g.tensors.get_mut("model.layers.0.self_attn.q_proj.weight").unwrap().ty = GgmlType::Q4_0;
+        assert!(validate_tq1_shapes(&g, &hp).is_err());
+        g.tensors.get_mut("model.layers.0.self_attn.q_proj.weight").unwrap().ty = GgmlType::TQ1_0;
+        g.tensors.remove("spk_proj.1.bias");
+        assert!(validate_tq1_shapes(&g, &hp).is_err());
+        let (g, _) = fixture();
+        hp.n_head_kv = 0;
+        assert!(validate_tq1_shapes(&g, &hp).is_err());
+    }
+}
+
 impl Model {
     pub fn load(gguf: &Gguf, weights: Weights, be: Rc<Backend>) -> Result<Model, String> {
         if gguf.str("general.architecture")? != ARCH {
             return Err("not a ggtts Kitten-TTS 2 GGUF".into());
         }
         let layout = Layout::parse(gguf.str("kitten.ternary.layout")?).ok_or("unknown ternary layout")?;
+        if layout == Layout::Tq1 && be.device != Device::Cpu {
+            return Err("experimental TQ1_0 is currently supported only on CPU".into());
+        }
         let u = |k: &str| gguf.u32(&format!("kitten.{k}")).map(|v| v as usize);
         let hp = Hparams {
             n_layer: u("block_count")?,
@@ -131,6 +282,9 @@ impl Model {
             rope_base: gguf.f32("kitten.rope.freq_base")?,
             spk_dim: u("speaker_dim")?,
         };
+        if layout == Layout::Tq1 {
+            validate_tq1_shapes(gguf, &hp)?;
+        }
         // Size the context: every tensor, f32 for dequantized matrices.
         let ctx = unsafe {
             g::ggml_init(g::ggml_init_params {
@@ -165,6 +319,19 @@ impl Model {
         let pending: RefCell<Vec<(*mut g::ggml_tensor, Vec<u8>)>> = RefCell::new(Vec::new());
         let load = |name: &str| -> Result<*mut g::ggml_tensor, String> {
             let (t, data) = gguf.tensor(name)?;
+            if matches!(t.ty, GgmlType::TQ1_0 | GgmlType::TQ2_0 | GgmlType::Q4_0) {
+                if t.dims.len() != 2 {
+                    return Err(format!("{name}: quantized tensor must be a matrix"));
+                }
+                let expected = match layout {
+                    Layout::Tq1 => GgmlType::TQ1_0,
+                    Layout::Tq2Pad => GgmlType::TQ2_0,
+                    Layout::Q4 => GgmlType::Q4_0,
+                };
+                if t.ty != expected {
+                    return Err(format!("{name}: tensor type does not match declared layout"));
+                }
+            }
             let cname = CString::new(name).unwrap();
             unsafe {
                 let out = match (t.ty, weights) {
@@ -194,6 +361,11 @@ impl Model {
                         pending.borrow_mut().push((x, bytes));
                         x
                     }
+                    (GgmlType::TQ1_0, Weights::Ternary | Weights::TernaryF32Head) => {
+                        let x = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_TQ1_0, t.dims[0] as i64, t.dims[1] as i64);
+                        pending.borrow_mut().push((x, data.to_vec()));
+                        x
+                    }
                     (GgmlType::TQ2_0, Weights::Ternary | Weights::TernaryF32Head) => {
                         let x = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_TQ2_0, t.dims[0] as i64, t.dims[1] as i64);
                         pending.borrow_mut().push((x, data.to_vec()));
@@ -204,7 +376,7 @@ impl Model {
                         pending.borrow_mut().push((x, data.to_vec()));
                         x
                     }
-                    (GgmlType::TQ2_0 | GgmlType::Q4_0, Weights::F32) => {
+                    (GgmlType::TQ1_0 | GgmlType::TQ2_0 | GgmlType::Q4_0, Weights::F32) => {
                         let cols = t.dims[0] as usize / if t.ty == GgmlType::TQ2_0 { 2 } else { 1 };
                         let rows = t.dims[1] as usize;
                         let x = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_F32, cols as i64, rows as i64);

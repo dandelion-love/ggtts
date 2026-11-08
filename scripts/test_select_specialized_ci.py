@@ -33,12 +33,25 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(select(["scripts/package_cuda_release.sh"]), {"package", "release", "cuda"})
         self.assertEqual(select(["scripts/buildinfo_engines.sh"]), {"ggml", "release"})
         self.assertEqual(select(["crates/ggtts-qwen3-tts/src/lib.rs"]), {"binding", "android", "release", "ggml", "cuda"})
-        for path in (".github/workflows/ci.yml", "scripts/select_specialized_ci.py",
-                     "scripts/test_select_specialized_ci.py", "Cargo.lock"):
+        for path in (".github/workflows/ci.yml", "Cargo.lock"):
             self.assertEqual(select([path]), set(JOBS))
+        self.assertEqual(select(["scripts/select_specialized_ci.py", "scripts/test_select_specialized_ci.py"]), set())
+        self.assertEqual(select(["scripts/select_specialized_ci.py", "scripts/package_cuda_release.sh"]),
+                         {"package", "release", "cuda"})
         self.assertEqual(decide("pull_request", "main", "rc", True, []), set(JOBS))
         self.assertEqual(decide("pull_request", "main", "rc", False, ["docs/x"]), set())
         self.assertEqual(decide("push", "", "", True, ["Cargo.lock"]), {"ggml", "cuda"})
+
+    def test_report_provenance_does_not_select_unrelated_release_builds(self):
+        paths = ["crates/ggtts-cli/src/bin/ggtts-measure.rs", "crates/ggtts-cli/src/bin/ggtts-render.rs",
+                 "crates/ggtts-cli/tests/measure_cli.rs", "crates/ggtts-core/src/report.rs",
+                 "crates/ggtts-core/tests/report.rs", "crates/ggtts-instruments/src/runner.rs",
+                 "crates/ggtts-instruments/tests/runner.rs", "instruments/python/ggtts_instrument/envelope.py",
+                 "schemas/ggtts-report-2.schema.json"]
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"package"})
+        self.assertEqual(decide("pull_request", "main", "rc", True, paths), set(JOBS))
+        self.assertEqual(decide("pull_request", "rc", "feature", True,
+                                ["crates/unknown/src/lib.rs"]), set(JOBS))
 
     def test_workflow_job_changes(self):
         base = "name: CI\njobs:\n  package-smoke:\n    run: old\n  cuda-compile:\n    run: same\n  ggml:\n    run: same\n"

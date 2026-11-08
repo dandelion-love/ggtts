@@ -154,3 +154,22 @@ fn fake_engine_catalogue_preserves_tokens_and_samples_and_sees_a_sample_plant() 
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn real_probe_comparison_plants_and_model_refusal_are_tested_without_a_model() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let result = std::process::Command::new(ggtts_instruments::runner::default_python())
+        .current_dir(root)
+        .args([
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "scripts",
+            "-p",
+            "test_qwen_event_instrument_probe.py",
+        ])
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+}

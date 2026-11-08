@@ -38,3 +38,39 @@ GGTTS_DEVICE=cuda cargo test -p ggtts-qwen3-tts --features cuda,plant --release 
 The CUDA command also needs the appropriate CUDA runtime libraries on the host. Neither test pins or verifies the
 model files itself; the operator must verify the hashes before running it. This is one fixture and one tensor hook,
 not the full per-instrument promotion proof in #34.
+
+## Shipped event instruments on the same real model
+
+`scripts/qwen_event_instrument_probe.py` compares a traced baseline story with a second story render that also
+runs every shipped event instrument as required. The probe verifies the published talker and codec hashes before
+starting, requires every instrument report OK, and compares FLAC bytes, story draw seeds, and the recorded
+codebook-0 token sequence. Event instruments execute **after** generation. The trace only carries codebook 0;
+this is not an all-codebook comparison for every instrument.
+
+On the same host and prebuilt libraries described above, both runs used the story seed `1689311478` and ran all
+seven catalogue entries. Within each backend, the baseline and instrumented FLAC and recorded codebook-0 sequence
+were identical:
+
+| Backend | Trace steps | Codebook-0 sequence SHA-256 | FLAC SHA-256 | Renderer SHA-256 |
+|---|---|---|---|---|
+| CPU | 86 | `e081e798c14082e9f8eb55dfce089a279150d4750dee9349f5b7fb701f444840` | `915b19b5fc2ea864b6c90c12ef255c8109c7aa348d9e60e037289c39bb34f2a5` | `6c51dc22164773dcdb0aa09e56dde1778a1b1d493aa55eea0058696034d5b296` |
+| CUDA | 81 | `670ea8876aa6d9e25f163f74e30b8f8d84feafb3bbcba5abd196035bf29cc496` | `83eef46e742a83a41864326ab8fdfcc6e193139c42bb82148520c5b21ee547bb` | `5df7bc2ab48f2d147d1386ea0b91c1f496391dfb48fb257f2f811dcb4a36937f` |
+
+The sequence hash is over the compact JSON list of `(chunk, frame, token)` tuples, not a hash of all Qwen
+codebooks. Both reports were `ggtts-report/2` and complete. This is still one story per backend; it does not
+measure the cost of instrumentation, cover tensor hooks other than `StopTrace`, or prove external artifacts
+unchanged. The probe's unit tests independently plant a different FLAC hash, token and seed, and check refusal
+of an incorrect model before creating the work directory.
+
+Build `ggtts-render` and `ggtts-instrument-selftest` from the same checkout, then run the following for each
+backend with a **new** work directory outside the checkout and the model paths supplied:
+
+```sh
+python3 scripts/qwen_event_instrument_probe.py --render /path/to/ggtts-render \
+  --talker /path/to/v0.0.1-talker.gguf --codec /path/to/codec.gguf \
+  --device cpu --work /tmp/ggtts-qwen-cpu-proof
+```
+
+Use `--device cuda` and an independently built CUDA renderer for the CUDA run. The selftest executable must be
+beside the renderer, and Python must be available for the script instruments. The output directory contains
+generated audio and logs; keep it outside the repository. This probe has not been wired into the promotion gate.

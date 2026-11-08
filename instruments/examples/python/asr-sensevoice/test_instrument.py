@@ -16,6 +16,7 @@ spec.loader.exec_module(instrument)
 class FakeEnvelope:
     def __init__(self):
         self.inputs, self.metrics = [], []
+        self.doc = {'provenance': {'inputs': []}}
 
     def input(self, path):
         self.inputs.append(path)
@@ -54,7 +55,7 @@ class TestInstrument(unittest.TestCase):
         with patch.object(instrument, 'transcribe', return_value='abc'):
             bad = FakeEnvelope(); instrument.measure(self.ctx(), bad)
         self.assertEqual(bad.metrics[0][0][1], 0.5)
-        self.assertEqual(len(one.inputs), 7)
+        self.assertEqual(len(one.inputs) + len(one.doc['provenance']['inputs']), 7)
 
     def test_missing_model_audio_or_reference_and_empty_asr_fail(self):
         with patch.object(instrument, 'transcribe', return_value=''):
@@ -72,6 +73,12 @@ class TestInstrument(unittest.TestCase):
 
     def test_envelope_excludes_reference_and_private_paths(self):
         out = self.root / 'result.json'
+        private_audio = self.root / 'private-render-name.wav'
+        self.audio.rename(private_audio)
+        self.audio = private_audio
+        private_reference = self.root / 'private-reference-name.txt'
+        self.reference.rename(private_reference)
+        self.reference = private_reference
         args = ['--audio', str(self.audio), '--envelope', str(out), '--model-dir', str(self.model),
                 '--reference-file', str(self.reference)]
         with patch.object(instrument, 'transcribe', return_value='abcdef'):
@@ -81,6 +88,8 @@ class TestInstrument(unittest.TestCase):
         data = json.loads(content)
         self.assertNotIn('abcdef', content)
         self.assertNotIn(str(self.root), content)
+        self.assertNotIn('private-render-name', content)
+        self.assertNotIn('private-reference-name', content)
         self.assertEqual(data['status'], 'ok')
         self.assertEqual(data['provenance']['audio'], 'unknown')
 
@@ -91,6 +100,18 @@ class TestInstrument(unittest.TestCase):
             with patch.dict(sys.modules, {'funasr': fake}):
                 with self.assertRaisesRegex(RuntimeError, 'invalid output'):
                     instrument.transcribe(self.model, self.audio)
+
+    def test_silence_empty_recognition_is_failed_not_zero(self):
+        out = self.root / 'silent-result.json'
+        args = ['--audio', str(self.audio), '--envelope', str(out), '--model-dir', str(self.model),
+                '--reference-file', str(self.reference)]
+        recognizer = SimpleNamespace(generate=lambda **kwargs: [{'text': '<|nospeech|>'}])
+        with patch.dict(sys.modules, {'funasr': SimpleNamespace(AutoModel=lambda **kwargs: recognizer)}):
+            self.assertEqual(instrument.run(instrument.measure, instrument.NAME, instrument.VERSION,
+                                           ['artifact.audio'], audio_state='unknown', argv=args), 1)
+        data = json.loads(out.read_text(encoding='utf-8'))
+        self.assertEqual(data['status'], 'failed')
+        self.assertEqual(data['metrics'], [])
 
 
 if __name__ == '__main__':

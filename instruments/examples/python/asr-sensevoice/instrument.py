@@ -14,6 +14,7 @@ try:
 except ImportError:
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'python'))
 from ggtts_instrument import read_audio, run
+from ggtts_instrument.audio import sha256_of
 
 NAME, VERSION = 'asr-sensevoice', '0.1.0'
 _TAG = re.compile(r'<\|[^|]*\|>')
@@ -59,6 +60,9 @@ def measure(ctx, env):
     # before even the failure path writes an envelope; the files are identified by hash.
     model_arg = ctx.config.pop('model_dir', '')
     ref_arg = ctx.config.pop('reference_file', '')
+    if 'render_default' in ctx.config:
+        ctx.render = 'render'
+        ctx.config['render_default'] = 'render'
     unexpected = set(ctx.config) - {'render_default', 'run_default'}
     if unexpected:
         ctx.config.clear()
@@ -79,7 +83,11 @@ def measure(ctx, env):
     reference = normalize(ref.read_text(encoding='utf-8'))
     if not reference:
         raise ValueError('empty reference')
-    env.input(ctx.audio).input(str(ref))
+    # SDK input() stores basenames, which may themselves contain private text.
+    env.doc['provenance']['inputs'].extend([
+        {'path': 'audio', 'sha256': audio.sha256},
+        {'path': 'reference', 'sha256': sha256_of(ref)},
+    ])
     for name in model_files:
         env.input(str(model / name))
     ctx.config['normalization'] = 'unicode-nfkc-casefold-alphanumeric-v1'

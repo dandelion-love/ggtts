@@ -20,6 +20,7 @@ class ProbeTest(unittest.TestCase):
     def test_catalogue_and_wrong_model_refusal(self):
         self.assertIn("pitch-range", catalogue())
         self.assertIn("loudness-ends", catalogue())
+        self.assertNotIn("asr-sensevoice", catalogue())
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             model = root / "model"

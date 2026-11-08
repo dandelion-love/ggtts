@@ -32,7 +32,10 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(select([".github/workflows/release.yml"]), {"package", "release", "cuda"})
         self.assertEqual(select(["scripts/package_cuda_release.sh"]), {"package", "release", "cuda"})
         self.assertEqual(select(["scripts/buildinfo_engines.sh"]), {"ggml", "release"})
-        self.assertEqual(select(["crates/ggtts-qwen3-tts/src/lib.rs"]), {"binding", "android", "release", "ggml", "cuda"})
+        self.assertEqual(select(["crates/ggtts-qwen3-tts/src/lib.rs"]), {"package"})
+        self.assertEqual(select(["crates/ggtts-core/src/pipeline.rs", "crates/ggtts-cli/Cargo.toml"]), {"package"})
+        self.assertEqual(select(["crates/ggtts-ffi/src/lib.rs"]), {"binding", "android", "ggml", "cuda"})
+        self.assertEqual(select(["crates/ggtts-ggml-sys/build.rs"]), {"binding", "android", "ggml", "cuda"})
         for path in (".github/workflows/ci.yml", "Cargo.lock"):
             self.assertEqual(select([path]), set(JOBS))
         self.assertEqual(select(["scripts/select_specialized_ci.py", "scripts/test_select_specialized_ci.py"]), set())
@@ -40,7 +43,7 @@ class SelectionTest(unittest.TestCase):
                          {"package", "release", "cuda"})
         self.assertEqual(decide("pull_request", "main", "rc", True, []), set(JOBS))
         self.assertEqual(decide("pull_request", "main", "rc", False, ["docs/x"]), set())
-        self.assertEqual(decide("push", "", "", True, ["Cargo.lock"]), {"ggml", "cuda"})
+        self.assertEqual(decide("push", "", "", True, ["Cargo.lock"]), set())
 
     def test_report_provenance_does_not_select_unrelated_release_builds(self):
         paths = ["crates/ggtts-cli/src/bin/ggtts-measure.rs", "crates/ggtts-cli/src/bin/ggtts-render.rs",
@@ -58,6 +61,17 @@ class SelectionTest(unittest.TestCase):
                                 ["crates/ggtts-qwen3-tts/tests/frame_hook.rs"]), set())
         self.assertEqual(decide("pull_request", "rc", "feature", True,
                                 ["crates/ggtts-cli/tests/no_change_real.rs"]), {"package"})
+
+    def test_logging_change_gets_lightweight_pr_and_full_promotion(self):
+        paths = ["crates/ggtts-cli/Cargo.toml", "crates/ggtts-cli/src/bin/ggtts-render.rs",
+                 "crates/ggtts-cli/tests/logging_cli.rs", "crates/ggtts-core/src/lib.rs",
+                 "crates/ggtts-core/src/logging.rs", "crates/ggtts-core/src/pipeline.rs",
+                 "crates/ggtts-core/src/trace.rs", "crates/ggtts-core/tests/trace.rs",
+                 "crates/ggtts-qwen3-tts/src/lib.rs", "crates/ggtts-qwen3-tts/src/native_logging.rs",
+                 "crates/ggtts-instruments/src/runner.rs", "scripts/select_specialized_ci.py"]
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"package"})
+        self.assertEqual(decide("pull_request", "main", "rc", True, paths), set(JOBS))
+        self.assertEqual(decide("push", "", "", True, paths), set())
 
     def test_workflow_job_changes(self):
         base = "name: CI\njobs:\n  package-smoke:\n    run: old\n  cuda-compile:\n    run: same\n  ggml:\n    run: same\n"

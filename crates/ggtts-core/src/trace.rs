@@ -342,6 +342,16 @@ pub struct JsonlEvents<W: Write> {
     start: Instant,
     w: W,
     error: Option<io::Error>,
+    sink_ns: u128,
+    events_written: u64,
+}
+
+/// Time spent serializing and writing events inside the sink. It excludes event preparation by callers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TraceSinkStats {
+    pub events_written: u64,
+    pub sink_ns: u128,
+    pub flush_ns: u128,
 }
 
 impl<W: Write> JsonlEvents<W> {
@@ -351,16 +361,29 @@ impl<W: Write> JsonlEvents<W> {
             start: Instant::now(),
             w,
             error: None,
+            sink_ns: 0,
+            events_written: 0,
         }
     }
 
     /// Flush, and return the first write error if there was one.
-    pub fn finish(mut self) -> io::Result<W> {
+    pub fn finish(self) -> io::Result<W> {
+        self.finish_with_stats().map(|(writer, _)| writer)
+    }
+
+    /// Flush and return sink timings separately from inference and stream handoffs.
+    pub fn finish_with_stats(mut self) -> io::Result<(W, TraceSinkStats)> {
         if let Some(e) = self.error.take() {
             return Err(e);
         }
+        let start = Instant::now();
         self.w.flush()?;
-        Ok(self.w)
+        let stats = TraceSinkStats {
+            events_written: self.events_written,
+            sink_ns: self.sink_ns,
+            flush_ns: start.elapsed().as_nanos(),
+        };
+        Ok((self.w, stats))
     }
 }
 
@@ -372,11 +395,15 @@ impl<W: Write> Events for JsonlEvents<W> {
         if self.error.is_some() {
             return;
         }
+        let start = Instant::now();
         let mut m = e.to_json();
         m.insert("t_ms".into(), (self.start.elapsed().as_millis() as u64).into());
         if let Err(err) = writeln!(self.w, "{}", Value::Object(m)) {
             self.error = Some(err);
+        } else {
+            self.events_written += 1;
         }
+        self.sink_ns += start.elapsed().as_nanos();
     }
 }
 

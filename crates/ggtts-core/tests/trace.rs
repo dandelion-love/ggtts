@@ -231,6 +231,65 @@ fn a_recorded_trace_replays_exactly() {
     }
 }
 
+#[test]
+fn a_slow_trace_sink_is_measured_without_changing_audio_or_tokens() {
+    struct SlowOnce {
+        data: Vec<u8>,
+        delayed: bool,
+    }
+    impl std::io::Write for SlowOnce {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if !self.delayed {
+                self.delayed = true;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            self.data.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let case = &cases()[0];
+    let mut baseline_engine = case.engine();
+    let baseline = render_story_traced(
+        &mut baseline_engine,
+        &case.story_id,
+        &case.chunks(&case.engine()),
+        &case.opts(&case.engine()),
+        &mut NullEvents,
+    )
+    .unwrap();
+    let mut engine = case.engine();
+    let mut sink = JsonlEvents::new(
+        SlowOnce {
+            data: Vec::new(),
+            delayed: false,
+        },
+        1,
+    );
+    let elapsed = std::time::Instant::now();
+    emit_header(&mut sink, &Header::for_engine(&engine, 1));
+    let read = render_story_traced(
+        &mut engine,
+        &case.story_id,
+        &case.chunks(&case.engine()),
+        &case.opts(&case.engine()),
+        &mut sink,
+    )
+    .unwrap();
+    let (output, stats) = sink.finish_with_stats().unwrap();
+    assert!(elapsed.elapsed() >= std::time::Duration::from_millis(20));
+    assert!(
+        stats.sink_ns >= 20_000_000,
+        "the planted sink delay must be measured: {stats:?}"
+    );
+    assert!(stats.events_written > 0);
+    assert_eq!(baseline.samples, read.samples);
+    let lines = parse(std::str::from_utf8(&output.data).unwrap()).unwrap();
+    assert_eq!(replay(&mut case.engine(), &lines).unwrap().mismatch, None);
+}
+
 /// Change the first line matching `pick` with `edit`, and return the edited trace.
 fn tamper(
     lines: &[Map<String, Value>],

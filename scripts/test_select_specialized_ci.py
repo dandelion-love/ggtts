@@ -122,6 +122,18 @@ class SelectionTest(unittest.TestCase):
         self.assertFalse(logging_lockfile_change(before, after, core_before, core_after, cli_before,
                                                  cli_after + 'cc = "1"\n'))
         self.assertFalse(logging_lockfile_change(before, after, core_before, core_after, cli_before, None))
+        event_before = ('[package]\nname = "ggtts-instrument-event-template"\n'
+                        'description = "Template: an out-of-process ggtts event instrument in Rust, reading ggtts-trace/1 and writing ggtts-report/1"\n'
+                        '[dependencies]\nserde_json = "1"\n')
+        event_after = event_before.replace("reading ggtts-trace/1", "reading ggtts traces")
+        compare_event = lambda new: logging_lockfile_change(before, after, core_before, core_after,
+                                                            cli_before, cli_after, event_before, new)
+        self.assertTrue(compare_event(event_after))
+        self.assertFalse(compare_event(event_after.replace('serde_json = "1"', 'serde_json = "2"')))
+        self.assertFalse(compare_event(event_after + '[features]\nextra = []\n'))
+        self.assertFalse(compare_event(event_after.replace('[dependencies]', 'build = "build.rs"\n[dependencies]')))
+        self.assertFalse(compare_event(event_after.replace('ggtts traces', 'different traces')))
+        self.assertFalse(compare_event('not valid TOML = ='))
         paths = ["Cargo.lock", "crates/ggtts-core/Cargo.toml"]
         self.assertEqual(decide("pull_request", "rc", "feature", True, paths, logging_lock_safe=True), {"package"})
         self.assertEqual(decide("pull_request", "main", "rc", True, paths, logging_lock_safe=True), set(JOBS))
@@ -166,6 +178,26 @@ class SelectionTest(unittest.TestCase):
                 self.assertEqual(stdout.getvalue().count("=true"), len(JOBS))
             paths.remove("crates/ggtts-ggml-sys/Cargo.toml")
             paths.remove(".github/workflows/ci.yml")
+            event_path = "instruments/templates/rust/event/Cargo.toml"
+            paths.append(event_path)
+            event_before = ('[package]\nname = "ggtts-instrument-event-template"\n'
+                            'description = "Template: an out-of-process ggtts event instrument in Rust, reading ggtts-trace/1 and writing ggtts-report/1"\n'
+                            '[dependencies]\nserde_json = "1"\n')
+            event_after = event_before.replace("reading ggtts-trace/1", "reading ggtts traces")
+            blob["base:" + event_path] = event_before
+            blob["head:" + event_path] = event_after
+            with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
+                main()
+                self.assertEqual(stdout.getvalue().count("=true"), 1)
+                self.assertIn("package=true", stdout.getvalue())
+            for altered in (event_after.replace('serde_json = "1"', 'serde_json = "2"'),
+                            event_after + '[features]\nextra = []\n',
+                            event_after.replace('[dependencies]', 'build = "build.rs"\n[dependencies]')):
+                blob["head:" + event_path] = altered
+                with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
+                    main()
+                    self.assertEqual(stdout.getvalue().count("=true"), len(JOBS))
+            paths.remove(event_path)
             del blob["base:Cargo.lock"]
             with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
                 main()

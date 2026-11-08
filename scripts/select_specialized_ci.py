@@ -16,6 +16,7 @@ JOBS = ("package", "binding", "android", "release", "ggml", "cuda")
 WORKFLOW = ".github/workflows/ci.yml"
 CORE_MANIFEST = "crates/ggtts-core/Cargo.toml"
 CLI_MANIFEST = "crates/ggtts-cli/Cargo.toml"
+EVENT_MANIFEST = "instruments/templates/rust/event/Cargo.toml"
 # SHA-256 of canonical JSON for each complete Cargo.lock package record, including
 # version, source, checksum and dependency edges. This exception is for the
 # reviewed tracing migration only; updating any crate requires the full matrix.
@@ -93,7 +94,8 @@ def workflow_changes(before, after):
     return selected
 
 
-def logging_lockfile_change(old_lock, new_lock, old_core, new_core, old_cli=None, new_cli=None):
+def logging_lockfile_change(old_lock, new_lock, old_core, new_core, old_cli=None, new_cli=None,
+                            old_event=None, new_event=None):
     """Only the exact, reviewed tracing graph and manifest changes qualify."""
     if tomllib is None:
         return False
@@ -102,6 +104,17 @@ def logging_lockfile_change(old_lock, new_lock, old_core, new_core, old_cli=None
         if before.get("version") not in (3, 4) or after.get("version") not in (3, 4):
             return False
         core_before, core_after = tomllib.loads(old_core), tomllib.loads(new_core)
+        if (old_event is None) != (new_event is None):
+            return False
+        if old_event is not None:
+            event_before, event_after = tomllib.loads(old_event), tomllib.loads(new_event)
+            package = event_before["package"]
+            if (package.get("name") != "ggtts-instrument-event-template" or
+                    package.get("description") != "Template: an out-of-process ggtts event instrument in Rust, reading ggtts-trace/1 and writing ggtts-report/1"):
+                return False
+            package["description"] = "Template: an out-of-process ggtts event instrument in Rust, reading ggtts traces and writing ggtts-report/1"
+            if event_before != event_after:
+                return False
         if (old_cli is None) != (new_cli is None):
             return False
         if old_cli is not None:
@@ -232,14 +245,15 @@ def main():
             workflow_selected = workflow_changes(old, new)
         if "Cargo.lock" in paths and CORE_MANIFEST in paths:
             manifests = [path for path in paths if path.endswith("Cargo.toml")]
-            if set(manifests) <= {CORE_MANIFEST, CLI_MANIFEST}:
+            if set(manifests) <= {CORE_MANIFEST, CLI_MANIFEST, EVENT_MANIFEST}:
                 try:
                     def blob(revision, path):
                         return subprocess.check_output(["git", "show", f"{revision}:{path}"], text=True)
                     cli = (blob(merge_base, CLI_MANIFEST), blob(head, CLI_MANIFEST)) if CLI_MANIFEST in paths else (None, None)
+                    event_blobs = (blob(merge_base, EVENT_MANIFEST), blob(head, EVENT_MANIFEST)) if EVENT_MANIFEST in paths else (None, None)
                     logging_lock_safe = logging_lockfile_change(
                         blob(merge_base, "Cargo.lock"), blob(head, "Cargo.lock"),
-                        blob(merge_base, CORE_MANIFEST), blob(head, CORE_MANIFEST), *cli)
+                        blob(merge_base, CORE_MANIFEST), blob(head, CORE_MANIFEST), *cli, *event_blobs)
                 except (OSError, subprocess.CalledProcessError, UnicodeError):
                     logging_lock_safe = False
     selected = decide(event, base_ref, head_ref, same_repo, paths, workflow_selected, logging_lock_safe)

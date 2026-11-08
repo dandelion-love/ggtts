@@ -193,12 +193,16 @@ pub fn run_with_logging(config: &Config, inputs: &Inputs, log: LogSettings) -> R
     let report_dir = &inputs.report_dir;
     fs::create_dir_all(report_dir).map_err(|e| format!("{}: {e}", report_dir.display()))?;
     let run_log_path = report_dir.join("run.log");
-    let mut run_log = File::create(&run_log_path).map_err(|e| format!("{}: {e}", run_log_path.display()))?;
+    let run_log_file = File::create(&run_log_path).map_err(|e| format!("{}: {e}", run_log_path.display()))?;
+    let run_log = ggtts_core::logging::LogSink::new(log, run_log_file);
     macro_rules! record {
         ($level:expr, $event:expr, $($args:tt)*) => {{
             if log.enabled($level) {
                 let component = if log.format == LogFormat::Text { "" } else { "instrument-runner" };
-                let _ = log.write(&mut run_log, $level, component, $event, format_args!($($args)*));
+                run_log.emit($level, component, $event, format_args!($($args)*), serde_json::Value::Null);
+                if run_log.failures() != 0 {
+                    return Err(format!("{}: unable to write instrument run log", run_log_path.display()));
+                }
             }
         }};
     }

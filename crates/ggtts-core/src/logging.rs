@@ -2,8 +2,9 @@
 use std::fmt;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
-use std::time::{SystemTime, UNIX_EPOCH};
+
+mod tracing_sink;
+pub use tracing_sink::LogSink;
 
 static LOG_EVENTS: AtomicU64 = AtomicU64::new(0);
 static LOG_SINK_NS: AtomicU64 = AtomicU64::new(0);
@@ -18,7 +19,7 @@ pub fn stats() -> (u64, u64, u64) {
     )
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Level {
     Error,
     Warn,
@@ -49,7 +50,7 @@ impl Level {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Format {
     Text,
     Json,
@@ -64,7 +65,7 @@ impl Format {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Settings {
     pub level: Level,
     pub format: Format,
@@ -195,46 +196,11 @@ impl Settings {
         message: fmt::Arguments<'_>,
         fields: serde_json::Value,
     ) -> io::Result<()> {
-        if !self.enabled(level) {
-            return Ok(());
-        }
-        let start = Instant::now();
-        let result = match self.format {
-            Format::Text if component.is_empty() => writeln!(out, "{message}"),
-            Format::Text => writeln!(out, "{component}: {message}"),
-            Format::Json => {
-                let timestamp_ms = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .ok()
-                    .and_then(|d| u64::try_from(d.as_millis()).ok());
-                let record = serde_json::json!({"format":"ggtts-log/1", "time_unix_ms":timestamp_ms,
-                    "level":level.name(), "component":component, "event":event, "message":message.to_string(),
-                    "fields":fields});
-                writeln!(out, "{record}")
-            }
-        };
-        LOG_SINK_NS.fetch_add(
-            start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
-            Ordering::Relaxed,
-        );
-        if result.is_ok() {
-            LOG_EVENTS.fetch_add(1, Ordering::Relaxed);
-        }
-        result
+        tracing_sink::write_to(self, out, level, component, event, message, fields)
     }
 
     pub fn stderr(self, level: Level, component: &str, event: &str, message: fmt::Arguments<'_>) {
-        if !self.enabled(level) {
-            return;
-        }
-        let start = Instant::now();
-        let stderr = io::stderr();
-        let mut locked = stderr.lock();
-        LOG_LOCK_WAIT_NS.fetch_add(
-            start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
-            Ordering::Relaxed,
-        );
-        let _ = self.write(&mut locked, level, component, event, message);
+        self.stderr_fields(level, component, event, message, serde_json::Value::Null);
     }
 
     pub fn stderr_fields(
@@ -248,14 +214,7 @@ impl Settings {
         if !self.enabled(level) {
             return;
         }
-        let start = Instant::now();
-        let stderr = io::stderr();
-        let mut locked = stderr.lock();
-        LOG_LOCK_WAIT_NS.fetch_add(
-            start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
-            Ordering::Relaxed,
-        );
-        let _ = self.write_fields(&mut locked, level, component, event, message, fields);
+        tracing_sink::stderr(self).emit(level, component, event, message, fields);
     }
 }
 

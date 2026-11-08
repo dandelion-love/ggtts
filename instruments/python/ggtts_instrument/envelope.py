@@ -1,6 +1,6 @@
-"""Build a `ggtts-report/1` envelope, check it, and write it.
+"""Build a `ggtts-report/2` envelope, check it, and write it.
 
-The contract is `schemas/ggtts-report-1.schema.json` (ggtts#29). `check()` restates it here so an instrument refuses
+The contract is `schemas/ggtts-report-2.schema.json`. `check()` restates it here so an instrument refuses
 to write an envelope the merger would mark `invalid`, and it names every reason, not only the first. The test suite
 holds `check()` to the planted defects the schema refuses.
 
@@ -16,11 +16,11 @@ import re
 
 from .audio import sha256_of
 
-FORMAT = "ggtts-report/1"
-READS = (FORMAT,)
+FORMAT = "ggtts-report/2"
+READS = (FORMAT, "ggtts-report/1")
 STATUSES = ("ok", "failed", "timeout", "skipped", "truncated", "invalid")
 DIRECTIONS = ("higher", "lower", "neutral", "n/a")
-AUDIO_STATES = ("raw", "trimmed", "n/a")
+AUDIO_STATES = ("raw", "trimmed", "unknown", "n/a")
 
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 _SHA = re.compile(r"^[0-9a-f]{64}$")
@@ -53,7 +53,7 @@ def _fields(obj, allowed, at, why):
 
 
 def check(env):
-    """Every reason `env` (a dict) is not a valid `ggtts-report/1` envelope; empty when it is."""
+    """Every reason `env` is not a valid supported report envelope; empty when it is."""
     why = []
     if not isinstance(env, dict):
         return ["an envelope is a JSON object"]
@@ -100,6 +100,8 @@ def check(env):
             why.append("provenance: `model_sha256` must be 64 lower-case hex digits or null")
         if prov.get("audio") not in AUDIO_STATES:
             why.append("provenance: `audio` must be one of %s" % ", ".join(AUDIO_STATES))
+        if env.get("format") == "ggtts-report/1" and prov.get("audio") == "unknown":
+            why.append("provenance: unknown audio state requires ggtts-report/2")
         seeds = prov.get("seeds")
         if not isinstance(seeds, list):
             why.append("provenance: `seeds` must be a list")

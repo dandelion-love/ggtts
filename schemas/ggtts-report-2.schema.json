@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ggtts:schema:ggtts-report:2",
+  "title": "ggtts-report/2: one instrument's envelope",
+  "description": "Every instrument writes one envelope. Metrics are a list, so adding a metric never changes the format. A value an instrument could not compute is null, never 0. The merged run report (report.json) is $defs/report. The runtime check is ggtts_core::report::validate, held in agreement with this schema by crates/ggtts-core/tests/report.rs.",
+  "$ref": "#/$defs/envelope",
+  "$defs": {
+    "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$" },
+    "text": { "type": "string", "minLength": 1 },
+    "text_or_null": { "oneOf": [{ "$ref": "#/$defs/text" }, { "type": "null" }] },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "uint": { "type": "integer", "minimum": 0 },
+    "status": {
+      "description": "invalid is set by the merger for an envelope it could not accept.",
+      "enum": ["ok", "failed", "timeout", "skipped", "truncated", "invalid"]
+    },
+    "metric": {
+      "type": "object",
+      "required": ["name", "value", "unit", "direction"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "$ref": "#/$defs/name" },
+        "value": {
+          "description": "null when the instrument could not compute it: a missing value, never 0.",
+          "type": ["number", "null"]
+        },
+        "unit": { "description": "Never empty: \"1\" for a ratio or a count.", "$ref": "#/$defs/text" },
+        "direction": {
+          "description": "Which way is better: neutral for a descriptive value, n/a for a diagnostic.",
+          "enum": ["higher", "lower", "neutral", "n/a"]
+        },
+        "interval": {
+          "description": "[low, high], low <= high. The ordering is checked by validate(); JSON Schema cannot compare two items.",
+          "type": "array",
+          "prefixItems": [{ "type": "number" }, { "type": "number" }],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "render": { "description": "The render this value is about; absent for a run-level value.", "$ref": "#/$defs/text" },
+        "chunk": { "description": "The chunk within render.", "$ref": "#/$defs/uint" }
+      },
+      "dependentRequired": { "chunk": ["render"] }
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["path", "type", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "$ref": "#/$defs/text" },
+        "type": { "description": "A media type, for example audio/flac.", "$ref": "#/$defs/text" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "required": ["run", "instrument"],
+      "additionalProperties": false,
+      "properties": {
+        "run": { "description": "The run's id, the same in every envelope of one run.", "$ref": "#/$defs/text" },
+        "instrument": { "description": "This instrument instance's id, unique within the run.", "$ref": "#/$defs/text" }
+      }
+    },
+    "provenance": {
+      "description": "What the result depends on. A value nobody knows is null, never a guess.",
+      "type": "object",
+      "required": ["config", "ggtts", "engine", "backend", "model_sha256", "seeds", "inputs", "audio"],
+      "additionalProperties": false,
+      "properties": {
+        "config": { "description": "The instrument's effective configuration, defaults included.", "type": "object" },
+        "ggtts": { "$ref": "#/$defs/text_or_null" },
+        "engine": { "$ref": "#/$defs/text_or_null" },
+        "backend": { "$ref": "#/$defs/text_or_null" },
+        "model_sha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "seeds": {
+          "description": "The effective seeds.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["render", "seed"],
+            "additionalProperties": false,
+            "properties": {
+              "render": { "$ref": "#/$defs/text" },
+              "chunk": { "$ref": "#/$defs/uint" },
+              "seed": { "$ref": "#/$defs/uint" }
+            }
+          }
+        },
+        "inputs": {
+          "description": "Every input file the instrument read, by hash.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "sha256"],
+            "additionalProperties": false,
+            "properties": { "path": { "$ref": "#/$defs/text" }, "sha256": { "$ref": "#/$defs/sha256" } }
+          }
+        },
+        "audio": { "description": "Whether the measured audio was trimmed of edge silence.", "enum": ["raw", "trimmed", "unknown", "n/a"] }
+      }
+    },
+    "envelope_properties": {
+      "$comment": "Shared by envelope and entry, which add their own closing rules.",
+      "type": "object",
+      "properties": {
+        "format": { "const": "ggtts-report/2" },
+        "name": { "$ref": "#/$defs/name" },
+        "version": { "$ref": "#/$defs/text" },
+        "identity": { "$ref": "#/$defs/identity" },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "hooks": {
+          "description": "The hooks the instrument read, as named in docs/instruments/hooks.md.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/text" }
+        },
+        "status": { "$ref": "#/$defs/status" },
+        "metrics": { "type": "array", "items": { "$ref": "#/$defs/metric" } },
+        "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
+        "log": { "description": "The instrument's log, or null.", "$ref": "#/$defs/text_or_null" },
+        "error": { "description": "Why it did not end ok, in one line.", "type": ["string", "null"] }
+      }
+    },
+    "envelope": {
+      "allOf": [{ "$ref": "#/$defs/envelope_properties" }],
+      "required": ["format", "name", "version", "identity", "provenance", "hooks", "status", "metrics", "artifacts", "log"],
+      "properties": { "$schema": { "type": "string" } },
+      "unevaluatedProperties": false
+    },
+    "entry": {
+      "description": "One instrument in a merged report: its envelope, where it came from, and, when it was invalid, every reason. It is then listed with status invalid, never dropped.",
+      "allOf": [{ "$ref": "#/$defs/envelope_properties" }],
+      "required": ["format", "name", "version", "identity", "provenance", "hooks", "status", "metrics", "artifacts", "log", "source"],
+      "properties": {
+        "source": { "type": "string" },
+        "invalid": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+      },
+      "unevaluatedProperties": false
+    },
+    "report": {
+      "description": "report.json: every envelope of one run, merged, with the completeness of its required instruments.",
+      "type": "object",
+      "required": ["format", "run", "measurement", "summary", "completeness", "instruments"],
+      "additionalProperties": false,
+      "properties": {
+        "format": { "const": "ggtts-report/2" },
+        "run": { "$ref": "#/$defs/text" },
+        "measurement": {
+          "description": "incomplete when any required instrument is missing, invalid, or did not end ok.",
+          "enum": ["complete", "incomplete"]
+        },
+        "summary": {
+          "type": "object",
+          "required": ["ok", "failed", "timeout", "skipped", "truncated", "invalid"],
+          "additionalProperties": false,
+          "properties": {
+            "ok": { "$ref": "#/$defs/uint" },
+            "failed": { "$ref": "#/$defs/uint" },
+            "timeout": { "$ref": "#/$defs/uint" },
+            "skipped": { "$ref": "#/$defs/uint" },
+            "truncated": { "$ref": "#/$defs/uint" },
+            "invalid": { "$ref": "#/$defs/uint" }
+          }
+        },
+        "completeness": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "present", "valid", "statuses", "met"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "$ref": "#/$defs/name" },
+              "present": { "type": "boolean" },
+              "valid": { "type": "boolean" },
+              "statuses": { "type": "array", "items": { "$ref": "#/$defs/status" } },
+              "met": { "type": "boolean" }
+            }
+          }
+        },
+        "instruments": { "type": "array", "items": { "$ref": "#/$defs/entry" } }
+      }
+    }
+  }
+}

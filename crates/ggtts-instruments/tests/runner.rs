@@ -93,6 +93,7 @@ fn setup_with(tag: &str, paragraphs: &[String]) -> (PathBuf, Inputs) {
         render: "story".into(),
         report_dir: dir.join("report"),
         audio,
+        audio_state: ggtts_core::report::AudioState::Trimmed,
         audio_seconds: Some(read.seconds()),
         events: Some(events),
         bin_dir: Path::new(SELFTEST).parent().map(Path::to_path_buf),

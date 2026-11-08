@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 const RUN: &str = "run-2026-11-06-a";
 
 fn schema() -> Value {
-    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/ggtts-report-1.schema.json");
+    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/ggtts-report-2.schema.json");
     serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
 }
 
@@ -64,6 +64,32 @@ fn env(name: &str) -> Value {
         "artifacts": [{"path": "instruments/timings/steps.csv", "type": "text/csv", "sha256": sha('c')}],
         "log": "instruments/timings/log.txt"
     })
+}
+
+#[test]
+fn v2_unknown_is_explicit_and_v1_remains_readable() {
+    let mut old = env("timings");
+    old["format"] = json!("ggtts-report/1");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/ggtts-report-1.schema.json");
+    let old_schema: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let old_validator = jsonschema::validator_for(&old_schema).unwrap();
+    assert!(old_validator.is_valid(&old));
+    assert!(validate(&old).is_ok());
+    let report = merge(
+        RUN,
+        &[Input {
+            source: "legacy.json".into(),
+            text: old.to_string(),
+        }],
+        &[],
+    );
+    assert!(validator(Some("report")).is_valid(&report.to_json()));
+    old["provenance"]["audio"] = json!("unknown");
+    assert!(!old_validator.is_valid(&old));
+    assert!(validate(&old).is_err());
+    old["format"] = json!(FORMAT);
+    assert!(validator(None).is_valid(&old));
+    assert!(validate(&old).is_ok());
 }
 
 fn with(name: &str, f: impl Fn(&mut Value)) -> Value {
@@ -137,7 +163,7 @@ fn planted() -> Vec<(&'static str, Value)> {
         ("not an object", json!([1, 2])),
         ("no status", e(&|v| rm(v, "/status"))),
         ("a status not in the list", e(&|v| v["status"] = json!("done"))),
-        ("the next format", e(&|v| v["format"] = json!("ggtts-report/2"))),
+        ("the next format", e(&|v| v["format"] = json!("ggtts-report/3"))),
         ("an upper-case name", e(&|v| v["name"] = json!("Timings"))),
         ("an empty version", e(&|v| v["version"] = json!(""))),
         ("an empty hook", e(&|v| v["hooks"] = json!([""]))),

@@ -35,6 +35,15 @@ class EnvelopeCheck(unittest.TestCase):
     def test_a_built_envelope_is_valid(self):
         self.assertEqual(check(envelope()), [])
 
+    def test_previous_format_and_unknown_state(self):
+        doc = envelope()
+        doc["format"] = "ggtts-report/1"
+        self.assertEqual(check(doc), [])
+        doc["provenance"]["audio"] = "unknown"
+        self.assertNotEqual(check(doc), [])
+        doc["format"] = "ggtts-report/2"
+        self.assertEqual(check(doc), [])
+
     def test_planted_defects_are_each_refused(self):
         def mut(f):
             d = json.loads(json.dumps(envelope()))
@@ -44,7 +53,7 @@ class EnvelopeCheck(unittest.TestCase):
         plants = {
             "no status": lambda d: d.pop("status"),
             "a status not in the list": lambda d: d.update(status="done"),
-            "the next format": lambda d: d.update(format="ggtts-report/2"),
+            "the next format": lambda d: d.update(format="ggtts-report/3"),
             "an upper-case name": lambda d: d.update(name="X"),
             "a metric without a unit": lambda d: d["metrics"][0].pop("unit"),
             "a direction not in the list": lambda d: d["metrics"][0].update(direction="up"),

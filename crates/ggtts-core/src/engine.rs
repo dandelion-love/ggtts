@@ -103,6 +103,10 @@ impl std::error::Error for EngineError {}
 /// One model family.
 pub trait Engine {
     fn info(&self) -> &EngineInfo;
+    /// Meaning of `p_stop` emitted by this engine, when known. Absence means unspecified, not zero.
+    fn p_stop_semantics(&self) -> Option<&'static str> {
+        None
+    }
     /// The protocol numbers this engine's output is rendered with: ceilings, pauses, judge bars and level.
     fn profile(&self) -> &Profile;
     /// Text to codec tokens for one chunk.

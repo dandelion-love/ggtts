@@ -12,7 +12,7 @@
 //! | Field | Meaning |
 //! |---|---|
 //! | `token` | The sampled codebook-0 token at this frame. |
-//! | `p_stop` | Engine-reported stop probability. Qwen's existing implementation estimates filtered sampler mass, not an unfiltered temperature-1 probability; see `docs/instruments/hooks.md`. |
+//! | `p_stop` | Engine-reported stop value; inspect `flags.p_stop_semantics`, or treat it as unknown if absent. |
 //! | `entropy` | Entropy in nats of the main sampler's distribution after temperature, before top-k and top-p. |
 //! | `top1_p`, `rank` | The most likely token's probability, and the rank of the token actually drawn. |
 //! | `cb`, `cb_p` | Level 2: the depth model's tokens (codebooks 1 onward) and each one's probability. |
@@ -79,14 +79,13 @@ pub struct Header {
     /// The model's sha256, when the engine has a model.
     pub model_sha256: Option<String>,
     pub codec_sha256: Option<String>,
-    /// The non-default flags. A secret flag is written as `{"set": true, "source": ...}` by its caller, never as
-    /// its value.
+    /// Non-default flags and versioned producer semantics. Secret values must never be written here.
     pub flags: Map<String, Value>,
     pub trace_level: u8,
 }
 
 impl Header {
-    /// A header for `engine` at `trace_level`, with no flags.
+    /// A header for `engine` at `trace_level`, including declared measurement semantics.
     pub fn for_engine(engine: &dyn Engine, trace_level: u8) -> Self {
         let info = engine.info();
         Self {
@@ -98,7 +97,9 @@ impl Header {
             protocol: engine.profile().protocol.to_string(),
             model_sha256: None,
             codec_sha256: None,
-            flags: Map::new(),
+            flags: engine.p_stop_semantics().map_or_else(Map::new, |semantics| {
+                Map::from_iter([("p_stop_semantics".into(), semantics.into())])
+            }),
             trace_level,
         }
     }

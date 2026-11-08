@@ -48,7 +48,7 @@
         "model_sha256": { "$ref": "#/$defs/sha256" },
         "codec_sha256": { "$ref": "#/$defs/sha256" },
         "flags": {
-          "description": "The non-default flags. A secret flag is written as {\"set\": true, \"source\": ...}, never as its value.",
+          "description": "Non-default flags and versioned producer semantics. Secret values must never be written here.",
           "type": "object"
         },
         "trace_level": { "type": "integer", "minimum": 1, "maximum": 2 }

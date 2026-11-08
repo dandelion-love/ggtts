@@ -73,6 +73,7 @@ fn the_fake_and_the_pipeline_emit_every_event_with_its_meaning() {
             assert_eq!(ev(&lines[0]), "trace", "{id}: the header is first");
             assert_eq!(lines[0]["format"], FORMAT);
             assert_eq!(lines[0]["engine"], "fake");
+            assert_eq!(lines[0]["flags"]["p_stop_semantics"], "fake-synthetic/1");
             assert_eq!(lines[0]["protocol"], "story-v1");
             assert_eq!(lines[0]["trace_level"], level);
             assert!(

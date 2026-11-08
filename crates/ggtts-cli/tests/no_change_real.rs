@@ -26,6 +26,9 @@ struct Capture<E> {
 }
 
 impl<E: Engine> Engine for Capture<E> {
+    fn p_stop_semantics(&self) -> Option<&'static str> {
+        self.engine.p_stop_semantics()
+    }
     fn info(&self) -> &EngineInfo {
         self.engine.info()
     }
@@ -141,6 +144,7 @@ fn each_event_instrument_preserves_real_qwen_tokens_and_samples() {
     let root = std::env::temp_dir().join(format!("ggtts-real-each-{}-{backend}", std::process::id()));
     std::fs::create_dir(&root).expect("fresh scratch directory");
     let events = root.join("events.jsonl");
+    assert_eq!(trace.lines[0]["flags"]["p_stop_semantics"], "qwen-sampler-weights/1");
     let lines: Vec<String> = trace
         .lines
         .iter()

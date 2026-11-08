@@ -21,7 +21,7 @@ stream carries is an event instrument. A tensor hook is justified only by a valu
 
 | Level | Hook | Tier | Carried by | Data | Status |
 |---|---|---|---|---|---|
-| Per step | Stop probability | Event | `step.p_stop` | Probability of end-of-speech at temperature 1, before filtering | Available (the fake engine) |
+| Per step | Stop probability | Event | `step.p_stop` | Engine-reported value; see the versioned meaning in the trace header | Available on Qwen and the fake engine; unavailable on Kitten |
 | Per step | Sampler state | Event | `step.entropy`, `step.top1_p`, `step.rank` | Entropy in nats after temperature, before top-k and top-p; the most likely token's probability; the rank of the token drawn | Available (the fake engine) |
 | Per step | Token | Event | `step.token`, and at level 2 `step.cb`, `step.cb_p` | Codebook 0's token; at level 2 the depth model's tokens (codebooks 1 onward) and their probabilities | Available (the fake engine) |
 | Per step | Talker logits | Tensor | A tensor hook's `&[f32]` | The full logit vector for codebook 0 before temperature | Planned |
@@ -41,6 +41,24 @@ stream carries is an event instrument. A tensor hook is justified only by a valu
 "Available (the fake engine)" means the stream defines the hook and the fake engine emits it; a real engine emits
 it once its traced generation is wired. An engine that cannot supply a field leaves it out: a missing field is
 never zero.
+
+The header's `flags.p_stop_semantics` identifies the producer's meaning. `qwen-sampler-weights/1` is the EOS
+weight divided by the sum of the actual f32 weights after suppression, repetition penalty, temperature, top-k,
+top-p and the sampler's cutoff. It describes normalized weights, not a claim that the finite-precision random draw
+has an exactly continuous probability distribution. `fake-synthetic/1` is a scripted test signal, not a model
+probability. This metadata is a producer declaration, not independent proof of the implementation. Missing metadata
+means the semantics are unknown: in particular, older Qwen traces used a separate
+approximation that omitted the top-p cutoff, while older documentation incorrectly called it an unfiltered
+temperature-1 probability. Do not reinterpret those traces as the new measurement. The standalone stop-hook JSONL
+also adds `p_stop_semantics` when known; old records omit it. Strict readers must allow the new field.
+Because values and headers can change, replaying a retained legacy trace against a corrected build can report a
+semantic or value mismatch; preserve the original binary and trace when reproducing an old report.
+Calculating this value repeats weight preparation on a copy of the logits. That work runs only when requested and is
+included in the instrumented generation wall time; it is not free or isolated model-compute time.
+
+Qwen emits a step for the EOS draw itself; the fake engine reports `stop: eos` without a separate EOS step, so that
+terminal observation is not guaranteed by the current cross-engine trace contract. Measurement changes and the
+impact on existing reports are tracked in [#104](https://github.com/dandelion-love/ggtts/issues/104).
 
 ## Timing and order
 

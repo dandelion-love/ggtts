@@ -247,7 +247,7 @@ fn the_stop_trace_hook_writes_the_values_the_engine_has() {
     let want: String = (0..n)
         .map(|f| {
             format!(
-                "{{\"chunk\":2,\"draw\":1,\"seed\":9,\"frame\":{f},\"token\":{},\"p_stop\":{:e}}}
+                "{{\"chunk\":2,\"draw\":1,\"seed\":9,\"frame\":{f},\"token\":{},\"p_stop\":{:e},\"p_stop_semantics\":\"fake-synthetic/1\"}}
 ",
                 g.codes.frames[(f * 16) as usize],
                 fake_p_stop(f, n)

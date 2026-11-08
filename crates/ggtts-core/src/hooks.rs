@@ -67,6 +67,8 @@ pub struct Step<'a> {
     /// The codebook-0 token drawn at this step.
     pub token: u32,
     pub p_stop: Option<f64>,
+    /// Versioned producer meaning of `p_stop`; absent when the producer cannot identify it.
+    pub p_stop_semantics: Option<&'static str>,
     pub logits: Option<&'a [f32]>,
 }
 
@@ -195,6 +197,7 @@ impl Hooks {
 
 /// The worked example: the per-step stop-probability trace, one JSON object per generated frame,
 /// `{"chunk":C,"draw":D,"seed":S,"frame":F,"token":T,"p_stop":P}` with `P` in exponent form.
+/// A known producer meaning is included as `p_stop_semantics`; older records have no such declaration.
 ///
 /// It wants `p_stop` and nothing else, so an engine computes only that. A write error is kept and returned by
 /// [`finish`](TensorHook::finish), so a trace that could not be written is never mistaken for a complete one.
@@ -233,10 +236,13 @@ impl<W: Write> TensorHook for StopTrace<W> {
         if self.error.is_some() {
             return;
         }
+        let semantics = s.p_stop_semantics.map_or_else(String::new, |v| {
+            format!(",\"p_stop_semantics\":{}", serde_json::json!(v))
+        });
         let r = writeln!(
             self.w,
-            "{{\"chunk\":{},\"draw\":{},\"seed\":{},\"frame\":{},\"token\":{},\"p_stop\":{:e}}}",
-            s.chunk, s.draw, s.seed, s.frame, s.token, p
+            "{{\"chunk\":{},\"draw\":{},\"seed\":{},\"frame\":{},\"token\":{},\"p_stop\":{:e}{}}}",
+            s.chunk, s.draw, s.seed, s.frame, s.token, p, semantics
         )
         .and_then(|_| self.w.flush());
         if let Err(e) = r {
@@ -276,6 +282,7 @@ mod tests {
             frame: 2,
             token: 3,
             p_stop: p,
+            p_stop_semantics: None,
             logits: None,
         }
     }
@@ -322,6 +329,19 @@ mod tests {
             String::from_utf8(t.into_inner()).unwrap(),
             "{\"chunk\":0,\"draw\":0,\"seed\":1,\"frame\":2,\"token\":3,\"p_stop\":2.5e-1}\n"
         );
+    }
+
+    #[test]
+    fn stop_trace_labels_known_semantics_and_escapes_them() {
+        let mut t = StopTrace::new(Vec::new());
+        let mut s = step(Some(0.25));
+        s.p_stop_semantics = Some("producer\"/1");
+        t.step(&s);
+        t.finish().unwrap();
+        let bytes = t.into_inner();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["p_stop_semantics"], "producer\"/1");
+        assert_eq!(value["p_stop"], 0.25);
     }
 
     struct Broken;

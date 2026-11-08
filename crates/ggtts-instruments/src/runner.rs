@@ -37,12 +37,12 @@
 //! to.
 
 use std::fs::{self, File};
-use std::io::Write;
 use std::panic::{catch_unwind, UnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+use ggtts_core::logging::{Format as LogFormat, Level as LogLevel, Settings as LogSettings};
 use ggtts_core::report::{
     self, AudioState, Envelope, Identity, Input, InputFile, Metric, Provenance, Report, Status, FORMAT,
 };
@@ -184,11 +184,24 @@ fn entry_config(config: &Config, entry: &Entry, needs_events: bool) -> Map<Strin
 
 /// Run every configured instrument in order, then merge. `Err` only when the report itself cannot be written.
 pub fn run(config: &Config, inputs: &Inputs) -> Result<RunSummary, String> {
+    run_with_logging(config, inputs, LogSettings::default())
+}
+
+/// Run with explicit log settings; child-process logs remain separate, unmodified files.
+pub fn run_with_logging(config: &Config, inputs: &Inputs, log: LogSettings) -> Result<RunSummary, String> {
     let t_run = Instant::now();
     let report_dir = &inputs.report_dir;
     fs::create_dir_all(report_dir).map_err(|e| format!("{}: {e}", report_dir.display()))?;
     let run_log_path = report_dir.join("run.log");
     let mut run_log = File::create(&run_log_path).map_err(|e| format!("{}: {e}", run_log_path.display()))?;
+    macro_rules! record {
+        ($level:expr, $event:expr, $($args:tt)*) => {{
+            if log.enabled($level) {
+                let component = if log.format == LogFormat::Text { "" } else { "instrument-runner" };
+                let _ = log.write(&mut run_log, $level, component, $event, format_args!($($args)*));
+            }
+        }};
+    }
     let bin_dir = match &inputs.bin_dir {
         Some(d) => d.clone(),
         None => std::env::current_exe()
@@ -200,8 +213,9 @@ pub fn run(config: &Config, inputs: &Inputs) -> Result<RunSummary, String> {
         OnError::Continue => "continue",
         OnError::Abort => "abort",
     };
-    let _ = writeln!(
-        run_log,
+    record!(
+        LogLevel::Info,
+        "start",
         "ggtts instruments {}: run {}, render {}, {} instrument(s), on_error {on_error}, require [{}], audio {}, \
          events {}",
         env!("CARGO_PKG_VERSION"),
@@ -307,8 +321,14 @@ pub fn run(config: &Config, inputs: &Inputs) -> Result<RunSummary, String> {
             source: format!("instruments/{}/envelope.json", entry.name),
             text,
         });
-        let _ = writeln!(
-            run_log,
+        let level = match env.status {
+            Status::Ok => LogLevel::Info,
+            Status::Failed | Status::Timeout | Status::Invalid => LogLevel::Error,
+            Status::Skipped | Status::Truncated => LogLevel::Warn,
+        };
+        record!(
+            level,
+            "instrument",
             "instrument {} {}: {} ({exit}, {ms} ms){}",
             env.name,
             env.version,
@@ -358,8 +378,9 @@ pub fn run(config: &Config, inputs: &Inputs) -> Result<RunSummary, String> {
         overhead,
     };
     let count = |s: Status| summary.envelopes.iter().filter(|e| e.status == s).count();
-    let _ = writeln!(
-        run_log,
+    record!(
+        LogLevel::Info,
+        "done",
         "done: {} ok, {} failed, timed out or invalid, {} skipped, {} truncated{}",
         count(Status::Ok),
         summary.failures(),
@@ -368,8 +389,9 @@ pub fn run(config: &Config, inputs: &Inputs) -> Result<RunSummary, String> {
         if summary.aborted { "; aborted" } else { "" }
     );
     let within = |ok: bool| if ok { "within" } else { "OVER" };
-    let _ = writeln!(
-        run_log,
+    record!(
+        LogLevel::Info,
+        "overhead",
         "overhead: time to first audio +0 ms (instruments start after the audio is written); instrument phase {} ms \
          = instruments {} ms + runner {} ms (budget {} ms: {})",
         overhead.total_ms,
@@ -381,8 +403,9 @@ pub fn run(config: &Config, inputs: &Inputs) -> Result<RunSummary, String> {
     if let Some(s) = inputs.audio_seconds.filter(|s| *s > 0.0) {
         let rtf = overhead.total_ms as f64 / 1000.0 / s;
         let own = overhead.own_ms as f64 / 1000.0 / s;
-        let _ = writeln!(
-            run_log,
+        record!(
+            LogLevel::Info,
+            "overhead_rtf",
             "overhead: RTF added {rtf:.4} over {s:.2} s of audio, runner's own share {own:.4} (budget {BUDGET_RTF} on \
              30 s or more: {})",
             if s >= 30.0 {
@@ -393,9 +416,14 @@ pub fn run(config: &Config, inputs: &Inputs) -> Result<RunSummary, String> {
         );
     }
     if summary.complete() {
-        let _ = writeln!(run_log, "measurement: complete");
+        record!(LogLevel::Info, "measurement_complete", "measurement: complete");
     } else {
-        let _ = writeln!(run_log, "measurement: INCOMPLETE: {}", summary.incomplete.join("; "));
+        record!(
+            LogLevel::Error,
+            "measurement_incomplete",
+            "measurement: INCOMPLETE: {}",
+            summary.incomplete.join("; ")
+        );
     }
     Ok(summary)
 }

@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! ggtts-render --model M.gguf [--codec C.gguf] --out x.flac [--engine auto|qwen3-tts|kitten-tts-2|fake]
-//!              [--threads N] [--device cpu|cuda] [--trace trace.jsonl] [--voice REF.json]
+//!              [--threads N] [--device cpu|cuda] [--trace trace.jsonl [--trace-level 1|2]] [--timing-report FILE] [--voice REF.json]
 //!              [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text "..." [--seed S] | --story story.txt)
 //!              [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE.yaml] [--require NAME]...
 //!              [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID]
@@ -49,6 +49,7 @@ use std::time::Instant;
 
 use ggtts_core::engine::{ChunkRequest, Engine};
 use ggtts_core::flac::write_flac;
+use ggtts_core::logging::{Format as LogFormat, Level as LogLevel, Settings as LogSettings};
 use ggtts_core::pipeline::{plan_story, render_story_streamed, RenderOptions};
 use ggtts_core::stream::{Container, StreamLevel, StreamWriter};
 use ggtts_core::text::read_text;
@@ -79,10 +80,11 @@ mod gguf_arch;
 
 const BINARY: &str = "ggtts-render";
 const USAGE: &str = "usage: ggtts-render --model M.gguf [--codec C.gguf] --out x.flac \
-[--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N] [--device cpu|cuda] [--trace FILE] [--voice REF] \
+[--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] \
 [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
-[--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID]\n       ggtts-render --version";
+[--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID] \
+[--log-level error|warn|info|debug|trace] [--log-format text|json] [--timing-report FILE]\n       ggtts-render --version";
 
 /// Which stream to ask for, printed by `--help`.
 const STREAMS: &str = concat!(
@@ -114,6 +116,8 @@ struct Args {
     threads: Option<i32>,
     device: Option<String>,
     trace: Option<PathBuf>,
+    trace_level: Option<u8>,
+    timing_report: Option<PathBuf>,
     /// A reference voice, for engines that clone one (kitten-tts-2: a `ggtts-kitten prepare` JSON). Others ignore it.
     voice: Option<PathBuf>,
     stream: Option<String>,
@@ -148,6 +152,14 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--seed" => a.seed = Some(value()?.parse().map_err(|_| "--seed needs an integer")?),
             "--device" => a.device = Some(value()?),
             "--trace" => a.trace = Some(value()?.into()),
+            "--timing-report" => a.timing_report = Some(value()?.into()),
+            "--trace-level" => {
+                let level = value()?.parse::<u8>().map_err(|_| "--trace-level must be 1 or 2")?;
+                if !(1..=2).contains(&level) {
+                    return Err("--trace-level must be 1 or 2".into());
+                }
+                a.trace_level = Some(level);
+            }
             "--voice" => a.voice = Some(value()?.into()),
             "--stream" => a.stream = Some(value()?),
             "--stream-format" => a.stream_format = Some(value()?),
@@ -249,7 +261,15 @@ fn open_stream(a: &Args) -> Result<Option<StreamWriter<Box<dyn std::io::Write>>>
 
 /// Render, then run the instruments. The exit code: 0, or 3 when a required instrument is not ok (the measurement is
 /// INCOMPLETE; the FLAC is written).
-fn render(a: Args) -> Result<u8, String> {
+fn render(a: Args, log: LogSettings) -> Result<u8, String> {
+    #[cfg(feature = "ggml")]
+    ggtts_qwen3_tts::native_logging::install(log).map_err(str::to_string)?;
+    if a.trace_level.is_some() && (a.trace.is_none() || a.story.is_none()) {
+        return Err("--trace-level requires a story and --trace".into());
+    }
+    if a.timing_report.as_ref().is_some_and(|p| p.exists()) {
+        return Err("--timing-report must be a new file".into());
+    }
     let mut stream = open_stream(&a)?;
     if a.out.is_none() && stream.is_none() {
         return Err("--out is required (or --stream)".into());
@@ -279,7 +299,11 @@ fn render(a: Args) -> Result<u8, String> {
     let mut engine = load_engine(&name, &a, &model)?;
     let load_ms = t0.elapsed().as_millis();
     let t1 = Instant::now();
-    let mut measured_render_ms = None;
+    let measured_render_ms;
+    let frames_generated;
+    let mut stage_times = None;
+    let mut trace_stats = None;
+    let mut stream_stats = None;
     let (samples, rate) = match (&a.text, &a.story) {
         (Some(text), None) => {
             let req = ChunkRequest {
@@ -289,18 +313,37 @@ fn render(a: Args) -> Result<u8, String> {
                 draw: 0,
             };
             let g = engine.generate(&req).map_err(|e| e.to_string())?;
-            let gen_ms = t1.elapsed().as_millis();
+            frames_generated = g.codes.n_frames() as u64;
+            let gen_ns = t1.elapsed().as_nanos();
+            let gen_ms = gen_ns / 1_000_000;
             let t2 = Instant::now();
             let pcm = engine.decode(&g.codes).map_err(|e| e.to_string())?;
+            let decode_ns = t2.elapsed().as_nanos();
+            if a.timing_report.is_some() {
+                stage_times = Some(ggtts_core::pipeline::StageTimings {
+                    generate_ns: gen_ns,
+                    decode_ns,
+                    judge_ns: 0,
+                });
+            }
             if let Some(w) = stream.as_mut() {
+                let first_audio_ms = t1.elapsed().as_millis();
+                let started = Instant::now();
                 w.write(&pcm.samples, pcm.sample_rate)
                     .map_err(|e| format!("--stream: {e}"))?;
+                stream_stats = Some((Some(first_audio_ms), 1, None, started.elapsed().as_nanos()));
             }
-            eprintln!(
-                "{BINARY}: {} frames, stop {:?}, generate {gen_ms} ms, decode {} ms",
-                g.codes.n_frames(),
-                g.stop,
-                t2.elapsed().as_millis()
+            measured_render_ms = t1.elapsed().as_millis();
+            log.stderr(
+                LogLevel::Info,
+                BINARY,
+                "draw",
+                format_args!(
+                    "{} frames, stop {:?}, generate {gen_ms} ms, decode {} ms",
+                    g.codes.n_frames(),
+                    g.stop,
+                    decode_ns / 1_000_000
+                ),
             );
             (pcm.samples, pcm.sample_rate)
         }
@@ -310,15 +353,19 @@ fn render(a: Args) -> Result<u8, String> {
             let profile = *engine.profile();
             let chunks = plan_story(&profile, &paragraphs);
             let mut first_audio_ms = None;
+            let mut level_ns = 0u128;
+            let mut stream_write_ns = 0u128;
+            let mut stream_writes = 0u64;
             let hold_s = a.stream_level_seconds.unwrap_or(ggtts_core::stream::DEFAULT_HOLD_S);
             let mut leveller = StreamLevel::new(&profile, hold_s);
             let raw = a.stream_raw;
+            let trace_level = a.trace_level.unwrap_or(1);
             let mut trace = a
                 .trace
                 .as_ref()
                 .map(|path| {
                     std::fs::File::create(path)
-                        .map(|file| JsonlEvents::new(file, 1))
+                        .map(|file| JsonlEvents::new(file, trace_level))
                         .map_err(|e| format!("--trace {}: {e}", path.display()))
                 })
                 .transpose()?;
@@ -331,41 +378,52 @@ fn render(a: Args) -> Result<u8, String> {
                 inner: events,
                 end: None,
             };
-            emit_header(&mut events, &Header::for_engine(engine.as_ref(), 1));
-            let read = render_story_streamed(
-                engine.as_mut(),
-                &title,
-                &chunks,
-                &RenderOptions::for_profile(&profile),
-                &mut events,
-                &mut |p| {
-                    if let Some(w) = stream.as_mut() {
-                        let ready = if raw {
-                            vec![p.samples.to_vec()]
-                        } else {
-                            leveller.push(p.samples, p.sample_rate)
-                        };
-                        for piece in ready {
-                            // First audio is the first WRITE: a held piece has not reached the listener.
-                            first_audio_ms.get_or_insert(t1.elapsed().as_millis());
-                            // A failed write stops the render: nothing can receive the rest.
-                            w.write(&piece, p.sample_rate).map_err(|e| e.to_string())?;
-                        }
+            emit_header(&mut events, &Header::for_engine(engine.as_ref(), trace_level));
+            let mut options = RenderOptions::for_profile(&profile);
+            options.measure_timings = a.timing_report.is_some();
+            let read = render_story_streamed(engine.as_mut(), &title, &chunks, &options, &mut events, &mut |p| {
+                if let Some(w) = stream.as_mut() {
+                    let started = Instant::now();
+                    let ready = if raw {
+                        vec![p.samples.to_vec()]
+                    } else {
+                        leveller.push(p.samples, p.sample_rate)
+                    };
+                    level_ns += started.elapsed().as_nanos();
+                    for piece in ready {
+                        // First audio is the first WRITE: a held piece has not reached the listener.
+                        first_audio_ms.get_or_insert(t1.elapsed().as_millis());
+                        // A failed write stops the render: nothing can receive the rest.
+                        let started = Instant::now();
+                        w.write(&piece, p.sample_rate).map_err(|e| e.to_string())?;
+                        stream_write_ns += started.elapsed().as_nanos();
+                        stream_writes += 1;
                     }
-                    Ok(())
-                },
-            )
+                }
+                Ok(())
+            })
             .map_err(|e| e.to_string())?;
             if let Some(w) = stream.as_mut() {
                 // A read shorter than the hold leaves at the end, levelled over all of it.
-                for piece in leveller.finish() {
+                let started = Instant::now();
+                let ready = leveller.finish();
+                level_ns += started.elapsed().as_nanos();
+                for piece in ready {
                     first_audio_ms.get_or_insert(t1.elapsed().as_millis());
+                    let started = Instant::now();
                     w.write(&piece, read.sample_rate)
                         .map_err(|e| format!("--stream: {e}"))?;
+                    stream_write_ns += started.elapsed().as_nanos();
+                    stream_writes += 1;
                 }
             }
             let render_ms = t1.elapsed().as_millis();
-            measured_render_ms = Some(render_ms);
+            measured_render_ms = render_ms;
+            frames_generated = read.frames_generated;
+            stage_times = read.timings;
+            if stream.is_some() {
+                stream_stats = Some((first_audio_ms, stream_writes, Some(level_ns), stream_write_ns));
+            }
             if events.level() > 0 {
                 if let Some(ms) = first_audio_ms {
                     events.emit(Event::Timing {
@@ -386,7 +444,13 @@ fn render(a: Args) -> Result<u8, String> {
                 }
             }
             if let Some(writer) = trace {
-                writer.finish().map_err(|e| format!("--trace: {e}"))?;
+                let (_, stats) = writer.finish_with_stats().map_err(|e| format!("--trace: {e}"))?;
+                trace_stats = Some((trace_level, stats));
+                if log.enabled(LogLevel::Info) {
+                    log.stderr_fields(LogLevel::Info, BINARY, "trace_sink", format_args!("trace sink {} events, {} ns serialization/write, {} ns flush; generation includes trace emission",
+                        stats.events_written, stats.sink_ns, stats.flush_ns), serde_json::json!({"events":stats.events_written,
+                        "sink_ns":stats.sink_ns as u64, "flush_ns":stats.flush_ns as u64, "trace_level":trace_level}));
+                }
             }
             if let Some(w) = &stream {
                 let db = |g: Option<f64>| g.map_or("none".to_string(), |g| format!("{:+.4} dB", 20.0 * g.log10()));
@@ -399,39 +463,111 @@ fn render(a: Args) -> Result<u8, String> {
                         db(leveller.gain())
                     )
                 };
-                eprintln!(
-                    "{BINARY}: streamed {} samples {what}, first audio at {} ms; the read's level gain {} \
+                log.stderr(
+                    LogLevel::Info,
+                    BINARY,
+                    "stream",
+                    format_args!(
+                        "streamed {} samples {what}, first audio {}; the read's level gain {} \
                      (the --out FLAC applies it)",
-                    w.samples(),
-                    first_audio_ms.unwrap_or(0),
-                    db(read.gain),
+                        w.samples(),
+                        first_audio_ms.map_or_else(|| "not written".to_string(), |ms| format!("at {ms} ms")),
+                        db(read.gain),
+                    ),
                 );
+                if log.enabled(LogLevel::Info) {
+                    log.stderr_fields(LogLevel::Info, BINARY, "stream_handoff", format_args!("stream handoffs {stream_writes} writes, {level_ns} ns preparing/levelling, {stream_write_ns} ns writing"),
+                        serde_json::json!({"writes":stream_writes, "preparation_ns":level_ns as u64,
+                                           "write_ns":stream_write_ns as u64, "first_audio_ms":first_audio_ms}));
+                }
             }
-            eprintln!(
-                "{BINARY}: {} chunks, {} first-draw defects, {:.2} s of audio",
-                read.chunks.len(),
-                read.first_draw_defects(),
-                read.seconds()
+            log.stderr(
+                LogLevel::Info,
+                BINARY,
+                "story",
+                format_args!(
+                    "{} chunks, {} first-draw defects, {:.2} s of audio",
+                    read.chunks.len(),
+                    read.first_draw_defects(),
+                    read.seconds()
+                ),
             );
             (read.samples, read.sample_rate)
         }
         _ => return Err("give exactly one of --text and --story".into()),
     };
-    let render_ms = measured_render_ms.unwrap_or_else(|| t1.elapsed().as_millis());
+    let render_ms = measured_render_ms;
     let mut written = None;
+    let mut artifact_write_ns = None;
     if let Some(out) = &a.out {
+        let started = Instant::now();
         let path = write_flac(out, &samples, rate).map_err(|e| format!("{}: {e}", out.display()))?;
-        eprintln!(
-            "{BINARY}: wrote {} ({} samples at {rate} Hz) with {} on {}, parity {}; load {load_ms} ms, render {render_ms} ms",
+        artifact_write_ns = Some(started.elapsed().as_nanos());
+        if log.enabled(LogLevel::Info) {
+            log.stderr_fields(
+                LogLevel::Info,
+                BINARY,
+                "render_complete",
+                format_args!(
+            "wrote {} ({} samples at {rate} Hz) with {} on {}, parity {}; load {load_ms} ms, render {render_ms} ms",
             path.display(),
             samples.len(),
             engine.info().family,
             engine.info().backend,
             engine.info().parity
-        );
+        ),
+                serde_json::json!({"samples":samples.len(), "sample_rate":rate, "load_ms":load_ms as u64,
+                            "render_ms":render_ms as u64, "engine":engine.info().family,
+                            "backend":engine.info().backend, "parity":engine.info().parity}),
+            );
+        }
         written = Some(path);
     }
+    let write_timing = |instrument_ms: Option<u128>| -> Result<(), String> {
+        let Some(path) = &a.timing_report else {
+            return Ok(());
+        };
+        use std::io::Write;
+        let (log_records, log_sink_ns, log_lock_wait_ns) = ggtts_core::logging::stats();
+        let stage = stage_times.map(|t| serde_json::json!({
+            "generate_ns": t.generate_ns as u64, "decode_ns": t.decode_ns as u64,
+            "judge_ns": a.story.as_ref().map(|_| t.judge_ns as u64),
+            "generated_frames_per_second": (t.generate_ns > 0).then(|| frames_generated as f64 * 1e9 / t.generate_ns as f64)
+        }));
+        let trace = trace_stats.map(|(level, s): (u8, ggtts_core::trace::TraceSinkStats)| {
+            serde_json::json!({
+                "level": level, "events": s.events_written, "sink_ns": s.sink_ns as u64, "flush_ns": s.flush_ns as u64
+            })
+        });
+        let stream = stream_stats.map(
+            |(first, writes, level_ns, write_ns): (Option<u128>, u64, Option<u128>, u128)| {
+                serde_json::json!({
+                    "first_audio_ms": first.map(|v| v as u64), "writes": writes,
+                    "preparation_ns": level_ns.map(|v| v as u64), "write_ns": write_ns as u64
+                })
+            },
+        );
+        let audio_seconds = (rate > 0).then(|| samples.len() as f64 / f64::from(rate));
+        let report = serde_json::json!({
+            "format": "ggtts-timing/1", "engine": engine.info().family, "backend": engine.info().backend,
+            "parity": engine.info().parity, "load_ms": load_ms as u64, "render_ms": render_ms as u64,
+            "audio_seconds": audio_seconds, "frames_generated": frames_generated, "stages": stage,
+            "render_rtf": audio_seconds.filter(|s| *s > 0.0).map(|s| render_ms as f64 / 1000.0 / s),
+            "stream": stream, "trace_sink": trace, "artifact_write_ns": artifact_write_ns.map(|v| v as u64),
+            "instrument_phase_ms": instrument_ms.map(|v| v as u64),
+            "logging": {"level": log.level.name(), "format": log.format.name(), "records": log_records,
+                        "sink_ns": log_sink_ns, "lock_wait_ns": log_lock_wait_ns},
+            "limits": "generation is host wall time including observer callbacks; no exclusive GPU or asynchronous synchronization claim; timings overlap; logger counters omit caller preparation and external child logs"
+        });
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|e| format!("--timing-report {}: {e}", path.display()))?;
+        writeln!(file, "{report}").map_err(|e| format!("--timing-report {}: {e}", path.display()))
+    };
     let (Some(config), Some(path)) = (instruments, written) else {
+        write_timing(None)?;
         return Ok(ggtts_instruments::runner::EXIT_OK);
     };
     let render_id = path
@@ -460,25 +596,43 @@ fn render(a: Args) -> Result<u8, String> {
         bin_dir: None,
         instruments_dir: None,
     };
-    let summary = ggtts_instruments::run(&config, &inputs)?;
+    let summary = ggtts_instruments::runner::run_with_logging(&config, &inputs, log)?;
     for e in &summary.envelopes {
         let why = e.error.as_ref().map_or(String::new(), |w| format!(": {w}"));
-        eprintln!(
-            "{BINARY}: instrument {} {}: {}{why}",
-            e.name,
-            e.version,
-            e.status.as_str()
+        let level = match e.status {
+            ggtts_core::report::Status::Ok => LogLevel::Info,
+            ggtts_core::report::Status::Failed
+            | ggtts_core::report::Status::Timeout
+            | ggtts_core::report::Status::Invalid => LogLevel::Error,
+            ggtts_core::report::Status::Skipped | ggtts_core::report::Status::Truncated => LogLevel::Warn,
+        };
+        log.stderr(
+            level,
+            BINARY,
+            "instrument",
+            format_args!("instrument {} {}: {}{why}", e.name, e.version, e.status.as_str()),
         );
     }
-    eprintln!(
-        "{BINARY}: instrument report in {}; runner {} ms (budget {} ms)",
-        inputs.report_dir.display(),
-        summary.overhead.own_ms,
-        summary.overhead.budget_ms
+    log.stderr(
+        LogLevel::Info,
+        BINARY,
+        "instrument_report",
+        format_args!(
+            "instrument report in {}; runner {} ms (budget {} ms)",
+            inputs.report_dir.display(),
+            summary.overhead.own_ms,
+            summary.overhead.budget_ms
+        ),
     );
     if !summary.complete() {
-        eprintln!("{BINARY}: measurement INCOMPLETE: {}", summary.incomplete.join("; "));
+        log.stderr(
+            LogLevel::Error,
+            BINARY,
+            "measurement_incomplete",
+            format_args!("measurement INCOMPLETE: {}", summary.incomplete.join("; ")),
+        );
     }
+    write_timing(Some(summary.overhead.total_ms))?;
     Ok(summary.exit_code())
 }
 
@@ -505,7 +659,14 @@ fn engine_lines() -> Vec<String> {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let (log, args) = match LogSettings::from_args(&raw) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(ggtts_instruments::runner::EXIT_RENDER_FAILED);
+        }
+    };
     match args.first().map(String::as_str) {
         None | Some("--version") | Some("-V") => {
             for line in ggtts_core::version_lines(BINARY) {
@@ -521,11 +682,13 @@ fn main() -> ExitCode {
             println!("{INSTRUMENTS_HELP}");
             ExitCode::SUCCESS
         }
-        Some(_) => match parse(&args).and_then(render) {
+        Some(_) => match parse(&args).and_then(|a| render(a, log)) {
             Ok(code) => ExitCode::from(code),
             Err(e) => {
-                eprintln!("error: {e}");
-                eprintln!("{USAGE}");
+                log.stderr(LogLevel::Error, "error", "command_failed", format_args!("{e}"));
+                if log.format == LogFormat::Text {
+                    eprintln!("{USAGE}");
+                }
                 ExitCode::from(ggtts_instruments::runner::EXIT_RENDER_FAILED)
             }
         },

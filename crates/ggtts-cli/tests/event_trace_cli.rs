@@ -2,6 +2,58 @@ use std::path::Path;
 use std::process::Command;
 
 #[test]
+fn trace_levels_are_explicit_and_reject_invalid_combinations() {
+    let root = std::env::temp_dir().join(format!("ggtts-trace-level-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let story = root.join("story.txt");
+    std::fs::write(&story, "A short story\nA short sentence.").unwrap();
+    for level in ["1", "2"] {
+        let trace = root.join(format!("trace-{level}.jsonl"));
+        let result = Command::new(env!("CARGO_BIN_EXE_ggtts-render"))
+            .args(["--engine", "fake", "--story"])
+            .arg(&story)
+            .arg("--out")
+            .arg(root.join(format!("out-{level}.flac")))
+            .arg("--trace")
+            .arg(&trace)
+            .args(["--trace-level", level])
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        let lines: Vec<serde_json::Value> = std::fs::read_to_string(trace)
+            .unwrap()
+            .lines()
+            .map(|s| serde_json::from_str(s).unwrap())
+            .collect();
+        assert_eq!(lines[0]["trace_level"].as_u64(), Some(level.parse().unwrap()));
+        let step = lines.iter().find(|v| v["ev"] == "step").unwrap();
+        assert_eq!(step.get("cb").is_some(), level == "2");
+    }
+    assert_eq!(
+        std::fs::read(root.join("out-1.flac")).unwrap(),
+        std::fs::read(root.join("out-2.flac")).unwrap()
+    );
+    for args in [
+        vec!["--trace-level", "0"],
+        vec!["--trace-level", "3"],
+        vec!["--trace-level", "1"],
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_ggtts-render"))
+            .args(["--engine", "fake", "--story"])
+            .arg(&story)
+            .arg("--out")
+            .arg(root.join("bad.flac"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(!root.join("bad.flac").exists());
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn held_stream_records_the_actual_first_write_before_trace_end() {
     let root = std::env::temp_dir().join(format!("ggtts-held-timing-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);

@@ -21,7 +21,7 @@ stream carries is an event instrument. A tensor hook is justified only by a valu
 
 | Level | Hook | Tier | Carried by | Data | Status |
 |---|---|---|---|---|---|
-| Per step | Stop probability | Event | `step.p_stop` | Probability of end-of-speech at temperature 1, before filtering | Available (the fake engine) |
+| Per step | Stop probability | Event | `step.p_stop` | Engine-reported stop probability; Qwen estimates filtered sampler mass, not an unfiltered temperature-1 probability | Available on Qwen and the fake engine; unavailable on Kitten |
 | Per step | Sampler state | Event | `step.entropy`, `step.top1_p`, `step.rank` | Entropy in nats after temperature, before top-k and top-p; the most likely token's probability; the rank of the token drawn | Available (the fake engine) |
 | Per step | Token | Event | `step.token`, and at level 2 `step.cb`, `step.cb_p` | Codebook 0's token; at level 2 the depth model's tokens (codebooks 1 onward) and their probabilities | Available (the fake engine) |
 | Per step | Talker logits | Tensor | A tensor hook's `&[f32]` | The full logit vector for codebook 0 before temperature | Planned |
@@ -41,6 +41,14 @@ stream carries is an event instrument. A tensor hook is justified only by a valu
 "Available (the fake engine)" means the stream defines the hook and the fake engine emits it; a real engine emits
 it once its traced generation is wired. An engine that cannot supply a field leaves it out: a missing field is
 never zero.
+
+The existing Qwen `p_stop` implementation uses suppressed and repetition-penalized logits, configured temperature
+and top-k/top-p, but computes the mass separately from the sampler with different precision and without the
+sampler's top-p cutoff. It is an estimate, not a demonstrated exact sampler probability. Older documentation
+incorrectly called it an unfiltered temperature-1 probability; existing traces must not be reinterpreted that way.
+The fake engine emits synthetic values, not model probabilities. Qwen emits a step for the EOS draw itself; the fake
+engine reports `stop: eos` without a separate EOS step, so that terminal observation is not guaranteed by the
+current cross-engine trace contract. [#104](https://github.com/dandelion-love/ggtts/issues/104) tracks the mismatch.
 
 ## Timing and order
 

@@ -12,7 +12,7 @@
 //! | Field | Meaning |
 //! |---|---|
 //! | `token` | The sampled codebook-0 token at this frame. |
-//! | `p_stop` | Probability of the end-of-speech token at temperature 1, before any filtering. |
+//! | `p_stop` | Engine-reported stop probability. Qwen's existing implementation estimates filtered sampler mass, not an unfiltered temperature-1 probability; see `docs/instruments/hooks.md`. |
 //! | `entropy` | Entropy in nats of the main sampler's distribution after temperature, before top-k and top-p. |
 //! | `top1_p`, `rank` | The most likely token's probability, and the rank of the token actually drawn. |
 //! | `cb`, `cb_p` | Level 2: the depth model's tokens (codebooks 1 onward) and each one's probability. |

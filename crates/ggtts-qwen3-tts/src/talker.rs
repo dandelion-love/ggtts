@@ -1676,6 +1676,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_stop_probability_can_differ_from_sampler_weights() {
+        let settings = Sampling {
+            temperature: 1.0,
+            top_k: 0,
+            top_p: 0.999_999_94,
+            ..Sampling::default()
+        };
+        let mut logits = vec![-17.0; 11];
+        logits[0] = 0.0;
+        let estimate = stop_probability(&logits, 1, settings);
+        let mut rng = Philox { seed: 0, subseq: 0 };
+        sample_top_k_p(&mut logits, settings, &mut rng);
+        assert!(estimate > 0.0, "legacy helper leaves nonzero EOS mass");
+        assert_eq!(logits[1], 0.0, "sampler's max-minus-16 cutoff removes EOS");
+    }
+
+    #[test]
     fn philox_is_deterministic_and_in_range() {
         let mut a = Philox {
             seed: 20260905,

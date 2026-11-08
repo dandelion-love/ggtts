@@ -342,7 +342,10 @@ mod tests {
         input["instruments"].as_array_mut().unwrap().push(sibling);
         input["summary"]["ok"] = json!(2);
         let out = export(&input).unwrap();
-        assert_eq!(out["instruments"][0]["metrics"].as_array().unwrap().len(), METRICS.len());
+        assert_eq!(
+            out["instruments"][0]["metrics"].as_array().unwrap().len(),
+            METRICS.len()
+        );
         assert_eq!(out["instruments"][1]["metrics"][0]["value"], 0.2);
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/ggtts-shareable-report-1.schema.json");
         let schema: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
@@ -355,7 +358,10 @@ mod tests {
 
     #[test]
     fn merger_invalid_and_instrument_invalid_stay_incomplete() {
-        let broken = Input { source: "private-path".into(), text: "not json private".into() };
+        let broken = Input {
+            source: "private-path".into(),
+            text: "not json private".into(),
+        };
         let merged = merge("private-run", &[broken], &["private-path"]);
         let out = export(&merged.to_json()).unwrap();
         assert_eq!(out["instruments"][0]["status"], "invalid");

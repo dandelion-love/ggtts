@@ -387,6 +387,9 @@ fn the_overhead_is_logged_against_the_budget_stated_before_measuring() {
     // purpose (GGTTS_SKIP_PYTHON=1, as the Python instrument suites honour).
     let skip_python = std::env::var_os("GGTTS_SKIP_PYTHON").is_some();
     for k in ggtts_instruments::catalogue::CATALOGUE {
+        if k.name == "asr-sensevoice" {
+            continue; // Requires an explicitly provisioned model and reference.
+        }
         if k.interpreter.is_none() || !skip_python {
             c.apply_instrument_flag(k.name).unwrap();
         }

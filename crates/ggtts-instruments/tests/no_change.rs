@@ -115,8 +115,8 @@ fn fake_engine_available_catalogue_preserves_tokens_and_samples_and_sees_a_sampl
     let mut config = Config::default();
     assert!(CATALOGUE.iter().any(|item| item.name == "loudness-ends"));
     for item in CATALOGUE {
-        if item.name == "loudness-ends" {
-            continue; // Optional pYIN is not installed on ordinary CI; do not count it as a passed proof.
+        if item.name == "loudness-ends" || item.name == "asr-sensevoice" {
+            continue; // Optional dependencies and model/reference are not provisioned on ordinary CI.
         }
         config.apply_instrument_flag(item.name).unwrap();
         config.require.push(item.name.to_string());
@@ -140,7 +140,7 @@ fn fake_engine_available_catalogue_preserves_tokens_and_samples_and_sees_a_sampl
         "instruments did not all report OK: {:?}",
         result.incomplete
     );
-    assert_eq!(result.envelopes.len() + 1, CATALOGUE.len());
+    assert_eq!(result.envelopes.len() + 2, CATALOGUE.len());
     let schema_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/ggtts-report-2.schema.json");
     let schema: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(schema_path).unwrap()).unwrap();
     let validator = jsonschema::validator_for(&schema).expect("the published report schema compiles");

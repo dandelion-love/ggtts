@@ -300,6 +300,17 @@ fn render_with_loader(
     log: LogSettings,
     loader: impl FnOnce(&str, &Args, &Path) -> Result<Box<dyn Engine>, String>,
 ) -> Result<u8, String> {
+    render_with_story_reader(a, log, loader, |path| {
+        std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
+    })
+}
+
+fn render_with_story_reader(
+    a: Args,
+    log: LogSettings,
+    loader: impl FnOnce(&str, &Args, &Path) -> Result<Box<dyn Engine>, String>,
+    read_story: impl FnOnce(&Path) -> Result<String, String>,
+) -> Result<u8, String> {
     if a.trace_level.is_some() && (a.trace.is_none() || a.story.is_none()) {
         return Err("--trace-level requires a story and --trace".into());
     }
@@ -320,7 +331,7 @@ fn render_with_loader(
             None
         }
         (None, Some(story)) => {
-            let contents = std::fs::read_to_string(story).map_err(|e| format!("{}: {e}", story.display()))?;
+            let contents = read_story(story)?;
             let (title, paragraphs) = read_text(&contents);
             if paragraphs.is_empty() {
                 return Err("the story has no chunk to render".into());
@@ -820,6 +831,48 @@ mod tests {
                 self.inner.decode(codes)
             }
         }
+    }
+
+    #[test]
+    fn story_read_delay_is_outside_render_timing() {
+        let root = std::env::temp_dir().join(format!("ggtts-story-clock-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let story = root.join("story.txt");
+        std::fs::write(&story, "Title\nA short sentence.\n").unwrap();
+        let report = root.join("timing.json");
+        let args = Args {
+            engine: Some("fake".into()),
+            story: Some(story),
+            stream: Some(root.join("stream.wav").to_string_lossy().into_owned()),
+            stream_raw: true,
+            timing_report: Some(report.clone()),
+            ..Args::default()
+        };
+        let log = LogSettings {
+            level: LogLevel::Error,
+            format: LogFormat::Text,
+        };
+        let wall = Instant::now();
+        let code = render_with_story_reader(
+            args,
+            log,
+            |_, _, _| Ok(Box::new(ggtts_fake::FakeEngine::default())),
+            |path| {
+                std::thread::sleep(std::time::Duration::from_millis(1200));
+                std::fs::read_to_string(path).map_err(|e| e.to_string())
+            },
+        )
+        .unwrap();
+        let elapsed = wall.elapsed().as_millis();
+        assert_eq!(code, 0);
+        let timing: serde_json::Value = serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
+        let render_ms = u128::from(timing["render_ms"].as_u64().unwrap());
+        assert!(timing["stream"]["first_audio_ms"].is_number());
+        assert!(
+            elapsed.saturating_sub(render_ms) >= 900,
+            "story read delay was included in render timing"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -59,6 +59,13 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(decide("pull_request", "rc", "feature", True,
                                 ["crates/ggtts-cli/tests/no_change_real.rs"]), {"package"})
 
+    def test_pitch_catalogue_and_package_changes_do_not_select_engine_archives(self):
+        paths = ["crates/ggtts-instruments/src/catalogue.rs", "crates/ggtts-core/tests/python_instruments.rs",
+                 "instruments/examples/python/pitch-range/instrument.py", "instruments/vendor/pitchy-4.1.0/index.js",
+                 "scripts/package_and_smoke.sh", "scripts/select_specialized_ci.py"]
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"package"})
+        self.assertEqual(decide("pull_request", "main", "rc", True, paths), set(JOBS))
+
     def test_workflow_job_changes(self):
         base = "name: CI\njobs:\n  package-smoke:\n    run: old\n  cuda-compile:\n    run: same\n  ggml:\n    run: same\n"
         self.assertEqual(workflow_changes(base, base.replace("run: old", "run: new")), {"package"})

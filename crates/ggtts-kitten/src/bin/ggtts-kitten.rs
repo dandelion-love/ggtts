@@ -8,15 +8,17 @@
 //! ggtts-kitten tokcheck --tokenizer tokenizer.json --expect FILE
 //! ggtts-kitten block-parity --s3gguf FILE --ref DIR [--blocks 25,50] [--contexts 0,25,50,all] [--lookahead 3]
 //!                     [--plant seam-shift] [--threads N]
-//! ggtts-kitten render --gguf FILE --tokenizer tokenizer.json --reference REF.json --lines FILE --out-dir DIR
+//! ggtts-kitten render --gguf FILE [--tokenizer tokenizer.json] --reference REF.json --lines FILE --out-dir DIR
 //!                     --python PYTHON --script tools/kitten_ref.py [--seed N] [--threads N] [--max-tokens N]
-//!                     [--tokens-only 1]
+//!                     [--tokens-only 1] [--weights ternary|f32] [--require-decoder ggml]
 //! ```
 //!
 //! `prepare --s3gguf FILE --wav CLIP.wav --transcript TEXT --out REF.json` prepares a reference clip without Python.
 //! `tokcheck` compares the Rust tokenizer with the ids `tools/kitten_ref.py tokenize` wrote. `render` reads one
-//! text per line of `--lines`, generates each with the ternary LM on ggml, decodes it through the PyTorch S3Gen
-//! bridge, and writes `NN.flac` and `report.json` (timings and real-time factors) into `--out-dir`.
+//! text per line of `--lines`, generates each with either the native quantized or f32-dequantized LM on ggml,
+//! decodes it with S3Gen, and writes `NN.flac` and `report.json` (timings and real-time factors) into `--out-dir`.
+//! With no `--s3gguf`, the legacy render path uses the PyTorch bridge. For a comparison that requires ggml S3Gen,
+//! pass `--require-decoder ggml` and `--s3gguf FILE`; an omitted codec or `--decoder pytorch` is then rejected.
 //!
 //! `parity` runs the teacher-forced forward pass on the inputs `tools/kitten_ref.py logits` recorded in `DIR`
 //! and compares the hidden state after every layer and the logits with PyTorch's, against the arm's bar.
@@ -187,25 +189,67 @@ fn tokcheck_cmd(a: &Args) -> Result<bool, String> {
     Ok(bad == 0)
 }
 
-fn render_cmd(a: &Args) -> Result<bool, String> {
-    let threads: usize = a.or("threads", "4").parse().map_err(|_| "bad --threads")?;
-    let be = backend(a, threads)?;
-    let seed: u64 = a.or("seed", "1234").parse().map_err(|_| "bad --seed")?;
-    let out_dir = PathBuf::from(a.get("out-dir")?);
-    std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
-    let lines: Vec<String> = std::fs::read_to_string(a.get("lines")?)
+fn render_weights(a: &Args) -> Result<Weights, String> {
+    match a.or("weights", "ternary") {
+        "ternary" => Ok(Weights::Ternary),
+        "f32" => Ok(Weights::F32),
+        other => Err(format!("unknown --weights {other}")),
+    }
+}
+
+fn render_lines(path: &Path) -> Result<Vec<String>, String> {
+    let lines: Vec<String> = std::fs::read_to_string(path)
         .map_err(|e| e.to_string())?
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .map(String::from)
         .collect();
+    if lines.is_empty() {
+        return Err("no nonempty input lines".into());
+    }
+    Ok(lines)
+}
+
+fn render_tokenizer(a: &Args, gguf: &Gguf) -> Result<Tokenizer, String> {
+    if let Some(path) = a.map.get("tokenizer") {
+        Tokenizer::open(Path::new(path))
+    } else {
+        Tokenizer::from_json(gguf.str("kitten.tokenizer.json")?)
+    }
+}
+
+fn validate_decoder(a: &Args) -> Result<(), String> {
+    let decoder = a.or("decoder", "ggml");
+    if !matches!(decoder, "ggml" | "pytorch") {
+        return Err(format!("unknown --decoder {decoder}"));
+    }
+    if let Some(required) = a.map.get("require-decoder") {
+        if required != "ggml" {
+            return Err(format!("unknown --require-decoder {required}"));
+        }
+        if decoder != "ggml" || a.map.get("s3gguf").is_none_or(|p| p.is_empty()) {
+            return Err("--require-decoder ggml requires --decoder ggml and --s3gguf".into());
+        }
+    }
+    Ok(())
+}
+
+fn render_cmd(a: &Args) -> Result<bool, String> {
+    validate_decoder(a)?;
+    let weights = render_weights(a)?;
+    let lines = render_lines(Path::new(a.get("lines")?))?;
+    let threads: usize = a.or("threads", "4").parse().map_err(|_| "bad --threads")?;
+    let be = backend(a, threads)?;
+    let seed: u64 = a.or("seed", "1234").parse().map_err(|_| "bad --seed")?;
+    let out_dir = PathBuf::from(a.get("out-dir")?);
+    std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let t0 = Instant::now();
     let gguf = Gguf::open(Path::new(a.get("gguf")?))?;
-    let model = Model::load(&gguf, Weights::Ternary, be.clone())?;
+    let tok = render_tokenizer(a, &gguf)?;
+    let model = Model::load(&gguf, weights, be.clone())?;
     drop(gguf);
     let load_s = t0.elapsed().as_secs_f64();
-    let tok = Tokenizer::open(Path::new(a.get("tokenizer")?))?;
     let reference = Reference::open(Path::new(a.get("reference")?))?;
     let py = PyDecoder {
         python: PathBuf::from(a.or("python", "")),
@@ -315,7 +359,7 @@ fn render_cmd(a: &Args) -> Result<bool, String> {
     let info = eng.info().clone();
     let full = serde_json::json!({
         "engine": {"family": info.family, "backend": info.backend, "parity": info.parity},
-        "ggtts": ggtts_core::VERSION, "ggml": ggtts_core::ggml::COMMIT, "threads": threads, "load_s": load_s,
+        "ggtts": ggtts_core::VERSION, "ggml": ggtts_core::ggml::COMMIT, "threads": threads, "weights": a.or("weights", "ternary"), "load_s": load_s,
         "lines": report,
     });
     std::fs::write(
@@ -933,5 +977,77 @@ fn main() -> ExitCode {
             eprintln!("error: {e}");
             ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod render_option_tests {
+    use super::*;
+    use ggtts_kitten::gguf::Value;
+    use std::collections::BTreeMap;
+
+    fn args(pairs: &[(&str, &str)]) -> Args {
+        Args {
+            map: pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        }
+    }
+
+    #[test]
+    fn weights_and_required_decoder_fail_closed() {
+        assert_eq!(render_weights(&args(&[])).unwrap(), Weights::Ternary);
+        assert_eq!(render_weights(&args(&[("weights", "f32")])).unwrap(), Weights::F32);
+        assert!(render_weights(&args(&[("weights", "bad")])).is_err());
+        assert!(validate_decoder(&args(&[])).is_ok()); // legacy PyTorch fallback
+        assert!(validate_decoder(&args(&[("decoder", "pytorch")])).is_ok());
+        assert!(validate_decoder(&args(&[("decoder", "bad")])).is_err());
+        let missing = args(&[("require-decoder", "ggml")]);
+        assert!(render_cmd(&missing).unwrap_err().contains("--s3gguf"));
+        assert!(validate_decoder(&args(&[("require-decoder", "ggml"), ("s3gguf", "codec.gguf")])).is_ok());
+        assert!(validate_decoder(&args(&[
+            ("require-decoder", "ggml"),
+            ("decoder", "pytorch"),
+            ("s3gguf", "codec.gguf")
+        ]))
+        .is_err());
+        assert!(validate_decoder(&args(&[("require-decoder", "bad")])).is_err());
+    }
+
+    #[test]
+    fn lines_and_tokenizer_selection_refuse_bad_input() {
+        let dir = std::env::temp_dir().join(format!("ggtts-kitten-render-options-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lines = dir.join("lines.txt");
+        std::fs::write(&lines, " \n\t\n").unwrap();
+        assert!(render_lines(&lines).unwrap_err().contains("no nonempty"));
+        std::fs::write(&lines, " first \n\nsecond\n").unwrap();
+        assert_eq!(render_lines(&lines).unwrap(), ["first", "second"]);
+        let json = r#"{"model":{"type":"BPE","vocab":{"a":1},"merges":[]},"added_tokens":[]}"#;
+        let mut kv = BTreeMap::new();
+        kv.insert("kitten.tokenizer.json".into(), Value::Str(json.into()));
+        let gguf = Gguf {
+            bytes: vec![],
+            kv,
+            tensors: BTreeMap::new(),
+            order: vec![],
+        };
+        assert_eq!(render_tokenizer(&args(&[]), &gguf).unwrap().encode("a").unwrap(), [1]);
+        let path = dir.join("tokenizer.json");
+        std::fs::write(&path, json.replace("\"a\":1", "\"a\":2")).unwrap();
+        assert_eq!(
+            render_tokenizer(&args(&[("tokenizer", path.to_str().unwrap())]), &gguf)
+                .unwrap()
+                .encode("a")
+                .unwrap(),
+            [2]
+        );
+        assert!(render_tokenizer(&args(&[("tokenizer", dir.join("missing").to_str().unwrap())]), &gguf).is_err());
+        let empty = Gguf {
+            bytes: vec![],
+            kv: BTreeMap::new(),
+            tensors: BTreeMap::new(),
+            order: vec![],
+        };
+        assert!(render_tokenizer(&args(&[]), &empty).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

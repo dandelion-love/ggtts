@@ -69,7 +69,7 @@ fn render<E: Engine>(engine: E, events: &mut dyn Events, plant_sample: bool) -> 
     };
     let profile = *capture.profile();
     let paragraphs = vec!["你好，今日天氣好好。".to_string()];
-    let chunks = plan_story(&profile, &paragraphs);
+    let chunks = plan_story(&profile, &paragraphs).unwrap();
     let mut opts = RenderOptions::for_profile(&profile);
     opts.redraw = 0;
     let level = events.level();

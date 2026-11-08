@@ -1,11 +1,11 @@
 {
  "format": "ggtts-pipeline-cases/1",
  "spec": "story-v1",
- "source": "exported from the reference long-text render's parity cases; texts are invented sentences",
+ "source": "Corrected references, compared on every case at 26 and 45: lab synthesize_long.py sha256 477f61093c49f986670f6ed29a823dcc08db313b6e38a8d4d7327a923b966a7d, lab render_story.py sha256 b8c32c75bf71187c708e78f88ef9551a725dea2921ca448b79f8162657e9b5e5, lab chunks.json sha256 1f52055f824aef5deb26de78a51a3dd2fc707ff73aacabc7861785469a7d7c8e; recipe commit 82e33d1, chunking.py sha256 2bed07ccee4b90e52544cd1cae970ff0ce312934b1c3b55a681a56b191c444d2. Invented text.",
  "cases": [
   {
    "id": "punct-cantonese",
-   "about": "every clause mark the splitter knows (，。、；：！？), full-width corner and curly quotes it does not split on, and merges that keep each clause's own mark",
+   "about": "every clause mark the splitter knows (，。、；：！？), full-width corner and curly quotes it does not split on, and merges that keep each clause's own mark Corrected reference preserves all non-whitespace input.",
    "story_id": "punct-cantonese",
    "paragraphs": [
     "「你食咗飯未呀？」佢問我。我話：「仲未呀，等陣先食啦！」",
@@ -53,12 +53,12 @@
     "chunks": [
      {
       "para": 0,
-      "text": "「你食咗飯未呀？」佢問我。我話：「仲未呀，等陣先食啦！",
-      "punct": "！",
+      "text": "「你食咗飯未呀？」佢問我。我話：「仲未呀，等陣先食啦！」",
+      "punct": "！」",
       "last_in_para": true,
       "body_len": 26,
-      "seed_k0": 2542185162,
-      "seed_k1": 4052598275
+      "seed_k0": 3104856810,
+      "seed_k1": 1497145113
      },
      {
       "para": 1,
@@ -170,7 +170,7 @@
   },
   {
    "id": "ceiling-plus-one",
-   "about": "one clause of ceiling+1 (46) at the end of a paragraph: hard-cut at the ceiling, and the one-character remainder is under 4 characters, so it is DROPPED; and two clauses whose merge would be ceiling+1, which stay apart",
+   "about": "A final clause over the ceiling retains its short tail and punctuation; two clauses whose merge exceeds the ceiling stay apart.",
    "story_id": "ceiling-plus-one",
    "paragraphs": [
     "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出嚟。",
@@ -181,6 +181,10 @@
      [
       "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出",
       ""
+     ],
+     [
+      "嚟",
+      "。"
      ]
     ],
     [
@@ -201,10 +205,19 @@
       "para": 0,
       "text": "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出",
       "punct": "",
-      "last_in_para": true,
+      "last_in_para": false,
       "body_len": 45,
       "seed_k0": 3206533341,
       "seed_k1": 3561816315
+     },
+     {
+      "para": 0,
+      "text": "嚟。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 1,
+      "seed_k0": 1504066533,
+      "seed_k1": 1789296747
      },
      {
       "para": 1,
@@ -212,8 +225,8 @@
       "punct": "，",
       "last_in_para": false,
       "body_len": 22,
-      "seed_k0": 401138589,
-      "seed_k1": 67567686
+      "seed_k0": 4062683158,
+      "seed_k1": 1710177999
      },
      {
       "para": 1,
@@ -221,8 +234,8 @@
       "punct": "。",
       "last_in_para": true,
       "body_len": 23,
-      "seed_k0": 2813819763,
-      "seed_k1": 4172342421
+      "seed_k0": 1556029707,
+      "seed_k1": 4223352923
      }
     ]
    },
@@ -550,19 +563,25 @@
   },
   {
    "id": "short-and-empty",
-   "about": "a paragraph shorter than 4 characters vanishes; an empty clause (two marks in a row) is skipped and its mark is lost; leading and trailing spaces of a clause are stripped; …… is not a split character",
+   "about": "Short paragraphs and consecutive punctuation are retained; whitespace-only paragraphs remain empty.",
    "story_id": "short-and-empty",
    "paragraphs": [
     "好。",
     "真係？！唔係掛。",
     "  前面有空格 ， 後面都有  。",
-    "佢諗咗好耐……終於開口講嘢。"
+    "佢諗咗好耐……終於開口講嘢。",
+    "一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一……二二二二二二二二二二二二二二二二二二二二二二二二二二二二二二。"
    ],
    "raw_chunks_story": [
-    [],
     [
      [
-      "真係？唔係掛",
+      "好",
+      "。"
+     ]
+    ],
+    [
+     [
+      "真係？！唔係掛",
       "。"
      ]
     ],
@@ -577,19 +596,38 @@
       "佢諗咗好耐……終於開口講嘢",
       "。"
      ]
+    ],
+    [
+     [
+      "一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一……二二二二二二二二二二二二二",
+      ""
+     ],
+     [
+      "二二二二二二二二二二二二二二二二二",
+      "。"
+     ]
     ]
    ],
    "story": {
     "ceiling": 45,
     "chunks": [
      {
-      "para": 1,
-      "text": "真係？唔係掛。",
+      "para": 0,
+      "text": "好。",
       "punct": "。",
       "last_in_para": true,
-      "body_len": 6,
-      "seed_k0": 2007386499,
-      "seed_k1": 904270199
+      "body_len": 1,
+      "seed_k0": 2271353756,
+      "seed_k1": 2696531056
+     },
+     {
+      "para": 1,
+      "text": "真係？！唔係掛。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 7,
+      "seed_k0": 4108111965,
+      "seed_k1": 1816622723
      },
      {
       "para": 2,
@@ -597,8 +635,8 @@
       "punct": "。",
       "last_in_para": true,
       "body_len": 10,
-      "seed_k0": 560884102,
-      "seed_k1": 1499038486
+      "seed_k0": 1224655364,
+      "seed_k1": 1830015187
      },
      {
       "para": 3,
@@ -606,8 +644,26 @@
       "punct": "。",
       "last_in_para": true,
       "body_len": 13,
-      "seed_k0": 3567234167,
-      "seed_k1": 3368126205
+      "seed_k0": 3839053127,
+      "seed_k1": 1462110845
+     },
+     {
+      "para": 4,
+      "text": "一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一……二二二二二二二二二二二二二",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 45,
+      "seed_k0": 838028076,
+      "seed_k1": 2432334807
+     },
+     {
+      "para": 4,
+      "text": "二二二二二二二二二二二二二二二二二。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 17,
+      "seed_k0": 1414994543,
+      "seed_k1": 688176173
      }
     ]
    },
@@ -615,13 +671,22 @@
     "ceiling": 26,
     "chunks": [
      {
-      "para": 1,
-      "text": "真係？唔係掛。",
+      "para": 0,
+      "text": "好。",
       "punct": "。",
       "last_in_para": true,
-      "body_len": 6,
-      "seed_k0": 2007386499,
-      "seed_k1": 904270199
+      "body_len": 1,
+      "seed_k0": 2271353756,
+      "seed_k1": 2696531056
+     },
+     {
+      "para": 1,
+      "text": "真係？！唔係掛。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 7,
+      "seed_k0": 4108111965,
+      "seed_k1": 1816622723
      },
      {
       "para": 2,
@@ -629,8 +694,8 @@
       "punct": "。",
       "last_in_para": true,
       "body_len": 10,
-      "seed_k0": 560884102,
-      "seed_k1": 1499038486
+      "seed_k0": 1224655364,
+      "seed_k1": 1830015187
      },
      {
       "para": 3,
@@ -638,8 +703,35 @@
       "punct": "。",
       "last_in_para": true,
       "body_len": 13,
-      "seed_k0": 3567234167,
-      "seed_k1": 3368126205
+      "seed_k0": 3839053127,
+      "seed_k1": 1462110845
+     },
+     {
+      "para": 4,
+      "text": "一一一一一一一一一一一一一一一一一一一一一一一一一一",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 26,
+      "seed_k0": 1386901557,
+      "seed_k1": 2932287490
+     },
+     {
+      "para": 4,
+      "text": "一一一一……二二二二二二二二二二二二二二二二二二二二",
+      "punct": "",
+      "last_in_para": false,
+      "body_len": 26,
+      "seed_k0": 1361318278,
+      "seed_k1": 703973759
+     },
+     {
+      "para": 4,
+      "text": "二二二二二二二二二二。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 10,
+      "seed_k0": 788629772,
+      "seed_k1": 3496501371
      }
     ]
    }
@@ -715,7 +807,7 @@
   },
   {
    "id": "min-length-4",
-   "about": "the drop filter at its bar: a chunk body of exactly 4 code points is KEPT and one of 3 is DROPPED; a final clause of ceiling+4 (49) keeps its 4-character remainder, one of ceiling+3 loses its 3",
+   "about": "Short paragraphs and clause tails are retained, including their punctuation.",
    "story_id": "min-length-4",
    "paragraphs": [
     "今日好熱。",
@@ -730,7 +822,12 @@
       "。"
      ]
     ],
-    [],
+    [
+     [
+      "好熱呀",
+      "。"
+     ]
+    ],
     [
      [
       "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出",
@@ -745,6 +842,10 @@
      [
       "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出",
       ""
+     ],
+     [
+      "嚟玩下",
+      "。"
      ]
     ]
    ],
@@ -761,13 +862,22 @@
       "seed_k1": 739799106
      },
      {
+      "para": 1,
+      "text": "好熱呀。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 3,
+      "seed_k0": 3558257708,
+      "seed_k1": 3737306107
+     },
+     {
       "para": 2,
       "text": "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出",
       "punct": "",
       "last_in_para": false,
       "body_len": 45,
-      "seed_k0": 340355078,
-      "seed_k1": 2300012394
+      "seed_k0": 654953279,
+      "seed_k1": 4171761727
      },
      {
       "para": 2,
@@ -775,17 +885,26 @@
       "punct": "。",
       "last_in_para": true,
       "body_len": 4,
-      "seed_k0": 3196994617,
-      "seed_k1": 500694453
+      "seed_k0": 2829532884,
+      "seed_k1": 1663225462
      },
      {
       "para": 3,
       "text": "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒服又好放鬆真係好難得有咁嘅好天氣可以出",
       "punct": "",
-      "last_in_para": true,
+      "last_in_para": false,
       "body_len": 45,
-      "seed_k0": 1541924903,
-      "seed_k1": 1249820579
+      "seed_k0": 2907602373,
+      "seed_k1": 1736658775
+     },
+     {
+      "para": 3,
+      "text": "嚟玩下。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 3,
+      "seed_k0": 4226797767,
+      "seed_k1": 3801905946
      }
     ]
    },
@@ -802,13 +921,22 @@
       "seed_k1": 739799106
      },
      {
+      "para": 1,
+      "text": "好熱呀。",
+      "punct": "。",
+      "last_in_para": true,
+      "body_len": 3,
+      "seed_k0": 3558257708,
+      "seed_k1": 3737306107
+     },
+     {
       "para": 2,
       "text": "我哋今日喺海邊行咗好耐睇住啲船慢慢駛返嚟碼頭感覺好舒",
       "punct": "",
       "last_in_para": false,
       "body_len": 26,
-      "seed_k0": 1303224313,
-      "seed_k1": 2048320220
+      "seed_k0": 639589181,
+      "seed_k1": 2207473826
      },
      {
       "para": 2,
@@ -816,8 +944,8 @@
       "punct": "。",
       "last_in_para": true,
       "body_len": 23,
-      "seed_k0": 3522223306,
-      "seed_k1": 4200317821
+      "seed_k0": 1372450334,
+      "seed_k1": 671099601
      },
      {
       "para": 3,
@@ -825,8 +953,8 @@
       "punct": "",
       "last_in_para": false,
       "body_len": 26,
-      "seed_k0": 2867771359,
-      "seed_k1": 2382168149
+      "seed_k0": 1261849103,
+      "seed_k1": 3530928134
      },
      {
       "para": 3,
@@ -834,8 +962,8 @@
       "punct": "。",
       "last_in_para": true,
       "body_len": 22,
-      "seed_k0": 3275805156,
-      "seed_k1": 2626621709
+      "seed_k0": 3682128610,
+      "seed_k1": 1189476550
      }
     ]
    }

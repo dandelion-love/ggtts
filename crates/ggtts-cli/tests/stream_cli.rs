@@ -42,7 +42,7 @@ fn reference(path: &Path) -> (Vec<f32>, Vec<f32>, u32, Option<f64>) {
     let (title, paragraphs) = read_text(&std::fs::read_to_string(path).unwrap());
     let mut engine = FakeEngine::default();
     let profile = *engine.profile();
-    let chunks = plan_story(&profile, &paragraphs);
+    let chunks = plan_story(&profile, &paragraphs).unwrap();
     let mut pieces = Vec::new();
     let read = render_story_streamed(
         &mut engine,
@@ -223,7 +223,7 @@ fn the_default_stream_is_levelled_for_a_listener() {
     let (title, paragraphs) = read_text(&std::fs::read_to_string(&story).unwrap());
     let mut engine = FakeEngine::default();
     let profile = *engine.profile();
-    let chunks = plan_story(&profile, &paragraphs);
+    let chunks = plan_story(&profile, &paragraphs).unwrap();
     let mut lv = ggtts_core::stream::StreamLevel::new(&profile, ggtts_core::stream::DEFAULT_HOLD_S);
     let mut want = Vec::new();
     render_story_streamed(
@@ -308,7 +308,7 @@ fn stream_level_seconds_is_checked_and_0_is_the_first_chunk() {
     let (title, paragraphs) = read_text(&std::fs::read_to_string(&story).unwrap());
     let mut engine = FakeEngine::default();
     let profile = *engine.profile();
-    let chunks = plan_story(&profile, &paragraphs);
+    let chunks = plan_story(&profile, &paragraphs).unwrap();
     let mut lv = ggtts_core::stream::FirstChunkLevel::new(&profile);
     let mut want = Vec::new();
     render_story_streamed(
@@ -328,4 +328,107 @@ fn stream_level_seconds_is_checked_and_0_is_the_first_chunk() {
         "--stream-level-seconds 0 is the first-chunk gain"
     );
     std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn invalid_input_does_not_truncate_stream_or_load_model() {
+    let dir = scratch("invalid-input");
+    let output = dir.join("sentinel.wav");
+    for text in ["   ", "？！"] {
+        std::fs::write(&output, b"sentinel").unwrap();
+        let r = Command::new(BIN)
+            .args([
+                "--engine",
+                "qwen3-tts",
+                "--model",
+                "missing-model.gguf",
+                "--text",
+                text,
+                "--stream",
+                output.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!r.status.success());
+        let error = String::from_utf8_lossy(&r.stderr);
+        assert!(
+            error.contains(if text.trim().is_empty() {
+                "empty"
+            } else {
+                "punctuation-only"
+            }),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&output).unwrap(), b"sentinel");
+    }
+    for text in ["   ", "？！"] {
+        std::fs::write(&output, b"sentinel").unwrap();
+        let r = Command::new(BIN)
+            .args([
+                "--engine",
+                "auto",
+                "--model",
+                "missing-model.gguf",
+                "--text",
+                text,
+                "--stream",
+                output.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!r.status.success());
+        let error = String::from_utf8_lossy(&r.stderr);
+        assert!(
+            error.contains(if text.trim().is_empty() {
+                "empty"
+            } else {
+                "punctuation-only"
+            }),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&output).unwrap(), b"sentinel");
+    }
+    let auto_story = dir.join("auto-invalid-story.txt");
+    std::fs::write(&auto_story, "標題\n好。\n？！\n").unwrap();
+    std::fs::write(&output, b"sentinel").unwrap();
+    let r = Command::new(BIN)
+        .args([
+            "--engine",
+            "auto",
+            "--model",
+            "missing-model.gguf",
+            "--story",
+            auto_story.to_str().unwrap(),
+            "--stream",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!r.status.success());
+    assert!(String::from_utf8_lossy(&r.stderr).contains("punctuation-only"));
+    assert_eq!(std::fs::read(&output).unwrap(), b"sentinel");
+    let story = dir.join("invalid-story.txt");
+    for text in [
+        "標題\n好。\n？！\n".to_string(),
+        format!("標題\n{}好\n", "！".repeat(46)),
+    ] {
+        std::fs::write(&story, text).unwrap();
+        std::fs::write(&output, b"sentinel").unwrap();
+        let r = Command::new(BIN)
+            .args([
+                "--engine",
+                "qwen3-tts",
+                "--model",
+                "missing-model.gguf",
+                "--story",
+                story.to_str().unwrap(),
+                "--stream",
+                output.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!r.status.success());
+        assert!(String::from_utf8_lossy(&r.stderr).contains("punctuation-only"));
+        assert_eq!(std::fs::read(&output).unwrap(), b"sentinel");
+    }
 }

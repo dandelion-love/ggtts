@@ -13,7 +13,7 @@ use crate::text::{plan, PlannedChunk};
 use crate::trace::{Event, Events, NullEvents};
 
 /// Chunk a story's paragraphs at the profile's [`story_ceiling`](Profile::story_ceiling).
-pub fn plan_story(profile: &Profile, paragraphs: &[String]) -> Vec<PlannedChunk> {
+pub fn plan_story(profile: &Profile, paragraphs: &[String]) -> Result<Vec<PlannedChunk>, &'static str> {
     plan(profile, paragraphs, profile.story_ceiling)
 }
 

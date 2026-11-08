@@ -9,8 +9,10 @@ anything measured on the sound itself.
 | `rms_dbfs` | dBFS | neutral | RMS over the whole read |
 | `clipped_samples` | 1 | lower | Samples at or above `--clip` in magnitude (default 0.999) |
 
-A silent read has no level in dB: `peak_dbfs` and `rms_dbfs` are then `null`, never 0 or minus infinity. The audio is
-the final read, trimmed and joined, so the envelope says `audio: trimmed`.
+A silent read has no level in dB: `peak_dbfs` and `rms_dbfs` are then `null`, never 0 or minus infinity. For a
+pipeline story render, the runner records trimmed and joined audio; a single render is recorded as raw. For an existing file, `ggtts-measure`
+records the supplied `--audio-state` (`raw`, `trimmed`, or `unknown`; default `unknown`). A standalone invocation
+also reports `unknown`; this instrument does not determine or change the audio's trim state.
 
 ```
 python instrument.py --audio out.flac --envelope env.json [--clip 0.999]

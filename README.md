@@ -1,9 +1,8 @@
 # ggtts
 An instrumented text-to-speech engine on ggml, written in Rust: one engine per model architecture, a pluggable compute stack, and token-exact parity tests
 
-> **Status: walking skeleton.** The long-text pipeline (chunking, a seed per chunk, the judge, trim, joins, level
-> and FLAC output) runs against a fake engine and passes the reference's recorded pipeline cases in CI, on Linux
-> and Windows. No model engine exists yet, so nothing real renders. `ggtts-render --version` reports the ggml pin.
+> **Status: release candidate.** Qwen3-TTS and Kitten-TTS 2 render with ggml on CPU and, in the Linux CUDA build,
+> on supported NVIDIA GPUs. Release archives include `ggtts-render` and `ggtts-measure`; model files are separate.
 
 ## What it is
 
@@ -48,13 +47,12 @@ refused so report files cannot overwrite an input through a path, symlink or har
 
 | Binary | Job |
 |---|---|
-| `ggtts-render` | Text in; FLAC and a provenance manifest out |
-| `ggtts-server` | An OpenAI-style `POST /v1/audio/speech` |
-| `ggtts-bench` | Speed, parity checks against golden fixtures, and trace replay |
-| `ggtts-convert` | A Hugging Face checkpoint to GGUF |
+| `ggtts-render` | Render text or a story to FLAC and/or a live PCM stream |
+| `ggtts-measure` | Run instruments on existing audio |
+| `ggtts-kitten` and `ggtts-kitten-convert` | Source-built Kitten voice preparation and GGUF conversion tools |
 
-Only `ggtts-render` exists so far, and it prints its version and the ggml pin. Every flag will have a `GGTTS_ARG_*`
-environment variable, after llama.cpp's `LLAMA_ARG_*` convention.
+The release archives ship `ggtts-render` and `ggtts-measure`; the Kitten preparation and conversion tools are built
+from source. `ggtts-render --version` lists the included engines and backends as well as the ggml pin.
 
 ### Streaming: which stream
 
@@ -66,6 +64,119 @@ environment variable, after llama.cpp's `LLAMA_ARG_*` convention.
 - **For parity checks: `--stream FILE --stream-raw`.** The pieces before the level step, bit-exact to the batch read
   before its level step. The FLAC is this stream times the gain printed at the end. Tests and `stream_probe.sh` ask
   for it by name.
+
+### Render and listen: Qwen and Kitten
+
+These Bash examples use the `ggtts-render` from an unpacked [release](https://github.com/dandelion-love/ggtts/releases)
+and `ffplay` from FFmpeg (on Ubuntu/WSL,
+install the `ffmpeg` package). Replace the paths below with your own files. Releases do **not** include model
+weights, a prepared Kitten voice, or `ffplay`. The examples were checked on Linux/WSL; use a Bash shell for the
+binary pipelines rather than a shell that converts piped output to text.
+On Linux/WSL, use the CUDA archive and `DEVICE=cuda` for a supported NVIDIA GPU with the CUDA runtime installed;
+set `DEVICE=cpu` for a CPU archive. On Windows use the CPU archive and its `ggtts-render.exe`.
+RC 7's Linux CPU archive requires glibc 2.39 and does not start on Ubuntu 22.04; see
+[#85](https://github.com/dandelion-love/ggtts/issues/85). The Linux CUDA archive was tested on Ubuntu 22.04;
+it needs the NVIDIA driver and CUDA runtime libraries even when its CPU backend is selected.
+
+`--engine` chooses the model architecture. `--model` is its language-model GGUF and `--codec` is its **audio
+decoder GGUF**, not an output file format or an audio encoder selector. Qwen needs the talker and its matching
+12 Hz tokenizer/codec; Kitten needs its LM and S3Gen GGUFs plus a prepared reference-voice JSON. The Qwen model
+and codec used by this project are in [jmtl/hk-cantonese-cc0-qwen3-tts-GGUF](https://huggingface.co/jmtl/hk-cantonese-cc0-qwen3-tts-GGUF)
+and described in the [Qwen README](https://github.com/dandelion-love/ggtts/blob/main/crates/ggtts-qwen3-tts/README.md).
+To convert Kitten and prepare a voice, follow the [Kitten README](https://github.com/dandelion-love/ggtts/blob/main/crates/ggtts-kitten/README.md#convert-prepare-render).
+Those Kitten tools are source-built and are not in the release archive. The models' own licences apply.
+
+```bash
+# Run from the extracted archive; edit these paths and DEVICE for your machine.
+GGTTS=./ggtts-render                    # on Windows: ./ggtts-render.exe
+DEVICE=cuda                            # or cpu; Windows release is CPU-only
+QWEN_MODEL=/path/to/qwen-talker-hk-cantonese-cc0-v0.0.1-q8_0.gguf
+QWEN_CODEC=/path/to/qwen-tokenizer-12hz-q8_0.gguf
+KITTEN_MODEL=/path/to/kitten-lm.gguf
+KITTEN_CODEC=/path/to/kitten-s3gen.gguf
+KITTEN_VOICE=/path/to/prepared-voice.json
+
+# First line is the title; following non-empty lines are paragraphs.
+cat > qwen-story.txt <<'EOF'
+Morning walk
+今日天氣好好，我哋一齊去公園行下。
+行完之後，我哋去飲杯茶。
+EOF
+cat > kitten-story.txt <<'EOF'
+The lighthouse
+The little lighthouse kept its lamp burning all through the stormy night.
+In the morning, the fishing boats returned to the harbour.
+EOF
+```
+
+**FLAC file plus live WAV playback.** `--out` writes a completed, lossless FLAC file; `--stream -` sends the live
+stream to standard output. Diagnostics stay on standard error, so they do not corrupt the pipe. The live stream
+and the completed FLAC can have different loudness, as described above.
+
+```bash
+# Qwen: talker + tokenizer/codec GGUF.
+"$GGTTS" --engine qwen3-tts --device "$DEVICE" --model "$QWEN_MODEL" --codec "$QWEN_CODEC" \
+  --story qwen-story.txt --out qwen.flac --stream - --stream-format wav \
+  | ffplay -nodisp -autoexit -i -
+
+# Kitten: LM + S3Gen GGUF + prepared reference voice.
+"$GGTTS" --engine kitten-tts-2 --device "$DEVICE" --model "$KITTEN_MODEL" --codec "$KITTEN_CODEC" \
+  --voice "$KITTEN_VOICE" --story kitten-story.txt --out kitten.flac --stream - --stream-format wav \
+  | ffplay -nodisp -autoexit -i -
+
+# Listen again after rendering.
+ffplay -nodisp -autoexit qwen.flac
+ffplay -nodisp -autoexit kitten.flac
+```
+
+To save the live WAV instead of piping it to a player, replace `--stream -` with `--stream qwen-live.wav`
+or `--stream kitten-live.wav` and remove the pipe. The stream uses a WAV header with unknown length; some players
+require a finalized WAV header. `--out` always writes FLAC and forces a `.flac` suffix, regardless of the suffix
+given. Omit `--out` if only the stream is needed.
+
+**Raw 16-bit PCM playback.** The other stream format is `s16le` (`raw` is an alias). It starts with the text line
+`ggtts-pcm s16le rate=24000 channels=1` and a newline, followed by little-endian mono PCM. The models in these
+examples output 24 kHz. The helper below removes and validates that header before sending the bytes to `ffplay`;
+it refuses a different rate rather than playing it at the wrong speed. It needs Python 3.8+.
+
+```bash
+strip_ggtts_pcm_header() {
+  python3 -u -c '
+import sys
+if sys.platform == "win32":
+    import msvcrt, os
+    msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
+    msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
+source = sys.stdin.buffer
+if source.readline() != b"ggtts-pcm s16le rate=24000 channels=1\n":
+    raise SystemExit("Expected a 24 kHz mono ggtts PCM stream")
+while True:
+    block = source.read1(65536)
+    if not block:
+        break
+    sys.stdout.buffer.write(block)
+'
+}
+
+"$GGTTS" --engine qwen3-tts --device "$DEVICE" --model "$QWEN_MODEL" --codec "$QWEN_CODEC" \
+  --story qwen-story.txt --stream - --stream-format s16le \
+  | strip_ggtts_pcm_header | ffplay -nodisp -autoexit -f s16le -ar 24000 -ac 1 -i -
+
+"$GGTTS" --engine kitten-tts-2 --device "$DEVICE" --model "$KITTEN_MODEL" --codec "$KITTEN_CODEC" \
+  --voice "$KITTEN_VOICE" --story kitten-story.txt --stream - --stream-format s16le \
+  | strip_ggtts_pcm_header | ffplay -nodisp -autoexit -f s16le -ar 24000 -ac 1 -i -
+```
+
+To save that stream, use `--stream qwen.pcm` or `--stream kitten.pcm` instead of `--stream -` and omit the pipe;
+the saved file **includes the header**, so strip it before treating it as plain PCM. For a different model's sample
+rate, read its header and update both the helper and `ffplay -ar`. `--stream-format raw` selects the same container;
+it is distinct from `--stream-raw`, which changes the levelled-versus-parity stream described above.
+
+`--story` emits completed chunks as they become available, subject to the five-second levelling hold. A short
+story may therefore be held until it finishes. `--text "..."` can replace `--story FILE` for one line, but the
+stream receives that line only after the engine has generated and decoded it. `--stream-level-seconds 0` reduces
+the story hold at the cost of potentially uneven loudness. The stream formats are WAV and s16le; FLAC is the
+completed-file format. There is no native MP3, AAC or Opus encoder selection in `ggtts-render`.
 
 ## How parity is tested
 

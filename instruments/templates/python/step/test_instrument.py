@@ -44,6 +44,41 @@ class Selftest(unittest.TestCase):
             write_lines(cut, read_lines(r.trace)[:-1])
             self.assertEqual(run_instrument(SCRIPT, d, events=cut)["status"], "truncated")
 
+    def test_missing_step_data_is_not_a_success(self):
+        with Workdir() as d:
+            r = fixture(d)
+            original = read_lines(r.trace)
+            cases = (
+                [line for line in original if line["ev"] != "step"],
+                [line if line["ev"] != "step" else
+                 {k: v for k, v in line.items() if k != "p_stop"} for line in original],
+                [line for line in original if line["ev"] != "step" or line["chunk"] != 0],
+            )
+            for i, lines in enumerate(cases):
+                path = os.path.join(d, "missing-%d.jsonl" % i)
+                write_lines(path, lines)
+                result = run_instrument(SCRIPT, d, events=path)
+                self.assertEqual(result["status"], "skipped")
+                self.assertIn("p_stop", result["error"])
+
+    def test_one_frame_draw_has_no_early_sample_but_is_valid(self):
+        with Workdir() as d:
+            r = fixture(d)
+            lines = read_lines(r.trace)
+            kept = set()
+            one = []
+            for line in lines:
+                if line["ev"] == "step":
+                    if line["chunk"] in kept:
+                        continue
+                    kept.add(line["chunk"])
+                one.append(line)
+            path = os.path.join(d, "one-frame.jsonl")
+            write_lines(path, one)
+            result = run_instrument(SCRIPT, d, events=path)
+            self.assertEqual(result["status"], "ok")
+            self.assertTrue(all(value is None for value in metrics(result).values()))
+
 
 if __name__ == "__main__":
     unittest.main()

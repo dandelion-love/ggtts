@@ -99,6 +99,9 @@ mod planted {
         /// sampler's stream after each frame, so every later token moves. It fires only when a hook is passed: it
         /// exists to show that the hook's identity check can see a hook that is not quiet.
         FrameHookDraw,
+        /// Simulate hook-triggered corruption of sampler logits after copying them for an observer.
+        /// The test-only feature removes this branch entirely from production builds.
+        HookLogitMutation,
     }
 
     #[cfg(feature = "plant")]
@@ -818,6 +821,11 @@ impl Talker {
                 .p_stop
                 .then(|| stop_probability(&logits, c.codec_eos_id, sampling));
             let seen = wants.logits.then(|| logits.clone());
+            #[cfg(feature = "plant")]
+            if self.plant == Plant::HookLogitMutation && wants.logits && frame == 0 {
+                logits.fill(-1.0e9);
+                logits[0] = 1.0e9;
+            }
             let next = if sampling.temperature <= 0.0 {
                 argmax(&logits)
             } else {

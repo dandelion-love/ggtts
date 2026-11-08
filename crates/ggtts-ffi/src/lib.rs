@@ -273,7 +273,7 @@ fn plan(engine: &dyn Engine, text: &str) -> Result<Vec<ggtts_core::text::Planned
     if paragraphs.is_empty() {
         return Err((GGTTS_ERR_ARG, "text is empty".into()));
     }
-    Ok(plan_story(engine.profile(), &paragraphs))
+    plan_story(engine.profile(), &paragraphs).map_err(|e| (GGTTS_ERR_ARG, e.to_string()))
 }
 
 fn options(engine: &dyn Engine, seed: u64) -> RenderOptions {
@@ -448,5 +448,88 @@ mod planted {
         fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
             self.0.decode(codes)
         }
+    }
+}
+
+#[cfg(test)]
+mod chunk_input_tests {
+    use super::*;
+
+    #[test]
+    fn punctuation_only_is_an_argument_error_before_render() {
+        let engine = ggtts_fake::FakeEngine::default();
+        let (code, message) = plan(&engine, "？！").unwrap_err();
+        assert_eq!(code, GGTTS_ERR_ARG);
+        assert!(message.contains("punctuation-only"));
+    }
+    extern "C" fn count(user: *mut std::ffi::c_void, _: *const f32, _: usize, _: u32) -> i32 {
+        unsafe {
+            *(user as *mut usize) += 1;
+        }
+        0
+    }
+
+    struct CountingEngine {
+        inner: ggtts_fake::FakeEngine,
+        calls: Arc<AtomicU64>,
+    }
+
+    impl Engine for CountingEngine {
+        fn info(&self) -> &ggtts_core::engine::EngineInfo {
+            self.inner.info()
+        }
+        fn profile(&self) -> &ggtts_core::profile::Profile {
+            self.inner.profile()
+        }
+        fn generate(
+            &mut self,
+            req: &ggtts_core::engine::ChunkRequest<'_>,
+        ) -> Result<ggtts_core::engine::Generated, ggtts_core::engine::EngineError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.generate(req)
+        }
+        fn decode(
+            &mut self,
+            codes: &ggtts_core::engine::Codes,
+        ) -> Result<ggtts_core::engine::Pcm, ggtts_core::engine::EngineError> {
+            self.inner.decode(codes)
+        }
+    }
+
+    #[test]
+    fn exported_render_and_stream_reject_before_any_output() {
+        use std::ffi::CString;
+        let text = CString::new("好。\n？！").unwrap();
+        let calls = Arc::new(AtomicU64::new(0));
+        let engine = CountingEngine {
+            inner: ggtts_fake::FakeEngine::default(),
+            calls: calls.clone(),
+        };
+        let handle = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        registry()
+            .get_or_insert_with(HashMap::new)
+            .insert(handle, Arc::new(Mutex::new(Held::checked(Box::new(engine)))));
+        let (mut pcm, mut len, mut rate) = (std::ptr::null_mut(), 0, 0);
+        assert_eq!(
+            unsafe { ggtts_render(handle, text.as_ptr(), 1, &mut pcm, &mut len, &mut rate) },
+            GGTTS_ERR_ARG
+        );
+        assert!(pcm.is_null());
+        let mut callbacks = 0usize;
+        assert_eq!(
+            unsafe {
+                ggtts_render_stream(
+                    handle,
+                    text.as_ptr(),
+                    1,
+                    Some(count),
+                    &mut callbacks as *mut usize as *mut std::ffi::c_void,
+                )
+            },
+            GGTTS_ERR_ARG
+        );
+        assert_eq!(callbacks, 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "invalid input invoked generate");
+        assert_eq!(ggtts_free(handle), GGTTS_OK);
     }
 }

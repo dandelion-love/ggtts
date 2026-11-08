@@ -14,6 +14,24 @@ JOB_MAP = {
     "check": set(), "build-test": set(), "planted-ceiling": set(),
 }
 
+# Generic measurement/reporting paths are compiled and tested on both CPU hosts for every PR. Full engine,
+# Android and release-archive builds still run on the rc-to-main promotion. This is deliberately an exact list:
+# a new or moved crate path falls back to all specialized jobs until classified.
+MEASUREMENT_PATHS = {
+    "crates/ggtts-cli/src/bin/ggtts-measure.rs",
+    "crates/ggtts-cli/src/bin/ggtts-render.rs",
+    "crates/ggtts-cli/tests/measure_cli.rs",
+    "crates/ggtts-cli/tests/no_change_real.rs",
+    "crates/ggtts-core/src/report.rs",
+    "crates/ggtts-core/tests/report.rs",
+    "crates/ggtts-core/tests/python_instruments.rs",
+    "crates/ggtts-instruments/src/catalogue.rs",
+    "crates/ggtts-instruments/src/runner.rs",
+    "crates/ggtts-instruments/tests/runner.rs",
+    "crates/ggtts-instruments/tests/no_change.rs",
+    "crates/ggtts-qwen3-tts/tests/frame_hook.rs",
+}
+
 
 def workflow_sections(text):
     """Split this repository's workflow into its header and top-level job blocks."""
@@ -55,7 +73,8 @@ def workflow_changes(before, after):
 
 def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None):
     if event != "pull_request":
-        return {"ggml", "cuda"}
+        # A merge to rc already had its PR checks; the full matrix runs on promotion.
+        return set()
     if base_ref == "main" and head_ref == "rc" and same_repo:
         return set(JOBS)
     selected = set()
@@ -63,10 +82,21 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None):
         if path == WORKFLOW:
             selected.update(set(JOBS) if workflow_selected is None else workflow_selected)
         if path in ("scripts/select_specialized_ci.py", "scripts/test_select_specialized_ci.py"):
-            return set(JOBS)
+            # CI always runs the selector tests. The full matrix is reserved for promotion, unless another
+            # changed path independently needs one of these jobs.
+            continue
         if path in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".gitmodules"):
             return set(JOBS)
         if path.startswith("crates/"):
+            if path in MEASUREMENT_PATHS:
+                # The package job exercises the actual CLI/instrument packaging without CUDA or Android.
+                if path.startswith(("crates/ggtts-cli/", "crates/ggtts-instruments/")):
+                    selected.add("package")
+                continue
+            if not path.startswith(("crates/ggtts-core/", "crates/ggtts-cli/", "crates/ggtts-instruments/",
+                                    "crates/ggtts-qwen3-tts/", "crates/ggtts-kitten/", "crates/ggtts-ggml-sys/",
+                                    "crates/ggtts-fake/", "crates/ggtts-ffi/")):
+                return set(JOBS)
             # Desktop and Android builds include the engines. The FFI also links
             # the engine and core crates; favor coverage over a fragile dependency map.
             selected.update(("binding", "android", "release", "ggml", "cuda"))

@@ -38,7 +38,7 @@ pack() {
     done
     cp "$root/LICENSE" "$root/README.md" "$dir/"
     cp -r "$root/instruments/python/ggtts_instrument" "$dir/instruments/python/"
-    cp -r "$root/instruments/templates" "$root/instruments/examples" "$root/instruments/README.md" \
+    cp -r "$root/instruments/templates" "$root/instruments/examples" "$root/instruments/vendor" "$root/instruments/README.md" \
         "$root/instruments/instruments.yaml" "$dir/instruments/"
     find "$dir/instruments" -name __pycache__ -prune -exec rm -rf {} +
     say "packed $dir"
@@ -121,6 +121,25 @@ smoke() {
         return 1
     fi
     say "ok on $path: ggtts-measure measured the render from the packed instruments/ (exit 0, envelope ok)"
+    [ -f "$dir/instruments/vendor/pitchy-4.1.0/index.js" ] && \
+        [ -f "$dir/instruments/vendor/fft.js-4.0.4/fft.js" ] || \
+        { say "missing bundled pitch detector or FFT in $path"; return 1; }
+    if command -v "${GGTTS_NODE:-node}" >/dev/null 2>&1; then
+        set +e
+        (unset GGTTS_INSTRUMENTS_DIR; cd "$work" && "$measure" --audio out.flac --report pitch-report \
+            --instrument pitch-range --require pitch-range) 2> "$work/pitch-err.txt"
+        code=$?
+        set -e
+        status=$(sed -n 's/^ *"status": "\([^"]*\)".*/\1/p' "$work/pitch-report/instruments/pitch-range/envelope.json" 2>/dev/null | head -1)
+        if [ "$code" -ne 0 ] || [ "$status" != ok ]; then
+            say "FAILED on $path: pitch-range exit $code, status ${status:-without an envelope}"
+            cat "$work/pitch-err.txt" >&2
+            return 1
+        fi
+        say "ok on $path: pitch-range ran from the packed instruments/"
+    else
+        say "pitch-range not run: Node.js is unavailable"
+    fi
     if [ -f "$dir/BUILDINFO.json" ]; then
         local binaries
         binaries=$(sed -n 's/.*"binaries":[[:space:]]*\(\[[^]]*\]\).*/\1/p' "$dir/BUILDINFO.json")

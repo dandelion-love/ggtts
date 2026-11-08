@@ -27,12 +27,14 @@ use ggtts_instruments::runner::{input_file, EXIT_RENDER_FAILED};
 const BINARY: &str = "ggtts-measure";
 const USAGE: &str = "usage: ggtts-measure --audio IN.flac [--events E.jsonl] [--render ID] [--run ID] --report DIR \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
+[--audio-state raw|trimmed|unknown] \
 [--on-instrument-error continue|abort] [--instrument-timeout S]\n\
   --report DIR must not already exist";
 
 #[derive(Default)]
 struct Args {
     audio: Option<PathBuf>,
+    audio_state: Option<ggtts_core::report::AudioState>,
     events: Option<PathBuf>,
     render: Option<String>,
     run: Option<String>,
@@ -51,6 +53,14 @@ fn parse(args: &[String]) -> Result<Args, String> {
         }
         match flag.as_str() {
             "--audio" => a.audio = Some(value()?.into()),
+            "--audio-state" => {
+                a.audio_state = Some(match value()?.as_str() {
+                    "raw" => ggtts_core::report::AudioState::Raw,
+                    "trimmed" => ggtts_core::report::AudioState::Trimmed,
+                    "unknown" => ggtts_core::report::AudioState::Unknown,
+                    _ => return Err("--audio-state must be raw, trimmed or unknown".into()),
+                });
+            }
             "--events" => a.events = Some(value()?.into()),
             "--render" => a.render = Some(value()?),
             "--run" => a.run = Some(value()?),
@@ -142,6 +152,7 @@ fn measure(a: Args) -> Result<u8, String> {
         render,
         report_dir: report.clone(),
         audio: audio_copy,
+        audio_state: a.audio_state.unwrap_or(ggtts_core::report::AudioState::Unknown),
         audio_seconds: flac_seconds(&bytes),
         events: events_copy,
         bin_dir: None,

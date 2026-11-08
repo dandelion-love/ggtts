@@ -21,7 +21,7 @@ fn dir(name: &str) -> PathBuf {
 fn trace() -> Vec<Map<String, Value>> {
     let mut e = FakeEngine::default();
     let paragraphs = vec!["今日天氣好好，我哋去公園行下。".to_string(), "聽日再傾。".to_string()];
-    let chunks = plan_story(e.profile(), &paragraphs);
+    let chunks = plan_story(e.profile(), &paragraphs).unwrap();
     let opts = RenderOptions::for_profile(e.profile());
     let mut w = JsonlEvents::new(Vec::new(), 1);
     emit_header(&mut w, &Header::for_engine(&e, 1));
@@ -70,6 +70,14 @@ fn metric(env: &Value, name: &str) -> Value {
 
 /// The envelope fields every `ggtts-report/1` envelope carries.
 fn assert_shape(env: &Value) {
+    let schema_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../schemas/ggtts-report-1.schema.json");
+    let schema: Value = serde_json::from_str(&std::fs::read_to_string(schema_path).unwrap()).unwrap();
+    let validator = jsonschema::validator_for(&schema).expect("the v1 report schema compiles");
+    assert!(
+        validator.is_valid(env),
+        "event template emitted an envelope outside its declared v1 schema"
+    );
     for k in [
         "format",
         "name",

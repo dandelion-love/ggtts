@@ -82,6 +82,24 @@ pub const CATALOGUE: &[Known] = &[
         "the rendered audio: silences inside the speech, between its first and last loud frame (example)",
         false,
     ),
+    python(
+        "pitch-range",
+        "examples/python/pitch-range/instrument.py",
+        "voiced pitch median and 5th-to-95th percentile range using the lab's Pitchy detector",
+        false,
+    ),
+    python(
+        "loudness-ends",
+        "examples/python/loudness-ends/instrument.py",
+        "relative loud and soft ends over pYIN-voiced speech-core frames",
+        false,
+    ),
+    python(
+        "asr-sensevoice",
+        "examples/python/asr-sensevoice/instrument.py",
+        "optional CPU ASR character error against a local reference; not a quality verdict",
+        false,
+    ),
 ];
 
 pub fn find(name: &str) -> Option<&'static Known> {

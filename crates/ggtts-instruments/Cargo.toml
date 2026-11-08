@@ -20,3 +20,4 @@ yaml-rust2 = "0.13"
 
 [dev-dependencies]
 ggtts-fake.workspace = true
+jsonschema = { version = "0.60.2", default-features = false }

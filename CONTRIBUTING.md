@@ -36,6 +36,25 @@ Thank you for looking. ggtts is young and its design is still under review, so o
 * No audio in the repository. Fixtures hold text, seeds, token ids, numbers and hashes.
 * No personal data. Do not name real people as voices.
 
+## Instrument contributions
+
+An instrument contribution names the hooks and input artifacts it reads and documents what its result can and cannot
+establish. Supply a self-test with a planted defect of the kind it claims to detect and a no-op that reads as no
+change. The self-test must actually run in the existing test suite, validate the emitted envelope against the current
+report contract, and leave a log with the outcome. A crash, missing required input or unsupported measurement must
+remain visible as a non-OK result; never replace a missing value with zero. For an event instrument, test a truncated
+event stream as well. Out-of-process instruments must not modify their inputs; in-process tensor hooks are trusted
+and have the narrower isolation described in the instrument documentation.
+
+Version an instrument when its behavior, defaults or metric meaning changes; document whether existing comparisons
+remain valid. The report schema's format version changes when a previously valid reader cannot safely read a new
+envelope. Preserve the previous schema and make the current reader accept the previous version. Adding a metric to
+the metrics list does not change the report format. Any version change must include compatibility and rejection tests.
+
+The local promotion gate currently does not prove that every instrument leaves a real model's tokens and audio
+unchanged; that proof is tracked in #34. A fake-engine test does not establish the same property for real decoder
+or GPU execution. Token/audio equality also says nothing about timing or external artifacts.
+
 ## Ported code
 
 Code ported from another project keeps its licence notice, names the file, line range and commit it came from in a
@@ -57,11 +76,18 @@ CI runs the desktop release builds, archive smoke tests, Android build and host 
 same-repository `rc` to `main` promotion PR. Other PRs run the specialized checks selected by
 `scripts/select_specialized_ci.py` for their changed paths; pushes skip these four jobs. A skip is not a pass.
 The Linux and Windows ggml jobs and hosted CUDA compile use the same selector on ordinary PRs; a packaging-only
-workflow edit selects the archive tests, while changes to a specialized job select that job. Changes to the
-selector, unknown jobs or workflow-wide configuration conservatively select all. On pushes, ggml and CUDA still
-run; the four release and binding jobs are skipped. General checks still run, and the tag-triggered release
+workflow edit selects the archive tests, while changes to a specialized job select that job. Unknown jobs or
+workflow-wide configuration conservatively select all. Selector changes run their dedicated tests; other changed
+paths select their own jobs. On pushes, ggml and CUDA still run; the four release and binding jobs are skipped.
+General checks still run, and the tag-triggered release
 workflow still builds its archives. CUDA compilation on promotion is separate from GPU runtime parity; the local
 promotion gate supplies the latter.
+
+For the explicitly listed generic measurement and report paths in the selector, ordinary PRs run the standard
+Linux and Windows CPU checks and, for CLI or runner edits, package smoke. They do not automatically build the CUDA,
+Android or full release binaries. This trades earlier feature-specific compilation for a lighter PR: those builds
+remain mandatory on the promotion PR, and unrelated engine or unclassified crate changes still select specialized
+checks. Selector tests exercise the promotion and path decisions without building the full matrix on that PR.
 
 **Promotion.** `main` moves only by one reviewed pull request from `rc`. Hosted runners have no GPU, so before that
 pull request is merged, someone with a supported GPU runs `scripts/rc_gate.sh --ref origin/rc --work /path/to/scratch`
@@ -71,8 +97,12 @@ version, CUDA and the model/reference inputs documented at the top of each engin
 Set their environment variables before running; the gate assigns separate `WORK` and `CARGO_TARGET_DIR` directories
 under the persistent scratch directory. Use `--wait-file` for a busy GPU. The report identifies the commit, model
 and fixture hashes, device, probe commands and logs. External CUDA library build provenance must be checked separately.
-The probes compare each engine to its own reference; they do not prove CPU and GPU outputs identical, nor the
-instrument no-change proof in #34. A pass applies only to the recorded commit.
+The probes compare each engine to its own reference; they do not prove CPU and GPU outputs identical. The gate also
+requires the pinned Qwen v0.0.1 talker and codec to pass the instrument identity tests on CPU and CUDA: full codec
+tokens and decoded samples, every shipped event instrument, the `StopTrace` hook, and a test-only hook-boundary logit
+mutation that must be detected. The CPU check builds ggml from the pinned checkout; CUDA uses the Qwen reference's
+prebuilt ggml libraries. Missing inputs, a wrong model hash, a failed check, or a filtered test that never ran cannot
+pass. These checks do not establish timing or external-artifact identity. A pass applies only to the recorded commit.
 Release tags are cut from `main`. Pre-release tags (`vX.Y.Z-rc.N`) may be cut from `rc`.
 
 By contributing you agree that your contribution is licensed under the MIT licence of this repository.

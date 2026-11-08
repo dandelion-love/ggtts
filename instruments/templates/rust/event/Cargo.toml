@@ -19,3 +19,4 @@ sha2 = "0.10"
 
 [dev-dependencies]
 ggtts-fake.workspace = true
+jsonschema = { version = "0.60.2", default-features = false }

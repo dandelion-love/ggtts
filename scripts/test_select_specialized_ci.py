@@ -33,12 +33,46 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(select(["scripts/package_cuda_release.sh"]), {"package", "release", "cuda"})
         self.assertEqual(select(["scripts/buildinfo_engines.sh"]), {"ggml", "release"})
         self.assertEqual(select(["crates/ggtts-qwen3-tts/src/lib.rs"]), {"binding", "android", "release", "ggml", "cuda"})
-        for path in (".github/workflows/ci.yml", "scripts/select_specialized_ci.py",
-                     "scripts/test_select_specialized_ci.py", "Cargo.lock"):
+        for path in (".github/workflows/ci.yml", "Cargo.lock"):
             self.assertEqual(select([path]), set(JOBS))
+        self.assertEqual(select(["scripts/select_specialized_ci.py", "scripts/test_select_specialized_ci.py"]), set())
+        self.assertEqual(select(["scripts/select_specialized_ci.py", "scripts/package_cuda_release.sh"]),
+                         {"package", "release", "cuda"})
         self.assertEqual(decide("pull_request", "main", "rc", True, []), set(JOBS))
         self.assertEqual(decide("pull_request", "main", "rc", False, ["docs/x"]), set())
-        self.assertEqual(decide("push", "", "", True, ["Cargo.lock"]), {"ggml", "cuda"})
+        self.assertEqual(decide("push", "", "", True, ["Cargo.lock"]), set())
+
+    def test_report_provenance_does_not_select_unrelated_release_builds(self):
+        paths = ["crates/ggtts-cli/src/bin/ggtts-measure.rs", "crates/ggtts-cli/src/bin/ggtts-render.rs",
+                 "crates/ggtts-cli/tests/measure_cli.rs", "crates/ggtts-core/src/report.rs",
+                 "crates/ggtts-core/tests/report.rs", "crates/ggtts-instruments/src/runner.rs",
+                 "crates/ggtts-instruments/tests/runner.rs", "instruments/python/ggtts_instrument/envelope.py",
+                 "schemas/ggtts-report-2.schema.json"]
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"package"})
+        self.assertEqual(decide("pull_request", "main", "rc", True, paths), set(JOBS))
+        self.assertEqual(decide("pull_request", "rc", "feature", True,
+                                ["crates/unknown/src/lib.rs"]), set(JOBS))
+        self.assertEqual(decide("pull_request", "rc", "feature", True,
+                                ["crates/ggtts-instruments/tests/no_change.rs"]), {"package"})
+        self.assertEqual(decide("pull_request", "rc", "feature", True,
+                                ["crates/ggtts-qwen3-tts/tests/frame_hook.rs"]), set())
+        self.assertEqual(decide("pull_request", "rc", "feature", True,
+                                ["crates/ggtts-cli/tests/no_change_real.rs"]), {"package"})
+
+    def test_pitch_catalogue_and_package_changes_do_not_select_engine_archives(self):
+        paths = ["crates/ggtts-instruments/src/catalogue.rs", "crates/ggtts-core/tests/python_instruments.rs",
+                 "instruments/examples/python/pitch-range/instrument.py", "instruments/vendor/pitchy-4.1.0/index.js",
+                 "scripts/package_and_smoke.sh", "scripts/select_specialized_ci.py"]
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"package"})
+        self.assertEqual(decide("pull_request", "main", "rc", True, paths), set(JOBS))
+
+    def test_loudness_catalogue_changes_do_not_select_engine_archives(self):
+        paths = ["crates/ggtts-instruments/src/catalogue.rs", "crates/ggtts-core/tests/python_instruments.rs",
+                 "crates/ggtts-instruments/tests/no_change.rs", "crates/ggtts-instruments/tests/runner.rs",
+                 "instruments/examples/python/loudness-ends/instrument.py", "instruments/instruments.yaml",
+                 "scripts/test_qwen_event_instrument_probe.py"]
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"package"})
+        self.assertEqual(decide("pull_request", "main", "rc", True, paths), set(JOBS))
 
     def test_workflow_job_changes(self):
         base = "name: CI\njobs:\n  package-smoke:\n    run: old\n  cuda-compile:\n    run: same\n  ggml:\n    run: same\n"

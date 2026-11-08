@@ -54,7 +54,7 @@ fn render_bytes(dir: &Path, paragraphs: &[String]) -> Vec<u8> {
     let read = render_story(
         &mut engine,
         "story",
-        &plan_story(&profile, paragraphs),
+        &plan_story(&profile, paragraphs).unwrap(),
         &RenderOptions::for_profile(&profile),
     )
     .unwrap();
@@ -75,7 +75,7 @@ fn setup_with(tag: &str, paragraphs: &[String]) -> (PathBuf, Inputs) {
     let read = render_story_traced(
         &mut engine,
         "story",
-        &plan_story(&profile, paragraphs),
+        &plan_story(&profile, paragraphs).unwrap(),
         &RenderOptions::for_profile(&profile),
         &mut rec,
     )
@@ -93,6 +93,7 @@ fn setup_with(tag: &str, paragraphs: &[String]) -> (PathBuf, Inputs) {
         render: "story".into(),
         report_dir: dir.join("report"),
         audio,
+        audio_state: ggtts_core::report::AudioState::Trimmed,
         audio_seconds: Some(read.seconds()),
         events: Some(events),
         bin_dir: Path::new(SELFTEST).parent().map(Path::to_path_buf),
@@ -112,6 +113,98 @@ fn planted(name: &str, mode: &str, extra: &str) -> String {
 
 fn read(p: PathBuf) -> String {
     std::fs::read_to_string(p).unwrap()
+}
+
+#[test]
+fn asr_instrument_runs_through_runner_and_fails_closed() {
+    if std::env::var_os("GGTTS_SKIP_PYTHON").is_some() {
+        return;
+    }
+    let (dir, inputs) = setup("asr-integration");
+    let model = dir.join("model");
+    std::fs::create_dir_all(&model).unwrap();
+    for name in [
+        "model.pt",
+        "config.yaml",
+        "am.mvn",
+        "tokens.json",
+        "chn_jpn_yue_eng_ko_spectok.bpe.model",
+    ] {
+        std::fs::write(model.join(name), b"synthetic").unwrap();
+    }
+    let reference = dir.join("reference.txt");
+    std::fs::write(&reference, b"abcdef").unwrap();
+    let instrument =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments/examples/python/asr-sensevoice/instrument.py");
+    let wrapper = dir.join("wrapper.py");
+    let before = std::fs::read(&inputs.audio).unwrap();
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let flag = format!(
+        "asr-sensevoice,command={},interpreter={python},arg.model_dir={},arg.reference_file={}",
+        wrapper.display(),
+        model.display(),
+        reference.display()
+    );
+    let write_wrapper = |mode: &str| {
+        let code = format!(
+            "import sys, types, runpy, time\nmode = {mode:?}\nclass M:\n def __init__(self, **kw): pass\n def generate(self, **kw):\n  if mode == 'timeout': time.sleep(10)\n  return [{{'text': '<|nospeech|>' if mode == 'silence' else ('abc' if mode == 'omit' else 'abcdef')}}]\nsys.modules['funasr'] = types.SimpleNamespace(AutoModel=M)\nrunpy.run_path({:?}, run_name='__main__')\n",
+            instrument.to_string_lossy()
+        );
+        std::fs::write(&wrapper, code).unwrap();
+    };
+    let mut cfg = Config::default();
+    cfg.apply_instrument_flag(&flag).unwrap();
+    cfg.apply_instrument_flag("selftest").unwrap();
+    cfg.require.push("asr-sensevoice".into());
+    write_wrapper("ok");
+    let ok = run(&cfg, &inputs).unwrap();
+    assert_eq!(ok.exit_code(), EXIT_OK, "{:?}", ok.envelopes);
+    assert_eq!(ok.envelopes[0].name, "asr-sensevoice");
+    assert_eq!(ok.envelopes[1].name, "selftest");
+    assert_eq!(ok.envelopes[0].metrics[0].value, Some(0.0));
+    assert_eq!(std::fs::read(&inputs.audio).unwrap(), before);
+    write_wrapper("omit");
+    let omitted = run(&cfg, &inputs).unwrap();
+    assert_eq!(omitted.envelopes[0].metrics[0].value, Some(0.5));
+    write_wrapper("silence");
+    let mut silent_inputs = inputs.clone();
+    silent_inputs.audio = write_flac(&dir.join("planted-silence"), &vec![0.0; 2400], 24000).unwrap();
+    let silent = run(&cfg, &silent_inputs).unwrap();
+    assert_eq!(silent.envelopes[0].status, Status::Failed);
+    assert_eq!(silent.exit_code(), EXIT_INCOMPLETE);
+    assert!(silent.envelopes[0].metrics.is_empty());
+    cfg.require.clear();
+    let optional = run(&cfg, &silent_inputs).unwrap();
+    assert_eq!(optional.envelopes[0].status, Status::Failed);
+    assert_eq!(optional.exit_code(), EXIT_OK);
+    cfg.require.push("asr-sensevoice".into());
+    cfg.instruments[0]
+        .args
+        .iter_mut()
+        .find(|(k, _)| k == "model_dir")
+        .unwrap()
+        .1 = dir.join("absent").display().to_string();
+    let missing = run(&cfg, &inputs).unwrap();
+    assert_eq!(missing.envelopes[0].status, Status::Failed);
+    assert_eq!(missing.exit_code(), EXIT_INCOMPLETE);
+    cfg.instruments[0]
+        .args
+        .iter_mut()
+        .find(|(k, _)| k == "model_dir")
+        .unwrap()
+        .1 = model.display().to_string();
+    write_wrapper("timeout");
+    cfg.instruments[0].timeout_s = Some(0.2);
+    let timed = run(&cfg, &inputs).unwrap();
+    assert_eq!(timed.envelopes[0].status, Status::Timeout);
+    assert_eq!(timed.exit_code(), EXIT_INCOMPLETE);
+    // Runner-generated envelopes carry full argument paths: these reports are private.
+    assert_eq!(
+        timed.envelopes[0].provenance.config["args"]["reference_file"],
+        serde_json::json!(reference.display().to_string())
+    );
+    assert_eq!(std::fs::read(&inputs.audio).unwrap(), before);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -386,12 +479,20 @@ fn the_overhead_is_logged_against_the_budget_stated_before_measuring() {
     // purpose (GGTTS_SKIP_PYTHON=1, as the Python instrument suites honour).
     let skip_python = std::env::var_os("GGTTS_SKIP_PYTHON").is_some();
     for k in ggtts_instruments::catalogue::CATALOGUE {
+        if k.name == "asr-sensevoice" {
+            continue; // Requires an explicitly provisioned model and reference.
+        }
         if k.interpreter.is_none() || !skip_python {
             c.apply_instrument_flag(k.name).unwrap();
         }
     }
     let s = run(&c, &inputs).unwrap();
-    assert!(s.envelopes.iter().all(|e| e.status == Status::Ok), "{:?}", s.envelopes);
+    assert!(
+        s.envelopes.iter().all(|e| e.status == Status::Ok
+            || (e.name == "loudness-ends" && e.status == Status::Skipped && e.error.is_some())),
+        "{:?}",
+        s.envelopes
+    );
     let o = s.overhead;
     assert_eq!(o.own_ms + o.instruments_ms, o.total_ms);
     assert_eq!(

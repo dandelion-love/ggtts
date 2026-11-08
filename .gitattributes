@@ -1,0 +1,3 @@
+# These vendored sources are verified byte-for-byte against published package hashes at runtime.
+instruments/vendor/pitchy-4.1.0/index.js -text
+instruments/vendor/fft.js-4.0.4/fft.js -text

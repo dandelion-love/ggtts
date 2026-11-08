@@ -439,7 +439,7 @@ fn the_clamp_check_sees_a_quiet_first_chunk() {
         "七八九十一二三四。".to_string(),
     ];
     let probe = FakeEngine::default();
-    let chunks = plan_story(probe.profile(), &paragraphs);
+    let chunks = plan_story(probe.profile(), &paragraphs).unwrap();
     let quiet = Shape {
         amplitude_scale: Some(0.05),
         ..Default::default()
@@ -645,7 +645,7 @@ fn quiet_opening() -> (Vec<Vec<f32>>, Read, Profile) {
         })
         .collect();
     let probe = FakeEngine::default();
-    let chunks = plan_story(probe.profile(), &paragraphs);
+    let chunks = plan_story(probe.profile(), &paragraphs).unwrap();
     let shape: HashMap<String, Shape> = chunks
         .iter()
         .enumerate()

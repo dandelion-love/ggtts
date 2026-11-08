@@ -17,6 +17,26 @@ fn missing_reference_and_output_respect_requirement_and_on_error() {
     std::fs::write(model.join("config.json"), "{}").unwrap();
     std::fs::write(model.join("model.safetensors"), b"synthetic").unwrap();
     let missing_ref = root.join("absent-reference.txt");
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let wrapper = root.join("fake-asr.py");
+    let instrument = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../instruments/examples/python/asr-qwen/instrument.py");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "import runpy,sys,types\n\
+             torch=types.ModuleType('torch'); torch.float32='f32'; torch.set_num_threads=lambda n: None\n\
+             class M:\n\
+             \x20 @staticmethod\n\
+             \x20 def from_pretrained(*a,**k): return M()\n\
+             \x20 def transcribe(self,*a,**k): return [types.SimpleNamespace(text='abcdef')]\n\
+             q=types.ModuleType('qwen_asr'); q.Qwen3ASRModel=M\n\
+             sys.modules['torch']=torch; sys.modules['qwen_asr']=q\n\
+             runpy.run_path({:?},run_name='__main__')\n",
+            instrument.to_string_lossy()
+        ),
+    )
+    .unwrap();
     let audio = ggtts_core::flac::write_flac(&root.join("audio"), &[0.1; 2400], 24000).unwrap();
     let before = std::fs::read(&audio).unwrap();
     let mut inputs = Inputs {
@@ -33,7 +53,8 @@ fn missing_reference_and_output_respect_requirement_and_on_error() {
     let mut missing = Config::default();
     missing
         .apply_instrument_flag(&format!(
-            "asr-qwen,arg.model_dir={},arg.reference_file={}",
+            "asr-qwen,command={},interpreter={python},arg.model_dir={},arg.reference_file={}",
+            wrapper.display(),
             model.display(),
             missing_ref.display()
         ))
@@ -47,12 +68,24 @@ fn missing_reference_and_output_respect_requirement_and_on_error() {
     assert_eq!(required.envelopes[0].status, Status::Failed);
     assert_eq!(required.exit_code(), EXIT_INCOMPLETE);
     assert!(required.envelopes[0].metrics.is_empty());
+    let log = std::fs::read_to_string(inputs.report_dir.join("instruments/asr-qwen/asr-qwen.log")).unwrap();
+    assert!(log.contains("local model directory and reference file are required"));
+
+    // Only create the missing reference; the same instrument, model and audio must now succeed.
+    std::fs::write(&missing_ref, "abcdef").unwrap();
+    inputs.report_dir = root.join("report-reference-present");
+    let control = run(&missing, &inputs).unwrap();
+    assert_eq!(control.exit_code(), EXIT_OK);
+    assert_eq!(control.envelopes[0].status, Status::Ok);
+    assert_eq!(control.envelopes[0].metrics[0].value, Some(0.0));
 
     // A process which exits successfully without writing its envelope is invalid, never zero.
     let script = root.join("no-envelope.py");
     std::fs::write(&script, "# deliberately write no envelope\n").unwrap();
-    let python = if cfg!(windows) { "python" } else { "python3" };
-    let flag = format!("no-output,command={},interpreter={python},version=test", script.display());
+    let flag = format!(
+        "no-output,command={},interpreter={python},version=test",
+        script.display()
+    );
     let sibling = format!(
         "sibling,command={},version=test,arg.mode=ok",
         env!("CARGO_BIN_EXE_ggtts-instrument-selftest")

@@ -340,6 +340,7 @@ dependencies = [
  "jsonschema",
  "libm",
  "serde_json",
+ "unicode-general-category",
 ]
 
 [[package]]

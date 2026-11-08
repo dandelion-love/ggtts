@@ -85,7 +85,7 @@ fn render(engine: Qwen3Tts, events: &mut dyn Events) -> (Vec<u8>, Vec<f32>, u32)
     };
     let profile = *capture.profile();
     let paragraphs = vec!["小朋友喺海邊砌咗一座好大嘅沙堡。".to_string()];
-    let chunks = plan_story(&profile, &paragraphs);
+    let chunks = plan_story(&profile, &paragraphs).unwrap();
     let mut opts = RenderOptions::for_profile(&profile);
     opts.redraw = 0;
     let level = events.level();

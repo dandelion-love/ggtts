@@ -879,6 +879,78 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn empty_stream_makes_required_timing_incomplete() {
+        let root = std::env::temp_dir().join(format!("ggtts-empty-required-timing-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let story = root.join("story.txt");
+        std::fs::write(&story, "Title\nA short sentence.\n").unwrap();
+        let trace = root.join("trace.jsonl");
+        let report = root.join("report");
+        let mut args = Args {
+            engine: Some("fake".into()),
+            story: Some(story),
+            out: Some(root.join("out.flac")),
+            stream: Some(root.join("stream.wav").to_string_lossy().into_owned()),
+            trace: Some(trace.clone()),
+            report: Some(report.clone()),
+            ..Args::default()
+        };
+        args.instruments.take("--instrument", "render-timing".into());
+        args.instruments.take("--require", "render-timing".into());
+        let log = LogSettings {
+            level: LogLevel::Error,
+            format: LogFormat::Text,
+        };
+        let code = render_with_loader(args, log, |_, _, _| Ok(Box::new(EmptyThenAudio::new(true)))).unwrap();
+        assert_eq!(
+            code, 3,
+            "missing first audio must make the required instrument incomplete"
+        );
+        let events: Vec<serde_json::Value> = std::fs::read_to_string(trace)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(events.iter().any(|v| v["ev"] == "end"));
+        assert!(!events
+            .iter()
+            .any(|v| v["ev"] == "timing" && v["stage"] == "first_audio"));
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(report.join("instruments/render-timing/envelope.json")).unwrap())
+                .unwrap();
+        assert_eq!(envelope["status"], "skipped");
+        assert_eq!(
+            envelope["error"],
+            "missing or invalid first_audio timing; a streaming v2 trace is required"
+        );
+
+        // The same instrument configuration must complete when a normal decoder supplies audio.
+        let mut control = Args {
+            engine: Some("fake".into()),
+            story: Some(root.join("story.txt")),
+            out: Some(root.join("control.flac")),
+            stream: Some(root.join("control.wav").to_string_lossy().into_owned()),
+            trace: Some(root.join("control.jsonl")),
+            report: Some(root.join("control-report")),
+            ..Args::default()
+        };
+        control.instruments.take("--instrument", "render-timing".into());
+        control.instruments.take("--require", "render-timing".into());
+        let log = LogSettings {
+            level: LogLevel::Error,
+            format: LogFormat::Text,
+        };
+        let code = render_with_loader(control, log, |_, _, _| Ok(Box::new(ggtts_fake::FakeEngine::default()))).unwrap();
+        assert_eq!(code, 0, "a normal stream must complete the required measurement");
+        let envelope: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("control-report/instruments/render-timing/envelope.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(envelope["status"], "ok");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// Every engine `--version` can list reaches its own arm in `load_engine`, never the unknown-architecture refusal.
     #[test]
     fn every_engine_has_a_load_arm() {

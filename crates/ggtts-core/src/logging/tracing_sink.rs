@@ -118,6 +118,7 @@ pub struct LogSink {
     settings: Settings,
     dispatch: tracing::Dispatch,
     failures: Arc<AtomicU64>,
+    sink_ns: &'static AtomicU64,
 }
 
 impl LogSink {
@@ -126,6 +127,10 @@ impl LogSink {
     }
 
     fn from_output(settings: Settings, output: Output) -> Self {
+        Self::from_output_with_counter(settings, output, &LOG_SINK_NS)
+    }
+
+    fn from_output_with_counter(settings: Settings, output: Output, sink_ns: &'static AtomicU64) -> Self {
         let failures = Arc::new(AtomicU64::new(0));
         let writer = MeasuredWriter {
             output,
@@ -141,6 +146,7 @@ impl LogSink {
             settings,
             dispatch: tracing::Dispatch::new(subscriber),
             failures,
+            sink_ns,
         }
     }
 
@@ -176,7 +182,7 @@ impl LogSink {
                 Level::Trace => emit!(tracing::Level::TRACE),
             }
         });
-        LOG_SINK_NS.fetch_add(elapsed_ns(start), Ordering::Relaxed);
+        self.sink_ns.fetch_add(elapsed_ns(start), Ordering::Relaxed);
         LOG_EVENTS.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -353,6 +359,9 @@ mod tests {
 
     #[test]
     fn slow_destination_is_reflected_in_sink_timing() {
+        static SLOW_NS: AtomicU64 = AtomicU64::new(0);
+        static FAST_NS: AtomicU64 = AtomicU64::new(0);
+        static QUIET_NS: AtomicU64 = AtomicU64::new(0);
         struct Slow(Buffer);
         impl Write for Slow {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -363,9 +372,32 @@ mod tests {
                 Ok(())
             }
         }
-        let buffer = Buffer::default();
-        let sink = LogSink::new(Settings::default(), Slow(buffer.clone()));
-        let before = LOG_SINK_NS.load(Ordering::Relaxed);
+        SLOW_NS.store(0, Ordering::Relaxed);
+        FAST_NS.store(0, Ordering::Relaxed);
+        QUIET_NS.store(0, Ordering::Relaxed);
+        let slow_buffer = Buffer::default();
+        let fast_buffer = Buffer::default();
+        let quiet_buffer = Buffer::default();
+        let production = LogSink::new(Settings::default(), Buffer::default());
+        assert!(std::ptr::eq(production.sink_ns, &LOG_SINK_NS));
+        let sink = LogSink::from_output_with_counter(
+            Settings::default(),
+            Arc::new(Mutex::new(Box::new(Slow(slow_buffer.clone())))),
+            &SLOW_NS,
+        );
+        let fast = LogSink::from_output_with_counter(
+            Settings::default(),
+            Arc::new(Mutex::new(Box::new(fast_buffer.clone()))),
+            &FAST_NS,
+        );
+        let quiet = LogSink::from_output_with_counter(
+            Settings {
+                level: Level::Error,
+                format: Format::Text,
+            },
+            Arc::new(Mutex::new(Box::new(quiet_buffer.clone()))),
+            &QUIET_NS,
+        );
         sink.emit(
             Level::Info,
             "test",
@@ -373,11 +405,28 @@ mod tests {
             format_args!("control"),
             serde_json::Value::Null,
         );
-        let elapsed = LOG_SINK_NS.load(Ordering::Relaxed) - before;
+        fast.emit(
+            Level::Info,
+            "test",
+            "slow",
+            format_args!("control"),
+            serde_json::Value::Null,
+        );
+        quiet.emit(
+            Level::Info,
+            "test",
+            "slow",
+            format_args!("control"),
+            serde_json::Value::Null,
+        );
+        let elapsed = SLOW_NS.load(Ordering::Relaxed);
         assert!(
             elapsed >= 10_000_000,
             "sink timing missed the planted delay: {elapsed} ns"
         );
-        assert_eq!(&*buffer.0.lock().unwrap(), b"test: control\n");
+        assert_eq!(&*slow_buffer.0.lock().unwrap(), b"test: control\n");
+        assert_eq!(*slow_buffer.0.lock().unwrap(), *fast_buffer.0.lock().unwrap());
+        assert!(quiet_buffer.0.lock().unwrap().is_empty());
+        assert_eq!(QUIET_NS.load(Ordering::Relaxed), 0);
     }
 }

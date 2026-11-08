@@ -161,7 +161,10 @@ fn each_event_instrument_preserves_real_qwen_tokens_and_samples() {
     assert!(CATALOGUE.iter().any(|item| item.name == "asr-sensevoice"));
     for item in CATALOGUE {
         if matches!(item.name, "asr-sensevoice" | "asr-qwen") {
-            println!("instrument={} status=not-run reason=no-local-model-or-reference", item.name);
+            println!(
+                "instrument={} status=not-run reason=no-local-model-or-reference",
+                item.name
+            );
             continue;
         }
         let mut config = Config::default();

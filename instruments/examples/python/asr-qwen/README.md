@@ -24,13 +24,17 @@ Example configuration through an instrument flag:
 ```
 
 The instrument does not put reference or recognized text in arguments, logs or
-its envelope. It hashes the completed audio and reference with fixed public
+its successful envelope. It hashes the completed audio and reference with fixed
 identifiers; the model identity is SHA-256 over each sorted relative snapshot
 filename (length-prefixed) and that file's SHA-256 bytes. It records the model
 hash, engine, CPU, thread count, package version and normalization rule. The
 caller supplies and identifies the audio trim state; this instrument does not
-trim it. The generic runner's failure reports can retain configured file paths,
-so keep run reports private and use paths without secrets or transcript text.
+trim it. The generic runner replaces a failed, timed-out or unstarted
+instrument's envelope with its own failure envelope containing configured and
+input file paths; `run.log` also records input paths. **All runner reports and
+logs are private**, including failures and timeouts. Do not publish them, and
+use file paths without secrets or transcript text. Publishing reports requires
+a separate reviewed redaction mechanism; this instrument does not provide one.
 
 Synthetic unit tests use a fake recognizer. A real-model CPU smoke and a
 validated omission-sensitive comparison remain required before making claims

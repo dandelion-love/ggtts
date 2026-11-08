@@ -1,0 +1,154 @@
+//! Explicit, allowlisted export of a private merged instrument report.
+
+use std::collections::BTreeMap;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::Path;
+
+use ggtts_core::report::{validate, Status, FORMAT};
+use serde_json::{json, Value};
+
+fn fields(v: &Value, required: &[&str], optional: &[&str]) -> Result<(), ()> {
+    let m = v.as_object().ok_or(())?;
+    if required.iter().any(|k| !m.contains_key(*k))
+        || m.keys().any(|k| !required.contains(&k.as_str()) && !optional.contains(&k.as_str()))
+    { return Err(()); }
+    Ok(())
+}
+
+fn export(v: &Value) -> Result<Value, ()> {
+    fields(v, &["format", "run", "measurement", "summary", "completeness", "instruments"], &[])?;
+    if v["format"] != FORMAT || v["run"].as_str().filter(|s| !s.is_empty()).is_none() { return Err(()); }
+    let entries = v["instruments"].as_array().ok_or(())?;
+    let reqs = v["completeness"].as_array().ok_or(())?;
+    let mut counts: BTreeMap<&str, u64> = Status::ALL.into_iter().map(|s| (s.as_str(), 0)).collect();
+    let mut names = BTreeMap::<String, usize>::new();
+    let mut records = Vec::new();
+    let mut identities = Vec::new();
+    for entry in entries {
+        let mut raw = entry.clone();
+        let object = raw.as_object_mut().ok_or(())?;
+        if object.remove("source").and_then(|v| v.as_str().map(str::to_owned)).is_none() { return Err(()); }
+        let invalid = object.remove("invalid");
+        let env = validate(&raw).map_err(|_| ())?;
+        if env.identity.run != v["run"] || identities.contains(&env.identity.instrument) { return Err(()); }
+        identities.push(env.identity.instrument.clone());
+        if invalid.is_some() != (env.status == Status::Invalid) { return Err(()); }
+        if let Some(x) = invalid {
+            if x.as_array().filter(|a| !a.is_empty() && a.iter().all(Value::is_string)).is_none() { return Err(()); }
+        }
+        *counts.get_mut(env.status.as_str()).ok_or(())? += 1;
+        let next = names.len() + 1;
+        let id = *names.entry(env.name.clone()).or_insert(next);
+        let mut metrics = Vec::new();
+        for m in &env.metrics {
+            // Names and units are not inherently safe strings. Only this reviewed
+            // pair is currently exportable; new metrics require policy review.
+            if m.name != "character_error_rate" || m.unit != "1" { return Err(()); }
+            metrics.push(json!({"name":m.name,"unit":m.unit,"value":m.value,
+                "direction":m.direction.as_str(),"interval":m.interval,"chunk":m.chunk,
+                "render_scoped":m.render.is_some()}));
+        }
+        records.push(json!({"instrument":id,"status":env.status.as_str(),"audio":env.provenance.audio.as_str(),
+            "model_sha256":env.provenance.model_sha256,
+            "input_sha256":env.provenance.inputs.iter().map(|i| &i.sha256).collect::<Vec<_>>(),
+            "artifact_sha256":env.artifacts.iter().map(|i| &i.sha256).collect::<Vec<_>>(),"metrics":metrics}));
+    }
+    let summary = v["summary"].as_object().ok_or(())?;
+    if summary.len() != counts.len() || counts.iter().any(|(k,n)| summary.get(*k).and_then(Value::as_u64) != Some(*n)) { return Err(()); }
+    let mut required = Vec::new();
+    let mut all_met = true;
+    for req in reqs {
+        fields(req, &["name", "present", "valid", "statuses", "met"], &[])?;
+        let name = req["name"].as_str().filter(|s| !s.is_empty()).ok_or(())?;
+        let found: Vec<_> = entries.iter().filter(|e| e["name"] == name).collect();
+        let statuses: Vec<_> = found.iter().map(|e| e["status"].as_str().unwrap_or("")).collect();
+        let valid = found.iter().all(|e| e.get("invalid").is_none());
+        let present = !found.is_empty();
+        let met = present && valid && statuses.iter().all(|s| *s == "ok");
+        if req["present"] != present || req["valid"] != valid || req["met"] != met || req["statuses"] != json!(statuses) { return Err(()); }
+        let next = names.len() + 1;
+        let id = *names.entry(name.to_owned()).or_insert(next);
+        required.push(json!({"instrument":id,"present":present,"valid":valid,"statuses":statuses,"met":met}));
+        all_met &= met;
+    }
+    if v["measurement"] != if all_met { "complete" } else { "incomplete" } { return Err(()); }
+    Ok(json!({"format":"ggtts-shareable-report/1","measurement":v["measurement"],
+        "summary":counts,"required":required,"instruments":records,
+        "omitted":["identifiers","paths","configuration","logs","error details","unreviewed provenance"]}))
+}
+
+fn run() -> Result<(), ()> {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.len() != 2 { return Err(()); }
+    let input = std::fs::read(Path::new(&args[0])).map_err(|_| ())?;
+    let value: Value = serde_json::from_slice(&input).map_err(|_| ())?;
+    let out = export(&value)?;
+    let encoded = serde_json::to_vec_pretty(&out).map_err(|_| ())?;
+    let mut file = OpenOptions::new().write(true).create_new(true).open(Path::new(&args[1])).map_err(|_| ())?;
+    file.write_all(&encoded).map_err(|_| ())?;
+    Ok(())
+}
+
+fn main() {
+    if run().is_err() {
+        eprintln!("Export refused: invalid, unsupported, or inaccessible report or destination.");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ggtts_core::report::{merge, Input};
+
+    fn report(status: &str, required: bool) -> Value {
+        let e = json!({"format":FORMAT,"name":"sensitive-name","version":"secret-version",
+            "identity":{"run":"private-run","instrument":"private-id"},
+            "provenance":{"config":{"secret":"private-transcript"},"ggtts":null,"engine":null,
+                "backend":null,"model_sha256":"a".repeat(64),"seeds":[],
+                "inputs":[{"path":"private-path","sha256":"b".repeat(64)}],"audio":"trimmed"},
+            "hooks":["private-hook"],"status":status,
+            "metrics":[{"name":"character_error_rate","unit":"1","value":0.25,"direction":"neutral","render":"private-render"}],
+            "artifacts":[{"path":"private-artifact","type":"private-type","sha256":"c".repeat(64)}],
+            "log":"private-log","error":"private-error"});
+        let i = Input { source:"private-source".into(), text:e.to_string() };
+        merge("private-run", &[i], if required { &["sensitive-name"] } else { &[] }).to_json()
+    }
+
+    #[test]
+    fn removes_planted_strings_for_success_and_failure() {
+        for status in ["ok", "failed", "timeout", "skipped", "truncated"] {
+            let input = report(status, true);
+            let before = input.to_string();
+            let out = export(&input).unwrap();
+            let text = out.to_string();
+            for secret in ["private", "sensitive-name", "secret-version"] { assert!(!text.contains(secret)); }
+            assert_eq!(out["measurement"], if status == "ok" {"complete"} else {"incomplete"});
+            assert_eq!(out["instruments"][0]["metrics"][0]["value"], 0.25);
+            assert_eq!(before, input.to_string());
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_fields_metrics_and_false_completeness() {
+        let input = report("failed", true);
+        let mut x = input.clone(); x["instruments"][0]["private-extra"] = json!("secret"); assert!(export(&x).is_err());
+        let mut x = input.clone(); x["instruments"][0]["metrics"][0]["unit"] = json!("private-unit"); assert!(export(&x).is_err());
+        let mut x = input.clone(); x["measurement"] = json!("complete"); assert!(export(&x).is_err());
+        let mut x = input.clone(); x["summary"]["failed"] = json!(0); assert!(export(&x).is_err());
+        let mut x = input; x["instruments"][0]["status"] = json!("mystery"); assert!(export(&x).is_err());
+    }
+
+    #[test]
+    fn optional_failure_and_missing_required_remain_distinct() {
+        let optional = export(&report("failed", false)).unwrap();
+        assert_eq!(optional["measurement"], "complete");
+        let input = merge("private-run", &[], &["missing-private-name"]).to_json();
+        let missing = export(&input).unwrap();
+        assert_eq!(missing["measurement"], "incomplete");
+        assert_eq!(missing["required"][0]["present"], false);
+        assert!(!missing.to_string().contains("missing-private-name"));
+    }
+
+}

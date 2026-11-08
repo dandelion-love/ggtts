@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+import math
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "python"))
@@ -21,6 +22,16 @@ def first_sound(samples):
 
 
 class Selftest(unittest.TestCase):
+    def test_no_pause_has_a_valid_null_longest_pause(self):
+        with Workdir() as d:
+            rate = 24000
+            path = os.path.join(d, "continuous.wav")
+            write_wav(path, [0.3 * math.sin(2 * math.pi * 220 * i / rate) for i in range(rate)], rate)
+            result = run_instrument(SCRIPT, d, audio=path)
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(total(metrics(result), "internal_pauses"), 0)
+            self.assertIsNone(total(metrics(result), "longest_pause_s"))
+
     def test_noop_reads_as_no_change(self):
         with Workdir() as d:
             r = fixture(d)

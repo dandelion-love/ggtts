@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare real Qwen story output with tracing alone and with all shipped event instruments.
+"""Compare real Qwen story output with tracing alone and configured shipped instruments.
 
 This is a partial no-change probe: step events expose codebook 0 only, not every codebook. The separate real
 StopTrace test compares full codec-token vectors. Scratch files are created only in a new external directory.
@@ -30,7 +30,7 @@ def catalogue():
     names = []
     for line in (ROOT / "instruments/instruments.yaml").read_text(encoding="utf-8").splitlines():
         match = re.match(r"\s*# - (?:\{name:\s*)?([a-z][a-z0-9-]*)", line)
-        if match and match.group(1) != "mine":
+        if match and match.group(1) not in ("mine", "asr-sensevoice"):
             names.append(match.group(1))
     if not names or len(set(names)) != len(names):
         raise ValueError("instrument catalogue template is empty or duplicated")
@@ -90,6 +90,7 @@ def main():
                "render_sha256": sha(binary), "instruments": names, "seeds": seeds_a, "step_count": len(a),
                "codebook0_sha256": hashlib.sha256(json.dumps(a, separators=(",", ":")).encode()).hexdigest(),
                "flac_sha256": audio_a, "report_format": report.get("format"),
+               "excluded_instruments": {"asr-sensevoice": "ASR model and reference not configured"},
                "limits": "One fixture; codebook 0 only; event instruments execute after generation; "
                          "no timing or external-artifact identity; no cross-backend parity."}
     (work / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")

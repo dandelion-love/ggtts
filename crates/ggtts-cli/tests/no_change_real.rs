@@ -1,6 +1,7 @@
 //! Local real-Qwen no-change proof. Ignored on hosted CI: it needs the published GGUFs and optional CUDA.
 //! Event instruments run after generation. This compares full generated token vectors and decoded samples with
-//! tracing off/on, then runs each catalogue instrument separately against the traced render and checks its audio.
+//! tracing off/on, then runs configured catalogue instruments against the traced render and checks its audio.
+//! The optional ASR instrument is excluded because this fixture supplies no ASR model or reference.
 #![cfg(feature = "ggml")]
 
 use std::path::{Path, PathBuf};
@@ -157,6 +158,9 @@ fn each_event_instrument_preserves_real_qwen_tokens_and_samples() {
     let audio = write_flac(&root.join("audio"), &samples, rate).unwrap();
     let audio_sha = sha256(&std::fs::read(&audio).unwrap());
     for item in CATALOGUE {
+        if item.name == "asr-sensevoice" {
+            continue; // This fixture does not provide an ASR model or reference text.
+        }
         let mut config = Config::default();
         config.apply_instrument_flag(item.name).unwrap();
         config.require.push(item.name.to_string());
@@ -186,7 +190,7 @@ fn each_event_instrument_preserves_real_qwen_tokens_and_samples() {
     println!(
         "backend={backend}; build={}; story=no-change-fixture; seeds={seeds:?}; tokens_sha256={}; \
               samples_sha256={}; limits: event instruments run after generation; no timing or external-artifact \
-              identity; no cross-backend parity",
+              identity; no cross-backend parity; asr-sensevoice not run",
         env!("CARGO_PKG_VERSION"),
         hex(&tokens),
         hex(&samples_bytes(&samples))

@@ -920,6 +920,34 @@ mod tests {
             serde_json::from_slice(&std::fs::read(report.join("instruments/render-timing/envelope.json")).unwrap())
                 .unwrap();
         assert_eq!(envelope["status"], "skipped");
+        assert_eq!(
+            envelope["error"],
+            "missing or invalid first_audio timing; a streaming v2 trace is required"
+        );
+
+        // The same instrument configuration must complete when a normal decoder supplies audio.
+        let mut control = Args {
+            engine: Some("fake".into()),
+            story: Some(root.join("story.txt")),
+            out: Some(root.join("control.flac")),
+            stream: Some(root.join("control.wav").to_string_lossy().into_owned()),
+            trace: Some(root.join("control.jsonl")),
+            report: Some(root.join("control-report")),
+            ..Args::default()
+        };
+        control.instruments.take("--instrument", "render-timing".into());
+        control.instruments.take("--require", "render-timing".into());
+        let log = LogSettings {
+            level: LogLevel::Error,
+            format: LogFormat::Text,
+        };
+        let code = render_with_loader(control, log, |_, _, _| Ok(Box::new(ggtts_fake::FakeEngine::default()))).unwrap();
+        assert_eq!(code, 0, "a normal stream must complete the required measurement");
+        let envelope: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("control-report/instruments/render-timing/envelope.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(envelope["status"], "ok");
         std::fs::remove_dir_all(root).unwrap();
     }
 

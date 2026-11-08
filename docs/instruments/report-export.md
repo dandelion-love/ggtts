@@ -14,9 +14,11 @@ cargo run -p ggtts-instruments --bin ggtts-report-export -- private/report.json 
 
 Only `ggtts-report/2` merged JSON is accepted. The exporter validates each
 envelope, rejects unknown fields and inconsistent completeness or counts, and
-refuses unsupported metrics. The sole reviewed metric and unit are
-`character_error_rate` and `1`. Extend that allowlist only after reviewing the
-new name and unit as public constants. Failure prints a generic message; it does
+refuses unsupported metrics. The reviewed name/unit pairs in `METRICS` cover
+the bundled catalogue's metrics, including ASR, audio levels, timing, pauses,
+pitch and loudness. Unreviewed third-party metrics are refused. Extend the
+allowlist and output schema together only after reviewing the new name and unit
+as public constants. Failure prints a generic message; it does
 not print input contents or paths. Do not treat a failed export as a report.
 
 Output retains status, required disposition, metric values and direction,
@@ -28,4 +30,6 @@ joinable identifier; absent details must be recovered from private evidence.
 Hashes identify content, but can be matched against known inputs; metric values
 themselves may be sensitive. Review the output in its intended context before
 sharing. The export is a separate format, not a replacement for the private
-report, and does not establish ASR quality or detect omissions.
+report, and does not establish ASR quality or detect omissions. The output
+schema is `schemas/ggtts-shareable-report-1.schema.json`; schema validation
+alone is not an authorization to share the data.

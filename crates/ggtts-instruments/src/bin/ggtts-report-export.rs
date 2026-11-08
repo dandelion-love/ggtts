@@ -8,6 +8,41 @@ use std::path::Path;
 use ggtts_core::report::{validate, Status, FORMAT};
 use serde_json::{json, Value};
 
+// Public constants from the shipped instrument implementations. Arbitrary
+// third-party names and units are not safe to copy into a shareable report.
+const METRICS: &[(&str, &str)] = &[
+    ("audio_bytes", "bytes"),
+    ("events", "lines"),
+    ("p_stop_early_max", "1"),
+    ("early_stop_frames", "1"),
+    ("draws", "1"),
+    ("redraws", "1"),
+    ("cap_stops", "1"),
+    ("flagged_draws", "1"),
+    ("chunk_draws", "1"),
+    ("lead_s_max", "s"),
+    ("tail_s_max", "s"),
+    ("trim_s_total", "s"),
+    ("edges_over_limit", "1"),
+    ("seconds", "s"),
+    ("frames", "1"),
+    ("chunks", "1"),
+    ("gain_db", "dB"),
+    ("peak_dbfs", "dBFS"),
+    ("rms_dbfs", "dBFS"),
+    ("clipped_samples", "1"),
+    ("internal_pauses", "1"),
+    ("longest_pause_s", "s"),
+    ("pause_s_total", "s"),
+    ("pitch_voiced_frames", "1"),
+    ("pitch_median_hz", "Hz"),
+    ("pitch_range_st", "semitones"),
+    ("voiced_frames", "1"),
+    ("loud_p90_db", "dB"),
+    ("soft_p10_db", "dB"),
+    ("character_error_rate", "1"),
+];
+
 fn fields(v: &Value, required: &[&str], optional: &[&str]) -> Result<(), ()> {
     let m = v.as_object().ok_or(())?;
     if required.iter().any(|k| !m.contains_key(*k))
@@ -33,7 +68,7 @@ fn export(v: &Value) -> Result<Value, ()> {
     let mut counts: BTreeMap<&str, u64> = Status::ALL.into_iter().map(|s| (s.as_str(), 0)).collect();
     let mut names = BTreeMap::<String, usize>::new();
     let mut records = Vec::new();
-    let mut identities = Vec::new();
+    let mut identities: Vec<(String, Status)> = Vec::new();
     for entry in entries {
         let mut raw = entry.clone();
         let object = raw.as_object_mut().ok_or(())?;
@@ -46,11 +81,15 @@ fn export(v: &Value) -> Result<Value, ()> {
         }
         let invalid = object.remove("invalid");
         let env = validate(&raw).map_err(|_| ())?;
-        if env.identity.run != v["run"] || identities.contains(&env.identity.instrument) {
+        if env.identity.run != v["run"]
+            || identities.iter().any(|(id, status)| {
+                id == &env.identity.instrument && (*status != Status::Invalid || env.status != Status::Invalid)
+            })
+        {
             return Err(());
         }
-        identities.push(env.identity.instrument.clone());
-        if invalid.is_some() != (env.status == Status::Invalid) {
+        identities.push((env.identity.instrument.clone(), env.status));
+        if invalid.is_some() && env.status != Status::Invalid {
             return Err(());
         }
         if let Some(x) = invalid {
@@ -66,9 +105,7 @@ fn export(v: &Value) -> Result<Value, ()> {
         let id = *names.entry(env.name.clone()).or_insert(next);
         let mut metrics = Vec::new();
         for m in &env.metrics {
-            // Names and units are not inherently safe strings. Only this reviewed
-            // pair is currently exportable; new metrics require policy review.
-            if m.name != "character_error_rate" || m.unit != "1" {
+            if !METRICS.contains(&(m.name.as_str(), m.unit.as_str())) {
                 return Err(());
             }
             metrics.push(json!({"name":m.name,"unit":m.unit,"value":m.value,
@@ -288,5 +325,47 @@ mod tests {
         assert_eq!(out["instruments"][0]["instrument"], 1);
         assert_eq!(out["instruments"][1]["instrument"], 2);
         assert!(!out.to_string().contains("private"));
+    }
+
+    #[test]
+    fn all_shipped_metric_pairs_export_and_match_schema() {
+        let mut input = report("ok", false);
+        let metrics: Vec<Value> = METRICS
+            .iter()
+            .map(|(name, unit)| json!({"name":name,"unit":unit,"value":1.0,"direction":"neutral"}))
+            .collect();
+        input["instruments"][0]["metrics"] = json!(metrics);
+        let mut sibling = input["instruments"][0].clone();
+        sibling["name"] = json!("another-instrument");
+        sibling["identity"]["instrument"] = json!("another-id");
+        sibling["metrics"] = json!([{"name":"character_error_rate","unit":"1","value":0.2,"direction":"neutral"}]);
+        input["instruments"].as_array_mut().unwrap().push(sibling);
+        input["summary"]["ok"] = json!(2);
+        let out = export(&input).unwrap();
+        assert_eq!(out["instruments"][0]["metrics"].as_array().unwrap().len(), METRICS.len());
+        assert_eq!(out["instruments"][1]["metrics"][0]["value"], 0.2);
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/ggtts-shareable-report-1.schema.json");
+        let schema: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        assert!(validator.is_valid(&out));
+        let mut unreviewed = out;
+        unreviewed["instruments"][0]["metrics"][0]["name"] = json!("private-name");
+        assert!(!validator.is_valid(&unreviewed));
+    }
+
+    #[test]
+    fn merger_invalid_and_instrument_invalid_stay_incomplete() {
+        let broken = Input { source: "private-path".into(), text: "not json private".into() };
+        let merged = merge("private-run", &[broken], &["private-path"]);
+        let out = export(&merged.to_json()).unwrap();
+        assert_eq!(out["instruments"][0]["status"], "invalid");
+        assert_eq!(out["measurement"], "incomplete");
+        assert!(!out.to_string().contains("private"));
+        let mut own = report("failed", true);
+        own["instruments"][0]["status"] = json!("invalid");
+        own["summary"]["failed"] = json!(0);
+        own["summary"]["invalid"] = json!(1);
+        own["completeness"][0]["statuses"] = json!(["invalid"]);
+        assert_eq!(export(&own).unwrap()["measurement"], "incomplete");
     }
 }

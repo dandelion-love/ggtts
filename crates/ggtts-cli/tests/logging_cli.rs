@@ -2,6 +2,24 @@ use std::path::Path;
 use std::process::Command;
 
 #[test]
+fn invalid_logging_level_reports_json_for_both_commands() {
+    for bin in [env!("CARGO_BIN_EXE_ggtts-render"), env!("CARGO_BIN_EXE_ggtts-measure")] {
+        for args in [
+            ["--log-format", "json", "--log-level", "invalid"],
+            ["--log-level", "invalid", "--log-format", "json"],
+        ] {
+            let output = Command::new(bin).args(args).output().unwrap();
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+            let value: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(value["format"], "ggtts-log/1");
+            assert_eq!(value["level"], "error");
+            assert_eq!(value["event"], "logging_config");
+        }
+    }
+}
+
+#[test]
 fn json_logs_are_consistent_and_do_not_contaminate_audio_stdout() {
     let root = std::env::temp_dir().join(format!("ggtts-json-logs-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);

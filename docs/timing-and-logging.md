@@ -2,7 +2,7 @@
 
 Both `ggtts-render` and `ggtts-measure` accept `--log-level error|warn|info|debug|trace` and `--log-format text|json`. The defaults are `info` and `text`; `GGTTS_LOG_LEVEL` and `GGTTS_LOG_FORMAT` set defaults, and command-line options override them. Errors remain visible at every level. Logs go to stderr, leaving audio and data on stdout intact. JSON logs use one `ggtts-log/1` object per line; the schema is in `schemas/ggtts-log-1.schema.json`. The instrument runner uses the same settings for its `run.log`. An instrument's own output is captured separately in its per-instrument log and is not converted to this format. Native ggml messages go through the CLI logger where the backend uses its callback; other native or child-process output may bypass it.
 
-Errors encountered while parsing the logging configuration itself are currently plain text, including when JSON was requested. Consumers must handle that startup failure separately.
+Logging configuration errors use the valid output format selected before the error; an invalid format falls back to text.
 
 `ggtts-render --timing-report path.json` writes a new `ggtts-timing/1` report even at error level or without a trace. The path must not already exist. Its schema is `schemas/ggtts-timing-1.schema.json`. `--trace` enables the story event trace; `--trace-level 1` selects summary events and `--trace-level 2` adds detailed events. Traces can contain input text and should be handled as user data.
 
@@ -23,7 +23,7 @@ python3 scripts/logging_overhead_probe.py --render /path/to/ggtts-render \
 
 ## Example comparison
 
-On an i9-12900K with four threads and an RTX 3080 Ti, the probe rendered one synthetic Qwen story three times per setting after a warmup. Times below are median render milliseconds (minimum–maximum). CPU and CUDA used separately built executables linked against existing ggml libraries. All settings on each backend produced identical FLAC hashes and frame counts; traced modes also had identical emitted codebook-0 tokens and draw seeds.
+On an i9-12900K with four threads and an RTX 3080 Ti, the probe rendered one synthetic Qwen story three times per setting after a warmup. Times below are median render milliseconds (minimum–maximum). CPU and CUDA used separately built executables linked against existing ggml libraries. The recorded binaries predate the subsequent startup-error formatting change; their hashes are given below. All settings on each backend produced identical FLAC hashes and frame counts; traced modes also had identical emitted codebook-0 tokens and draw seeds.
 
 | Setting | CPU ms | CUDA-requested ms |
 | --- | ---: | ---: |

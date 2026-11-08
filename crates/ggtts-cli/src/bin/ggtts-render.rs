@@ -663,7 +663,12 @@ fn main() -> ExitCode {
     let (log, args) = match LogSettings::from_args(&raw) {
         Ok(parsed) => parsed,
         Err(e) => {
-            eprintln!("error: {e}");
+            e.settings.stderr(
+                LogLevel::Error,
+                "error",
+                "logging_config",
+                format_args!("{}", e.message),
+            );
             return ExitCode::from(ggtts_instruments::runner::EXIT_RENDER_FAILED);
         }
     };

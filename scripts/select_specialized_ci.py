@@ -14,9 +14,8 @@ JOB_MAP = {
     "check": set(), "build-test": set(), "planted-ceiling": set(),
 }
 
-# Generic measurement/reporting paths are compiled and tested on both CPU hosts for every PR. Full engine,
-# Android and release-archive builds still run on the rc-to-main promotion. This is deliberately an exact list:
-# a new or moved crate path falls back to all specialized jobs until classified.
+# Generic measurement/reporting paths are compiled and tested on both CPU hosts for every PR.
+# Full engine, Android and release-archive builds run on the rc-to-main promotion.
 MEASUREMENT_PATHS = {
     "crates/ggtts-cli/src/bin/ggtts-measure.rs",
     "crates/ggtts-cli/src/bin/ggtts-render.rs",
@@ -71,7 +70,8 @@ def workflow_changes(before, after):
 
 def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None):
     if event != "pull_request":
-        return {"ggml", "cuda"}
+        # A merge to rc already had its PR checks; the full matrix runs on promotion.
+        return set()
     if base_ref == "main" and head_ref == "rc" and same_repo:
         return set(JOBS)
     selected = set()
@@ -94,10 +94,12 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None):
                                     "crates/ggtts-qwen3-tts/", "crates/ggtts-kitten/", "crates/ggtts-ggml-sys/",
                                     "crates/ggtts-fake/", "crates/ggtts-ffi/")):
                 return set(JOBS)
-            # Desktop and Android builds include the engines. The FFI also links
-            # the engine and core crates; favor coverage over a fragile dependency map.
-            selected.update(("binding", "android", "release", "ggml", "cuda"))
-            if path.startswith(("crates/ggtts-cli/", "crates/ggtts-instruments/")):
+            if path.startswith(("crates/ggtts-ggml-sys/", "crates/ggtts-ffi/")):
+                # Direct changes to native build or bindings need their targeted checks.
+                selected.update(("binding", "android", "ggml", "cuda"))
+            else:
+                # Ordinary source PRs get the CPU checks and package smoke; promotion
+                # above still runs every native, binding and release job.
                 selected.add("package")
         if path.startswith(("android/", "scripts/android_build.sh")):
             selected.update(("android", "binding"))

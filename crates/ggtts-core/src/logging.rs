@@ -70,6 +70,23 @@ pub struct Settings {
     pub format: Format,
 }
 
+/// A configuration failure, with the usable output format selected so far.
+#[derive(Debug)]
+pub struct ConfigError {
+    pub message: String,
+    pub settings: Settings,
+}
+
+fn config_error(message: &str, format: &str) -> ConfigError {
+    ConfigError {
+        message: message.into(),
+        settings: Settings {
+            level: Level::Error,
+            format: if format == "json" { Format::Json } else { Format::Text },
+        },
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -81,15 +98,25 @@ impl Default for Settings {
 
 impl Settings {
     /// Consume shared flags; explicit flags override environment settings. Errors are never suppressible.
-    pub fn from_args(args: &[String]) -> Result<(Self, Vec<String>), String> {
+    pub fn from_args(args: &[String]) -> Result<(Self, Vec<String>), ConfigError> {
         let mut level = std::env::var("GGTTS_LOG_LEVEL").unwrap_or_else(|_| "info".into());
         let mut format = std::env::var("GGTTS_LOG_FORMAT").unwrap_or_else(|_| "text".into());
         let mut rest = Vec::new();
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
             match arg.as_str() {
-                "--log-level" => level = iter.next().ok_or("--log-level needs a value")?.clone(),
-                "--log-format" => format = iter.next().ok_or("--log-format needs a value")?.clone(),
+                "--log-level" => {
+                    level = iter
+                        .next()
+                        .ok_or_else(|| config_error("--log-level needs a value", &format))?
+                        .clone()
+                }
+                "--log-format" => {
+                    format = iter
+                        .next()
+                        .ok_or_else(|| config_error("--log-format needs a value", &format))?
+                        .clone()
+                }
                 _ => {
                     rest.push(arg.clone());
                     // Values may themselves begin with `--`; never reinterpret text or paths as logging flags.
@@ -133,11 +160,12 @@ impl Settings {
                 }
             }
         }
-        let level = Level::parse(&level).ok_or("log level must be error, warn, info, debug or trace")?;
+        let level = Level::parse(&level)
+            .ok_or_else(|| config_error("log level must be error, warn, info, debug or trace", &format))?;
         let format = match format.as_str() {
             "text" => Format::Text,
             "json" => Format::Json,
-            _ => return Err("log format must be text or json".into()),
+            _ => return Err(config_error("log format must be text or json", &format)),
         };
         Ok((Self { level, format }, rest))
     }

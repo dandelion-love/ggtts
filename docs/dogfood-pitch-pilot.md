@@ -18,6 +18,9 @@ and fft.js 4.0.4 SHA-256 `4092b92cec888377666265b724d676628d377d4d5f56b03b76d9c2
 Both comparisons used Node 12.22.9. They share the detector, so agreement is a wiring and definition check, not
 independent validation of the detector or evidence across different speakers and conditions.
 
+This comparison is with the recording booth. The checkpoint-card loud/soft-end analysis uses a different pYIN
+voicing track and speech-core selection, so these results do not establish parity with that release-gate measure.
+
 The synthetic controls include a copy no-op, an octave plant and silence. A 200 Hz tone with quiet boundaries
 measured 200 Hz and a zero-semitone range in the reference. An uninterrupted constant-level tone produced no voiced
 frames under the booth's relative gate; this behavior is important when interpreting null pitch. A missing Node

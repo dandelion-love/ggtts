@@ -7,6 +7,9 @@ Measures voiced pitch with the lab recording booth's pinned Pitchy 4.1.0 detecto
 median pitch and the 95th minus 5th percentile of voiced pitch in semitones. With fewer, the two pitch values are
 null and `pitch_voiced_frames` records why; this is not a score of audio quality.
 
+This is the recording-booth measure. The lab's checkpoint-card loud/soft-end analysis uses a different pYIN
+voicing track and speech-core selection; this instrument's voiced frames or range must not be substituted for it.
+
 Node.js is required. Set `GGTTS_NODE` to its executable if `node` is not on PATH. If Node is unavailable, the
 instrument reports `skipped`; a required measurement is incomplete. The pinned MIT-licensed detector and FFT are
 bundled in `instruments/vendor` and verified before use. The Python SDK's supported audio formats and optional

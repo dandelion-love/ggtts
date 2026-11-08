@@ -94,6 +94,12 @@ pub const CATALOGUE: &[Known] = &[
         "relative loud and soft ends over pYIN-voiced speech-core frames",
         false,
     ),
+    python(
+        "asr-qwen",
+        "examples/python/asr-qwen/instrument.py",
+        "offline CPU Qwen3-ASR character error rate against a local reference",
+        false,
+    ),
 ];
 
 pub fn find(name: &str) -> Option<&'static Known> {

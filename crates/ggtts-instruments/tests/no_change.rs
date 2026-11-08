@@ -112,7 +112,12 @@ fn fake_engine_catalogue_preserves_tokens_and_samples_and_sees_a_sample_plant() 
     let before = sha256(&std::fs::read(&audio).unwrap());
     let mut config = Config::default();
     for item in CATALOGUE {
-        config.apply_instrument_flag(item.name).unwrap();
+        let flag = if item.name == "render-timing" {
+            "render-timing,arg.stage_only=true"
+        } else {
+            item.name
+        };
+        config.apply_instrument_flag(flag).unwrap();
         config.require.push(item.name.to_string());
     }
     let inputs = Inputs {

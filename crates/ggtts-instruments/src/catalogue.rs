@@ -71,6 +71,12 @@ pub const CATALOGUE: &[Known] = &[
         true,
     ),
     python(
+        "render-timing",
+        "templates/python/timing/instrument.py",
+        "stream first-audio latency, render real-time factor and draw stage durations",
+        true,
+    ),
+    python(
         "audio-levels",
         "templates/python/audio/instrument.py",
         "the rendered audio: peak and RMS level (template)",

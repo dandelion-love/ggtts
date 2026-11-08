@@ -227,9 +227,36 @@ fn render(
                     n_text_tokens: None,
                 });
             }
+            let stage_start = tracing.then(std::time::Instant::now);
             let generated = engine.generate_hooked(&req, events, hooks)?;
+            if let Some(start) = stage_start {
+                events.emit(Event::Timing {
+                    stage: "generate",
+                    chunk: Some(req.chunk),
+                    draw: Some(k),
+                    ms: start.elapsed().as_millis() as u64,
+                });
+            }
+            let stage_start = tracing.then(std::time::Instant::now);
             let pcm = engine.decode(&generated.codes)?;
+            if let Some(start) = stage_start {
+                events.emit(Event::Timing {
+                    stage: "decode",
+                    chunk: Some(req.chunk),
+                    draw: Some(k),
+                    ms: start.elapsed().as_millis() as u64,
+                });
+            }
+            let stage_start = tracing.then(std::time::Instant::now);
             let j = judge_f32(&profile, &pcm.samples, pcm.sample_rate, &c.text);
+            if let Some(start) = stage_start {
+                events.emit(Event::Timing {
+                    stage: "judge",
+                    chunk: Some(req.chunk),
+                    draw: Some(k),
+                    ms: start.elapsed().as_millis() as u64,
+                });
+            }
             let frames = generated.codes.n_frames();
             total_frames += frames as u64;
             if let Some(t0) = t0 {

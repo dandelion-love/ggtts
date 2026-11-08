@@ -158,7 +158,12 @@ fn each_event_instrument_preserves_real_qwen_tokens_and_samples() {
     let audio_sha = sha256(&std::fs::read(&audio).unwrap());
     for item in CATALOGUE {
         let mut config = Config::default();
-        config.apply_instrument_flag(item.name).unwrap();
+        let flag = if item.name == "render-timing" {
+            "render-timing,arg.stage_only=true"
+        } else {
+            item.name
+        };
+        config.apply_instrument_flag(flag).unwrap();
         config.require.push(item.name.to_string());
         let inputs = Inputs {
             run: "real-no-change".into(),

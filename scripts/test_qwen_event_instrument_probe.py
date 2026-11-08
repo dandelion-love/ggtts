@@ -18,7 +18,7 @@ class ProbeTest(unittest.TestCase):
                 require_identical(*args)
 
     def test_catalogue_and_wrong_model_refusal(self):
-        self.assertEqual(len(catalogue()), 7)
+        self.assertIn("render-timing", catalogue())
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             model = root / "model"

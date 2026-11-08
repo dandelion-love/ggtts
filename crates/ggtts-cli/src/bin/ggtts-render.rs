@@ -11,7 +11,7 @@
 //! `--voice` is a reference voice for an engine that clones one; an engine that does not ignores it.
 //! `--engine auto` (the default) picks the engine from the model's `general.architecture`. `--text` renders one
 //! request at one seed (default 20260905). `--story` reads a story file (title line, then one paragraph per line)
-//! and renders it on the core's story path. For stories `--trace` writes a complete ggtts-trace/1 event stream;
+//! and renders it on the core's story path. For stories `--trace` writes a complete ggtts-trace/2 event stream;
 //! tracing is read-only, so the FLAC is the same with or without it. Engines need the `ggml` feature (and
 //! `--device cuda` the `cuda` feature); without it only `--version` and the fake engine work.
 //!
@@ -52,7 +52,27 @@ use ggtts_core::flac::write_flac;
 use ggtts_core::pipeline::{plan_story, render_story_streamed, RenderOptions};
 use ggtts_core::stream::{Container, StreamLevel, StreamWriter};
 use ggtts_core::text::read_text;
-use ggtts_core::trace::{emit_header, Events, Header, JsonlEvents, NullEvents};
+use ggtts_core::trace::{emit_header, Event, Events, Header, JsonlEvents, NullEvents};
+
+// The pipeline ends before a held stream is flushed. Delay the trace end marker until the CLI has recorded
+// the actual first write; readers stop at that marker.
+struct DeferredEnd<'a> {
+    inner: &'a mut dyn Events,
+    end: Option<(u64, f64)>,
+}
+
+impl Events for DeferredEnd<'_> {
+    fn level(&self) -> u8 {
+        self.inner.level()
+    }
+    fn emit(&mut self, event: Event<'_>) {
+        if let Event::End { frames, seconds } = event {
+            self.end = Some((frames, seconds));
+        } else {
+            self.inner.emit(event);
+        }
+    }
+}
 
 #[path = "../gguf_arch.rs"]
 mod gguf_arch;
@@ -259,6 +279,7 @@ fn render(a: Args) -> Result<u8, String> {
     let mut engine = load_engine(&name, &a, &model)?;
     let load_ms = t0.elapsed().as_millis();
     let t1 = Instant::now();
+    let mut measured_render_ms = None;
     let (samples, rate) = match (&a.text, &a.story) {
         (Some(text), None) => {
             let req = ChunkRequest {
@@ -306,13 +327,17 @@ fn render(a: Args) -> Result<u8, String> {
                 Some(writer) => writer,
                 None => &mut null,
             };
-            emit_header(events, &Header::for_engine(engine.as_ref(), 1));
+            let mut events = DeferredEnd {
+                inner: events,
+                end: None,
+            };
+            emit_header(&mut events, &Header::for_engine(engine.as_ref(), 1));
             let read = render_story_streamed(
                 engine.as_mut(),
                 &title,
                 &chunks,
                 &RenderOptions::for_profile(&profile),
-                events,
+                &mut events,
                 &mut |p| {
                     if let Some(w) = stream.as_mut() {
                         let ready = if raw {
@@ -331,9 +356,6 @@ fn render(a: Args) -> Result<u8, String> {
                 },
             )
             .map_err(|e| e.to_string())?;
-            if let Some(writer) = trace {
-                writer.finish().map_err(|e| format!("--trace: {e}"))?;
-            }
             if let Some(w) = stream.as_mut() {
                 // A read shorter than the hold leaves at the end, levelled over all of it.
                 for piece in leveller.finish() {
@@ -341,6 +363,30 @@ fn render(a: Args) -> Result<u8, String> {
                     w.write(&piece, read.sample_rate)
                         .map_err(|e| format!("--stream: {e}"))?;
                 }
+            }
+            let render_ms = t1.elapsed().as_millis();
+            measured_render_ms = Some(render_ms);
+            if events.level() > 0 {
+                if let Some(ms) = first_audio_ms {
+                    events.emit(Event::Timing {
+                        stage: "first_audio",
+                        chunk: None,
+                        draw: None,
+                        ms: ms as u64,
+                    });
+                }
+                events.emit(Event::Timing {
+                    stage: "render",
+                    chunk: None,
+                    draw: None,
+                    ms: render_ms as u64,
+                });
+                if let Some((frames, seconds)) = events.end.take() {
+                    events.inner.emit(Event::End { frames, seconds });
+                }
+            }
+            if let Some(writer) = trace {
+                writer.finish().map_err(|e| format!("--trace: {e}"))?;
             }
             if let Some(w) = &stream {
                 let db = |g: Option<f64>| g.map_or("none".to_string(), |g| format!("{:+.4} dB", 20.0 * g.log10()));
@@ -371,7 +417,7 @@ fn render(a: Args) -> Result<u8, String> {
         }
         _ => return Err("give exactly one of --text and --story".into()),
     };
-    let render_ms = t1.elapsed().as_millis();
+    let render_ms = measured_render_ms.unwrap_or_else(|| t1.elapsed().as_millis());
     let mut written = None;
     if let Some(out) = &a.out {
         let path = write_flac(out, &samples, rate).map_err(|e| format!("{}: {e}", out.display()))?;

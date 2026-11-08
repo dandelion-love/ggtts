@@ -1,8 +1,8 @@
 # Instrument hooks
 
 This page lists every point where an instrument can observe a render, what each point carries, when it fires, and
-what guarantees an instrument can rely on. The event stream that carries them is `ggtts-trace/1`, and its JSON
-schema is [`schemas/ggtts-trace-1.schema.json`](../../schemas/ggtts-trace-1.schema.json).
+what guarantees an instrument can rely on. The event stream that carries them is `ggtts-trace/2`, and its JSON
+schema is [`schemas/ggtts-trace-2.schema.json`](../../schemas/ggtts-trace-2.schema.json). Readers also accept v1.
 
 A hook is **available** when an engine emits it today, and **planned** when this page fixes its place and shape
 but no code emits it yet. An instrument must not depend on a planned hook.
@@ -11,7 +11,7 @@ but no code emits it yet. An instrument must not depend on a planned hook.
 
 | Tier | Language | Where it runs | What it sees | Guarantee |
 |---|---|---|---|---|
-| **Event instrument** | Any | Out of process | The `ggtts-trace/1` stream, live (a pipe) or replayed (a file), plus the run's artifacts (the rendered FLAC) | It cannot change the render's tokens or audio: it never shares the engine's memory, sampler or thread. A crash or bad output is its own failure. A live reader that falls behind can block the engine's writes until the runner (#30) bounds each instrument's buffer; see Timing and order. |
+| **Event instrument** | Any | Out of process | The `ggtts-trace/2` stream, live (a pipe) or replayed (a file), plus the run's artifacts (the rendered FLAC) | It cannot change the render's tokens or audio: it never shares the engine's memory, sampler or thread. A crash or bad output is its own failure. A live reader that falls behind can block the engine's writes until the runner (#30) bounds each instrument's buffer; see Timing and order. |
 | **Tensor hook** | Rust | In process, behind a cargo feature | Values an event cannot carry cheaply: the talker's logits, chunk audio before trimming | Read-only by convention (shared references to values the engine already computed, no draw from the sampler's random stream), enforced by the identity check, not by the type system. It has no timeout or crash boundary: its failure is the render's. It is compiled only with its feature, so a default build has no tensor hook at all. |
 
 Python never runs inside the decode loop. Anything that needs a value per frame and can be computed from what the
@@ -29,13 +29,13 @@ stream carries is an event instrument. A tensor hook is justified only by a valu
 | Per chunk | Draw ends | Event | `chunk_end` | Frames, stop reason (`eos`, `cap`, `abort`), the judge's seconds per character and verdict, wall-clock ms | Available |
 | Per chunk | Tokens | Event | The draw's `step` events, in frame order | Every frame's codebook-0 token (all codebooks at level 2) | Available (the fake engine) |
 | Per chunk | Trim | Event | `trim` | Lead and tail seconds cut from the kept draw, and the kept sample range | Available |
-| Per chunk | Hand-off to the stream | Event | `emit` | The chunk's piece of the read, before the level step: its first sample (`start`) and length (`samples`, the kept audio plus the gap after it unless it is the last chunk). Its `t_ms` is the hand-off time, which streaming's time to first audio uses | Available |
+| Per chunk | Hand-off to the stream | Event | `emit` | The chunk's piece before stream levelling: its first sample and length. This is not the first stream write. | Available |
 | Per chunk | Chunk audio | Tensor | A tensor hook's `&[f32]` and sample rate | The kept draw's decoded samples before trimming | Planned |
 | Per render | Text | Event | `chunk_begin.text` of each chunk's draw 0, in chunk order | The text the engine was given, chunk by chunk | Available |
 | Per render | Join | Event | `join` | Chunks joined, samples, the level gain in dB | Available |
 | Per render | End | Event | `end` | Total frames generated (every draw), seconds of audio | Available |
 | Per render | Final audio | Event (artifact) | The FLAC that `ggtts-render` writes | The read as delivered | Available as a file; the runner names it to instruments |
-| Per render | Timings | Event | `t_ms` on every event, `chunk_end.ms` | Milliseconds since the trace began; the wall-clock of one draw (generate, decode and judge together) | Available |
+| Per render | Timings | Event | `timing.stage`, `timing.ms` | Per-draw generation, decoding and judging; on CLI story traces, render duration and first actual stream write when streaming | Available in v2 |
 | Per run | All items | Event | One trace per item, listed by the run's manifest | Every render of the run | Planned (the runner) |
 
 "Available (the fake engine)" means the stream defines the hook and the fake engine emits it; a real engine emits
@@ -48,15 +48,17 @@ A render's stream is one JSON object per line, UTF-8, in this order:
 
 1. `trace`, the header, once and first. It carries `format` (the version) and what made the trace.
 2. For each chunk, in chunk order, for each draw of that chunk, in draw order:
-   `chunk_begin`, then that draw's `step` events with `frame` rising from 0, then `chunk_end`.
+   `chunk_begin`, then that draw's `step` events with `frame` rising from 0, then generation, decode and judge
+   `timing` records and `chunk_end`.
    A chunk is redrawn only when the judge flags the draw, so most chunks have one draw.
 3. `trim`, once per chunk, after that chunk's last `chunk_end`. It describes the kept draw (the last one).
 4. `emit`, once per chunk, right after its `trim` and before the next chunk's `chunk_begin`: the chunk's piece
    was handed to the stream.
 5. `join`, once, after every chunk.
-6. `end`, once, last.
+6. CLI story traces add `first_audio` timing when streaming, then `render` timing, after the last stream write.
+7. `end`, once, last. The CLI delays this marker until held streaming audio has been written.
 
-Every event carries `t_ms`, non-decreasing through the stream. `t_ms` and `chunk_end.ms` are the only fields that
+Every event carries `t_ms`, non-decreasing through the stream. `t_ms`, `chunk_end.ms`, and `timing.ms` are fields that
 may differ between two runs of the same render with the same seed: replay and every comparison ignore them, and an
 instrument must not treat them as data about the audio.
 
@@ -87,8 +89,8 @@ its backend, build and seed.
 
 ## The stream's version, and the compatibility rule
 
-The header's `format` is the stream's version, `ggtts-trace/1` today. The schema is
-[`schemas/ggtts-trace-1.schema.json`](../../schemas/ggtts-trace-1.schema.json); every line of every trace validates
+The header's `format` is the stream's version, `ggtts-trace/2` today. The schema is
+[`schemas/ggtts-trace-2.schema.json`](../../schemas/ggtts-trace-2.schema.json); every line of every trace validates
 against it, and a test checks that on every recorded fake-engine render (`crates/ggtts-core/tests/trace_schema.rs`).
 
 - **Adding a field or an event is a new version.** The schema refuses fields and events it does not name, so one
@@ -96,6 +98,6 @@ against it, and a test checks that on every recorded fake-engine render (`crates
   row in this catalogue in the same change. `emit` is part of `ggtts-trace/1` as first published: streaming added
   it before this schema existed, and the schema test caught it.
 - **Readers accept the current version and the one before it.** `trace::READS` lists the formats `trace::parse`
-  accepts. When `ggtts-trace/2` is published, `READS` becomes `["ggtts-trace/2", "ggtts-trace/1"]`, and
+  accepts. `READS` is `["ggtts-trace/2", "ggtts-trace/1"]`, and
   `ggtts-trace/1` is dropped only at `/3`. A test holds `READS` to that shape.
 - Writers write only the current version.

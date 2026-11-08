@@ -1,6 +1,6 @@
 # Template: a Rust event instrument
 
-An out-of-process instrument: a program that reads a render's event stream (`ggtts-trace/1`) and writes one envelope
+An out-of-process instrument: a program that reads a render's event stream (`ggtts-trace/2` or `/1`) and writes one envelope
 (`ggtts-report/1`). The runner starts it after the render, so it cannot change the render. If it crashes, hangs or
 writes nonsense, that is its own failure, not the render's.
 

@@ -115,6 +115,7 @@ fn the_sdk_templates_and_example_pass_their_self_tests_on_a_fake_engine_render()
         "templates/python/chunk",
         "templates/python/trim",
         "templates/python/render",
+        "templates/python/timing",
         "templates/python/audio",
         "examples/python/internal-pauses",
     ] {

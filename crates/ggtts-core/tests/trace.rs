@@ -1,4 +1,4 @@
-//! The instrument interface: the fake engine and the pipeline emit every `ggtts-trace/1` event
+//! The instrument interface: the fake engine and the pipeline emit every `ggtts-trace/2` event
 //! with its documented meaning, a recorded trace replays, and tracing changes no output.
 //!
 //! Each check is shown to see what it claims to rule out: replay goes red on a planted token, depth-codebook or
@@ -148,6 +148,10 @@ fn the_fake_and_the_pipeline_emit_every_event_with_its_meaning() {
                             .or_default()
                             .push((l["draw"].as_u64().unwrap(), l["verdict"].clone()));
                     }
+                    "timing" => {
+                        assert!(["generate", "decode", "judge"].contains(&l["stage"].as_str().unwrap()));
+                        assert!(l["chunk"].is_u64() && l["draw"].is_u64() && l["ms"].is_u64());
+                    }
                     "trim" => {
                         trims += 1;
                         assert!(num(l, "lead_s") >= 0.0 && num(l, "tail_s") >= 0.0);
@@ -192,6 +196,7 @@ fn the_fake_and_the_pipeline_emit_every_event_with_its_meaning() {
         "trim",
         "emit",
         "join",
+        "timing",
         "end",
     ]
     .map(String::from)

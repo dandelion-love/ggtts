@@ -1,4 +1,4 @@
-//! The instrument interface: per-step events, the trace format `ggtts-trace/1`, replay and the trace-identity check.
+//! The instrument interface: per-step events, the trace format `ggtts-trace/2`, replay and the trace-identity check.
 //!
 //! Instruments are opt-in. With tracing off the sink is [`NullEvents`], whose [`level`](Events::level) is 0, and
 //! neither the pipeline nor an engine computes an instrument value. With it on the output must not change: an
@@ -25,7 +25,7 @@
 //! instrument is trusted only once it has been shown to detect a planted defect and to read a no-op as no change.
 //!
 //! The hook catalogue, the event order and the two instrument tiers are in `docs/instruments/hooks.md`; the JSON
-//! schema every line validates against is `schemas/ggtts-trace-1.schema.json`.
+//! schema every line validates against is `schemas/ggtts-trace-2.schema.json`.
 
 use std::io::{self, Write};
 use std::time::Instant;
@@ -36,12 +36,12 @@ use crate::audio::{judge_f32, trim_edges_f32};
 use crate::engine::{ChunkRequest, Codes, Engine, EngineError, Pcm, Stop};
 
 /// The trace format this module writes and reads.
-pub const FORMAT: &str = "ggtts-trace/1";
+pub const FORMAT: &str = "ggtts-trace/2";
 
 /// The formats [`parse`] accepts: the current one first, then at most the one before it. Readers accept the
 /// previous version for one version, so a trace written by the last release still reads. Writers write only
 /// [`FORMAT`].
-pub const READS: &[&str] = &[FORMAT];
+pub const READS: &[&str] = &[FORMAT, "ggtts-trace/1"];
 
 /// The fields replay ignores: wall-clock only.
 pub const CLOCK_FIELDS: [&str; 2] = ["t_ms", "ms"];
@@ -149,6 +149,13 @@ pub enum Event<'a> {
         chunk: u32,
         start: usize,
         samples: usize,
+    },
+    /// A measured duration. Values are wall-clock and excluded from trace identity comparisons.
+    Timing {
+        stage: &'static str,
+        chunk: Option<u32>,
+        draw: Option<u32>,
+        ms: u64,
     },
     Join {
         chunks: u32,
@@ -260,6 +267,13 @@ impl Event<'_> {
                 m.insert("chunk".into(), (*chunk).into());
                 m.insert("start".into(), (*start).into());
                 m.insert("samples".into(), (*samples).into());
+            }
+            Event::Timing { stage, chunk, draw, ms } => {
+                m.insert("ev".into(), "timing".into());
+                m.insert("stage".into(), (*stage).into());
+                put(&mut m, "chunk", *chunk);
+                put(&mut m, "draw", *draw);
+                m.insert("ms".into(), (*ms).into());
             }
             Event::Join {
                 chunks,

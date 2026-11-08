@@ -30,7 +30,7 @@ The current pilot script explicitly requests a 1.5 s threshold. Instrument 0.2.0
 - Inserting two seconds of zeros midway increased the pause count from zero to one in both tools on each clip, with a 2.00 s longest gap. It demonstrates detection of this coarse plant only.
 - A missing `--audio` was rejected with exit 2 and no report directory. This is an input error, distinct from exit 3 for a rendered or supplied input whose required measurement is incomplete.
 - The first run used system Python without `soundfile`. Both instruments rejected the lab-written predictive FLAC controls and the measurement returned incomplete. Selecting the lab environment via `GGTTS_PYTHON` made the same controls readable. Python with `soundfile` is required for those files; the built-in fallback only decodes ggtts's FLAC subset.
-- The instrument envelopes currently assert `provenance.audio = trimmed` even for existing files whose trim state was not supplied. The inputs here have **unknown** trim state. This provenance defect is tracked in [#91](https://github.com/dandelion-love/ggtts/issues/91); do not treat those envelope fields as proof of trimming.
+- The instrument envelopes from this run asserted `provenance.audio = trimmed` even though the files' trim state was not supplied. The inputs here have **unknown** trim state. [#91](https://github.com/dandelion-love/ggtts/issues/91) corrected that behavior for later runs; do not treat the old envelope fields as proof of trimming.
 
 ## Reproduce
 

@@ -118,6 +118,7 @@ fn the_sdk_templates_and_example_pass_their_self_tests_on_a_fake_engine_render()
         "templates/python/timing",
         "templates/python/audio",
         "examples/python/internal-pauses",
+        "examples/python/stop-probability",
     ] {
         let (ran, skipped) = unittest(&py, &root.join(t), &["test_instrument"], &dir);
         assert!(ran >= 2, "{t}: only {ran} tests ran");

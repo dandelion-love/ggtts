@@ -57,8 +57,10 @@ Calculating this value repeats weight preparation on a copy of the logits. That 
 included in the instrumented generation wall time; it is not free or isolated model-compute time.
 
 Qwen emits a step for the EOS draw itself; the fake engine reports `stop: eos` without a separate EOS step, so that
-terminal observation is not guaranteed by the current cross-engine trace contract. Measurement changes and the
-impact on existing reports are tracked in [#104](https://github.com/dandelion-love/ggtts/issues/104).
+terminal observation is not guaranteed by the current cross-engine trace contract. When known, the header's
+`flags.codec_eos_token` declares the producer's codebook-0 EOS token. The per-step stop instrument checks that token
+against the final step before marking an EOS draw. Measurement changes and the impact on existing reports are
+tracked in [#104](https://github.com/dandelion-love/ggtts/issues/104).
 
 ## Timing and order
 

@@ -107,6 +107,10 @@ pub trait Engine {
     fn p_stop_semantics(&self) -> Option<&'static str> {
         None
     }
+    /// Codebook-0 end-of-speech token when this engine can identify it.
+    fn codec_eos_token(&self) -> Option<u32> {
+        None
+    }
     /// The protocol numbers this engine's output is rendered with: ceilings, pauses, judge bars and level.
     fn profile(&self) -> &Profile;
     /// Text to codec tokens for one chunk.

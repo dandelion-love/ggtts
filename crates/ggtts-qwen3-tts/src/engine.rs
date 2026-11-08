@@ -218,6 +218,10 @@ impl Engine for Qwen3Tts {
         Some("qwen-sampler-weights/1")
     }
 
+    fn codec_eos_token(&self) -> Option<u32> {
+        u32::try_from(self.talker.config.codec_eos_id).ok()
+    }
+
     fn profile(&self) -> &Profile {
         &PROFILE
     }

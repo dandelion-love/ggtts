@@ -88,6 +88,12 @@ pub const CATALOGUE: &[Known] = &[
         "the rendered audio: silences inside the speech, between its first and last loud frame (example)",
         false,
     ),
+    python(
+        "stop-probability",
+        "examples/python/stop-probability/instrument.py",
+        "each Qwen sampler stop weight, including verified EOS steps",
+        true,
+    ),
 ];
 
 pub fn find(name: &str) -> Option<&'static Known> {

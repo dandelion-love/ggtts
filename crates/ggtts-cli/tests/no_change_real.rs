@@ -29,6 +29,9 @@ impl<E: Engine> Engine for Capture<E> {
     fn p_stop_semantics(&self) -> Option<&'static str> {
         self.engine.p_stop_semantics()
     }
+    fn codec_eos_token(&self) -> Option<u32> {
+        self.engine.codec_eos_token()
+    }
     fn info(&self) -> &EngineInfo {
         self.engine.info()
     }
@@ -145,6 +148,7 @@ fn each_event_instrument_preserves_real_qwen_tokens_and_samples() {
     std::fs::create_dir(&root).expect("fresh scratch directory");
     let events = root.join("events.jsonl");
     assert_eq!(trace.lines[0]["flags"]["p_stop_semantics"], "qwen-sampler-weights/1");
+    assert!(trace.lines[0]["flags"]["codec_eos_token"].is_u64());
     let lines: Vec<String> = trace
         .lines
         .iter()

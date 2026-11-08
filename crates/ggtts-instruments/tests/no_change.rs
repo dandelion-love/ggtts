@@ -1,6 +1,7 @@
 //! The ordinary CI proof uses the fake engine only. It does not establish real-model or GPU identity.
-//! Event instruments run after rendering; this checks the real runner, its full catalogue, and the artifacts it
-//! handles. The planted sample mutation is a test double for a bad observer, not a real in-process tensor hook.
+//! Event instruments run after rendering; this checks the real runner and the fake-compatible catalogue. The Qwen-only
+//! stop-probability instrument is excluded because the fake engine has no terminal EOS step. The planted sample
+//! mutation is a test double for a bad observer, not a real in-process tensor hook.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -24,6 +25,9 @@ struct Capture<E> {
 impl<E: Engine> Engine for Capture<E> {
     fn p_stop_semantics(&self) -> Option<&'static str> {
         self.engine.p_stop_semantics()
+    }
+    fn codec_eos_token(&self) -> Option<u32> {
+        self.engine.codec_eos_token()
     }
     fn info(&self) -> &EngineInfo {
         self.engine.info()
@@ -84,7 +88,7 @@ fn sample_bytes(samples: &[f32]) -> Vec<u8> {
 }
 
 #[test]
-fn fake_engine_catalogue_preserves_tokens_and_samples_and_sees_a_sample_plant() {
+fn fake_compatible_catalogue_preserves_tokens_and_samples_and_sees_a_sample_plant() {
     let root = std::env::temp_dir().join(format!("ggtts-no-change-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
@@ -114,7 +118,11 @@ fn fake_engine_catalogue_preserves_tokens_and_samples_and_sees_a_sample_plant() 
     let audio = write_flac(&root.join("audio"), &samples, rate).unwrap();
     let before = sha256(&std::fs::read(&audio).unwrap());
     let mut config = Config::default();
+    assert!(CATALOGUE.iter().any(|item| item.name == "stop-probability"));
     for item in CATALOGUE {
+        if item.name == "stop-probability" {
+            continue; // The fake engine has no terminal EOS step; this proof is Qwen-only.
+        }
         let flag = if item.name == "render-timing" {
             "render-timing,arg.stage_only=true"
         } else {
@@ -142,7 +150,7 @@ fn fake_engine_catalogue_preserves_tokens_and_samples_and_sees_a_sample_plant() 
         "instruments did not all report OK: {:?}",
         result.incomplete
     );
-    assert_eq!(result.envelopes.len(), CATALOGUE.len());
+    assert_eq!(result.envelopes.len() + 1, CATALOGUE.len());
     let schema_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/ggtts-report-2.schema.json");
     let schema: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(schema_path).unwrap()).unwrap();
     let validator = jsonschema::validator_for(&schema).expect("the published report schema compiles");
@@ -169,9 +177,9 @@ fn fake_engine_catalogue_preserves_tokens_and_samples_and_sees_a_sample_plant() 
         "the sample-mutation plant must make the identity check red"
     );
     println!(
-        "fake backend; seed derived from no-change-fixture; {} event instruments; sample plant detected; \
-              does not establish real-model/GPU identity, timing, or external-artifact safety",
-        CATALOGUE.len()
+        "fake backend; seed derived from no-change-fixture; {} instruments; stop-probability not run; sample plant detected; \
+              does not establish full-catalogue, real-model/GPU identity, timing, or external-artifact safety",
+        CATALOGUE.len() - 1
     );
     std::fs::remove_dir_all(root).unwrap();
 }

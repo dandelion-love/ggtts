@@ -97,9 +97,16 @@ impl Header {
             protocol: engine.profile().protocol.to_string(),
             model_sha256: None,
             codec_sha256: None,
-            flags: engine.p_stop_semantics().map_or_else(Map::new, |semantics| {
-                Map::from_iter([("p_stop_semantics".into(), semantics.into())])
-            }),
+            flags: {
+                let mut flags = Map::new();
+                if let Some(semantics) = engine.p_stop_semantics() {
+                    flags.insert("p_stop_semantics".into(), semantics.into());
+                }
+                if let Some(eos) = engine.codec_eos_token() {
+                    flags.insert("codec_eos_token".into(), eos.into());
+                }
+                flags
+            },
             trace_level,
         }
     }

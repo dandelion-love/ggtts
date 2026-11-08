@@ -30,13 +30,14 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 pack() {
     local bin=$1 dir=$2 ext="" b list=""
     case "$bin" in *.exe) ext=.exe ;; esac
-    mkdir -p "$dir/instruments/python"
+    mkdir -p "$dir/instruments/python" "$dir/schemas"
     for b in ggtts-render ggtts-measure; do
         [ -f "$(dirname "$bin")/$b$ext" ] || { say "no $b$ext beside $bin"; return 1; }
         cp "$(dirname "$bin")/$b$ext" "$dir/"
         list="$list${list:+,}\"$b$ext\""
     done
     cp "$root/LICENSE" "$root/README.md" "$dir/"
+    cp "$root/schemas/ggtts-stop-probability-1.schema.json" "$dir/schemas/"
     cp -r "$root/instruments/python/ggtts_instrument" "$dir/instruments/python/"
     cp -r "$root/instruments/templates" "$root/instruments/examples" "$root/instruments/README.md" \
         "$root/instruments/instruments.yaml" "$dir/instruments/"
@@ -82,6 +83,11 @@ smoke() {
         *) cp -r "$path" "$work/packed"; dir="$work/packed" ;;
     esac
     [ -n "${dir:-}" ] || { say "$path holds no directory"; return 1; }
+    if [ -f "$dir/instruments/examples/python/stop-probability/instrument.py" ]; then
+        [ -f "$dir/schemas/ggtts-stop-probability-1.schema.json" ] || {
+            say "stop-probability artifact schema is missing from $path"; return 1;
+        }
+    fi
     if [ -n "$expected_tag" ]; then
         python3 "$root/scripts/check_release_version.py" "$dir" "$expected_tag"
     fi

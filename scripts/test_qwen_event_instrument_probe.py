@@ -19,6 +19,7 @@ class ProbeTest(unittest.TestCase):
 
     def test_catalogue_and_wrong_model_refusal(self):
         self.assertIn("render-timing", catalogue())
+        self.assertIn("stop-probability", catalogue())
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             model = root / "model"

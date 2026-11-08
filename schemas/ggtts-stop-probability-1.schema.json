@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ggtts:schema:ggtts-stop-probability:1",
+  "title": "One per-step stop-probability record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "p_stop_semantics", "chunk", "draw", "step", "token", "p_stop", "draw_stop", "terminal_eos"],
+  "allOf": [{"if": {"properties": {"terminal_eos": {"const": true}}},
+             "then": {"properties": {"draw_stop": {"const": "eos"}}}}],
+  "properties": {
+    "format": {"const": "ggtts-stop-probability/1"},
+    "p_stop_semantics": {"const": "qwen-sampler-weights/1"},
+    "chunk": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "draw": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "step": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "token": {"type": "integer", "minimum": 0, "maximum": 65535},
+    "p_stop": {"type": "number", "minimum": 0, "maximum": 1},
+    "draw_stop": {"enum": ["eos", "cap"]},
+    "terminal_eos": {"type": "boolean"}
+  }
+}

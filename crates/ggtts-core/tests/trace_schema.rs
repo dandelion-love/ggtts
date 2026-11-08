@@ -36,6 +36,27 @@ fn validator() -> jsonschema::Validator {
     jsonschema::validator_for(&schema).expect("the schema compiles")
 }
 
+#[test]
+fn stop_probability_artifact_schema_refuses_missing_or_invalid_values() {
+    let schema: Value =
+        serde_json::from_slice(&std::fs::read(root().join("schemas/ggtts-stop-probability-1.schema.json")).unwrap())
+            .unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let valid = json!({"format":"ggtts-stop-probability/1", "p_stop_semantics":"qwen-sampler-weights/1",
+                       "chunk":0, "draw":0, "step":1, "token":2150, "p_stop":0.9,
+                       "draw_stop":"eos", "terminal_eos":true});
+    assert!(validator.is_valid(&valid));
+    let mut bad = valid.clone();
+    bad.as_object_mut().unwrap().remove("terminal_eos");
+    assert!(!validator.is_valid(&bad));
+    bad = valid;
+    bad["p_stop"] = json!(1.1);
+    assert!(!validator.is_valid(&bad));
+    bad["p_stop"] = json!(0.9);
+    bad["draw_stop"] = json!("cap");
+    assert!(!validator.is_valid(&bad));
+}
+
 fn errors(v: &jsonschema::Validator, line: &Map<String, Value>) -> Vec<String> {
     let inst = Value::Object(line.clone());
     v.iter_errors(&inst).map(|e| e.to_string()).collect()

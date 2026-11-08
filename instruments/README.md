@@ -7,6 +7,7 @@ An instrument measures a render without changing it. This folder holds what you 
 | `python/ggtts_instrument/` | The Python SDK, standard library only: read the event stream, read the audio, write the envelope |
 | `templates/python/<hook>/` | A minimal instrument for each event hook point, with a README and a self-test |
 | `examples/python/internal-pauses/` | A worked example: silences inside the speech of a rendered read |
+| `examples/python/stop-probability/` | Per-step Qwen sampler weights with validated EOS markers |
 
 The hook points and what each one carries are in [`docs/instruments/hooks.md`](../docs/instruments/hooks.md). The
 envelope every instrument writes is `ggtts-report/2` (`schemas/ggtts-report-2.schema.json`); the runner also reads

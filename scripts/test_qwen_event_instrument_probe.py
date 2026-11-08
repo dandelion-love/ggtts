@@ -21,9 +21,11 @@ class ProbeTest(unittest.TestCase):
         self.assertIn("pitch-range", catalogue())
         self.assertIn("loudness-ends", catalogue())
         self.assertIn("asr-qwen", catalogue())
+        self.assertIn("asr-sensevoice", catalogue())
         included, excluded = selected_instruments(catalogue())
         self.assertNotIn("asr-qwen", included)
-        self.assertEqual(excluded, ["asr-qwen"])
+        self.assertNotIn("asr-sensevoice", included)
+        self.assertEqual(set(excluded), {"asr-qwen", "asr-sensevoice"})
         self.assertIn("pitch-range", included)
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

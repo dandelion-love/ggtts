@@ -95,6 +95,12 @@ pub const CATALOGUE: &[Known] = &[
         false,
     ),
     python(
+        "asr-sensevoice",
+        "examples/python/asr-sensevoice/instrument.py",
+        "optional CPU ASR character error against a local reference; not a quality verdict",
+        false,
+    ),
+    python(
         "asr-qwen",
         "examples/python/asr-qwen/instrument.py",
         "offline CPU Qwen3-ASR character error rate against a local reference",

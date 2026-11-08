@@ -22,6 +22,9 @@ struct Capture<E> {
 }
 
 impl<E: Engine> Engine for Capture<E> {
+    fn p_stop_semantics(&self) -> Option<&'static str> {
+        self.engine.p_stop_semantics()
+    }
     fn info(&self) -> &EngineInfo {
         self.engine.info()
     }

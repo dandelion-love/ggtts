@@ -122,6 +122,7 @@ fn deliver(
         frame: frame as u32,
         token: token as u32,
         p_stop,
+        p_stop_semantics: p_stop.map(|_| "qwen-sampler-weights/1"),
         logits,
     };
     if let Some(t) = own.as_mut() {
@@ -211,6 +212,10 @@ impl Qwen3Tts {
 impl Engine for Qwen3Tts {
     fn info(&self) -> &EngineInfo {
         &self.info
+    }
+
+    fn p_stop_semantics(&self) -> Option<&'static str> {
+        Some("qwen-sampler-weights/1")
     }
 
     fn profile(&self) -> &Profile {

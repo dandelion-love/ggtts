@@ -1,10 +1,36 @@
 import os
+import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+from io import StringIO
 
-from select_specialized_ci import JOBS, decide, workflow_changes, workflow_sections
+from select_specialized_ci import JOBS, LOGGING_PACKAGES, decide, logging_lockfile_change, main, tomllib, workflow_changes, workflow_sections
+
+
+def lock_text(packages, version=4):
+    """Build a minimal lockfile using JSON strings, which are valid TOML strings."""
+    lines = [f"version = {version}"]
+    for package in packages:
+        lines.append("[[package]]")
+        for key, value in package.items():
+            lines.append(f"{key} = {json.dumps(value)}")
+    return "\n".join(lines)
+
+
+def logging_fixtures():
+    root = Path(__file__).resolve().parent.parent
+    packages = tomllib.loads((root / "Cargo.lock").read_text())["package"]
+    added = [p for p in packages if p["name"] in LOGGING_PACKAGES]
+    base = [{"name": "ggtts-core", "version": "0.0.1", "dependencies": ["serde_json"]},
+            {"name": "serde_json", "version": "1.0.154", "source": "registry", "checksum": "fixture"}]
+    head_core = dict(base[0], dependencies=["serde_json", "tracing", "tracing-subscriber"])
+    return (lock_text(base), lock_text([head_core, base[1], *added]),
+            '[dependencies]\nserde_json = "1"\n',
+            '[dependencies]\nserde_json = "1"\ntracing = "0.1.44"\ntracing-subscriber = "0.3.23"\n')
 
 
 class SelectionTest(unittest.TestCase):
@@ -73,6 +99,110 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(decide("pull_request", "main", "rc", True, paths), set(JOBS))
         self.assertEqual(decide("push", "", "", True, paths), set())
 
+    @unittest.skipIf(tomllib is None, "TOML parser unavailable; selector takes the full matrix")
+    def test_logging_lock_exception_checks_complete_semantics(self):
+        before, after, core_before, core_after = logging_fixtures()
+        safe = lambda old=before, new=after, oc=core_before, nc=core_after: logging_lockfile_change(old, new, oc, nc)
+        self.assertTrue(safe())
+        self.assertFalse(safe(new=after.replace('name = "tracing"', 'name = "unreviewed"')))
+        self.assertFalse(safe(new=after.replace('version = "0.1.44"', 'version = "0.1.45"')))
+        self.assertFalse(safe(new=after.replace('name = "tracing-core"', 'name = "tracing-core2"')))
+        self.assertFalse(safe(new=after.replace('checksum = "fixture"', 'checksum = "changed"')))
+        self.assertFalse(safe(new=after + '\n[[package]]\nname = "cc"\nversion = "1.0"\n'))
+        self.assertFalse(safe(new=after.replace('"tracing-subscriber"]', '"native-sys", "tracing-subscriber"]', 1)))
+        self.assertFalse(safe(new=after.replace('name = "valuable"', 'name = "valuable2"')))
+        self.assertFalse(safe(new=after + '\n[[package]]\nname = "tracing"\nversion = "0.1.44"\n'))
+        self.assertFalse(safe(new=after.replace('version = 4', 'version = 3', 1)))
+        self.assertFalse(safe(new=after.replace('version = 4', 'version = 99', 1)))
+        self.assertFalse(safe(new='not valid = = TOML'))
+        self.assertFalse(safe(nc=core_after + 'cc = "1"\n'))
+        cli_before = '[dependencies]\n[dev-dependencies]\nserde_json = {workspace = true}\n'
+        cli_after = '[dependencies]\nserde_json = {workspace = true}\n[dev-dependencies]\n'
+        self.assertTrue(logging_lockfile_change(before, after, core_before, core_after, cli_before, cli_after))
+        self.assertFalse(logging_lockfile_change(before, after, core_before, core_after, cli_before,
+                                                 cli_after + 'cc = "1"\n'))
+        self.assertFalse(logging_lockfile_change(before, after, core_before, core_after, cli_before, None))
+        event_before = ('[package]\nname = "ggtts-instrument-event-template"\n'
+                        'description = "Template: an out-of-process ggtts event instrument in Rust, reading ggtts-trace/1 and writing ggtts-report/1"\n'
+                        '[dependencies]\nserde_json = "1"\n')
+        event_after = event_before.replace("reading ggtts-trace/1", "reading ggtts traces")
+        compare_event = lambda new: logging_lockfile_change(before, after, core_before, core_after,
+                                                            cli_before, cli_after, event_before, new)
+        self.assertTrue(compare_event(event_after))
+        self.assertFalse(compare_event(event_after.replace('serde_json = "1"', 'serde_json = "2"')))
+        self.assertFalse(compare_event(event_after + '[features]\nextra = []\n'))
+        self.assertFalse(compare_event(event_after.replace('[dependencies]', 'build = "build.rs"\n[dependencies]')))
+        self.assertFalse(compare_event(event_after.replace('ggtts traces', 'different traces')))
+        self.assertFalse(compare_event('not valid TOML = ='))
+        paths = ["Cargo.lock", "crates/ggtts-core/Cargo.toml"]
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths, logging_lock_safe=True), {"package"})
+        self.assertEqual(decide("pull_request", "main", "rc", True, paths, logging_lock_safe=True), set(JOBS))
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), set(JOBS))
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths + ["Cargo.toml"],
+                                logging_lock_safe=True), set(JOBS))
+
+    @unittest.skipIf(tomllib is None, "TOML parser unavailable; selector takes the full matrix")
+    def test_logging_lock_git_blobs_and_unreadable_fall_back(self):
+        before, after, core_before, core_after = logging_fixtures()
+        paths = ["Cargo.lock", "crates/ggtts-core/Cargo.toml"]
+        blob = {"base:Cargo.lock": before, "head:Cargo.lock": after,
+                "base:crates/ggtts-core/Cargo.toml": core_before,
+                "head:crates/ggtts-core/Cargo.toml": core_after}
+        def git(args, **kwargs):
+            if args[1:3] == ["diff", "--no-renames"]:
+                return ("\0".join(paths) + "\0").encode()
+            if args[1] == "merge-base":
+                return "base\n"
+            if args[1] == "show":
+                if args[2] not in blob:
+                    raise subprocess.CalledProcessError(1, args)
+                return blob[args[2]]
+            raise AssertionError(args)
+        env = dict(EVENT="pull_request", BASE_REF="rc", HEAD_REF="branch", BASE_SHA="base", HEAD_SHA="head",
+                   REPOSITORY="x/y", HEAD_REPO="x/y")
+        with patch.dict(os.environ, env, clear=True), patch("select_specialized_ci.subprocess.check_output", side_effect=git):
+            with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
+                main()
+                self.assertIn("package=true", stdout.getvalue())
+                self.assertEqual(stdout.getvalue().count("=true"), 1)
+            paths.append(".github/workflows/ci.yml")
+            blob["base:.github/workflows/ci.yml"] = "name: CI\njobs:\n  cuda-compile:\n    run: old\n"
+            blob["head:.github/workflows/ci.yml"] = "name: CI\njobs:\n  cuda-compile:\n    run: new\n"
+            with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
+                main()
+                self.assertIn("cuda=true", stdout.getvalue())
+                self.assertIn("package=true", stdout.getvalue())
+            paths.append("crates/ggtts-ggml-sys/Cargo.toml")
+            with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
+                main()
+                self.assertEqual(stdout.getvalue().count("=true"), len(JOBS))
+            paths.remove("crates/ggtts-ggml-sys/Cargo.toml")
+            paths.remove(".github/workflows/ci.yml")
+            event_path = "instruments/templates/rust/event/Cargo.toml"
+            paths.append(event_path)
+            event_before = ('[package]\nname = "ggtts-instrument-event-template"\n'
+                            'description = "Template: an out-of-process ggtts event instrument in Rust, reading ggtts-trace/1 and writing ggtts-report/1"\n'
+                            '[dependencies]\nserde_json = "1"\n')
+            event_after = event_before.replace("reading ggtts-trace/1", "reading ggtts traces")
+            blob["base:" + event_path] = event_before
+            blob["head:" + event_path] = event_after
+            with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
+                main()
+                self.assertEqual(stdout.getvalue().count("=true"), 1)
+                self.assertIn("package=true", stdout.getvalue())
+            for altered in (event_after.replace('serde_json = "1"', 'serde_json = "2"'),
+                            event_after + '[features]\nextra = []\n',
+                            event_after.replace('[dependencies]', 'build = "build.rs"\n[dependencies]')):
+                blob["head:" + event_path] = altered
+                with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
+                    main()
+                    self.assertEqual(stdout.getvalue().count("=true"), len(JOBS))
+            paths.remove(event_path)
+            del blob["base:Cargo.lock"]
+            with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
+                main()
+                self.assertEqual(stdout.getvalue().count("=true"), len(JOBS))
+
     def test_workflow_job_changes(self):
         base = "name: CI\njobs:\n  package-smoke:\n    run: old\n  cuda-compile:\n    run: same\n  ggml:\n    run: same\n"
         self.assertEqual(workflow_changes(base, base.replace("run: old", "run: new")), {"package"})
@@ -102,7 +232,7 @@ class SelectionTest(unittest.TestCase):
             head = git("rev-parse", "HEAD")
             env = dict(os.environ, EVENT="pull_request", BASE_REF="rc", HEAD_REF="branch",
                        BASE_SHA=base, HEAD_SHA=head, REPOSITORY="x/y", HEAD_REPO="x/y")
-            result = subprocess.run(["python3", str(script)], cwd=d, env=env, capture_output=True, text=True)
+            result = subprocess.run([sys.executable, str(script)], cwd=d, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.count("=false"), 6)
             (Path(d) / "scripts").mkdir()
@@ -110,7 +240,7 @@ class SelectionTest(unittest.TestCase):
             git("add", ".")
             git("commit", "-qm", "android")
             env["HEAD_SHA"] = git("rev-parse", "HEAD")
-            result = subprocess.run(["python3", str(script)], cwd=d, env=env, capture_output=True, text=True)
+            result = subprocess.run([sys.executable, str(script)], cwd=d, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("android=true", result.stdout)
             self.assertIn("binding=true", result.stdout)
@@ -125,15 +255,15 @@ class SelectionTest(unittest.TestCase):
             workflow.write_text(workflow.read_text().replace("run: old", "run: new"))
             git("commit", "-qam", "package workflow")
             env["HEAD_SHA"] = git("rev-parse", "HEAD")
-            result = subprocess.run(["python3", str(script)], cwd=d, env=env, capture_output=True, text=True)
+            result = subprocess.run([sys.executable, str(script)], cwd=d, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("package=true", result.stdout)
             self.assertEqual(result.stdout.count("=true"), 1)
             env["BASE_SHA"] = "invalid"
-            self.assertNotEqual(subprocess.run(["python3", str(script)], cwd=d, env=env,
+            self.assertNotEqual(subprocess.run([sys.executable, str(script)], cwd=d, env=env,
                                                capture_output=True).returncode, 0)
             env.update(BASE_REF="main", HEAD_REF="rc")
-            result = subprocess.run(["python3", str(script)], cwd=d, env=env, capture_output=True, text=True)
+            result = subprocess.run([sys.executable, str(script)], cwd=d, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.count("=true"), 6)
 

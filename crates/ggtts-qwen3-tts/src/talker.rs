@@ -225,42 +225,15 @@ pub struct Generation {
 /// saw them (after suppression and the repetition penalty, before temperature). Nothing unasked is computed.
 pub type StepHook<'a> = dyn FnMut(i32, i32, Option<f64>, Option<&[f32]>) + 'a;
 
-/// The end-of-speech probability under the distribution the sampler draws from: the logits after suppression and
-/// repetition penalty, scaled by the temperature, cut to the top k (and top p), softmaxed. Computed in f64 on a copy,
-/// so it changes nothing the sampler sees and draws nothing from its stream.
+/// Normalized EOS weight after the sampler's actual filtering, computed on a copy without using its random stream.
 fn stop_probability(logits: &[f32], eos: i32, s: Sampling) -> f64 {
     if s.temperature <= 0.0 {
         return if argmax(logits) == eos { 1.0 } else { 0.0 };
     }
-    let mut l: Vec<f32> = logits.iter().map(|&x| x * (1.0f32 / s.temperature)).collect();
-    if s.top_k > 0 && (s.top_k as usize) < l.len() {
-        let mut sorted = l.clone();
-        sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-        let threshold = sorted[s.top_k as usize - 1];
-        for x in l.iter_mut() {
-            if *x < threshold {
-                *x = f32::NEG_INFINITY;
-            }
-        }
-    }
-    let max = l.iter().fold(f32::NEG_INFINITY, |m, &x| if x > m { x } else { m });
-    let mut p: Vec<f64> = l.iter().map(|&x| f64::from(x - max).exp()).collect();
-    if s.top_p > 0.0 && s.top_p < 1.0 {
-        let total: f64 = p.iter().sum();
-        let mut order: Vec<usize> = (0..p.len()).collect();
-        order.sort_by(|&a, &b| p[b].partial_cmp(&p[a]).unwrap_or(std::cmp::Ordering::Equal));
-        let mut cum = 0.0;
-        for (j, &i) in order.iter().enumerate() {
-            if j > 0 && cum >= f64::from(s.top_p) {
-                p[i] = 0.0;
-            } else {
-                cum += p[i] / total;
-            }
-        }
-    }
-    let total: f64 = p.iter().sum();
+    let mut weights = logits.to_vec();
+    let total = sampler_weights(&mut weights, s);
     if total > 0.0 {
-        p[eos as usize] / total
+        f64::from(weights[eos as usize] / total)
     } else {
         0.0
     }
@@ -1613,6 +1586,21 @@ fn sample_top_k_p(logits: &mut [f32], s: Sampling, rng: &mut Philox) -> i32 {
     if s.temperature <= 0.0 {
         return argmax(logits);
     }
+    let sum = sampler_weights(logits, s);
+    let target = rng.next_uniform() * sum;
+    let mut acc = 0f32;
+    for (i, &x) in logits.iter().enumerate() {
+        acc += x;
+        if acc >= target {
+            return i as i32;
+        }
+    }
+    n as i32 - 1
+}
+
+/// Mutate a copy or the sampler's logits into the exact unnormalized f32 weights used for its draw.
+fn sampler_weights(logits: &mut [f32], s: Sampling) -> f32 {
+    let n = logits.len();
     let inv = 1.0f32 / s.temperature;
     for x in logits.iter_mut() {
         *x *= inv;
@@ -1660,20 +1648,185 @@ fn sample_top_k_p(logits: &mut [f32], s: Sampling, rng: &mut Philox) -> i32 {
         *x = (*x - max).exp();
         sum += *x;
     }
-    let target = rng.next_uniform() * sum;
-    let mut acc = 0f32;
-    for (i, &x) in logits.iter().enumerate() {
-        acc += x;
-        if acc >= target {
-            return i as i32;
-        }
-    }
-    n as i32 - 1
+    sum
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Frozen pre-refactor sampler control. It must stay independent of sampler_weights.
+    fn previous_sample(logits: &mut [f32], s: Sampling, rng: &mut Philox) -> i32 {
+        let n = logits.len();
+        if s.temperature <= 0.0 {
+            return argmax(logits);
+        }
+        let inv = 1.0f32 / s.temperature;
+        for x in logits.iter_mut() {
+            *x *= inv;
+        }
+        if s.top_k > 0 && (s.top_k as usize) < n {
+            let mut sorted = logits.to_vec();
+            sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+            let threshold = sorted[s.top_k as usize - 1];
+            for x in logits.iter_mut() {
+                if *x < threshold {
+                    *x = f32::NEG_INFINITY;
+                }
+            }
+        }
+        if s.top_p > 0.0 && s.top_p < 1.0 {
+            let max = logits.iter().fold(f32::NEG_INFINITY, |m, &x| if x > m { x } else { m });
+            let mut sum_exp = 0f32;
+            for &x in logits.iter() {
+                sum_exp += (x - max).exp();
+            }
+            let inv_sum = 1.0f32 / sum_exp;
+            let cutoff = max - 16.0;
+            let mut probs = Vec::new();
+            for (i, x) in logits.iter_mut().enumerate() {
+                if *x >= cutoff {
+                    probs.push((i, (*x - max).exp() * inv_sum));
+                } else {
+                    *x = f32::NEG_INFINITY;
+                }
+            }
+            probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let mut cum = 0f32;
+            for (j, &(i, p)) in probs.iter().enumerate() {
+                if j > 0 && cum >= s.top_p {
+                    logits[i] = f32::NEG_INFINITY;
+                }
+                cum += p;
+            }
+        }
+        let max = logits.iter().fold(f32::NEG_INFINITY, |m, &x| if x > m { x } else { m });
+        let mut sum = 0f32;
+        for x in logits.iter_mut() {
+            *x = (*x - max).exp();
+            sum += *x;
+        }
+        let target = rng.next_uniform() * sum;
+        let mut acc = 0f32;
+        for (i, &x) in logits.iter().enumerate() {
+            acc += x;
+            if acc >= target {
+                return i as i32;
+            }
+        }
+        n as i32 - 1
+    }
+
+    #[test]
+    fn sampler_refactor_preserves_previous_draws_weights_and_rng() {
+        let settings = [
+            Sampling {
+                temperature: 0.0,
+                top_k: 0,
+                top_p: 1.0,
+                ..Sampling::default()
+            },
+            Sampling {
+                temperature: 0.7,
+                top_k: 0,
+                top_p: 1.0,
+                ..Sampling::default()
+            },
+            Sampling {
+                temperature: 1.2,
+                top_k: 3,
+                top_p: 0.75,
+                ..Sampling::default()
+            },
+            Sampling {
+                temperature: 1.0,
+                top_k: 0,
+                top_p: 0.999_999_94,
+                ..Sampling::default()
+            },
+        ];
+        for setting in settings {
+            for seed in 0..100 {
+                let logits = vec![0.0, -17.0, -17.0, 0.0, -1.0, 2.0, -20.0];
+                let mut old = logits.clone();
+                let mut new = logits;
+                let mut a = Philox { seed, subseq: 0 };
+                let mut b = Philox { seed, subseq: 0 };
+                assert_eq!(
+                    previous_sample(&mut old, setting, &mut a),
+                    sample_top_k_p(&mut new, setting, &mut b)
+                );
+                assert_eq!(old, new, "sampler weights changed");
+                assert_eq!(
+                    a.next_uniform().to_bits(),
+                    b.next_uniform().to_bits(),
+                    "RNG state changed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stop_probability_follows_sampler_cutoff() {
+        let settings = Sampling {
+            temperature: 1.0,
+            top_k: 0,
+            top_p: 0.999_999_94,
+            ..Sampling::default()
+        };
+        let mut logits = vec![-17.0; 11];
+        logits[0] = 0.0;
+        let probability = stop_probability(&logits, 1, settings);
+        let mut rng = Philox { seed: 0, subseq: 0 };
+        sample_top_k_p(&mut logits, settings, &mut rng);
+        assert_eq!(logits[1], 0.0, "sampler's max-minus-16 cutoff removes EOS");
+        assert_eq!(probability, 0.0, "EOS mass must use the same cutoff");
+    }
+
+    #[test]
+    fn stop_probability_uses_the_sampler_weights_for_filter_and_tie_cases() {
+        let inputs = [vec![3.0, 1.0, -2.0], vec![0.0, 0.0, -1.0], vec![0.0, -17.0, -17.0]];
+        let settings = [
+            Sampling {
+                temperature: 0.7,
+                top_k: 0,
+                top_p: 1.0,
+                ..Sampling::default()
+            },
+            Sampling {
+                temperature: 1.2,
+                top_k: 1,
+                top_p: 1.0,
+                ..Sampling::default()
+            },
+            Sampling {
+                temperature: 1.0,
+                top_k: 0,
+                top_p: 0.75,
+                ..Sampling::default()
+            },
+        ];
+        for logits in inputs {
+            for setting in settings {
+                let mut observed = logits.clone();
+                let mut rng = Philox { seed: 3, subseq: 0 };
+                sample_top_k_p(&mut observed, setting, &mut rng);
+                let total: f32 = observed.iter().sum();
+                for (eos, &weight) in observed.iter().enumerate() {
+                    assert_eq!(
+                        stop_probability(&logits, eos as i32, setting),
+                        f64::from(weight / total)
+                    );
+                }
+            }
+        }
+        let greedy = Sampling {
+            temperature: 0.0,
+            ..Sampling::default()
+        };
+        assert_eq!(stop_probability(&[0.0, 1.0, 1.0], 1, greedy), 1.0);
+        assert_eq!(stop_probability(&[0.0, 1.0, 1.0], 2, greedy), 0.0);
+    }
 
     #[test]
     fn philox_is_deterministic_and_in_range() {

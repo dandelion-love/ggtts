@@ -26,6 +26,7 @@ fn feed(n: u32, p: impl Fn(u32) -> f64) -> ggtts_instrument_tensor_template::Sum
             frame: f,
             token: 0,
             p_stop: Some(p(f)),
+            p_stop_semantics: Some("fake-synthetic/1"),
             logits: None,
         });
     }

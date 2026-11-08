@@ -48,6 +48,15 @@ unsafe extern "C" fn callback(level: ggml::ggml_log_level, text: *const c_char, 
     });
 }
 
+/// Set the process-wide handler once, before initializing any backend.
+pub fn install(settings: Settings) -> Result<(), &'static str> {
+    SETTINGS
+        .set(settings)
+        .map_err(|_| "native log handler already initialized")?;
+    unsafe { ggml::ggml_log_set(Some(callback), std::ptr::null_mut()) };
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,13 +68,4 @@ mod tests {
         assert_eq!(map_level(ggml::GGML_LOG_LEVEL_ERROR), Level::Error);
         assert_eq!(map_level(ggml::GGML_LOG_LEVEL_CONT), Level::Error);
     }
-}
-
-/// Set the process-wide handler once, before initializing any backend.
-pub fn install(settings: Settings) -> Result<(), &'static str> {
-    SETTINGS
-        .set(settings)
-        .map_err(|_| "native log handler already initialized")?;
-    unsafe { ggml::ggml_log_set(Some(callback), std::ptr::null_mut()) };
-    Ok(())
 }

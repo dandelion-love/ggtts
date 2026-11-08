@@ -58,6 +58,12 @@ def measure(ctx, env):
         return
     audio = read_audio(ctx.audio)
     try:
+        import librosa
+        import numpy
+        import scipy
+        if librosa.__version__ != "0.11.0":
+            env.status("skipped", "loudness-ends requires librosa 0.11.0 for the validated pYIN rule")
+            return
         track = derive(audio)
     except ImportError:
         env.status("skipped", "numpy and librosa are required to derive pYIN voicing")
@@ -65,16 +71,23 @@ def measure(ctx, env):
     if track is None:
         env.status("skipped", "no speech core found")
         return
-    import librosa
-    import numpy
-    import scipy
-    env.doc["provenance"]["config"].update({
+    ctx.config.update({
         "voicing_method": "librosa.pyin", "speech_core_method": "edges/2",
         "numpy_version": numpy.__version__, "scipy_version": scipy.__version__,
         "librosa_version": librosa.__version__, "hop_s": 0.01,
         "fmin_hz": 65.0, "fmax_hz": 500.0, "frame_length": 1024,
     })
     env.input(ctx.audio)
+    result = summarize(audio, track)
+    if result is None:
+        env.status("skipped", "invalid voicing/core or fewer than 20 voiced frames in the speech core")
+        return
+    for name, value, unit in result:
+        env.metric(name, value, unit, "neutral", render=ctx.render)
+
+
+def summarize(audio, track):
+    """Calculate the metrics from an internally derived track; None means unavailable."""
     hop = round(0.01 * audio.rate)
     f0 = track.get("f0_hz")
     start, end = track.get("core_start_s"), track.get("core_end_s")
@@ -82,12 +95,10 @@ def measure(ctx, env):
             (isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and x > 0) for x in f0)
             or not all(isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
                        for x in (start, end)) or not 0 <= start < end <= len(audio.samples) / audio.rate):
-        env.status("skipped", "invalid voicing values or speech-core boundaries")
-        return
+        return None
     n = len(audio.samples) // hop
     if abs(len(f0) - n) > 1:
-        env.status("skipped", "voicing and audio frame counts do not match")
-        return
+        return None
     a, b = int(start / 0.01), int(end / 0.01)
     levels = []
     for i in range(a, min(b, n, len(f0))):
@@ -96,13 +107,11 @@ def measure(ctx, env):
             rms = math.sqrt(sum(f32(x) ** 2 for x in frame) / hop)
             levels.append(f32(20 * math.log10(rms + 1e-12)))
     if len(levels) < 20:
-        env.status("skipped", "fewer than 20 voiced frames in the speech core")
-        return
+        return None
     centre = f32(statistics.median(levels))
     relative = [f32(x - centre) for x in levels]
-    env.metric("voiced_frames", len(levels), "1", "neutral", render=ctx.render)
-    env.metric("loud_p90_db", percentile(relative, 0.9), "dB", "neutral", render=ctx.render)
-    env.metric("soft_p10_db", percentile(relative, 0.1), "dB", "neutral", render=ctx.render)
+    return [("voiced_frames", len(levels), "1"), ("loud_p90_db", percentile(relative, 0.9), "dB"),
+            ("soft_p10_db", percentile(relative, 0.1), "dB")]
 
 
 if __name__ == "__main__":

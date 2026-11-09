@@ -43,3 +43,24 @@ fn text_reports_decode_without_story_trimming() {
     assert_eq!(d["text_decoded_samples"], d["output_samples"]);
     assert!(d["chunks"].is_null() && d["join_samples"].is_null());
 }
+
+#[test]
+fn instrumented_without_trace_writes_durations_and_refuses_existing_sidecar() {
+    let dir = std::env::temp_dir().join(format!("ggtts-duration-auto-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let instruments = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments");
+    let run = |report: &str, out: &str| Command::new(env!("CARGO_BIN_EXE_ggtts-render"))
+        .env("GGTTS_INSTRUMENTS_DIR", &instruments)
+        .args(["--engine", "fake", "--text", "Hello.", "--out"]).arg(dir.join(out))
+        .args(["--instrument", "audio-levels", "--require", "audio-levels", "--report"])
+        .arg(dir.join(report)).output().unwrap();
+    let first = run("ok", "ok.flac");
+    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+    assert!(dir.join("ok/duration.json").exists() && dir.join("ok/duration.md").exists());
+    std::fs::create_dir(dir.join("collision")).unwrap();
+    std::fs::write(dir.join("collision/duration.json"), b"keep").unwrap();
+    assert!(!run("collision", "never.flac").status.success());
+    assert_eq!(std::fs::read(dir.join("collision/duration.json")).unwrap(), b"keep");
+    assert!(!dir.join("never.flac").exists());
+}

@@ -339,7 +339,7 @@ fn render_with_story_reader(
     if a.timing_report.as_ref().is_some_and(|p| p.exists()) {
         return Err("--timing-report must be a new file".into());
     }
-    if a.duration_report.as_ref().is_some_and(|p| p.exists()) {
+    if a.duration_report.as_ref().is_some_and(|p| std::fs::symlink_metadata(p).is_ok()) {
         return Err("--duration-report must be a new file".into());
     }
     if a.out.is_none() && a.stream.is_none() {
@@ -379,6 +379,16 @@ fn render_with_story_reader(
     } else {
         None
     };
+    if instruments.is_some() {
+        let output = a.out.as_ref().expect("instruments require --out").with_extension("flac");
+        let dir = a.report.clone().unwrap_or_else(|| output.with_extension("report"));
+        for name in ["duration.json", "duration.md"] {
+            let path = dir.join(name);
+            if std::fs::symlink_metadata(&path).is_ok() {
+                return Err(format!("{} already exists; duration reports never overwrite", path.display()));
+            }
+        }
+    }
     let fake = a.engine.as_deref() == Some("fake");
     let model = match (&a.model, fake) {
         (Some(m), _) => m.clone(),
@@ -629,7 +639,8 @@ fn render_with_story_reader(
             "join_samples": joins,
             "join_seconds": joins.and_then(|n| (rate > 0).then(|| n as f64 / f64::from(rate))),
             "text_decoded_samples": (!story).then_some(samples.len()),
-            "text_decoded_seconds": (!story && rate > 0).then(|| samples.len() as f64 / f64::from(rate))
+            "text_decoded_seconds": (!story && rate > 0).then(|| samples.len() as f64 / f64::from(rate)),
+            "rate_note": "Chunk seconds use each decoder rate. The pipeline concatenates without resampling and outputs at the first chunk rate; differing rates change playback duration. Output and join seconds use the output rate."
         }))
     } else { None };
     let mut written = None;
@@ -740,13 +751,16 @@ fn render_with_story_reader(
     let summary = ggtts_instruments::runner::run_with_logging(&config, &inputs, log)?;
     if let Some(data) = &duration_data {
         let file = inputs.report_dir.join("duration.json");
-        std::fs::write(&file, format!("{data}\n")).map_err(|e| format!("{}: {e}", file.display()))?;
         use std::io::Write;
-        let md = inputs.report_dir.join("report.md");
-        let mut out = std::fs::OpenOptions::new().append(true).open(&md)
+        let mut out = std::fs::OpenOptions::new().write(true).create_new(true).open(&file)
+            .map_err(|e| format!("{}: {e}", file.display()))?;
+        writeln!(out, "{data}").map_err(|e| format!("{}: {e}", file.display()))?;
+        let md = inputs.report_dir.join("duration.md");
+        let mut out = std::fs::OpenOptions::new().write(true).create_new(true).open(&md)
             .map_err(|e| format!("{}: {e}", md.display()))?;
-        writeln!(out, "\n## Audio durations\n\nKept decoded and trimmed chunk durations, join contribution, and emitted duration are recorded in [duration.json](duration.json). Rejected redraws are excluded.\n\n```json\n{data}\n```")
+        writeln!(out, "# Audio durations\n\nKept decoded and trimmed chunk durations, join contribution, and emitted duration are recorded below and in [duration.json](duration.json). Rejected redraws are excluded.\n\n```json\n{data}\n```")
             .map_err(|e| format!("{}: {e}", md.display()))?;
+        log.stderr(LogLevel::Info, BINARY, "duration_report", format_args!("audio durations: {}", md.display()));
     }
     for e in &summary.envelopes {
         let why = e.error.as_ref().map_or(String::new(), |w| format!(": {w}"));

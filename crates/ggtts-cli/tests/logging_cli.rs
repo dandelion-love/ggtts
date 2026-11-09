@@ -74,7 +74,7 @@ fn json_logs_are_consistent_and_do_not_contaminate_audio_stdout() {
     assert_eq!(duration["discarded_draws_included"], false);
     let chunk = &duration["chunks"][0];
     assert!(chunk["decoded_samples"].as_u64().unwrap() >= chunk["trimmed_samples"].as_u64().unwrap());
-    assert!(std::fs::read_to_string(report.join("report.md")).unwrap().contains("Audio durations"));
+    assert!(std::fs::read_to_string(report.join("duration.md")).unwrap().contains("Audio durations"));
     assert!(timings["stream"]["write_ns"].is_number());
     let run_log = std::fs::read_to_string(report.join("run.log")).unwrap();
     assert!(run_log

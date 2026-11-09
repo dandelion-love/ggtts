@@ -30,6 +30,7 @@ def main():
     ap.add_argument("--device", choices=("cpu", "cuda"), required=True)
     for name in ("model", "codec", "voice"):
         ap.add_argument("--" + name, type=Path)
+    ap.add_argument("--speaker", help="Qwen speaker name passed to ggtts-render")
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--threads", type=int, default=4)
     args = ap.parse_args()
@@ -53,6 +54,8 @@ def main():
         path = getattr(args, flag)
         if path:
             common += ["--" + flag, str(path.resolve())]
+    if args.speaker is not None:
+        common += ["--speaker", args.speaker]
 
     def run(label, level, trace_level):
         base = work / label
@@ -138,3 +141,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -143,6 +143,27 @@ fn two_asr_instruments_stack_without_chaining_or_changing_audio() {
         s_inherited.provenance.config.get("device").and_then(|v| v.as_str()),
         Some("cuda")
     );
+    // The same hint also reaches a third-party child; the runner does not special-case ASR.
+    let custom = root.join("custom.py");
+    let sdk = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../instruments/python");
+    std::fs::write(
+        &custom,
+        format!(
+            "import os,sys\nsys.path.insert(0, {:?})\nfrom ggtts_instrument import run\ndef measure(c,e):\n assert os.environ.get('GGTTS_INSTRUMENT_DEVICE')=='cuda'\n e.metric('seen',1,'1','neutral',render=c.render)\nsys.exit(run(measure,'custom','1',hooks=[]))\n",
+            sdk.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let mut c = Config::default();
+    c.set_device("cuda").unwrap();
+    c.apply_instrument_flag(&format!(
+        "custom,command={},interpreter={python},version=1",
+        custom.display()
+    ))
+    .unwrap();
+    c.apply_require_flag("custom").unwrap();
+    let result = run(&c, &inputs).unwrap();
+    assert_eq!(result.exit_code(), EXIT_OK, "{:?}", result.envelopes);
     // Repeat the same stack as a no-op, then reverse it; both still consume the same input.
     for flags in [[&sflag, &qflag], [&sflag, &qflag], [&qflag, &sflag]] {
         let mut stacked = Config::default();

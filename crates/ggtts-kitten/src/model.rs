@@ -335,7 +335,10 @@ impl Model {
                     // On CUDA the ternary matrices are held as f16 (see `ternary_f16`). Every weight is a trit times
                     // an fp16 block scale, so f16 holds it exactly; the round trip below proves it per row and
                     // refuses otherwise rather than rounding.
-                    (GgmlType::TQ1_0 | GgmlType::TQ2_0 | GgmlType::Q4_0, Weights::Ternary | Weights::TernaryF32Head) if ternary_f16 => {
+                    (
+                        GgmlType::TQ1_0 | GgmlType::TQ2_0 | GgmlType::Q4_0,
+                        Weights::Ternary | Weights::TernaryF32Head,
+                    ) if ternary_f16 => {
                         let cols = t.dims[0] as usize / if t.ty == GgmlType::TQ2_0 { 2 } else { 1 };
                         let rows = t.dims[1] as usize;
                         let x = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_F16, cols as i64, rows as i64);

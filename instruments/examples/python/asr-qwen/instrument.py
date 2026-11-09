@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Optional offline CPU Qwen3-ASR instrument for already completed audio."""
+"""Optional offline Qwen3-ASR instrument for already completed audio."""
 import contextlib
 import hashlib
 import importlib.metadata
@@ -18,7 +18,7 @@ from ggtts_instrument import read_audio, run
 from ggtts_instrument.audio import sha256_of
 from ggtts_instrument.device import select_device, verify_model_device
 
-NAME, VERSION = 'asr-qwen', '0.1.0'
+NAME, VERSION = 'asr-qwen', '0.2.0'
 
 
 def normalize(text):

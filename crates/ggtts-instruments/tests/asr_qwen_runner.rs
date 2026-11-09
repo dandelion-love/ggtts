@@ -125,6 +125,7 @@ fn two_asr_instruments_stack_without_chaining_or_changing_audio() {
     let result = run(&gpu, &inputs).unwrap();
     assert_eq!(result.exit_code(), EXIT_OK, "{:?}", result.envelopes);
     for envelope in &result.envelopes {
+        assert_eq!(envelope.version, "0.2.0");
         assert_eq!(
             envelope.provenance.config.get("device").and_then(|v| v.as_str()),
             Some("cuda")

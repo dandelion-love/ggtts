@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Optional CPU SenseVoice instrument on completed audio; no quality verdict."""
+"""Optional offline SenseVoice instrument on completed audio; no quality verdict."""
 import contextlib
 import importlib.metadata
 import io
@@ -17,7 +17,7 @@ from ggtts_instrument import read_audio, run
 from ggtts_instrument.audio import sha256_of
 from ggtts_instrument.device import select_device, verify_model_device
 
-NAME, VERSION = 'asr-sensevoice', '0.1.0'
+NAME, VERSION = 'asr-sensevoice', '0.2.0'
 _TAG = re.compile(r'<\|[^|]*\|>')
 
 

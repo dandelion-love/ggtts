@@ -100,18 +100,24 @@ pub const CATALOGUE: &[Known] = &[
         "relative loud and soft ends over pYIN-voiced speech-core frames",
         false,
     ),
-    python(
-        "asr-sensevoice",
-        "examples/python/asr-sensevoice/instrument.py",
-        "optional ASR character error against a local reference; not a quality verdict",
-        false,
-    ),
-    python(
-        "asr-qwen",
-        "examples/python/asr-qwen/instrument.py",
-        "offline Qwen3-ASR character error rate against a local reference",
-        false,
-    ),
+    Known {
+        version: "0.2.0",
+        ..python(
+            "asr-sensevoice",
+            "examples/python/asr-sensevoice/instrument.py",
+            "optional ASR character error against a local reference; not a quality verdict",
+            false,
+        )
+    },
+    Known {
+        version: "0.2.0",
+        ..python(
+            "asr-qwen",
+            "examples/python/asr-qwen/instrument.py",
+            "offline Qwen3-ASR character error rate against a local reference",
+            false,
+        )
+    },
 ];
 
 pub fn find(name: &str) -> Option<&'static Known> {

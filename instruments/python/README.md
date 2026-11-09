@@ -9,6 +9,7 @@ now; it will be published on PyPI later.
 | `audio` | `read_audio(path)` returns mono float samples and the rate. It reads WAV (16-bit PCM or 32-bit float, streamed WAV included), and FLAC: any FLAC with `soundfile` installed, or without it the subset ggtts writes. |
 | `envelope` | `Envelope` builds a `ggtts-report/2` envelope: identity, provenance, metrics, artifacts by hash. `check(dict)` lists every reason an envelope is invalid, and `write()` refuses to write one. |
 | `cli` | `run(measure, name, version, hooks)` parses the runner's flags, calls `measure(ctx, env)`, and writes the envelope, as `failed` if `measure` raises. |
+| `device` | `select_device(override=None)` reads the chain's device hint or an explicit override; `verify_model_device(model, device)` verifies CUDA model parameters. Import these from `ggtts_instrument`. |
 | `testing` | Self-test helpers: a render to measure, a clock-only change for the no-op, and running an instrument as the runner does. |
 
 When an instrument uses `run()` and `read_audio()`, the private envelope's

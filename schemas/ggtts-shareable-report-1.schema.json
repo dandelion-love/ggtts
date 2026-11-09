@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ggtts:schema:ggtts-shareable-report:1",
+  "title": "Sanitized instrument report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "measurement", "summary", "required", "instruments", "omitted"],
+  "properties": {
+    "format": { "const": "ggtts-shareable-report/1" },
+    "measurement": { "enum": ["complete", "incomplete"] },
+    "summary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ok", "failed", "timeout", "skipped", "truncated", "invalid"],
+      "properties": {
+        "ok": { "$ref": "#/$defs/uint" }, "failed": { "$ref": "#/$defs/uint" },
+        "timeout": { "$ref": "#/$defs/uint" }, "skipped": { "$ref": "#/$defs/uint" },
+        "truncated": { "$ref": "#/$defs/uint" }, "invalid": { "$ref": "#/$defs/uint" }
+      }
+    },
+    "required": { "type": "array", "items": { "$ref": "#/$defs/requirement" } },
+    "instruments": { "type": "array", "items": { "$ref": "#/$defs/instrument" } },
+    "omitted": { "const": ["identifiers", "paths", "configuration", "logs", "error details", "unreviewed provenance"] }
+  },
+  "$defs": {
+    "uint": { "type": "integer", "minimum": 0 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "status": { "enum": ["ok", "failed", "timeout", "skipped", "truncated", "invalid"] },
+    "requirement": {
+      "type": "object", "additionalProperties": false,
+      "required": ["instrument", "present", "valid", "statuses", "met"],
+      "properties": {
+        "instrument": { "type": "integer", "minimum": 1 },
+        "present": { "type": "boolean" }, "valid": { "type": "boolean" },
+        "statuses": { "type": "array", "items": { "$ref": "#/$defs/status" } },
+        "met": { "type": "boolean" }
+      }
+    },
+    "instrument": {
+      "type": "object", "additionalProperties": false,
+      "required": ["instrument", "status", "audio", "model_sha256", "input_sha256", "artifact_sha256", "metrics"],
+      "properties": {
+        "instrument": { "type": "integer", "minimum": 1 }, "status": { "$ref": "#/$defs/status" },
+        "audio": { "enum": ["raw", "trimmed", "unknown", "n/a"] },
+        "model_sha256": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "input_sha256": { "type": "array", "items": { "$ref": "#/$defs/sha256" } },
+        "artifact_sha256": { "type": "array", "items": { "$ref": "#/$defs/sha256" } },
+        "metrics": { "type": "array", "items": { "$ref": "#/$defs/metric" } }
+      }
+    },
+    "metric": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "unit", "value", "direction", "interval", "chunk", "render_scoped"],
+      "oneOf": [
+        { "properties": { "unit": {"const":"bytes"}, "name": {"const":"audio_bytes"} } },
+        { "properties": { "unit": {"const":"lines"}, "name": {"const":"events"} } },
+        { "properties": { "unit": {"const":"1"}, "name": {"enum":["p_stop_early_max","early_stop_frames","draws","redraws","cap_stops","flagged_draws","chunk_draws","edges_over_limit","frames","chunks","clipped_samples","internal_pauses","pitch_voiced_frames","voiced_frames","character_error_rate","render_rtf"]} } },
+        { "properties": { "unit": {"const":"ms"}, "name": {"enum":["ttfa_ms","render_ms","generate_ms_total","decode_ms_total","judge_ms_total"]} } },
+        { "properties": { "unit": {"const":"s"}, "name": {"enum":["lead_s_max","tail_s_max","trim_s_total","seconds","longest_pause_s","pause_s_total"]} } },
+        { "properties": { "unit": {"const":"dB"}, "name": {"enum":["gain_db","loud_p90_db","soft_p10_db"]} } },
+        { "properties": { "unit": {"const":"dBFS"}, "name": {"enum":["peak_dbfs","rms_dbfs"]} } },
+        { "properties": { "unit": {"const":"Hz"}, "name": {"const":"pitch_median_hz"} } },
+        { "properties": { "unit": {"const":"semitones"}, "name": {"const":"pitch_range_st"} } }
+      ],
+      "properties": {
+        "name": { "type": "string" }, "unit": { "enum": ["1", "s", "ms", "bytes", "lines", "dB", "dBFS", "Hz", "semitones"] },
+        "value": { "type": ["number", "null"] }, "direction": { "enum": ["higher", "lower", "neutral", "n/a"] },
+        "interval": { "anyOf": [{ "type": "null" }, { "type": "array", "prefixItems": [{"type":"number"},{"type":"number"}], "minItems": 2, "maxItems": 2 }] },
+        "chunk": { "anyOf": [{ "$ref": "#/$defs/uint" }, { "type": "null" }] },
+        "render_scoped": { "type": "boolean" }
+      }
+    }
+  }
+}

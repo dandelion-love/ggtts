@@ -127,7 +127,7 @@ fn asr_instrument_runs_through_runner_and_fails_closed() {
         "model.pt",
         "config.yaml",
         "am.mvn",
-        "tokens.json",
+        "configuration.json",
         "chn_jpn_yue_eng_ko_spectok.bpe.model",
     ] {
         std::fs::write(model.join(name), b"synthetic").unwrap();

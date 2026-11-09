@@ -219,6 +219,8 @@ Windows, and a planted change (the story chunk ceiling set to 44 must turn the p
 also build and smoke the CUDA archive without a GPU. A tag `v*` builds release archives named with the ggml pin, each
 with a `BUILDINFO.json` and a build provenance attestation (`gh attestation verify <file> -R dandelion-love/ggtts`).
 
+The `x86_64` CPU release archives require AVX2, FMA, F16C and BMI2 CPU support, plus operating-system support for AVX state. They do not require AVX-512. Other x86-64 CPUs are not covered by this release baseline.
+
 Linux releases also include a separate `x86_64-linux-cuda` archive. It includes CUDA code for NVIDIA compute
 capabilities 8.6 and 8.9; other GPU architectures are not covered by the tested release. It requires an NVIDIA
 driver and the CUDA 12.6 runtime and cuBLAS libraries installed on the host and discoverable by the dynamic loader;

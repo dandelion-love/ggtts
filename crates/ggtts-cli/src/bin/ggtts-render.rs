@@ -855,8 +855,7 @@ mod tests {
             speaker: Some("hk_voice_343".into()),
             ..Args::default()
         };
-        let err = render_with_loader(args, log, |_, _, _| panic!("must reject before loading"))
-            .unwrap_err();
+        let err = render_with_loader(args, log, |_, _, _| panic!("must reject before loading")).unwrap_err();
         assert!(err.contains("only supported by the qwen3-tts engine"));
     }
 

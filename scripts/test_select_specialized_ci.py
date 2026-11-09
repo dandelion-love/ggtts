@@ -34,6 +34,21 @@ def logging_fixtures():
 
 
 class SelectionTest(unittest.TestCase):
+    def test_no_hosted_cuda_job_and_release_still_builds_cuda(self):
+        promotion = decide("pull_request", "main", "rc", True, ["Cargo.lock"])
+        self.assertEqual(promotion, set(JOBS))
+        self.assertNotIn("cuda", promotion)
+        root = Path(__file__).resolve().parent.parent
+        ci_jobs = workflow_sections((root / '.github/workflows/ci.yml').read_text())[1]
+        release_jobs = workflow_sections((root / '.github/workflows/release.yml').read_text())[1]
+        self.assertNotIn('cuda-compile', ci_jobs)
+        self.assertIn('cuda-build', release_jobs)
+        self.assertIn('scripts/package_cuda_release.sh', release_jobs['cuda-build'])
+        gate = (root / 'scripts/rc_gate.py').read_text()
+        self.assertIn('crates/ggtts-qwen3-tts/scripts/cuda_probe.sh', gate)
+        self.assertIn('crates/ggtts-kitten/scripts/cuda_probe.sh', gate)
+        self.assertIn('instrument_proof(work, scratch', gate)
+
     def test_renderer_routes_get_ggml_without_cuda(self):
         renderer = ["crates/ggtts-cli/src/bin/ggtts-render.rs"]
         self.assertEqual(decide("pull_request", "rc", "feature", True, renderer), {"ggml", "package"})
@@ -42,9 +57,9 @@ class SelectionTest(unittest.TestCase):
                                 ["crates/ggtts-cli/src/bin/ggtts-measure.rs"]), {"package"})
         self.assertEqual(decide("pull_request", "main", "rc", True, renderer), set(JOBS))
 
-    def test_cuda_checkout_has_git_and_initializes_submodule(self):
+    def test_release_cuda_checkout_has_git_and_initializes_submodule(self):
         root = Path(__file__).resolve().parent.parent
-        for file, job in (("ci.yml", "cuda-compile"), ("release.yml", "cuda-build")):
+        for file, job in (("release.yml", "cuda-build"),):
             text = (root / ".github" / "workflows" / file).read_text()
             block = workflow_sections(text)[1][job]
             install = block.index("apt-get install")
@@ -63,18 +78,18 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(select(["android/demo.kt"]), {"android", "binding"})
         self.assertEqual(select(["scripts/package_and_smoke.sh"]), {"package"})
         self.assertEqual(select(["scripts/check_release_version.py"]), {"package"})
-        self.assertEqual(select([".github/workflows/release.yml"]), {"package", "release", "cuda"})
-        self.assertEqual(select(["scripts/package_cuda_release.sh"]), {"package", "release", "cuda"})
+        self.assertEqual(select([".github/workflows/release.yml"]), {"package", "release"})
+        self.assertEqual(select(["scripts/package_cuda_release.sh"]), {"package", "release"})
         self.assertEqual(select(["scripts/buildinfo_engines.sh"]), {"ggml", "release"})
         self.assertEqual(select(["crates/ggtts-qwen3-tts/src/lib.rs"]), {"package"})
         self.assertEqual(select(["crates/ggtts-core/src/pipeline.rs", "crates/ggtts-cli/Cargo.toml"]), {"package"})
-        self.assertEqual(select(["crates/ggtts-ffi/src/lib.rs"]), {"binding", "android", "ggml", "cuda"})
-        self.assertEqual(select(["crates/ggtts-ggml-sys/build.rs"]), {"binding", "android", "ggml", "cuda"})
+        self.assertEqual(select(["crates/ggtts-ffi/src/lib.rs"]), {"binding", "android", "ggml"})
+        self.assertEqual(select(["crates/ggtts-ggml-sys/build.rs"]), {"binding", "android", "ggml"})
         for path in (".github/workflows/ci.yml", "Cargo.lock"):
             self.assertEqual(select([path]), set(JOBS))
         self.assertEqual(select(["scripts/select_specialized_ci.py", "scripts/test_select_specialized_ci.py"]), set())
         self.assertEqual(select(["scripts/select_specialized_ci.py", "scripts/package_cuda_release.sh"]),
-                         {"package", "release", "cuda"})
+                         {"package", "release"})
         self.assertEqual(decide("pull_request", "main", "rc", True, []), set(JOBS))
         self.assertEqual(decide("pull_request", "main", "rc", False, ["docs/x"]), set())
         self.assertEqual(decide("push", "", "", True, ["Cargo.lock"]), set())
@@ -96,7 +111,7 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(decide("pull_request", "rc", "feature", True,
                                 ["crates/ggtts-cli/tests/no_change_real.rs"]), {"package"})
 
-    def test_logging_change_gets_lightweight_pr_and_full_promotion(self):
+    def test_logging_change_gets_lightweight_pr_and_cpu_promotion(self):
         paths = ["crates/ggtts-cli/Cargo.toml", "crates/ggtts-cli/src/bin/ggtts-render.rs",
                  "crates/ggtts-cli/tests/logging_cli.rs", "crates/ggtts-core/src/lib.rs",
                  "crates/ggtts-core/src/logging.rs", "crates/ggtts-core/src/pipeline.rs",
@@ -174,11 +189,11 @@ class SelectionTest(unittest.TestCase):
                 self.assertIn("package=true", stdout.getvalue())
                 self.assertEqual(stdout.getvalue().count("=true"), 1)
             paths.append(".github/workflows/ci.yml")
-            blob["base:.github/workflows/ci.yml"] = "name: CI\njobs:\n  cuda-compile:\n    run: old\n"
-            blob["head:.github/workflows/ci.yml"] = "name: CI\njobs:\n  cuda-compile:\n    run: new\n"
+            blob["base:.github/workflows/ci.yml"] = "name: CI\njobs:\n  ggml:\n    run: old\n"
+            blob["head:.github/workflows/ci.yml"] = "name: CI\njobs:\n  ggml:\n    run: new\n"
             with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
                 main()
-                self.assertIn("cuda=true", stdout.getvalue())
+                self.assertIn("ggml=true", stdout.getvalue())
                 self.assertIn("package=true", stdout.getvalue())
             paths.append("crates/ggtts-ggml-sys/Cargo.toml")
             with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
@@ -226,10 +241,8 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(decide("pull_request", "main", "rc", True, paths), set(JOBS))
 
     def test_workflow_job_changes(self):
-        base = "name: CI\njobs:\n  package-smoke:\n    run: old\n  cuda-compile:\n    run: same\n  ggml:\n    run: same\n"
+        base = "name: CI\njobs:\n  package-smoke:\n    run: old\n  ggml:\n    run: same\n"
         self.assertEqual(workflow_changes(base, base.replace("run: old", "run: new")), {"package"})
-        self.assertEqual(workflow_changes(base, base.replace("  cuda-compile:\n    run: same",
-                                                             "  cuda-compile:\n    run: new")), {"cuda"})
         self.assertEqual(workflow_changes(base, base.replace("  ggml:\n    run: same",
                                                              "  ggml:\n    run: new")), {"ggml"})
         self.assertEqual(workflow_changes(base, base.replace("name: CI", "name: Other")), set(JOBS))
@@ -256,7 +269,7 @@ class SelectionTest(unittest.TestCase):
                        BASE_SHA=base, HEAD_SHA=head, REPOSITORY="x/y", HEAD_REPO="x/y")
             result = subprocess.run([sys.executable, str(script)], cwd=d, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.count("=false"), 6)
+            self.assertEqual(result.stdout.count("=false"), len(JOBS))
             (Path(d) / "scripts").mkdir()
             (Path(d) / "scripts" / "android_build.sh").write_text("build")
             git("add", ".")
@@ -270,7 +283,7 @@ class SelectionTest(unittest.TestCase):
             workflow_dir = Path(d) / ".github" / "workflows"
             workflow_dir.mkdir(parents=True)
             workflow = workflow_dir / "ci.yml"
-            workflow.write_text("name: CI\njobs:\n  package-smoke:\n    run: old\n  cuda-compile:\n    run: same\n")
+            workflow.write_text("name: CI\njobs:\n  package-smoke:\n    run: old\n  ggml:\n    run: same\n")
             git("add", ".")
             git("commit", "-qm", "workflow")
             env["BASE_SHA"] = git("rev-parse", "HEAD")
@@ -287,7 +300,8 @@ class SelectionTest(unittest.TestCase):
             env.update(BASE_REF="main", HEAD_REF="rc")
             result = subprocess.run([sys.executable, str(script)], cwd=d, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.count("=true"), 6)
+            self.assertEqual(result.stdout.count("=true"), len(JOBS))
+            self.assertNotIn("cuda=", result.stdout)
 
 
 # CI invokes this suite explicitly; include the logging probe launch test.

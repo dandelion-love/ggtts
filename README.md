@@ -231,6 +231,9 @@ CPU-only. The CUDA release does not include NCCL for multi-GPU communication. Th
 the packaged fake engine without a GPU; actual GPU inference
 requires a separate test on a GPU-equipped host.
 
+An experimental [Windows CUDA source build and local packaging guide](https://github.com/dandelion-love/ggtts/blob/rc/docs/windows-cuda-build.md)
+is available; it is not yet a released or GPU-validated archive.
+
 ## The pipeline cases
 
 `fixtures/pipeline/*.json` hold the reference implementation's recorded cases: text, numbers, decisions and hashes,

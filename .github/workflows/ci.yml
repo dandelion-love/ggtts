@@ -462,4 +462,16 @@ jobs:
       - name: Build ggtts-render exactly as release.yml does
         env:
           LIBCLANG_PATH: ${{ runner.os == 'Windows' && 'C:\Program Files\LLVM\bin' || '' }}
+          GGML_PORTABLE: "1"
         run: cargo build --release --locked -p ggtts-cli --features "${{ matrix.features }}"
+      - name: Verify the CPU build does not target the build host
+        run: |
+          set -euo pipefail
+          cache=$(find target/release/build -path '*/ggtts-ggml-sys-*/out/build/CMakeCache.txt' -print -quit)
+          test -n "$cache" && test -f "$cache"
+          grep -qx 'GGML_NATIVE:BOOL=OFF' "$cache"
+          grep -qx 'GGML_AVX512:BOOL=OFF' "$cache"
+          grep -qx 'GGML_AVX512_VBMI:BOOL=OFF' "$cache"
+          grep -qx 'GGML_AVX512_VNNI:BOOL=OFF' "$cache"
+          grep -qx 'GGML_AVX512_BF16:BOOL=OFF' "$cache"
+          grep -qx 'GGML_AVX_VNNI:BOOL=OFF' "$cache"

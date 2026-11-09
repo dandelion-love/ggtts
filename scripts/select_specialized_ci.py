@@ -12,7 +12,7 @@ try:
 except ImportError:
     tomllib = None  # Without a TOML parser the full matrix is mandatory.
 
-JOBS = ("package", "binding", "android", "release", "ggml", "cuda")
+JOBS = ("package", "binding", "android", "release", "ggml")
 WORKFLOW = ".github/workflows/ci.yml"
 CORE_MANIFEST = "crates/ggtts-core/Cargo.toml"
 CLI_MANIFEST = "crates/ggtts-cli/Cargo.toml"
@@ -36,12 +36,12 @@ LOGGING_PACKAGES = {
 JOB_MAP = {
     "package-smoke": {"package"}, "binding": {"binding"}, "android-arm64": {"android"},
     "release-build": {"release"}, "ggml": {"ggml"}, "ggml-windows": {"ggml"},
-    "cuda-compile": {"cuda"}, "specialized-selection": set(JOBS),
+    "specialized-selection": set(JOBS),
     "check": set(), "build-test": set(), "planted-ceiling": set(),
 }
 
 # Generic measurement/reporting paths are compiled and tested on both CPU hosts for every PR.
-# Full engine, Android and release-archive builds run on the rc-to-main promotion.
+# CPU release, Android and binding builds run on the rc-to-main promotion.
 MEASUREMENT_PATHS = {
     "crates/ggtts-cli/src/bin/ggtts-measure.rs",
     "crates/ggtts-cli/src/bin/ggtts-render.rs",
@@ -178,16 +178,17 @@ def logging_lockfile_change(old_lock, new_lock, old_core, new_core, old_cli=None
 
 def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, logging_lock_safe=False):
     if event != "pull_request":
-        # A merge to rc already had its PR checks; the full matrix runs on promotion.
+        # A merge to rc already had its PR checks; promotion runs the other release checks.
         return set()
     if base_ref == "main" and head_ref == "rc" and same_repo:
+        # The required on-device gate exercises CUDA at this head; the tag builds its archive.
         return set(JOBS)
     selected = set()
     for path in paths:
         if path == WORKFLOW:
             selected.update(set(JOBS) if workflow_selected is None else workflow_selected)
         if path in ("scripts/select_specialized_ci.py", "scripts/test_select_specialized_ci.py"):
-            # CI always runs the selector tests. The full matrix is reserved for promotion, unless another
+            # CI always runs the selector tests. Promotion runs the release checks, unless another
             # changed path independently needs one of these jobs.
             continue
         if path == "Cargo.lock" and logging_lock_safe:
@@ -212,10 +213,10 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
                 return set(JOBS)
             if path.startswith(("crates/ggtts-ggml-sys/", "crates/ggtts-ffi/")):
                 # Direct changes to native build or bindings need their targeted checks.
-                selected.update(("binding", "android", "ggml", "cuda"))
+                selected.update(("binding", "android", "ggml"))
             else:
                 # Ordinary source PRs get the CPU checks and package smoke; promotion
-                # above still runs every native, binding and release job.
+                # above still runs the CPU native, binding and release jobs.
                 selected.add("package")
         if path.startswith(("android/", "scripts/android_build.sh")):
             selected.update(("android", "binding"))
@@ -226,7 +227,7 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
         if path == "scripts/buildinfo_engines.sh":
             selected.update(("ggml", "release"))
         if path in (".github/workflows/release.yml", "scripts/package_cuda_release.sh"):
-            selected.update(("package", "release", "cuda"))
+            selected.update(("package", "release"))
     return selected
 
 

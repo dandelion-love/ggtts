@@ -6,6 +6,10 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "device": {
+      "description": "Default requested instrument device; per-instrument args.device overrides it for instruments that support devices.",
+      "enum": ["cpu", "cuda", "auto"]
+    },
     "format": {
       "const": "ggtts-instruments/1"
     },

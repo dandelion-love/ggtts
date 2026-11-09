@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -27,12 +28,25 @@ class FakeEnvelope:
 
 
 class TestInstrument(unittest.TestCase):
+    def test_unavailable_cuda_records_request_without_claiming_use(self):
+        out = self.root / 'unavailable.json'
+        args = ['--audio', str(self.audio), '--envelope', str(out), '--model-dir', str(self.model),
+                '--reference-file', str(self.reference)]
+        fake_torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False))
+        with patch.dict(sys.modules, {'torch': fake_torch}), patch.dict(os.environ, {'GGTTS_INSTRUMENT_DEVICE': 'cuda'}):
+            code = instrument.run(instrument.measure, instrument.NAME, instrument.VERSION,
+                                  ['artifact.audio'], audio_state='unknown', argv=args)
+        config = json.loads(out.read_text(encoding='utf-8'))['provenance']['config']
+        self.assertEqual(code, 1)
+        self.assertEqual(config['requested_device'], 'cuda')
+        self.assertNotIn('device', config)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.model = self.root / 'model'
         self.model.mkdir()
-        for name in ('model.pt', 'config.yaml', 'am.mvn', 'tokens.json', 'chn_jpn_yue_eng_ko_spectok.bpe.model'):
+        for name in ('model.pt', 'config.yaml', 'configuration.json', 'am.mvn', 'chn_jpn_yue_eng_ko_spectok.bpe.model'):
             (self.model / name).write_bytes(b'synthetic')
         self.reference = self.root / 'ref.txt'
         self.reference.write_text('abcdef', encoding='utf-8')
@@ -56,6 +70,21 @@ class TestInstrument(unittest.TestCase):
             bad = FakeEnvelope(); instrument.measure(self.ctx(), bad)
         self.assertEqual(bad.metrics[0][0][1], 0.5)
         self.assertEqual(len(one.inputs) + len(one.doc['provenance']['inputs']), 7)
+
+    def test_official_snapshot_without_tokens_and_optional_tokens_provenance(self):
+        self.assertFalse((self.model / 'tokens.json').exists())
+        with patch.object(instrument, 'transcribe', return_value='abcdef'):
+            official = FakeEnvelope(); instrument.measure(self.ctx(), official)
+            (self.model / 'tokens.json').write_text('{}', encoding='utf-8')
+            local = FakeEnvelope(); instrument.measure(self.ctx(), local)
+        self.assertEqual(len(local.inputs), len(official.inputs) + 1)
+        self.assertTrue(any(Path(path).name == 'tokens.json' for path in local.inputs))
+        for name in ('model.pt', 'config.yaml', 'configuration.json', 'am.mvn', 'chn_jpn_yue_eng_ko_spectok.bpe.model'):
+            p = self.model / name
+            p.unlink()
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'incomplete'):
+                instrument.measure(self.ctx(), FakeEnvelope())
+            p.write_bytes(b'synthetic')
 
     def test_missing_model_audio_or_reference_and_empty_asr_fail(self):
         with patch.object(instrument, 'transcribe', return_value=''):

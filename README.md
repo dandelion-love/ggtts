@@ -215,9 +215,11 @@ cargo run -p ggtts-cli --bin ggtts-render -- --version
 ```
 
 `rust-toolchain.toml` pins the Rust toolchain. CI runs `cargo fmt`, `clippy -D warnings`, the tests on Linux and
-Windows, and a planted change (the story chunk ceiling set to 44 must turn the pipeline cases red). Selected changes
-also build and smoke the CUDA archive without a GPU. A tag `v*` builds release archives named with the ggml pin, each
+Windows, and a planted change (the story chunk ceiling set to 44 must turn the pipeline cases red). PR CI does not
+build the CUDA archive; the mandatory promotion gate exercises CUDA on a real GPU. A tag `v*` builds release archives named with the ggml pin, each
 with a `BUILDINFO.json` and a build provenance attestation (`gh attestation verify <file> -R dandelion-love/ggtts`).
+
+The `x86_64` CPU release archives require AVX2, FMA, F16C and BMI2 CPU support, plus operating-system support for AVX state. They do not require AVX-512. Other x86-64 CPUs are not covered by this release baseline.
 
 Linux releases also include a separate `x86_64-linux-cuda` archive. It includes CUDA code for NVIDIA compute
 capabilities 8.6 and 8.9; other GPU architectures are not covered by the tested release. It requires an NVIDIA
@@ -228,6 +230,9 @@ the [driver requirements](https://docs.nvidia.com/cuda/archive/12.6.3/cuda-toolk
 CPU-only. The CUDA release does not include NCCL for multi-GPU communication. The hosted release smoke test exercises
 the packaged fake engine without a GPU; actual GPU inference
 requires a separate test on a GPU-equipped host.
+
+An experimental [Windows CUDA source build and local packaging guide](https://github.com/dandelion-love/ggtts/blob/rc/docs/windows-cuda-build.md)
+is available; it is not yet a released or GPU-validated archive.
 
 ## The pipeline cases
 

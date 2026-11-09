@@ -53,6 +53,8 @@ jobs:
         env:
           LIBCLANG_PATH: ${{ runner.os == 'Windows' && 'C:\Program Files\LLVM\bin' || '' }}
           GGTTS_RELEASE_VERSION: ${{ github.ref_name }}
+          # Do not bake the build host instruction set into shipped CPU binaries.
+          GGML_PORTABLE: "1"
         run: cargo build --release --locked -p ggtts-cli --features "${{ matrix.features }}"
       - name: Package, named with the ggml pin
         id: pkg

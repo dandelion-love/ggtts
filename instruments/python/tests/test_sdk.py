@@ -10,7 +10,9 @@ import os
 import struct
 import sys
 import threading
+import types
 import unittest
+from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
@@ -195,6 +197,61 @@ class Audio(unittest.TestCase):
 
 
 class Cli(unittest.TestCase):
+    def test_decoder_provenance_key_is_reserved_and_cannot_silently_replace_config(self):
+        with self.assertRaises(SystemExit):
+            run(lambda c, e: None, "x", "1", [], argv=["--envelope", "unused", "--ggtts-audio-decoders", "value"])
+        with Workdir() as w:
+            out = os.path.join(w, "env.json")
+            def bad(ctx, env):
+                ctx.config["ggtts_audio_decoders"] = "injected"
+                env.metric("m", 1.0, "1", "neutral")
+            self.assertEqual(run(bad, "x", "1", [], argv=["--envelope", out]), 1)
+            with open(out, encoding="utf-8") as f:
+                env = json.load(f)
+            self.assertEqual(env["status"], "failed")
+            self.assertEqual(env["metrics"], [])
+            self.assertIn("reserved", env["error"])
+
+    def test_decoder_identity_is_recorded_by_the_decoding_child(self):
+        with Workdir() as w:
+            audio, out = os.path.join(w, "input.wav"), os.path.join(w, "env.json")
+            write_wav(audio, [0.0, 0.5, -0.5], 24000)
+            def measure(ctx, env):
+                read_audio(ctx.audio)
+                env.input(ctx.audio)
+            self.assertEqual(run(measure, "x", "1", [], argv=["--audio", audio, "--envelope", out]), 0)
+            with open(out, encoding="utf-8") as f:
+                env = json.load(f)
+            records = env["provenance"]["config"]["ggtts_audio_decoders"]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["kind"], "ggtts-python-wav")
+            self.assertEqual(len(records[0]["sha256"]), 64)
+            self.assertIn({"path": "decoder:ggtts-python-wav", "sha256": records[0]["sha256"]},
+                          env["provenance"]["inputs"])
+            self.assertNotIn(w, json.dumps(records))
+            self.assertEqual(check(env), [])
+
+    def test_unknown_and_ambiguous_native_identity_never_invents_a_hash(self):
+        from ggtts_instrument.audio import _decoder
+        for paths in ([], ["not-a-real-file"], ["one", "two"]):
+            with patch("ggtts_instrument.audio._loaded_sndfile_paths", return_value=paths):
+                self.assertEqual(_decoder("libsndfile", "input.flac"), {"kind": "libsndfile", "sha256": None})
+
+    def test_native_opener_selection_and_mixed_symbols_without_optional_dependencies(self):
+        from ggtts_instrument.audio import _loaded_sndfile_paths
+        fake = types.SimpleNamespace(_ffi=types.SimpleNamespace(cast=lambda _type, value: value),
+                                     _snd=types.SimpleNamespace(sf_open=11, sf_wchar_open=22,
+                                                                sf_readf_float=33, sf_close=44))
+        for platform, path, expected in (("win32", "input.flac", 22), ("win32", b"input.flac", 11),
+                                         ("linux", "input.flac", 11)):
+            with patch.dict(sys.modules, {"soundfile": fake}), patch("sys.platform", platform), \
+                    patch("ggtts_instrument.audio._bound_module_path", return_value="module") as resolve:
+                self.assertEqual(_loaded_sndfile_paths(path), ["module"])
+                self.assertEqual([x.args[0] for x in resolve.call_args_list], [expected, 33, 44])
+        with patch.dict(sys.modules, {"soundfile": fake}), \
+                patch("ggtts_instrument.audio._bound_module_path", side_effect=["one", "two", "one"]):
+            self.assertEqual(_loaded_sndfile_paths("input.flac"), [])
+
     def test_a_crash_is_written_as_a_failed_envelope(self):
         with Workdir() as w:
             out = os.path.join(w, "env.json")

@@ -5,7 +5,7 @@
 //!              [--threads N] [--device cpu|cuda] [--trace trace.jsonl [--trace-level 1|2]] [--timing-report FILE] [--voice REF.json] [--speaker NAME]
 //!              [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text "..." [--seed S] | --story story.txt)
 //!              [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE.yaml] [--require NAME]...
-//!              [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID]
+//!              [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID]
 //! ```
 //!
 //! `--voice` is a reference voice for an engine that clones one; an engine that does not ignores it.
@@ -113,7 +113,7 @@ const USAGE: &str = "usage: ggtts-render --model M.gguf [--codec C.gguf] --out x
 [--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--speaker NAME] \
 [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
-[--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID] \
+[--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID] \
 [--log-level error|warn|info|debug|trace] [--log-format text|json] [--timing-report FILE] [--duration-report FILE]\n       ggtts-render --version";
 
 /// Which stream to ask for, printed by `--help`.
@@ -376,7 +376,7 @@ fn render_with_story_reader(
         if a.out.is_none() {
             return Err("instruments measure the --out FLAC: give --out".into());
         }
-        let c = a.instruments.resolve()?;
+        let c = resolve_instrument_config(&a)?;
         ggtts_instruments::runner::check(&c)?;
         Some(c)
     } else {
@@ -661,6 +661,10 @@ fn render_with_story_reader(
     } else {
         None
     };
+    // Instruments run after rendering. Release model-owned resources before loading
+    // any GPU-backed instrument, while retaining provenance for logs and timing.
+    let engine_info = engine.info().clone();
+    drop(engine);
     let mut written = None;
     let mut artifact_write_ns = None;
     if let Some(out) = &a.out {
@@ -676,13 +680,13 @@ fn render_with_story_reader(
             "wrote {} ({} samples at {rate} Hz) with {} on {}, parity {}; load {load_ms} ms, render {render_ms} ms",
             path.display(),
             samples.len(),
-            engine.info().family,
-            engine.info().backend,
-            engine.info().parity
+            engine_info.family,
+            engine_info.backend,
+            engine_info.parity
         ),
                 serde_json::json!({"samples":samples.len(), "sample_rate":rate, "load_ms":load_ms as u64,
-                            "render_ms":render_ms as u64, "engine":engine.info().family,
-                            "backend":engine.info().backend, "parity":engine.info().parity}),
+                            "render_ms":render_ms as u64, "engine":engine_info.family,
+                            "backend":engine_info.backend, "parity":engine_info.parity}),
             );
         }
         written = Some(path);
@@ -722,8 +726,8 @@ fn render_with_story_reader(
         );
         let audio_seconds = (rate > 0).then(|| samples.len() as f64 / f64::from(rate));
         let report = serde_json::json!({
-            "format": "ggtts-timing/1", "engine": engine.info().family, "backend": engine.info().backend,
-            "parity": engine.info().parity, "load_ms": load_ms as u64, "render_ms": render_ms as u64,
+            "format": "ggtts-timing/1", "engine": engine_info.family, "backend": engine_info.backend,
+            "parity": engine_info.parity, "load_ms": load_ms as u64, "render_ms": render_ms as u64,
             "audio_seconds": audio_seconds, "frames_generated": frames_generated, "stages": stage,
             "render_rtf": audio_seconds.filter(|s| *s > 0.0).map(|s| render_ms as f64 / 1000.0 / s),
             "stream": stream, "trace_sink": trace, "artifact_write_ns": artifact_write_ns.map(|v| v as u64),
@@ -845,6 +849,14 @@ fn render_with_story_reader(
     Ok(summary.exit_code())
 }
 
+fn resolve_instrument_config(a: &Args) -> Result<ggtts_instruments::Config, String> {
+    let mut config = a.instruments.resolve()?;
+    if config.device.is_none() {
+        config.set_device(a.device.as_deref().unwrap_or("cpu"))?;
+    }
+    Ok(config)
+}
+
 /// The model engines compiled into this binary, one line each, with the backends each can run on. Read from the
 /// build's features, not written by hand, so a build that dropped an engine says so (`scripts/buildinfo_engines.sh`
 /// turns these lines into the release's BUILDINFO list and refuses an empty or short one). The fake engine is a test
@@ -911,9 +923,108 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn instrument_device_inherits_render_and_respects_override() {
+        let args = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let parsed = super::parse(&args(&["--device", "cuda"])).unwrap();
+        assert_eq!(
+            super::resolve_instrument_config(&parsed).unwrap().device.as_deref(),
+            Some("cuda")
+        );
+        let parsed = super::parse(&args(&["--device", "cuda", "--instrument-device", "cpu"])).unwrap();
+        assert_eq!(
+            super::resolve_instrument_config(&parsed).unwrap().device.as_deref(),
+            Some("cpu")
+        );
+        let parsed = super::parse(&args(&[])).unwrap();
+        assert_eq!(
+            super::resolve_instrument_config(&parsed).unwrap().device.as_deref(),
+            Some("cpu")
+        );
+    }
     use super::*;
     use ggtts_core::engine::{Codes, EngineError, EngineInfo, Generated, Pcm};
     use ggtts_core::profile::Profile;
+
+    #[test]
+    fn engine_is_dropped_before_instrument_child_and_timing_keeps_metadata() {
+        struct MarkedEngine {
+            inner: ggtts_fake::FakeEngine,
+            marker: PathBuf,
+        }
+        impl Drop for MarkedEngine {
+            fn drop(&mut self) {
+                std::fs::write(&self.marker, b"dropped").unwrap();
+            }
+        }
+        impl Engine for MarkedEngine {
+            fn info(&self) -> &EngineInfo {
+                self.inner.info()
+            }
+            fn profile(&self) -> &Profile {
+                self.inner.profile()
+            }
+            fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
+                self.inner.generate(req)
+            }
+            fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
+                self.inner.decode(codes)
+            }
+        }
+        let root = std::env::temp_dir().join(format!("ggtts-engine-drop-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let script = root.join("instrument.py");
+        let marker = root.join("dropped");
+        let sdk = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../instruments/python");
+        std::fs::write(
+            &script,
+            format!(
+                "import sys,pathlib\nsys.path.insert(0,{:?})\nfrom ggtts_instrument import run\ndef measure(c,e):\n assert pathlib.Path(c.config['marker']).read_text()=='dropped'\n e.metric('checked',1,'1','neutral',render=c.render)\nsys.exit(run(measure,'lifecycle','1',hooks=[]))\n",
+                sdk.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        let python = std::env::var("GGTTS_PYTHON").unwrap_or_else(|_| {
+            if cfg!(windows) {
+                "python".into()
+            } else {
+                "python3".into()
+            }
+        });
+        let timing = root.join("timing.json");
+        let mut args = Args {
+            engine: Some("fake".into()),
+            text: Some("hello".into()),
+            out: Some(root.join("out.flac")),
+            report: Some(root.join("report")),
+            timing_report: Some(timing.clone()),
+            ..Args::default()
+        };
+        args.instruments.take(
+            "--instrument",
+            format!(
+                "lifecycle,command={},interpreter={python},version=1,arg.marker={}",
+                script.display(),
+                marker.display()
+            ),
+        );
+        args.instruments.take("--require", "lifecycle".into());
+        let log = LogSettings {
+            level: LogLevel::Error,
+            format: LogFormat::Text,
+        };
+        let code = render_with_loader(args, log, move |_, _, _| {
+            Ok(Box::new(MarkedEngine {
+                inner: ggtts_fake::FakeEngine::default(),
+                marker,
+            }))
+        })
+        .unwrap();
+        assert_eq!(code, 0);
+        let report: serde_json::Value = serde_json::from_slice(&std::fs::read(timing).unwrap()).unwrap();
+        assert_eq!(report["engine"], "fake");
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[cfg(feature = "ggml")]
     #[test]

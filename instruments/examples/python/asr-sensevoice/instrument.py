@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Optional CPU SenseVoice instrument on completed audio; no quality verdict."""
+"""Optional offline SenseVoice instrument on completed audio; no quality verdict."""
 import contextlib
 import importlib.metadata
 import io
@@ -15,8 +15,9 @@ except ImportError:
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'python'))
 from ggtts_instrument import read_audio, run
 from ggtts_instrument.audio import sha256_of
+from ggtts_instrument.device import select_device, verify_model_device
 
-NAME, VERSION = 'asr-sensevoice', '0.1.0'
+NAME, VERSION = 'asr-sensevoice', '0.2.1'
 _TAG = re.compile(r'<\|[^|]*\|>')
 
 
@@ -35,15 +36,15 @@ def distance(a, b):
     return row[-1]
 
 
-def transcribe(model_dir, audio):
+def transcribe(model_dir, audio, device='cpu'):
     # Keep third-party model output and exceptions out of logs: it can include private speech.
     try:
-        os.environ['CUDA_VISIBLE_DEVICES'] = ''
         os.environ['HF_HUB_OFFLINE'] = '1'
         os.environ['MODELSCOPE_OFFLINE'] = '1'
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             from funasr import AutoModel
-            model = AutoModel(model=str(model_dir), device='cpu', disable_update=True, ncpu=4)
+            model = AutoModel(model=str(model_dir), device=device, disable_update=True, ncpu=4)
+            verify_model_device(model, device)
             result = model.generate(input=str(audio), language='yue', use_itn=False)
         if not isinstance(result, list) or not result or not isinstance(result[0], dict):
             raise ValueError('malformed result')
@@ -60,6 +61,7 @@ def measure(ctx, env):
     # before even the failure path writes an envelope; the files are identified by hash.
     model_arg = ctx.config.pop('model_dir', '')
     ref_arg = ctx.config.pop('reference_file', '')
+    device_arg = ctx.config.pop('device', None)
     if 'render_default' in ctx.config:
         ctx.render = 'render'
         ctx.config['render_default'] = 'render'
@@ -73,10 +75,13 @@ def measure(ctx, env):
     ref = Path(ref_arg)
     if not model.is_dir() or not ref.is_file():
         raise ValueError('local model directory and reference file are required')
-    # SenseVoice requires these files; never download a model implicitly.
-    model_files = ('model.pt', 'config.yaml', 'am.mvn', 'tokens.json', 'chn_jpn_yue_eng_ko_spectok.bpe.model')
+    # The official FunASR snapshot maps these files via configuration.json.
+    # Some local variants also contain tokens.json; preserve its hash when present.
+    model_files = ('model.pt', 'config.yaml', 'configuration.json', 'am.mvn', 'chn_jpn_yue_eng_ko_spectok.bpe.model')
     if any(not (model / name).is_file() for name in model_files):
         raise ValueError('local model is incomplete')
+    if (model / 'tokens.json').is_file():
+        model_files += ('tokens.json',)
     audio = read_audio(ctx.audio)
     if not audio.samples:
         raise ValueError('empty audio')
@@ -92,14 +97,17 @@ def measure(ctx, env):
         env.input(str(model / name))
     ctx.config['normalization'] = 'unicode-nfkc-casefold-alphanumeric-v1'
     ctx.config['language'] = 'yue'
-    ctx.config['device'] = 'cpu'
+    ctx.config['requested_device'] = device_arg if device_arg is not None else os.environ.get('GGTTS_INSTRUMENT_DEVICE', 'cpu')
+    requested, device = select_device(device_arg)
+    ctx.config['requested_device'] = requested
     ctx.config['threads'] = 4
     ctx.config['itn'] = False
     try:
         ctx.config['funasr_version'] = importlib.metadata.version('funasr')
     except importlib.metadata.PackageNotFoundError:
         ctx.config['funasr_version'] = 'unavailable'
-    hyp = normalize(transcribe(model, ctx.audio))
+    hyp = normalize(transcribe(model, ctx.audio, device))
+    ctx.config['device'] = device
     if not hyp:
         raise ValueError('empty normalized ASR result')
     env.metric('character_error_rate', distance(reference, hyp) / len(reference), '1', 'neutral', render=ctx.render)

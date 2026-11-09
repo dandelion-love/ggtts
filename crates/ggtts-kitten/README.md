@@ -17,7 +17,7 @@ How it was ported, from where, and the parity levels with their measurements: [`
 - **A build with the `ggml` feature**: `git submodule update --init crates/ggtts-ggml-sys/ggml`, cmake and a C/C++
   compiler. For `--device cuda`, use the `cuda` feature with ggml built or linked with CUDA (`GGML_LIB_DIR`, see
   `ggtts-ggml-sys`).
-- **A reference clip**, as a WAV file of about 5 to 30 seconds of one speaker, and its transcript.
+- **A reference clip**, as a lossless FLAC or WAV file of about 5 to 30 seconds of one speaker, and its transcript.
 
 ## Convert, prepare, render
 
@@ -31,7 +31,7 @@ $K/ggtts-kitten-convert --repo $KITTEN --out kitten-lm.gguf
 $K/ggtts-kitten-convert --s3gen $TURBO/s3gen_meanflow.safetensors --pyannote $KITTEN/speaker/model.safetensors \
     --out kitten-s3gen.gguf
 # A reference voice, once per clip.
-$K/ggtts-kitten prepare --s3gguf kitten-s3gen.gguf --wav voice.wav --transcript "What the clip says." --out voice.json
+$K/ggtts-kitten prepare --s3gguf kitten-s3gen.gguf --wav voice.flac --transcript "What the clip says." --out voice.json
 # Text to FLAC.
 $K/ggtts-render --model kitten-lm.gguf --codec kitten-s3gen.gguf --voice voice.json --seed 1234 \
     --text "The little lighthouse kept its lamp burning all through the stormy night." --out line.flac
@@ -66,3 +66,4 @@ non-commercial and limited commercial use, with attribution, and **its outputs m
 model**. That includes audio rendered with this engine. A GGUF converted from those weights carries the same terms.
 The S3Gen decoder (Chatterbox-Turbo) and the pyannote speaker model are MIT. This repository holds no weights, no
 GGUFs, no recordings and no rendered audio.
+

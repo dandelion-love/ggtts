@@ -476,4 +476,3 @@ mod tests {
         assert!((0..128).all(|m| w[m * 201..(m + 1) * 201].iter().any(|&v| v > 0.0)));
     }
 }
-

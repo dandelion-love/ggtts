@@ -266,9 +266,6 @@ impl Model {
             return Err("not a ggtts Kitten-TTS 2 GGUF".into());
         }
         let layout = Layout::parse(gguf.str("kitten.ternary.layout")?).ok_or("unknown ternary layout")?;
-        if layout == Layout::Tq1 && be.device != Device::Cpu {
-            return Err("experimental TQ1_0 is currently supported only on CPU".into());
-        }
         let u = |k: &str| gguf.u32(&format!("kitten.{k}")).map(|v| v as usize);
         let hp = Hparams {
             n_layer: u("block_count")?,
@@ -338,7 +335,7 @@ impl Model {
                     // On CUDA the ternary matrices are held as f16 (see `ternary_f16`). Every weight is a trit times
                     // an fp16 block scale, so f16 holds it exactly; the round trip below proves it per row and
                     // refuses otherwise rather than rounding.
-                    (GgmlType::TQ2_0 | GgmlType::Q4_0, Weights::Ternary | Weights::TernaryF32Head) if ternary_f16 => {
+                    (GgmlType::TQ1_0 | GgmlType::TQ2_0 | GgmlType::Q4_0, Weights::Ternary | Weights::TernaryF32Head) if ternary_f16 => {
                         let cols = t.dims[0] as usize / if t.ty == GgmlType::TQ2_0 { 2 } else { 1 };
                         let rows = t.dims[1] as usize;
                         let x = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_F16, cols as i64, rows as i64);

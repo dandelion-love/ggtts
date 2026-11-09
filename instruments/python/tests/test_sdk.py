@@ -197,6 +197,21 @@ class Audio(unittest.TestCase):
 
 
 class Cli(unittest.TestCase):
+    def test_decoder_provenance_key_is_reserved_and_cannot_silently_replace_config(self):
+        with self.assertRaises(SystemExit):
+            run(lambda c, e: None, "x", "1", [], argv=["--envelope", "unused", "--ggtts-audio-decoders", "value"])
+        with Workdir() as w:
+            out = os.path.join(w, "env.json")
+            def bad(ctx, env):
+                ctx.config["ggtts_audio_decoders"] = "injected"
+                env.metric("m", 1.0, "1", "neutral")
+            self.assertEqual(run(bad, "x", "1", [], argv=["--envelope", out]), 1)
+            with open(out, encoding="utf-8") as f:
+                env = json.load(f)
+            self.assertEqual(env["status"], "failed")
+            self.assertEqual(env["metrics"], [])
+            self.assertIn("reserved", env["error"])
+
     def test_decoder_identity_is_recorded_by_the_decoding_child(self):
         with Workdir() as w:
             audio, out = os.path.join(w, "input.wav"), os.path.join(w, "env.json")
@@ -228,6 +243,8 @@ class Cli(unittest.TestCase):
         except ImportError:
             self.skipTest("soundfile is optional")
         from ggtts_instrument.audio import _loaded_sndfile_paths, sha256_of
+        with patch("ggtts_instrument.audio._bound_module_path", side_effect=["first", "second", "first"]):
+            self.assertEqual(_loaded_sndfile_paths(), [], "mixed bound modules must be unknown")
         if not (sys.platform.startswith("linux") or sys.platform == "win32"):
             self.skipTest("native module enumeration unavailable on this platform")
         with Workdir() as w:
@@ -315,4 +332,3 @@ class Cli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -15,8 +15,9 @@ When an instrument uses `run()` and `read_audio()`, the private envelope's
 `provenance.config.ggtts_audio_decoders` records one `{kind, sha256}` per successful
 decode. Kinds are `ggtts-python-wav`, `ggtts-python-flac`, and `libsndfile`.
 The built-in readers hash the SDK decoder source; native decoding resolves the
-module containing soundfile's bound libsndfile symbol on Linux or Windows and
-hashes that file. A matching `decoder:<kind>` entry in `provenance.inputs`
+module containing soundfile's bound open/read/close symbols on Linux or Windows;
+all three must resolve to the same file, which is hashed. A matching
+`decoder:<kind>` entry in `provenance.inputs`
 holds each known hash. If module resolution is unsupported, ambiguous, or the
 file cannot be read, the hash is null and no marker is added: this means unknown,
 not the built-in decoder. No filesystem path is recorded. The hash identifies
@@ -28,4 +29,3 @@ Tests: `python -m unittest discover -s tests` here, or the cargo harness describ
 
 The envelope rules here restate `schemas/ggtts-report-2.schema.json`; the SDK can also read v1. If the two ever disagree, the schema wins, and
 `tests/test_sdk.py` should gain the case that showed it.
-

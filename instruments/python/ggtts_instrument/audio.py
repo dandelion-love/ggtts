@@ -29,16 +29,26 @@ def _stop_decoder_capture(token):
 
 
 def _loaded_sndfile_paths():
-    """Resolve the module containing soundfile's bound decoder symbol.
+    """Resolve the modules backing the open/read/close functions soundfile uses.
 
     A mapped library with a matching filename alone is insufficient: another
     library might be bound. Resolve the address actually bound by soundfile.
     """
-    import ctypes
     import soundfile
-    address = int(soundfile._ffi.cast("uintptr_t", soundfile._snd.sf_version_string))
+    paths = []
+    for symbol in ("sf_open", "sf_readf_float", "sf_close"):
+        address = int(soundfile._ffi.cast("uintptr_t", getattr(soundfile._snd, symbol)))
+        path = _bound_module_path(address)
+        if not path:
+            return []
+        paths.append(path)
+    return [paths[0]] if len({os.path.normcase(os.path.realpath(p)) for p in paths}) == 1 else []
+
+
+def _bound_module_path(address):
+    import ctypes
     if not address:
-        return []
+        return None
     if sys.platform.startswith("linux"):
         class DlInfo(ctypes.Structure):
             _fields_ = [("filename", ctypes.c_char_p), ("base", ctypes.c_void_p),
@@ -49,8 +59,8 @@ def _loaded_sndfile_paths():
         info = DlInfo()
         if dladdr(ctypes.c_void_p(address), ctypes.byref(info)) and info.filename:
             path = os.fsdecode(info.filename)
-            return [path] if os.path.isabs(path) else []
-        return []
+            return path if os.path.isabs(path) else None
+        return None
     if sys.platform == "win32":
         from ctypes import wintypes
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -59,14 +69,14 @@ def _loaded_sndfile_paths():
         get_handle.argtypes = [wintypes.DWORD, ctypes.c_void_p, ctypes.POINTER(wintypes.HMODULE)]
         get_handle.restype = wintypes.BOOL
         if not get_handle(0x4 | 0x2, ctypes.c_void_p(address), ctypes.byref(handle)):
-            return []
+            return None
         name = kernel.GetModuleFileNameW
         name.argtypes = [wintypes.HMODULE, wintypes.LPWSTR, wintypes.DWORD]
         name.restype = wintypes.DWORD
         buf = ctypes.create_unicode_buffer(32768)
         n = name(handle, buf, len(buf))
-        return [buf.value] if n and n < len(buf) - 1 and os.path.isabs(buf.value) else []
-    return []
+        return buf.value if n and n < len(buf) - 1 and os.path.isabs(buf.value) else None
+    return None
 
 
 def _decoder(kind):
@@ -288,4 +298,3 @@ def read_audio(path, prefer_soundfile=True):
     else:
         raise AudioError("%s is neither WAV nor FLAC" % path)
     return Audio(samples, rate, str(path), sha256_of(path), decoder)
-

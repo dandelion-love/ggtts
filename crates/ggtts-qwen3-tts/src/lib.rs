@@ -21,6 +21,8 @@ pub mod fixtures;
 #[cfg(feature = "ggml")]
 pub mod gguf;
 #[cfg(feature = "ggml")]
+pub mod native_logging;
+#[cfg(feature = "ggml")]
 pub mod stream;
 #[cfg(feature = "ggml")]
 pub mod talker;

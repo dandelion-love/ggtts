@@ -1,4 +1,4 @@
-//! The instrument interface: the fake engine and the pipeline emit every `ggtts-trace/1` event
+//! The instrument interface: the fake engine and the pipeline emit every `ggtts-trace/2` event
 //! with its documented meaning, a recorded trace replays, and tracing changes no output.
 //!
 //! Each check is shown to see what it claims to rule out: replay goes red on a planted token, depth-codebook or
@@ -73,6 +73,7 @@ fn the_fake_and_the_pipeline_emit_every_event_with_its_meaning() {
             assert_eq!(ev(&lines[0]), "trace", "{id}: the header is first");
             assert_eq!(lines[0]["format"], FORMAT);
             assert_eq!(lines[0]["engine"], "fake");
+            assert_eq!(lines[0]["flags"]["p_stop_semantics"], "fake-synthetic/1");
             assert_eq!(lines[0]["protocol"], "story-v1");
             assert_eq!(lines[0]["trace_level"], level);
             assert!(
@@ -148,6 +149,10 @@ fn the_fake_and_the_pipeline_emit_every_event_with_its_meaning() {
                             .or_default()
                             .push((l["draw"].as_u64().unwrap(), l["verdict"].clone()));
                     }
+                    "timing" => {
+                        assert!(["generate", "decode", "judge"].contains(&l["stage"].as_str().unwrap()));
+                        assert!(l["chunk"].is_u64() && l["draw"].is_u64() && l["ms"].is_u64());
+                    }
                     "trim" => {
                         trims += 1;
                         assert!(num(l, "lead_s") >= 0.0 && num(l, "tail_s") >= 0.0);
@@ -192,6 +197,7 @@ fn the_fake_and_the_pipeline_emit_every_event_with_its_meaning() {
         "trim",
         "emit",
         "join",
+        "timing",
         "end",
     ]
     .map(String::from)
@@ -224,6 +230,65 @@ fn a_recorded_trace_replays_exactly() {
             assert_eq!(report.mismatch, None, "{} level {level}", case.id);
         }
     }
+}
+
+#[test]
+fn a_slow_trace_sink_is_measured_without_changing_audio_or_tokens() {
+    struct SlowOnce {
+        data: Vec<u8>,
+        delayed: bool,
+    }
+    impl std::io::Write for SlowOnce {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if !self.delayed {
+                self.delayed = true;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            self.data.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let case = &cases()[0];
+    let mut baseline_engine = case.engine();
+    let baseline = render_story_traced(
+        &mut baseline_engine,
+        &case.story_id,
+        &case.chunks(&case.engine()),
+        &case.opts(&case.engine()),
+        &mut NullEvents,
+    )
+    .unwrap();
+    let mut engine = case.engine();
+    let mut sink = JsonlEvents::new(
+        SlowOnce {
+            data: Vec::new(),
+            delayed: false,
+        },
+        1,
+    );
+    let elapsed = std::time::Instant::now();
+    emit_header(&mut sink, &Header::for_engine(&engine, 1));
+    let read = render_story_traced(
+        &mut engine,
+        &case.story_id,
+        &case.chunks(&case.engine()),
+        &case.opts(&case.engine()),
+        &mut sink,
+    )
+    .unwrap();
+    let (output, stats) = sink.finish_with_stats().unwrap();
+    assert!(elapsed.elapsed() >= std::time::Duration::from_millis(20));
+    assert!(
+        stats.sink_ns >= 20_000_000,
+        "the planted sink delay must be measured: {stats:?}"
+    );
+    assert!(stats.events_written > 0);
+    assert_eq!(baseline.samples, read.samples);
+    let lines = parse(std::str::from_utf8(&output.data).unwrap()).unwrap();
+    assert_eq!(replay(&mut case.engine(), &lines).unwrap().mismatch, None);
 }
 
 /// Change the first line matching `pick` with `edit`, and return the edited trace.

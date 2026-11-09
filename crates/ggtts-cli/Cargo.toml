@@ -22,10 +22,10 @@ ggtts-instruments.workspace = true
 ggtts-qwen3-tts.workspace = true
 ggtts-kitten = { path = "../ggtts-kitten" }
 ggtts-fake.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 claxon.workspace = true
-serde_json.workspace = true
 
 [features]
 default = []

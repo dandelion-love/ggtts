@@ -339,7 +339,10 @@ fn render_with_story_reader(
     if a.timing_report.as_ref().is_some_and(|p| p.exists()) {
         return Err("--timing-report must be a new file".into());
     }
-    if a.duration_report.as_ref().is_some_and(|p| std::fs::symlink_metadata(p).is_ok()) {
+    if a.duration_report
+        .as_ref()
+        .is_some_and(|p| std::fs::symlink_metadata(p).is_ok())
+    {
         return Err("--duration-report must be a new file".into());
     }
     if a.out.is_none() && a.stream.is_none() {
@@ -380,12 +383,19 @@ fn render_with_story_reader(
         None
     };
     if instruments.is_some() {
-        let output = a.out.as_ref().expect("instruments require --out").with_extension("flac");
+        let output = a
+            .out
+            .as_ref()
+            .expect("instruments require --out")
+            .with_extension("flac");
         let dir = a.report.clone().unwrap_or_else(|| output.with_extension("report"));
         for name in ["duration.json", "duration.md"] {
             let path = dir.join(name);
             if std::fs::symlink_metadata(&path).is_ok() {
-                return Err(format!("{} already exists; duration reports never overwrite", path.display()));
+                return Err(format!(
+                    "{} already exists; duration reports never overwrite",
+                    path.display()
+                ));
             }
         }
     }
@@ -609,16 +619,21 @@ fn render_with_story_reader(
                 ),
             );
             if a.duration_report.is_some() || instruments.is_some() {
-                duration_chunks = Some(read.chunks.iter().map(|c| {
-                    let trimmed = c.span.1 - c.span.0;
-                    let sr = c.decoded_sample_rate;
-                    serde_json::json!({"chunk": c.i, "kept_draw": c.redraws,
+                duration_chunks = Some(
+                    read.chunks
+                        .iter()
+                        .map(|c| {
+                            let trimmed = c.span.1 - c.span.0;
+                            let sr = c.decoded_sample_rate;
+                            serde_json::json!({"chunk": c.i, "kept_draw": c.redraws,
                         "sample_rate": (sr > 0).then_some(sr),
                         "decoded_samples": c.decoded_samples,
                         "decoded_seconds": (sr > 0).then(|| c.decoded_samples as f64 / f64::from(sr)),
                         "trimmed_samples": trimmed,
                         "trimmed_seconds": (sr > 0).then(|| trimmed as f64 / f64::from(sr))})
-                }).collect::<Vec<_>>());
+                        })
+                        .collect::<Vec<_>>(),
+                );
             }
             (read.samples, read.sample_rate)
         }
@@ -627,8 +642,9 @@ fn render_with_story_reader(
     let render_ms = measured_render_ms;
     let duration_data = if a.duration_report.is_some() || instruments.is_some() {
         let story = a.story.is_some();
-        let chunk_samples = duration_chunks.as_ref().map(|chunks| chunks.iter()
-            .filter_map(|c| c["trimmed_samples"].as_u64()).sum::<u64>());
+        let chunk_samples = duration_chunks
+            .as_ref()
+            .map(|chunks| chunks.iter().filter_map(|c| c["trimmed_samples"].as_u64()).sum::<u64>());
         let joins = chunk_samples.and_then(|n| (samples.len() as u64).checked_sub(n));
         Some(serde_json::json!({
             "format": "ggtts-duration/1", "path": if story { "story" } else { "text" },
@@ -642,7 +658,9 @@ fn render_with_story_reader(
             "text_decoded_seconds": (!story && rate > 0).then(|| samples.len() as f64 / f64::from(rate)),
             "rate_note": "Chunk seconds use each decoder rate. The pipeline concatenates without resampling and outputs at the first chunk rate; differing rates change playback duration. Output and join seconds use the output rate."
         }))
-    } else { None };
+    } else {
+        None
+    };
     let mut written = None;
     let mut artifact_write_ns = None;
     if let Some(out) = &a.out {
@@ -669,12 +687,15 @@ fn render_with_story_reader(
         }
         written = Some(path);
     }
-    if let (Some(path), Some(data)) = (&a.duration_report, &duration_data) {
+    let write_duration = |path: &Path, data: &serde_json::Value| -> Result<(), String> {
         use std::io::Write;
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path)
-            .map_err(|e| format!("--duration-report {}: {e}", path.display()))?;
-        writeln!(file, "{data}").map_err(|e| format!("--duration-report {}: {e}", path.display()))?;
-    }
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|e| format!("duration report {}: {e}", path.display()))?;
+        writeln!(file, "{data}").map_err(|e| format!("duration report {}: {e}", path.display()))
+    };
     let write_timing = |instrument_ms: Option<u128>| -> Result<(), String> {
         let Some(path) = &a.timing_report else {
             return Ok(());
@@ -719,6 +740,9 @@ fn render_with_story_reader(
         writeln!(file, "{report}").map_err(|e| format!("--timing-report {}: {e}", path.display()))
     };
     let (Some(config), Some(path)) = (instruments, written) else {
+        if let (Some(path), Some(data)) = (&a.duration_report, &duration_data) {
+            write_duration(path, data)?;
+        }
         write_timing(None)?;
         return Ok(ggtts_instruments::runner::EXIT_OK);
     };
@@ -752,15 +776,35 @@ fn render_with_story_reader(
     if let Some(data) = &duration_data {
         let file = inputs.report_dir.join("duration.json");
         use std::io::Write;
-        let mut out = std::fs::OpenOptions::new().write(true).create_new(true).open(&file)
-            .map_err(|e| format!("{}: {e}", file.display()))?;
-        writeln!(out, "{data}").map_err(|e| format!("{}: {e}", file.display()))?;
+        write_duration(&file, data)?;
+        // Resolve after the runner creates its directory, including path aliases.
+        if let Some(explicit) = &a.duration_report {
+            let same_file = std::fs::canonicalize(explicit)
+                .ok()
+                .zip(std::fs::canonicalize(&file).ok())
+                .is_some_and(|(a, b)| a == b);
+            if !same_file {
+                write_duration(explicit, data)?;
+            }
+        }
         let md = inputs.report_dir.join("duration.md");
-        let mut out = std::fs::OpenOptions::new().write(true).create_new(true).open(&md)
+        let mut out = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&md)
             .map_err(|e| format!("{}: {e}", md.display()))?;
         writeln!(out, "# Audio durations\n\nKept decoded and trimmed chunk durations, join contribution, and emitted duration are recorded below and in [duration.json](duration.json). Rejected redraws are excluded.\n\n```json\n{data}\n```")
             .map_err(|e| format!("{}: {e}", md.display()))?;
-        log.stderr(LogLevel::Info, BINARY, "duration_report", format_args!("kept decoded, trimmed, join and emitted durations: {} and {}", file.display(), md.display()));
+        log.stderr(
+            LogLevel::Info,
+            BINARY,
+            "duration_report",
+            format_args!(
+                "kept decoded, trimmed, join and emitted durations: {} and {}",
+                file.display(),
+                md.display()
+            ),
+        );
     }
     for e in &summary.envelopes {
         let why = e.error.as_ref().map_or(String::new(), |w| format!(": {w}"));

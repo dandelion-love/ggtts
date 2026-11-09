@@ -65,7 +65,10 @@ fn duration_counts_describe_only_the_kept_draw() {
             saw_cut |= kept < record.decoded_samples;
         }
     }
-    assert!(saw_redraw && saw_cut, "controls must include redraw and a planted edge cut");
+    assert!(
+        saw_redraw && saw_cut,
+        "controls must include redraw and a planted edge cut"
+    );
     let case = &cases()[0];
     let mut engine = case.engine();
     let chunks = case.chunks(&engine);
@@ -73,7 +76,11 @@ fn duration_counts_describe_only_the_kept_draw() {
     opts.edge_s = 1_000_000.0;
     let read = render_story(&mut engine, &case.story_id, &chunks, &opts).unwrap();
     for record in &read.chunks {
-        assert_eq!(record.decoded_samples, record.span.1 - record.span.0, "no-op trim changes count");
+        assert_eq!(
+            record.decoded_samples,
+            record.span.1 - record.span.0,
+            "no-op trim changes count"
+        );
     }
 }
 

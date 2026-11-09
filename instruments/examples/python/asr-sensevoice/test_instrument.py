@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -27,6 +28,19 @@ class FakeEnvelope:
 
 
 class TestInstrument(unittest.TestCase):
+    def test_unavailable_cuda_records_request_without_claiming_use(self):
+        out = self.root / 'unavailable.json'
+        args = ['--audio', str(self.audio), '--envelope', str(out), '--model-dir', str(self.model),
+                '--reference-file', str(self.reference)]
+        fake_torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False))
+        with patch.dict(sys.modules, {'torch': fake_torch}), patch.dict(os.environ, {'GGTTS_INSTRUMENT_DEVICE': 'cuda'}):
+            code = instrument.run(instrument.measure, instrument.NAME, instrument.VERSION,
+                                  ['artifact.audio'], audio_state='unknown', argv=args)
+        config = json.loads(out.read_text(encoding='utf-8'))['provenance']['config']
+        self.assertEqual(code, 1)
+        self.assertEqual(config['requested_device'], 'cuda')
+        self.assertNotIn('device', config)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)

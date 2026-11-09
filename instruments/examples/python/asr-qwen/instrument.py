@@ -109,12 +109,13 @@ def measure(ctx, env):
     ctx.config['requested_device'] = device_arg if device_arg is not None else os.environ.get('GGTTS_INSTRUMENT_DEVICE', 'cpu')
     requested, device = select_device(device_arg)
     ctx.config.update({'normalization': 'unicode-nfkc-casefold-alphanumeric-v1', 'language': 'Cantonese',
-                       'requested_device': requested, 'device': device, 'threads': 4})
+                       'requested_device': requested, 'threads': 4})
     try:
         ctx.config['qwen_asr_version'] = importlib.metadata.version('qwen-asr')
     except importlib.metadata.PackageNotFoundError:
         ctx.config['qwen_asr_version'] = 'unavailable'
     hyp = normalize(transcribe(model, ctx.audio, device))
+    ctx.config['device'] = device
     if not hyp:
         raise ValueError('empty normalized ASR result')
     env.metric('character_error_rate', distance(reference, hyp) / len(reference), '1', 'neutral', render=ctx.render)

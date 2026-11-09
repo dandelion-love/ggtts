@@ -7,7 +7,7 @@ CUDA archive for Linux, not Windows.
 
 Use a 64-bit Windows environment with a compatible NVIDIA GPU and driver, the
 Microsoft Visual C++ x64 Redistributable, Rust pinned by `rust-toolchain.toml`,
-Visual Studio C++ build tools, CMake, Ninja, libclang and a CUDA 12 toolkit. Set
+Visual Studio C++ build tools, CMake, Ninja, Git Bash, libclang and a CUDA 12 toolkit. Set
 `LIBCLANG_PATH` to the directory containing libclang and start a Visual Studio
 developer shell. The build below targets NVIDIA compute capabilities 8.6 and
 8.9; support for other architectures has not been established. The portable
@@ -20,6 +20,8 @@ executables as follows:
 git submodule update --init crates/ggtts-ggml-sys/ggml
 $env:CUDA_PATH = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.3'
 $env:CUDA_HOME = $env:CUDA_PATH
+$env:CUDACXX = Join-Path $env:CUDA_PATH 'bin\nvcc.exe'
+$env:PATH = (Join-Path $env:CUDA_PATH 'bin') + ';' + $env:PATH
 $env:GGML_PORTABLE = '1'
 $env:GGML_CUDA_ARCH = '86;89'
 $env:CMAKE_GENERATOR = 'Ninja'

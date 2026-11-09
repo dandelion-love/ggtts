@@ -17,7 +17,7 @@ from ggtts_instrument import read_audio, run
 from ggtts_instrument.audio import sha256_of
 from ggtts_instrument.device import select_device, verify_model_device
 
-NAME, VERSION = 'asr-sensevoice', '0.2.0'
+NAME, VERSION = 'asr-sensevoice', '0.2.1'
 _TAG = re.compile(r'<\|[^|]*\|>')
 
 
@@ -75,10 +75,13 @@ def measure(ctx, env):
     ref = Path(ref_arg)
     if not model.is_dir() or not ref.is_file():
         raise ValueError('local model directory and reference file are required')
-    # SenseVoice requires these files; never download a model implicitly.
-    model_files = ('model.pt', 'config.yaml', 'am.mvn', 'tokens.json', 'chn_jpn_yue_eng_ko_spectok.bpe.model')
+    # The official FunASR snapshot maps these files via configuration.json.
+    # Some local variants also contain tokens.json; preserve its hash when present.
+    model_files = ('model.pt', 'config.yaml', 'configuration.json', 'am.mvn', 'chn_jpn_yue_eng_ko_spectok.bpe.model')
     if any(not (model / name).is_file() for name in model_files):
         raise ValueError('local model is incomplete')
+    if (model / 'tokens.json').is_file():
+        model_files += ('tokens.json',)
     audio = read_audio(ctx.audio)
     if not audio.samples:
         raise ValueError('empty audio')

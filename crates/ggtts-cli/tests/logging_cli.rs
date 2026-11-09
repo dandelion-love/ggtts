@@ -69,6 +69,12 @@ fn json_logs_are_consistent_and_do_not_contaminate_audio_stdout() {
     assert_eq!(timings["trace_sink"]["level"], 2);
     assert!(timings["stages"]["generated_frames_per_second"].as_f64().unwrap() > 0.0);
     assert!(timings["instrument_phase_ms"].is_number());
+    let duration: serde_json::Value = serde_json::from_slice(&std::fs::read(report.join("duration.json")).unwrap()).unwrap();
+    assert_eq!(duration["format"], "ggtts-duration/1");
+    assert_eq!(duration["discarded_draws_included"], false);
+    let chunk = &duration["chunks"][0];
+    assert!(chunk["decoded_samples"].as_u64().unwrap() >= chunk["trimmed_samples"].as_u64().unwrap());
+    assert!(std::fs::read_to_string(report.join("report.md")).unwrap().contains("Audio durations"));
     assert!(timings["stream"]["write_ns"].is_number());
     let run_log = std::fs::read_to_string(report.join("run.log")).unwrap();
     assert!(run_log

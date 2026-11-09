@@ -114,7 +114,7 @@ const USAGE: &str = "usage: ggtts-render --model M.gguf [--codec C.gguf] --out x
 [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
 [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID] \
-[--log-level error|warn|info|debug|trace] [--log-format text|json] [--timing-report FILE]\n       ggtts-render --version";
+[--log-level error|warn|info|debug|trace] [--log-format text|json] [--timing-report FILE] [--duration-report FILE]\n       ggtts-render --version";
 
 /// Which stream to ask for, printed by `--help`.
 const STREAMS: &str = concat!(
@@ -148,6 +148,7 @@ struct Args {
     trace: Option<PathBuf>,
     trace_level: Option<u8>,
     timing_report: Option<PathBuf>,
+    duration_report: Option<PathBuf>,
     /// A reference voice, for engines that clone one (kitten-tts-2: a `ggtts-kitten prepare` JSON). Others ignore it.
     voice: Option<PathBuf>,
     /// Named speaker in a Qwen talker; distinct from a cloned reference voice.
@@ -185,6 +186,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--device" => a.device = Some(value()?),
             "--trace" => a.trace = Some(value()?.into()),
             "--timing-report" => a.timing_report = Some(value()?.into()),
+            "--duration-report" => a.duration_report = Some(value()?.into()),
             "--trace-level" => {
                 let level = value()?.parse::<u8>().map_err(|_| "--trace-level must be 1 or 2")?;
                 if !(1..=2).contains(&level) {
@@ -337,6 +339,9 @@ fn render_with_story_reader(
     if a.timing_report.as_ref().is_some_and(|p| p.exists()) {
         return Err("--timing-report must be a new file".into());
     }
+    if a.duration_report.as_ref().is_some_and(|p| p.exists()) {
+        return Err("--duration-report must be a new file".into());
+    }
     if a.out.is_none() && a.stream.is_none() {
         return Err("--out is required (or --stream)".into());
     }
@@ -414,6 +419,7 @@ fn render_with_story_reader(
     let mut stage_times = None;
     let mut trace_stats = None;
     let mut stream_stats = None;
+    let mut duration_chunks = None;
     let (samples, rate) = match (&a.text, &a.story) {
         (Some(text), None) => {
             let req = ChunkRequest {
@@ -592,11 +598,40 @@ fn render_with_story_reader(
                     read.seconds()
                 ),
             );
+            if a.duration_report.is_some() || instruments.is_some() {
+                duration_chunks = Some(read.chunks.iter().map(|c| {
+                    let trimmed = c.span.1 - c.span.0;
+                    let sr = c.decoded_sample_rate;
+                    serde_json::json!({"chunk": c.i, "kept_draw": c.redraws,
+                        "sample_rate": (sr > 0).then_some(sr),
+                        "decoded_samples": c.decoded_samples,
+                        "decoded_seconds": (sr > 0).then(|| c.decoded_samples as f64 / f64::from(sr)),
+                        "trimmed_samples": trimmed,
+                        "trimmed_seconds": (sr > 0).then(|| trimmed as f64 / f64::from(sr))})
+                }).collect::<Vec<_>>());
+            }
             (read.samples, read.sample_rate)
         }
         _ => return Err("give exactly one of --text and --story".into()),
     };
     let render_ms = measured_render_ms;
+    let duration_data = if a.duration_report.is_some() || instruments.is_some() {
+        let story = a.story.is_some();
+        let chunk_samples = duration_chunks.as_ref().map(|chunks| chunks.iter()
+            .filter_map(|c| c["trimmed_samples"].as_u64()).sum::<u64>());
+        let joins = chunk_samples.and_then(|n| (samples.len() as u64).checked_sub(n));
+        Some(serde_json::json!({
+            "format": "ggtts-duration/1", "path": if story { "story" } else { "text" },
+            "chunks": duration_chunks,
+            "discarded_draws_included": false,
+            "output_sample_rate": (rate > 0).then_some(rate), "output_samples": samples.len(),
+            "output_seconds": (rate > 0).then(|| samples.len() as f64 / f64::from(rate)),
+            "join_samples": joins,
+            "join_seconds": joins.and_then(|n| (rate > 0).then(|| n as f64 / f64::from(rate))),
+            "text_decoded_samples": (!story).then_some(samples.len()),
+            "text_decoded_seconds": (!story && rate > 0).then(|| samples.len() as f64 / f64::from(rate))
+        }))
+    } else { None };
     let mut written = None;
     let mut artifact_write_ns = None;
     if let Some(out) = &a.out {
@@ -622,6 +657,12 @@ fn render_with_story_reader(
             );
         }
         written = Some(path);
+    }
+    if let (Some(path), Some(data)) = (&a.duration_report, &duration_data) {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path)
+            .map_err(|e| format!("--duration-report {}: {e}", path.display()))?;
+        writeln!(file, "{data}").map_err(|e| format!("--duration-report {}: {e}", path.display()))?;
     }
     let write_timing = |instrument_ms: Option<u128>| -> Result<(), String> {
         let Some(path) = &a.timing_report else {
@@ -697,6 +738,16 @@ fn render_with_story_reader(
         instruments_dir: None,
     };
     let summary = ggtts_instruments::runner::run_with_logging(&config, &inputs, log)?;
+    if let Some(data) = &duration_data {
+        let file = inputs.report_dir.join("duration.json");
+        std::fs::write(&file, format!("{data}\n")).map_err(|e| format!("{}: {e}", file.display()))?;
+        use std::io::Write;
+        let md = inputs.report_dir.join("report.md");
+        let mut out = std::fs::OpenOptions::new().append(true).open(&md)
+            .map_err(|e| format!("{}: {e}", md.display()))?;
+        writeln!(out, "\n## Audio durations\n\nKept decoded and trimmed chunk durations, join contribution, and emitted duration are recorded in [duration.json](duration.json). Rejected redraws are excluded.\n\n```json\n{data}\n```")
+            .map_err(|e| format!("{}: {e}", md.display()))?;
+    }
     for e in &summary.envelopes {
         let why = e.error.as_ref().map_or(String::new(), |w| format!(": {w}"));
         let level = match e.status {

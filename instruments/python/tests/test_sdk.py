@@ -8,9 +8,11 @@ import io
 import json
 import os
 import struct
+import subprocess
 import sys
 import threading
 import unittest
+from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
@@ -195,6 +197,86 @@ class Audio(unittest.TestCase):
 
 
 class Cli(unittest.TestCase):
+    def test_decoder_identity_is_recorded_by_the_decoding_child(self):
+        with Workdir() as w:
+            audio, out = os.path.join(w, "input.wav"), os.path.join(w, "env.json")
+            write_wav(audio, [0.0, 0.5, -0.5], 24000)
+            def measure(ctx, env):
+                read_audio(ctx.audio)
+                env.input(ctx.audio)
+            self.assertEqual(run(measure, "x", "1", [], argv=["--audio", audio, "--envelope", out]), 0)
+            with open(out, encoding="utf-8") as f:
+                env = json.load(f)
+            records = env["provenance"]["config"]["ggtts_audio_decoders"]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["kind"], "ggtts-python-wav")
+            self.assertEqual(len(records[0]["sha256"]), 64)
+            self.assertIn({"path": "decoder:ggtts-python-wav", "sha256": records[0]["sha256"]},
+                          env["provenance"]["inputs"])
+            self.assertNotIn(w, json.dumps(records))
+            self.assertEqual(check(env), [])
+
+    def test_unknown_and_ambiguous_native_identity_never_invents_a_hash(self):
+        from ggtts_instrument.audio import _decoder
+        for paths in ([], ["not-a-real-file"], ["one", "two"]):
+            with patch("ggtts_instrument.audio._loaded_sndfile_paths", return_value=paths):
+                self.assertEqual(_decoder("libsndfile"), {"kind": "libsndfile", "sha256": None})
+
+    def test_real_native_flac_decoder_identifies_its_loaded_library(self):
+        try:
+            import soundfile
+        except ImportError:
+            self.skipTest("soundfile is optional")
+        from ggtts_instrument.audio import _loaded_sndfile_paths, sha256_of
+        if not (sys.platform.startswith("linux") or sys.platform == "win32"):
+            self.skipTest("native module enumeration unavailable on this platform")
+        with Workdir() as w:
+            audio, out = os.path.join(w, "input.flac"), os.path.join(w, "env.json")
+            soundfile.write(audio, [0.0, 0.5, -0.5], 24000, format="FLAC", subtype="PCM_16")
+            self.assertEqual(run(lambda c, e: read_audio(c.audio), "x", "1", [],
+                                 argv=["--audio", audio, "--envelope", out]), 0)
+            with open(out, encoding="utf-8") as f:
+                env = json.load(f)
+            paths = _loaded_sndfile_paths()
+            self.assertEqual(len(paths), 1, "actual loaded decoder must be unambiguous")
+            digest = sha256_of(paths[0])
+            self.assertEqual(env["provenance"]["config"]["ggtts_audio_decoders"],
+                             [{"kind": "libsndfile", "sha256": digest}])
+            self.assertIn({"path": "decoder:libsndfile", "sha256": digest}, env["provenance"]["inputs"])
+            self.assertNotIn(paths[0], json.dumps(env))
+            unknown = os.path.join(w, "unknown.json")
+            with patch("ggtts_instrument.audio._loaded_sndfile_paths", return_value=[]):
+                self.assertEqual(run(lambda c, e: read_audio(c.audio), "x", "1", [],
+                                     argv=["--audio", audio, "--envelope", unknown]), 0)
+            with open(unknown, encoding="utf-8") as f:
+                missing = json.load(f)
+            self.assertEqual(missing["provenance"]["config"]["ggtts_audio_decoders"],
+                             [{"kind": "libsndfile", "sha256": None}])
+            self.assertFalse(any(x["path"].startswith("decoder:") for x in missing["provenance"]["inputs"]))
+
+    def test_real_instrument_child_records_native_decoder(self):
+        try:
+            import soundfile
+        except ImportError:
+            self.skipTest("soundfile is optional")
+        if not (sys.platform.startswith("linux") or sys.platform == "win32"):
+            self.skipTest("native module resolution unavailable on this platform")
+        with Workdir() as w:
+            audio, out = os.path.join(w, "input.flac"), os.path.join(w, "env.json")
+            soundfile.write(audio, [0.0, 0.5, -0.5] * 1000, 24000, format="FLAC", subtype="PCM_16")
+            script = os.path.abspath(os.path.join(HERE, "..", "..", "examples", "python", "internal-pauses", "instrument.py"))
+            result = subprocess.run([sys.executable, script, "--audio", audio, "--envelope", out],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with open(out, encoding="utf-8") as f:
+                env = json.load(f)
+            decoder = env["provenance"]["config"]["ggtts_audio_decoders"][0]
+            self.assertEqual(decoder["kind"], "libsndfile")
+            self.assertIsNotNone(decoder["sha256"])
+            self.assertIn({"path": "decoder:libsndfile", "sha256": decoder["sha256"]},
+                          env["provenance"]["inputs"])
+            self.assertEqual(check(env), [])
+
     def test_a_crash_is_written_as_a_failed_envelope(self):
         with Workdir() as w:
             out = os.path.join(w, "env.json")
@@ -233,3 +315,4 @@ class Cli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -227,6 +227,22 @@ mod tests {
     }
 
     #[test]
+    fn decoder_provenance_does_not_export_configuration_or_paths() {
+        let mut input = report("ok", true);
+        let provenance = &mut input["instruments"][0]["provenance"];
+        provenance["config"]["ggtts_audio_decoders"] =
+            json!([{"kind":"libsndfile","sha256":"d".repeat(64),"private":"private-decoder-path"}]);
+        provenance["inputs"].as_array_mut().unwrap().push(json!({
+            "path":"decoder:libsndfile", "sha256":"d".repeat(64)
+        }));
+        let output = export(&input).unwrap();
+        let serialized = output.to_string();
+        assert!(!serialized.contains("private-decoder-path"));
+        assert!(!serialized.contains("decoder:libsndfile"));
+        assert!(serialized.contains(&"d".repeat(64)));
+    }
+
+    #[test]
     fn removes_planted_strings_for_success_and_failure() {
         for status in ["ok", "failed", "timeout", "skipped", "truncated"] {
             let input = report(status, true);
@@ -381,3 +397,4 @@ mod tests {
         assert_eq!(export(&own).unwrap()["measurement"], "incomplete");
     }
 }
+

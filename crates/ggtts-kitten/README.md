@@ -66,4 +66,3 @@ non-commercial and limited commercial use, with attribution, and **its outputs m
 model**. That includes audio rendered with this engine. A GGUF converted from those weights carries the same terms.
 The S3Gen decoder (Chatterbox-Turbo) and the pyannote speaker model are MIT. This repository holds no weights, no
 GGUFs, no recordings and no rendered audio.
-

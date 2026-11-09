@@ -100,12 +100,14 @@ fn exports_the_timing_instruments_real_synthetic_envelope() {
     let exported = shared["instruments"][0]["metrics"].as_array().unwrap();
     assert_eq!(exported.len(), metrics.len());
     for (before, after) in metrics.iter().zip(exported) {
-        for key in ["name", "unit", "value", "direction"] {
+        for key in ["name", "unit", "direction"] {
             assert_eq!(before[key], after[key]);
         }
+        assert!(before["value"].as_f64().is_some());
+        assert_eq!(before["value"].as_f64(), after["value"].as_f64());
     }
-    let schema_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../schemas/ggtts-shareable-report-1.schema.json");
+    let schema_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/ggtts-shareable-report-1.schema.json");
     let schema: Value = serde_json::from_slice(&std::fs::read(schema_path).unwrap()).unwrap();
     assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&shared));
     assert!(!shared.to_string().contains("private-trace-path"));

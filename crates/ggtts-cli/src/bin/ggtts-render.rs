@@ -760,7 +760,7 @@ fn render_with_story_reader(
             .map_err(|e| format!("{}: {e}", md.display()))?;
         writeln!(out, "# Audio durations\n\nKept decoded and trimmed chunk durations, join contribution, and emitted duration are recorded below and in [duration.json](duration.json). Rejected redraws are excluded.\n\n```json\n{data}\n```")
             .map_err(|e| format!("{}: {e}", md.display()))?;
-        log.stderr(LogLevel::Info, BINARY, "duration_report", format_args!("audio durations: {}", md.display()));
+        log.stderr(LogLevel::Info, BINARY, "duration_report", format_args!("kept decoded, trimmed, join and emitted durations: {} and {}", file.display(), md.display()));
     }
     for e in &summary.envelopes {
         let why = e.error.as_ref().map_or(String::new(), |w| format!(": {w}"));

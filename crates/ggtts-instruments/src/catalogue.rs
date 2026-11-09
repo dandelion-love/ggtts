@@ -103,13 +103,13 @@ pub const CATALOGUE: &[Known] = &[
     python(
         "asr-sensevoice",
         "examples/python/asr-sensevoice/instrument.py",
-        "optional CPU ASR character error against a local reference; not a quality verdict",
+        "optional ASR character error against a local reference; not a quality verdict",
         false,
     ),
     python(
         "asr-qwen",
         "examples/python/asr-qwen/instrument.py",
-        "offline CPU Qwen3-ASR character error rate against a local reference",
+        "offline Qwen3-ASR character error rate against a local reference",
         false,
     ),
 ];
@@ -125,6 +125,7 @@ pub fn template_yaml() -> String {
          # Every key has a flag (--instrument NAME,KEY=VALUE, --on-instrument-error, --instrument-timeout), and a flag\n\
          # overrides the file. Schema: docs/instruments/instruments.schema.json.\n\
          format: ggtts-instruments/1\n\
+         # device: cuda       # default for device-aware instruments; per-instrument args.device overrides\n\
          on_error: continue   # or abort: the render's output is kept either way\n\
          timeout_s: 60        # per instrument, unless its entry sets timeout_s\n\
          require: []          # instruments the measurement depends on: any not ok makes it INCOMPLETE (exit 3)\n\

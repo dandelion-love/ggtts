@@ -101,7 +101,7 @@ pub const CATALOGUE: &[Known] = &[
         false,
     ),
     Known {
-        version: "0.2.0",
+        version: "0.2.1",
         ..python(
             "asr-sensevoice",
             "examples/python/asr-sensevoice/instrument.py",

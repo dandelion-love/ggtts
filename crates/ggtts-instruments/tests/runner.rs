@@ -483,7 +483,12 @@ fn the_overhead_is_logged_against_the_budget_stated_before_measuring() {
             continue; // Requires an explicitly provisioned model and reference.
         }
         if k.interpreter.is_none() || !skip_python {
-            c.apply_instrument_flag(k.name).unwrap();
+            let flag = if k.name == "render-timing" {
+                "render-timing,arg.stage_only=true"
+            } else {
+                k.name
+            };
+            c.apply_instrument_flag(flag).unwrap();
         }
     }
     let s = run(&c, &inputs).unwrap();

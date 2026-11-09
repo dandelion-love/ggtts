@@ -33,6 +33,8 @@ pub struct RenderOptions {
     pub seed_salt: String,
     /// Silence kept at each edge of a chunk.
     pub edge_s: f64,
+    /// Collect wall-clock stage durations even when tracing is off. Includes observer work inside generation.
+    pub measure_timings: bool,
 }
 
 impl RenderOptions {
@@ -42,6 +44,7 @@ impl RenderOptions {
             redraw: profile.redraw,
             seed_salt: String::new(),
             edge_s: profile.edge_s,
+            measure_timings: false,
         }
     }
 }
@@ -73,6 +76,17 @@ pub struct Read {
     pub sample_rate: u32,
     /// The linear gain the level step applied, or `None` when no sample was above the floor.
     pub gain: Option<f64>,
+    /// Generated codec frames across all draws, including redraws.
+    pub frames_generated: u64,
+    /// Optional wall-clock stage totals. `None` means timing collection was not requested.
+    pub timings: Option<StageTimings>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StageTimings {
+    pub generate_ns: u128,
+    pub decode_ns: u128,
+    pub judge_ns: u128,
 }
 
 impl Read {
@@ -198,6 +212,7 @@ fn render(
 ) -> Result<Read, RenderError> {
     let tracing = events.level() > 0;
     let mut total_frames: u64 = 0;
+    let mut timings = opts.measure_timings.then(StageTimings::default);
     if chunks.is_empty() {
         return Err(RenderError::Empty);
     }
@@ -227,9 +242,54 @@ fn render(
                     n_text_tokens: None,
                 });
             }
+            let stage_start = (tracing || timings.is_some()).then(std::time::Instant::now);
             let generated = engine.generate_hooked(&req, events, hooks)?;
+            if let Some(start) = stage_start {
+                let elapsed = start.elapsed();
+                if let Some(t) = timings.as_mut() {
+                    t.generate_ns += elapsed.as_nanos();
+                }
+                if tracing {
+                    events.emit(Event::Timing {
+                        stage: "generate",
+                        chunk: Some(req.chunk),
+                        draw: Some(k),
+                        ms: elapsed.as_millis() as u64,
+                    });
+                }
+            }
+            let stage_start = (tracing || timings.is_some()).then(std::time::Instant::now);
             let pcm = engine.decode(&generated.codes)?;
+            if let Some(start) = stage_start {
+                let elapsed = start.elapsed();
+                if let Some(t) = timings.as_mut() {
+                    t.decode_ns += elapsed.as_nanos();
+                }
+                if tracing {
+                    events.emit(Event::Timing {
+                        stage: "decode",
+                        chunk: Some(req.chunk),
+                        draw: Some(k),
+                        ms: elapsed.as_millis() as u64,
+                    });
+                }
+            }
+            let stage_start = (tracing || timings.is_some()).then(std::time::Instant::now);
             let j = judge_f32(&profile, &pcm.samples, pcm.sample_rate, &c.text);
+            if let Some(start) = stage_start {
+                let elapsed = start.elapsed();
+                if let Some(t) = timings.as_mut() {
+                    t.judge_ns += elapsed.as_nanos();
+                }
+                if tracing {
+                    events.emit(Event::Timing {
+                        stage: "judge",
+                        chunk: Some(req.chunk),
+                        draw: Some(k),
+                        ms: elapsed.as_millis() as u64,
+                    });
+                }
+            }
             let frames = generated.codes.n_frames();
             total_frames += frames as u64;
             if let Some(t0) = t0 {
@@ -319,6 +379,8 @@ fn render(
         samples,
         sample_rate,
         gain,
+        frames_generated: total_frames,
+        timings,
     })
 }
 

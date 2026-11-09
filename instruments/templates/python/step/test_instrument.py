@@ -13,6 +13,21 @@ SCRIPT = os.path.join(HERE, "instrument.py")
 
 
 class Selftest(unittest.TestCase):
+    def test_report_identifies_or_declares_unknown_stop_semantics(self):
+        with Workdir() as d:
+            r = fixture(d)
+            lines = read_lines(r.trace)
+            lines[0].setdefault("flags", {})["p_stop_semantics"] = "qwen-sampler-weights/1"
+            tagged = os.path.join(d, "tagged.jsonl")
+            write_lines(tagged, lines)
+            result = run_instrument(SCRIPT, d, events=tagged)
+            self.assertEqual(result["provenance"]["config"]["p_stop_semantics"], "qwen-sampler-weights/1")
+            lines[0]["flags"].pop("p_stop_semantics")
+            unknown = os.path.join(d, "old.jsonl")
+            write_lines(unknown, lines)
+            result = run_instrument(SCRIPT, d, events=unknown)
+            self.assertEqual(result["provenance"]["config"]["p_stop_semantics"], "unknown")
+
     def test_noop_reads_as_no_change(self):
         with Workdir() as d:
             r = fixture(d)

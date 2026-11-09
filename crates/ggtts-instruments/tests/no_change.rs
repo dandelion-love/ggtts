@@ -24,6 +24,9 @@ struct Capture<E> {
 }
 
 impl<E: Engine> Engine for Capture<E> {
+    fn p_stop_semantics(&self) -> Option<&'static str> {
+        self.engine.p_stop_semantics()
+    }
     fn info(&self) -> &EngineInfo {
         self.engine.info()
     }
@@ -120,7 +123,12 @@ fn fake_engine_available_catalogue_preserves_tokens_and_samples_and_sees_a_sampl
         if matches!(item.name, "loudness-ends" | "asr-sensevoice" | "asr-qwen") {
             continue; // Optional dependencies and model/reference are not provisioned on ordinary CI.
         }
-        config.apply_instrument_flag(item.name).unwrap();
+        let flag = if item.name == "render-timing" {
+            "render-timing,arg.stage_only=true"
+        } else {
+            item.name
+        };
+        config.apply_instrument_flag(flag).unwrap();
         config.require.push(item.name.to_string());
     }
     let inputs = Inputs {

@@ -17,6 +17,9 @@ def measure(ctx, env):
     threshold = ctx.number("threshold", 0.5)
     trace = read_trace(ctx.events)
     env.input(ctx.events).from_trace(trace, ctx.render)
+    flags = trace.header.get("flags")
+    semantics = flags.get("p_stop_semantics") if isinstance(flags, dict) else None
+    ctx.config["p_stop_semantics"] = semantics if isinstance(semantics, str) and semantics else "unknown"
     draws = trace.draws()
     if not trace.complete:
         env.status("truncated", "the stream has no end event")

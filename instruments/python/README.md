@@ -5,7 +5,7 @@ now; it will be published on PyPI later.
 
 | Module | Use |
 |---|---|
-| `events` | `read_trace(path)` reads a whole `ggtts-trace/1` trace. `iter_events(source)` yields events as they arrive from a pipe or standard input (`-`). A stream without `end` reads as incomplete (`Trace.complete` is False), and an instrument reports it `truncated`. |
+| `events` | `read_trace(path)` reads a whole `ggtts-trace/2` or `/1` trace. `iter_events(source)` yields events as they arrive from a pipe or standard input (`-`). A stream without `end` reads as incomplete (`Trace.complete` is False), and an instrument reports it `truncated`. |
 | `audio` | `read_audio(path)` returns mono float samples and the rate. It reads WAV (16-bit PCM or 32-bit float, streamed WAV included), and FLAC: any FLAC with `soundfile` installed, or without it the subset ggtts writes. |
 | `envelope` | `Envelope` builds a `ggtts-report/2` envelope: identity, provenance, metrics, artifacts by hash. `check(dict)` lists every reason an envelope is invalid, and `write()` refuses to write one. |
 | `cli` | `run(measure, name, version, hooks)` parses the runner's flags, calls `measure(ctx, env)`, and writes the envelope, as `failed` if `measure` raises. |

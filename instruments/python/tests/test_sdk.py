@@ -104,7 +104,7 @@ class Events(unittest.TestCase):
     def test_what_is_not_a_trace_is_refused(self):
         bad = {
             "no header": ['{"ev":"step","t_ms":0}'],
-            "the next format": ['{"ev":"trace","format":"ggtts-trace/2","t_ms":0}'],
+            "the next format": ['{"ev":"trace","format":"ggtts-trace/3","t_ms":0}'],
             "no t_ms": ['{"ev":"trace","format":"ggtts-trace/1"}'],
             "not JSON": ['{"ev":"trace","format":"ggtts-trace/1","t_ms":0}', "{not json"],
             "a second header": ['{"ev":"trace","format":"ggtts-trace/1","t_ms":0}',

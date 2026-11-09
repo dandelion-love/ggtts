@@ -16,6 +16,8 @@ instruments:
   # - edge-trim
   # render-totals: per render: frames, seconds and chunks, and truncated when the stream has no end (template)
   # - render-totals
+  # render-timing: stream first-audio latency, render real-time factor and draw stage durations
+  # - render-timing
   # audio-levels: the rendered audio: peak and RMS level (template)
   # - audio-levels
   # internal-pauses: the rendered audio: silences inside the speech, between its first and last loud frame (example)

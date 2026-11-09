@@ -67,7 +67,8 @@ def main():
     common = [str(binary), "--engine", "qwen3-tts", "--device", args.device, "--model", str(talker),
               "--codec", str(codec), "--story", str(story)]
     for label in ("baseline", "instruments"):
-        cmd = common + ["--out", str(work / (label + ".flac")), "--trace", str(work / (label + ".jsonl"))]
+        cmd = common + ["--out", str(work / (label + ".flac")), "--trace", str(work / (label + ".jsonl")),
+                        "--stream", str(work / (label + "-stream.wav"))]
         if label == "instruments":
             cmd += ["--report", str(work / "report")]
             for name in names:

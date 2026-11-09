@@ -3,6 +3,10 @@
 Reads every `step` event and reports the **stop probability in the first half of each draw**. A well-behaved draw
 keeps `p_stop` low until it is near its end, so a high value early is pressure to stop too soon.
 
+The report's configuration records `p_stop_semantics` from the trace header, or `unknown` when absent. Do not
+compare unmarked older Qwen traces as though they used the current sampler-weight calculation. Fake-engine values
+are synthetic. See [the hook contract](../../../../docs/instruments/hooks.md) for the definitions and limits.
+
 | Metric | Unit | Better | Meaning |
 |---|---|---|---|
 | `p_stop_early_max` | 1 | lower | The highest `p_stop` among the first half of any draw's frames |

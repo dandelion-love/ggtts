@@ -18,6 +18,7 @@ class ProbeTest(unittest.TestCase):
                 require_identical(*args)
 
     def test_catalogue_and_wrong_model_refusal(self):
+        self.assertIn("render-timing", catalogue())
         self.assertIn("pitch-range", catalogue())
         self.assertIn("loudness-ends", catalogue())
         self.assertIn("asr-qwen", catalogue())

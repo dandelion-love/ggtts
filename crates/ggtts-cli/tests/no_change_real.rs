@@ -27,6 +27,9 @@ struct Capture<E> {
 }
 
 impl<E: Engine> Engine for Capture<E> {
+    fn p_stop_semantics(&self) -> Option<&'static str> {
+        self.engine.p_stop_semantics()
+    }
     fn info(&self) -> &EngineInfo {
         self.engine.info()
     }
@@ -142,6 +145,7 @@ fn each_event_instrument_preserves_real_qwen_tokens_and_samples() {
     let root = std::env::temp_dir().join(format!("ggtts-real-each-{}-{backend}", std::process::id()));
     std::fs::create_dir(&root).expect("fresh scratch directory");
     let events = root.join("events.jsonl");
+    assert_eq!(trace.lines[0]["flags"]["p_stop_semantics"], "qwen-sampler-weights/1");
     let lines: Vec<String> = trace
         .lines
         .iter()
@@ -168,7 +172,12 @@ fn each_event_instrument_preserves_real_qwen_tokens_and_samples() {
             continue;
         }
         let mut config = Config::default();
-        config.apply_instrument_flag(item.name).unwrap();
+        let flag = if item.name == "render-timing" {
+            "render-timing,arg.stage_only=true"
+        } else {
+            item.name
+        };
+        config.apply_instrument_flag(flag).unwrap();
         config.require.push(item.name.to_string());
         let inputs = Inputs {
             run: "real-no-change".into(),

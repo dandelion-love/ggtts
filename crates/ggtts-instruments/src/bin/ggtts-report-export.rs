@@ -397,4 +397,3 @@ mod tests {
         assert_eq!(export(&own).unwrap()["measurement"], "incomplete");
     }
 }
-

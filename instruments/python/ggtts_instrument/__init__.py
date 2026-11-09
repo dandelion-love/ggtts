@@ -15,6 +15,7 @@ carries.
 
 from .audio import Audio, AudioError, read_audio
 from .cli import Context, parse_args, run
+from .device import select_device, verify_model_device
 from .envelope import Envelope, EnvelopeError, check
 from .events import Trace, TraceError, iter_events, read_trace
 
@@ -34,4 +35,6 @@ __all__ = [
     "read_audio",
     "read_trace",
     "run",
+    "select_device",
+    "verify_model_device",
 ]

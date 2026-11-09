@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Optional offline CPU Qwen3-ASR instrument for already completed audio."""
+"""Optional offline Qwen3-ASR instrument for already completed audio."""
 import contextlib
 import hashlib
 import importlib.metadata
@@ -16,8 +16,9 @@ except ImportError:
 
 from ggtts_instrument import read_audio, run
 from ggtts_instrument.audio import sha256_of
+from ggtts_instrument.device import select_device, verify_model_device
 
-NAME, VERSION = 'asr-qwen', '0.1.0'
+NAME, VERSION = 'asr-qwen', '0.2.0'
 
 
 def normalize(text):
@@ -48,10 +49,9 @@ def model_identity(model):
     return h.hexdigest()
 
 
-def transcribe(model_dir, audio):
+def transcribe(model_dir, audio, device='cpu'):
     # Suppress third-party output and error text: either can contain private speech.
     try:
-        os.environ['CUDA_VISIBLE_DEVICES'] = ''
         os.environ['HF_HUB_OFFLINE'] = '1'
         os.environ['TRANSFORMERS_OFFLINE'] = '1'
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -59,9 +59,10 @@ def transcribe(model_dir, audio):
             from qwen_asr import Qwen3ASRModel
             torch.set_num_threads(4)
             model = Qwen3ASRModel.from_pretrained(
-                str(model_dir), dtype=torch.float32, device_map='cpu', max_inference_batch_size=1,
+                str(model_dir), dtype=torch.float32, device_map=device, max_inference_batch_size=1,
                 local_files_only=True,
             )
+            verify_model_device(model, device)
             result = model.transcribe([str(audio)], language='Cantonese')
         if not isinstance(result, list) or not result or not isinstance(getattr(result[0], 'text', None), str):
             raise ValueError('malformed result')
@@ -75,6 +76,7 @@ def transcribe(model_dir, audio):
 def measure(ctx, env):
     model_arg = ctx.config.pop('model_dir', '')
     reference_arg = ctx.config.pop('reference_file', '')
+    device_arg = ctx.config.pop('device', None)
     # The SDK's implicit render id is the audio filename stem, which may be private.
     if 'render_default' in ctx.config:
         ctx.render = 'render'
@@ -104,13 +106,16 @@ def measure(ctx, env):
         {'path': 'completed-audio', 'sha256': audio_hash},
         {'path': 'reference-text', 'sha256': reference_hash},
     ])
+    ctx.config['requested_device'] = device_arg if device_arg is not None else os.environ.get('GGTTS_INSTRUMENT_DEVICE', 'cpu')
+    requested, device = select_device(device_arg)
     ctx.config.update({'normalization': 'unicode-nfkc-casefold-alphanumeric-v1', 'language': 'Cantonese',
-                       'device': 'cpu', 'threads': 4})
+                       'requested_device': requested, 'threads': 4})
     try:
         ctx.config['qwen_asr_version'] = importlib.metadata.version('qwen-asr')
     except importlib.metadata.PackageNotFoundError:
         ctx.config['qwen_asr_version'] = 'unavailable'
-    hyp = normalize(transcribe(model, ctx.audio))
+    hyp = normalize(transcribe(model, ctx.audio, device))
+    ctx.config['device'] = device
     if not hyp:
         raise ValueError('empty normalized ASR result')
     env.metric('character_error_rate', distance(reference, hyp) / len(reference), '1', 'neutral', render=ctx.render)

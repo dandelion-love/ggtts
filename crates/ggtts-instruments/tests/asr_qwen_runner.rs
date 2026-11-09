@@ -8,8 +8,9 @@ use ggtts_instruments::runner::{run, Inputs, EXIT_INCOMPLETE, EXIT_OK};
 fn wrapper(path: &Path, script: &Path, result: &str) {
     let source = format!(
         "import runpy,sys,types,time\n\
-         torch=types.ModuleType('torch'); torch.float32='f32'; torch.set_num_threads=lambda n: None\n\
+         torch=types.ModuleType('torch'); torch.float32='f32'; torch.set_num_threads=lambda n: None; torch.cuda=types.SimpleNamespace(is_available=lambda: True)\n\
          class M:\n\
+         \x20 def parameters(self): return iter([types.SimpleNamespace(device=types.SimpleNamespace(type='cuda'))])\n\
          \x20 @staticmethod\n\
          \x20 def from_pretrained(*a,**k): return M()\n\
          \x20 def transcribe(self,*a,**k):\n\
@@ -40,7 +41,7 @@ fn config(wrapper: &Path, model: &Path, reference: &Path, required: bool, timeou
 
 fn sense_wrapper(path: &Path, script: &Path) {
     let source = format!(
-        "import runpy,sys,types\nclass M:\n def __init__(self,**kw): pass\n def generate(self,**kw): return [{{'text':'abcdef'}}]\nsys.modules['funasr']=types.SimpleNamespace(AutoModel=M)\nrunpy.run_path({:?},run_name='__main__')\n",
+        "import runpy,sys,types\nclass M:\n def __init__(self,**kw): pass\n def parameters(self): return iter([types.SimpleNamespace(device=types.SimpleNamespace(type='cuda'))])\n def generate(self,**kw): return [{{'text':'abcdef'}}]\nsys.modules['torch']=types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda:True))\nsys.modules['funasr']=types.SimpleNamespace(AutoModel=M)\nrunpy.run_path({:?},run_name='__main__')\n",
         script.to_string_lossy()
     );
     std::fs::write(path, source).unwrap();
@@ -115,6 +116,55 @@ fn two_asr_instruments_stack_without_chaining_or_changing_audio() {
     let s = run(&sonly, &inputs).unwrap();
     assert_eq!(s.exit_code(), EXIT_OK, "{:?}", s.envelopes);
     assert_eq!(s.envelopes[0].metrics[0].value, Some(0.0));
+    let mut gpu = Config::default();
+    gpu.set_device("cuda").unwrap();
+    gpu.apply_instrument_flag(&qflag).unwrap();
+    gpu.apply_instrument_flag(&sflag).unwrap();
+    gpu.apply_require_flag("asr-qwen").unwrap();
+    gpu.apply_require_flag("asr-sensevoice").unwrap();
+    let result = run(&gpu, &inputs).unwrap();
+    assert_eq!(result.exit_code(), EXIT_OK, "{:?}", result.envelopes);
+    for envelope in &result.envelopes {
+        assert_eq!(envelope.version, "0.2.0");
+        assert_eq!(
+            envelope.provenance.config.get("device").and_then(|v| v.as_str()),
+            Some("cuda")
+        );
+    }
+    gpu.apply_instrument_flag("asr-qwen,arg.device=cpu").unwrap();
+    let result = run(&gpu, &inputs).unwrap();
+    assert_eq!(result.exit_code(), EXIT_OK, "{:?}", result.envelopes);
+    let q_override = result.envelopes.iter().find(|e| e.name == "asr-qwen").unwrap();
+    let s_inherited = result.envelopes.iter().find(|e| e.name == "asr-sensevoice").unwrap();
+    assert_eq!(
+        q_override.provenance.config.get("device").and_then(|v| v.as_str()),
+        Some("cpu")
+    );
+    assert_eq!(
+        s_inherited.provenance.config.get("device").and_then(|v| v.as_str()),
+        Some("cuda")
+    );
+    // The same hint also reaches a third-party child; the runner does not special-case ASR.
+    let custom = root.join("custom.py");
+    let sdk = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../instruments/python");
+    std::fs::write(
+        &custom,
+        format!(
+            "import os,sys\nsys.path.insert(0, {:?})\nfrom ggtts_instrument import run\ndef measure(c,e):\n assert os.environ.get('GGTTS_INSTRUMENT_DEVICE')=='cuda'\n e.metric('seen',1,'1','neutral',render=c.render)\nsys.exit(run(measure,'custom','1',hooks=[]))\n",
+            sdk.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let mut c = Config::default();
+    c.set_device("cuda").unwrap();
+    c.apply_instrument_flag(&format!(
+        "custom,command={},interpreter={python},version=1",
+        custom.display()
+    ))
+    .unwrap();
+    c.apply_require_flag("custom").unwrap();
+    let result = run(&c, &inputs).unwrap();
+    assert_eq!(result.exit_code(), EXIT_OK, "{:?}", result.envelopes);
     // Repeat the same stack as a no-op, then reverse it; both still consume the same input.
     for flags in [[&sflag, &qflag], [&sflag, &qflag], [&qflag, &sflag]] {
         let mut stacked = Config::default();

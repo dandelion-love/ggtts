@@ -33,4 +33,3 @@ instruments:
   # - asr-qwen
   # An instrument of your own: a program that takes --events, --audio, --envelope, --name and its args.
   # - {name: mine, command: /path/to/mine, version: '0.1', timeout_s: 30}
-

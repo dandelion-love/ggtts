@@ -69,4 +69,3 @@ the CPU build-and-test job. It needs Python 3.8 or later; `GGTTS_SKIP_PYTHON=1` 
 
 Without the cargo harness, each self-test runs on a small synthetic render, so Python alone is enough while you
 write one.
-

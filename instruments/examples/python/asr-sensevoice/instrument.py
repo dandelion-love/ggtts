@@ -112,4 +112,3 @@ def measure(ctx, env):
 
 if __name__ == '__main__':
     sys.exit(run(measure, NAME, VERSION, hooks=['artifact.audio'], audio_state='unknown'))
-

@@ -36,4 +36,3 @@ class DeviceTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             verify_model_device(object(), "cuda")
         verify_model_device(object(), "cpu")
-

@@ -542,4 +542,3 @@ mod tests {
         assert_eq!(schema["properties"]["format"]["const"], FORMAT);
     }
 }
-

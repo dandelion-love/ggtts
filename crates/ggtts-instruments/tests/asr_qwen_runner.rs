@@ -277,4 +277,3 @@ fn completed_audio_is_unchanged_and_failures_respect_requirement() {
     assert_eq!(std::fs::read(&audio).unwrap(), before);
     let _ = std::fs::remove_dir_all(root);
 }
-

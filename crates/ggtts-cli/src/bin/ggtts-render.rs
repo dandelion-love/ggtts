@@ -1162,4 +1162,3 @@ mod tests {
         assert!(refused("not-an-engine").starts_with("no engine for architecture"));
     }
 }
-

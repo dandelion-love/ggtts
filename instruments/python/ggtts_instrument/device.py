@@ -34,4 +34,3 @@ def verify_model_device(model, device):
         except (StopIteration, TypeError):
             pass
     raise RuntimeError("instrument model did not demonstrate CUDA placement")
-

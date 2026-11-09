@@ -15,6 +15,7 @@ import sys
 import traceback
 
 from .envelope import Envelope, EnvelopeError
+from .audio import _start_decoder_capture, _stop_decoder_capture
 
 _OWN = ("events", "audio", "envelope", "name", "run", "instrument", "render")
 
@@ -67,6 +68,8 @@ def parse_args(argv=None, default_name=None):
     if "envelope" not in got:
         raise SystemExit("--envelope PATH is required")
     config = {k: v for k, v in got.items() if k not in _OWN}
+    if "ggtts_audio_decoders" in config:
+        raise SystemExit("--ggtts-audio-decoders is reserved for SDK decoder provenance")
     name = got.get("name") or default_name
     if not name:
         raise SystemExit("--name NAME is required")
@@ -93,13 +96,25 @@ def run(measure, name, version, hooks, audio_state="n/a", argv=None):
     """
     ctx = parse_args(argv, default_name=name)
     env = Envelope(ctx.name, version, ctx.run, ctx.instrument, hooks, ctx.config, audio_state)
+    decoders, token = _start_decoder_capture()
     try:
         measure(ctx, env)
     except Exception as e:  # noqa: BLE001 - any failure of the instrument is reported, never swallowed
         traceback.print_exc()
         env.doc["metrics"] = []
         env.status("failed", "%s: %s" % (type(e).__name__, e))
+    finally:
+        _stop_decoder_capture(token)
+    if "ggtts_audio_decoders" in ctx.config:
+        env.doc["metrics"] = []
+        env.status("failed", "ggtts_audio_decoders is reserved for SDK decoder provenance")
     env.doc["provenance"]["config"] = dict(ctx.config)
+    env.doc["provenance"]["config"]["ggtts_audio_decoders"] = decoders
+    for decoder in decoders:
+        if decoder["sha256"]:
+            marker = {"path": "decoder:" + decoder["kind"], "sha256": decoder["sha256"]}
+            if marker not in env.doc["provenance"]["inputs"]:
+                env.doc["provenance"]["inputs"].append(marker)
     try:
         env.write(ctx.envelope)
     except EnvelopeError as e:

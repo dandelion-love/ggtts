@@ -53,7 +53,8 @@
       "oneOf": [
         { "properties": { "unit": {"const":"bytes"}, "name": {"const":"audio_bytes"} } },
         { "properties": { "unit": {"const":"lines"}, "name": {"const":"events"} } },
-        { "properties": { "unit": {"const":"1"}, "name": {"enum":["p_stop_early_max","early_stop_frames","draws","redraws","cap_stops","flagged_draws","chunk_draws","edges_over_limit","frames","chunks","clipped_samples","internal_pauses","pitch_voiced_frames","voiced_frames","character_error_rate"]} } },
+        { "properties": { "unit": {"const":"1"}, "name": {"enum":["p_stop_early_max","early_stop_frames","draws","redraws","cap_stops","flagged_draws","chunk_draws","edges_over_limit","frames","chunks","clipped_samples","internal_pauses","pitch_voiced_frames","voiced_frames","character_error_rate","render_rtf"]} } },
+        { "properties": { "unit": {"const":"ms"}, "name": {"enum":["ttfa_ms","render_ms","generate_ms_total","decode_ms_total","judge_ms_total"]} } },
         { "properties": { "unit": {"const":"s"}, "name": {"enum":["lead_s_max","tail_s_max","trim_s_total","seconds","longest_pause_s","pause_s_total"]} } },
         { "properties": { "unit": {"const":"dB"}, "name": {"enum":["gain_db","loud_p90_db","soft_p10_db"]} } },
         { "properties": { "unit": {"const":"dBFS"}, "name": {"enum":["peak_dbfs","rms_dbfs"]} } },
@@ -61,7 +62,7 @@
         { "properties": { "unit": {"const":"semitones"}, "name": {"const":"pitch_range_st"} } }
       ],
       "properties": {
-        "name": { "type": "string" }, "unit": { "enum": ["1", "s", "bytes", "lines", "dB", "dBFS", "Hz", "semitones"] },
+        "name": { "type": "string" }, "unit": { "enum": ["1", "s", "ms", "bytes", "lines", "dB", "dBFS", "Hz", "semitones"] },
         "value": { "type": ["number", "null"] }, "direction": { "enum": ["higher", "lower", "neutral", "n/a"] },
         "interval": { "anyOf": [{ "type": "null" }, { "type": "array", "prefixItems": [{"type":"number"},{"type":"number"}], "minItems": 2, "maxItems": 2 }] },
         "chunk": { "anyOf": [{ "$ref": "#/$defs/uint" }, { "type": "null" }] },

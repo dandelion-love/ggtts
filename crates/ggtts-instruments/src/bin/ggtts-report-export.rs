@@ -41,6 +41,12 @@ const METRICS: &[(&str, &str)] = &[
     ("loud_p90_db", "dB"),
     ("soft_p10_db", "dB"),
     ("character_error_rate", "1"),
+    ("ttfa_ms", "ms"),
+    ("render_ms", "ms"),
+    ("render_rtf", "1"),
+    ("generate_ms_total", "ms"),
+    ("decode_ms_total", "ms"),
+    ("judge_ms_total", "ms"),
 ];
 
 fn fields(v: &Value, required: &[&str], optional: &[&str]) -> Result<(), ()> {

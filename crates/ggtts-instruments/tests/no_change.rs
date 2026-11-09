@@ -1,7 +1,7 @@
 //! The ordinary CI proof uses the fake engine only. It does not establish real-model or GPU identity.
 //! Event instruments run after rendering; this checks the real runner, its standard-CI catalogue subset, and the
-//! artifacts it handles. The pYIN-dependent loudness instrument is explicitly excluded here: promotion requires
-//! every instrument, including loudness, with its dependencies installed. The planted sample mutation is a test
+//! artifacts it handles. The pYIN-dependent loudness instrument and both ASR instruments are explicitly excluded:
+//! this fixture does not provision their optional dependencies, models or reference texts. The planted sample mutation is a test
 //! double for a bad observer, not a real in-process tensor hook.
 
 use std::collections::HashMap;
@@ -114,8 +114,10 @@ fn fake_engine_available_catalogue_preserves_tokens_and_samples_and_sees_a_sampl
     let before = sha256(&std::fs::read(&audio).unwrap());
     let mut config = Config::default();
     assert!(CATALOGUE.iter().any(|item| item.name == "loudness-ends"));
+    assert!(CATALOGUE.iter().any(|item| item.name == "asr-qwen"));
+    assert!(CATALOGUE.iter().any(|item| item.name == "asr-sensevoice"));
     for item in CATALOGUE {
-        if item.name == "loudness-ends" || item.name == "asr-sensevoice" {
+        if matches!(item.name, "loudness-ends" | "asr-sensevoice" | "asr-qwen") {
             continue; // Optional dependencies and model/reference are not provisioned on ordinary CI.
         }
         config.apply_instrument_flag(item.name).unwrap();
@@ -140,7 +142,7 @@ fn fake_engine_available_catalogue_preserves_tokens_and_samples_and_sees_a_sampl
         "instruments did not all report OK: {:?}",
         result.incomplete
     );
-    assert_eq!(result.envelopes.len() + 2, CATALOGUE.len());
+    assert_eq!(result.envelopes.len() + 3, CATALOGUE.len());
     let schema_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/ggtts-report-2.schema.json");
     let schema: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(schema_path).unwrap()).unwrap();
     let validator = jsonschema::validator_for(&schema).expect("the published report schema compiles");
@@ -167,9 +169,9 @@ fn fake_engine_available_catalogue_preserves_tokens_and_samples_and_sees_a_sampl
         "the sample-mutation plant must make the identity check red"
     );
     println!(
-        "fake backend; seed derived from no-change-fixture; {} instruments; loudness-ends not run; sample plant detected; \
+        "fake backend; seed derived from no-change-fixture; {} instruments; loudness-ends, asr-sensevoice and asr-qwen not run; sample plant detected; \
               does not establish full-catalogue, real-model/GPU identity, timing, or external-artifact safety",
-        CATALOGUE.len() - 1
+        CATALOGUE.len() - 3
     );
     std::fs::remove_dir_all(root).unwrap();
 }

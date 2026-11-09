@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from qwen_event_instrument_probe import catalogue, require_identical
+from qwen_event_instrument_probe import catalogue, require_identical, selected_instruments
 
 
 class ProbeTest(unittest.TestCase):
@@ -20,7 +20,13 @@ class ProbeTest(unittest.TestCase):
     def test_catalogue_and_wrong_model_refusal(self):
         self.assertIn("pitch-range", catalogue())
         self.assertIn("loudness-ends", catalogue())
-        self.assertNotIn("asr-sensevoice", catalogue())
+        self.assertIn("asr-qwen", catalogue())
+        self.assertIn("asr-sensevoice", catalogue())
+        included, excluded = selected_instruments(catalogue())
+        self.assertNotIn("asr-qwen", included)
+        self.assertNotIn("asr-sensevoice", included)
+        self.assertEqual(set(excluded), {"asr-qwen", "asr-sensevoice"})
+        self.assertIn("pitch-range", included)
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             model = root / "model"

@@ -1,7 +1,7 @@
 //! Local real-Qwen no-change proof. Ignored on hosted CI: it needs the published GGUFs and optional CUDA.
 //! Event instruments run after generation. This compares full generated token vectors and decoded samples with
 //! tracing off/on, then runs configured catalogue instruments against the traced render and checks its audio.
-//! The optional ASR instrument is excluded because this fixture supplies no ASR model or reference.
+//! Both optional ASR instruments are excluded because this fixture supplies no ASR models or reference.
 #![cfg(feature = "ggml")]
 
 use std::path::{Path, PathBuf};
@@ -157,9 +157,15 @@ fn each_event_instrument_preserves_real_qwen_tokens_and_samples() {
     std::fs::write(&events, lines.join("\n") + "\n").unwrap();
     let audio = write_flac(&root.join("audio"), &samples, rate).unwrap();
     let audio_sha = sha256(&std::fs::read(&audio).unwrap());
+    assert!(CATALOGUE.iter().any(|item| item.name == "asr-qwen"));
+    assert!(CATALOGUE.iter().any(|item| item.name == "asr-sensevoice"));
     for item in CATALOGUE {
-        if item.name == "asr-sensevoice" {
-            continue; // This fixture does not provide an ASR model or reference text.
+        if matches!(item.name, "asr-sensevoice" | "asr-qwen") {
+            println!(
+                "instrument={} status=not-run reason=no-local-model-or-reference",
+                item.name
+            );
+            continue;
         }
         let mut config = Config::default();
         config.apply_instrument_flag(item.name).unwrap();
@@ -189,8 +195,8 @@ fn each_event_instrument_preserves_real_qwen_tokens_and_samples() {
     }
     println!(
         "backend={backend}; build={}; story=no-change-fixture; seeds={seeds:?}; tokens_sha256={}; \
-              samples_sha256={}; limits: event instruments run after generation; no timing or external-artifact \
-              identity; no cross-backend parity; asr-sensevoice not run",
+              samples_sha256={}; limits: asr-sensevoice and asr-qwen not run; event instruments run after generation; no timing or external-artifact \
+              identity; no cross-backend parity",
         env!("CARGO_PKG_VERSION"),
         hex(&tokens),
         hex(&samples_bytes(&samples))

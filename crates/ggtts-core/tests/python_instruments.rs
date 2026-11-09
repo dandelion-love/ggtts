@@ -119,6 +119,7 @@ fn the_sdk_templates_and_example_pass_their_self_tests_on_a_fake_engine_render()
         "examples/python/internal-pauses",
         "examples/python/pitch-range",
         "examples/python/asr-sensevoice",
+        "examples/python/asr-qwen",
     ] {
         let (ran, skipped) = unittest(&py, &root.join(t), &["test_instrument"], &dir);
         assert!(ran >= 2, "{t}: only {ran} tests ran");

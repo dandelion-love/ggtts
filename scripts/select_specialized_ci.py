@@ -196,6 +196,11 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
         if path in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".gitmodules"):
             return set(JOBS)
         if path.startswith("crates/"):
+            if path == "crates/ggtts-cli/src/bin/ggtts-render.rs":
+                # The renderer contains ggml-gated engine loading and routing. Default CPU
+                # tests do not compile those branches; exercise them without selecting CUDA.
+                selected.update(("ggml", "package"))
+                continue
             if path in MEASUREMENT_PATHS:
                 # The package job exercises the actual CLI/instrument packaging without CUDA or Android.
                 if path.startswith(("crates/ggtts-cli/", "crates/ggtts-instruments/")):

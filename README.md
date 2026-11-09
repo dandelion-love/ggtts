@@ -87,6 +87,11 @@ and described in the [Qwen README](https://github.com/dandelion-love/ggtts/blob/
 To convert Kitten and prepare a voice, follow the [Kitten README](https://github.com/dandelion-love/ggtts/blob/main/crates/ggtts-kitten/README.md#convert-prepare-render).
 Those Kitten tools are source-built and are not in the release archive. The models' own licences apply.
 
+For a Qwen model with named speakers, select the name in its model card with `--speaker NAME`. The Cantonese
+v0.0.5 model uses `--speaker hk_voice_343` (or `hk_voice_777` for its other voice). Without the option, ggtts
+uses the legacy `hk_cantonese_speaker` name, as for v0.0.1. An unknown or absent speaker is an error; ggtts does
+not choose an arbitrary voice. `--speaker` applies only to Qwen, while `--voice` supplies Kitten's reference JSON.
+
 ```bash
 # Run from the extracted archive; edit these paths and DEVICE for your machine.
 GGTTS=./ggtts-render                    # on Windows: ./ggtts-render.exe

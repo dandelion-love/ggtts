@@ -34,6 +34,14 @@ def logging_fixtures():
 
 
 class SelectionTest(unittest.TestCase):
+    def test_renderer_routes_get_ggml_without_cuda(self):
+        renderer = ["crates/ggtts-cli/src/bin/ggtts-render.rs"]
+        self.assertEqual(decide("pull_request", "rc", "feature", True, renderer), {"ggml", "package"})
+        self.assertNotIn("cuda", decide("pull_request", "rc", "feature", True, renderer))
+        self.assertEqual(decide("pull_request", "rc", "feature", True,
+                                ["crates/ggtts-cli/src/bin/ggtts-measure.rs"]), {"package"})
+        self.assertEqual(decide("pull_request", "main", "rc", True, renderer), set(JOBS))
+
     def test_cuda_checkout_has_git_and_initializes_submodule(self):
         root = Path(__file__).resolve().parent.parent
         for file, job in (("ci.yml", "cuda-compile"), ("release.yml", "cuda-build")):
@@ -77,7 +85,7 @@ class SelectionTest(unittest.TestCase):
                  "crates/ggtts-core/tests/report.rs", "crates/ggtts-instruments/src/runner.rs",
                  "crates/ggtts-instruments/tests/runner.rs", "instruments/python/ggtts_instrument/envelope.py",
                  "schemas/ggtts-report-2.schema.json"]
-        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"package"})
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"ggml", "package"})
         self.assertEqual(decide("pull_request", "main", "rc", True, paths), set(JOBS))
         self.assertEqual(decide("pull_request", "rc", "feature", True,
                                 ["crates/unknown/src/lib.rs"]), set(JOBS))
@@ -95,7 +103,7 @@ class SelectionTest(unittest.TestCase):
                  "crates/ggtts-core/src/trace.rs", "crates/ggtts-core/tests/trace.rs",
                  "crates/ggtts-qwen3-tts/src/lib.rs", "crates/ggtts-qwen3-tts/src/native_logging.rs",
                  "crates/ggtts-instruments/src/runner.rs", "scripts/select_specialized_ci.py"]
-        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"package"})
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"ggml", "package"})
         self.assertEqual(decide("pull_request", "main", "rc", True, paths), set(JOBS))
         self.assertEqual(decide("push", "", "", True, paths), set())
 

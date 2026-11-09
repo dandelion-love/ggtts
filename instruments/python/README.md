@@ -26,6 +26,9 @@ protection against replacement while the process runs. The shareable exporter
 removes configuration and paths, retaining input hashes only.
 
 Tests: `python -m unittest discover -s tests` here, or the cargo harness described in `../README.md`.
+The optional real native-decoder tests require `soundfile` and `numpy` and run
+separately with `python -m unittest discover -s native_tests`. The default
+standard-library suite does not exercise a native decoder.
 
 The envelope rules here restate `schemas/ggtts-report-2.schema.json`; the SDK can also read v1. If the two ever disagree, the schema wins, and
 `tests/test_sdk.py` should gain the case that showed it.

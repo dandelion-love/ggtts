@@ -8,9 +8,9 @@ import io
 import json
 import os
 import struct
-import subprocess
 import sys
 import threading
+import types
 import unittest
 from unittest.mock import patch
 
@@ -237,71 +237,20 @@ class Cli(unittest.TestCase):
             with patch("ggtts_instrument.audio._loaded_sndfile_paths", return_value=paths):
                 self.assertEqual(_decoder("libsndfile", "input.flac"), {"kind": "libsndfile", "sha256": None})
 
-    def test_real_native_flac_decoder_identifies_its_loaded_library(self):
-        try:
-            import soundfile
-        except ImportError:
-            self.skipTest("soundfile is optional")
-        from ggtts_instrument.audio import _loaded_sndfile_paths, sha256_of
-        with patch("ggtts_instrument.audio._bound_module_path", side_effect=["first", "second", "first"]):
-            self.assertEqual(_loaded_sndfile_paths("input.flac"), [], "mixed bound modules must be unknown")
-        if sys.platform == "win32":
-            with patch("ggtts_instrument.audio._bound_module_path", return_value="module") as module:
-                _loaded_sndfile_paths("input.flac")
-                want = int(soundfile._ffi.cast("uintptr_t", soundfile._snd.sf_wchar_open))
-                self.assertEqual(module.call_args_list[0].args[0], want)
-            with patch("ggtts_instrument.audio._bound_module_path", return_value="module") as module:
-                _loaded_sndfile_paths(b"input.flac")
-                want = int(soundfile._ffi.cast("uintptr_t", soundfile._snd.sf_open))
-                self.assertEqual(module.call_args_list[0].args[0], want)
-        if not (sys.platform.startswith("linux") or sys.platform == "win32"):
-            self.skipTest("native module enumeration unavailable on this platform")
-        with Workdir() as w:
-            audio, out = os.path.join(w, "input.flac"), os.path.join(w, "env.json")
-            soundfile.write(audio, [0.0, 0.5, -0.5], 24000, format="FLAC", subtype="PCM_16")
-            self.assertEqual(run(lambda c, e: read_audio(c.audio), "x", "1", [],
-                                 argv=["--audio", audio, "--envelope", out]), 0)
-            with open(out, encoding="utf-8") as f:
-                env = json.load(f)
-            paths = _loaded_sndfile_paths(audio)
-            self.assertEqual(len(paths), 1, "actual loaded decoder must be unambiguous")
-            digest = sha256_of(paths[0])
-            self.assertEqual(env["provenance"]["config"]["ggtts_audio_decoders"],
-                             [{"kind": "libsndfile", "sha256": digest}])
-            self.assertIn({"path": "decoder:libsndfile", "sha256": digest}, env["provenance"]["inputs"])
-            self.assertNotIn(paths[0], json.dumps(env))
-            unknown = os.path.join(w, "unknown.json")
-            with patch("ggtts_instrument.audio._loaded_sndfile_paths", return_value=[]):
-                self.assertEqual(run(lambda c, e: read_audio(c.audio), "x", "1", [],
-                                     argv=["--audio", audio, "--envelope", unknown]), 0)
-            with open(unknown, encoding="utf-8") as f:
-                missing = json.load(f)
-            self.assertEqual(missing["provenance"]["config"]["ggtts_audio_decoders"],
-                             [{"kind": "libsndfile", "sha256": None}])
-            self.assertFalse(any(x["path"].startswith("decoder:") for x in missing["provenance"]["inputs"]))
-
-    def test_real_instrument_child_records_native_decoder(self):
-        try:
-            import soundfile
-        except ImportError:
-            self.skipTest("soundfile is optional")
-        if not (sys.platform.startswith("linux") or sys.platform == "win32"):
-            self.skipTest("native module resolution unavailable on this platform")
-        with Workdir() as w:
-            audio, out = os.path.join(w, "input.flac"), os.path.join(w, "env.json")
-            soundfile.write(audio, [0.0, 0.5, -0.5] * 1000, 24000, format="FLAC", subtype="PCM_16")
-            script = os.path.abspath(os.path.join(HERE, "..", "..", "examples", "python", "internal-pauses", "instrument.py"))
-            result = subprocess.run([sys.executable, script, "--audio", audio, "--envelope", out],
-                                    capture_output=True, text=True, timeout=30)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            with open(out, encoding="utf-8") as f:
-                env = json.load(f)
-            decoder = env["provenance"]["config"]["ggtts_audio_decoders"][0]
-            self.assertEqual(decoder["kind"], "libsndfile")
-            self.assertIsNotNone(decoder["sha256"])
-            self.assertIn({"path": "decoder:libsndfile", "sha256": decoder["sha256"]},
-                          env["provenance"]["inputs"])
-            self.assertEqual(check(env), [])
+    def test_native_opener_selection_and_mixed_symbols_without_optional_dependencies(self):
+        from ggtts_instrument.audio import _loaded_sndfile_paths
+        fake = types.SimpleNamespace(_ffi=types.SimpleNamespace(cast=lambda _type, value: value),
+                                     _snd=types.SimpleNamespace(sf_open=11, sf_wchar_open=22,
+                                                                sf_readf_float=33, sf_close=44))
+        for platform, path, expected in (("win32", "input.flac", 22), ("win32", b"input.flac", 11),
+                                         ("linux", "input.flac", 11)):
+            with patch.dict(sys.modules, {"soundfile": fake}), patch("sys.platform", platform), \
+                    patch("ggtts_instrument.audio._bound_module_path", return_value="module") as resolve:
+                self.assertEqual(_loaded_sndfile_paths(path), ["module"])
+                self.assertEqual([x.args[0] for x in resolve.call_args_list], [expected, 33, 44])
+        with patch.dict(sys.modules, {"soundfile": fake}), \
+                patch("ggtts_instrument.audio._bound_module_path", side_effect=["one", "two", "one"]):
+            self.assertEqual(_loaded_sndfile_paths("input.flac"), [])
 
     def test_a_crash_is_written_as_a_failed_envelope(self):
         with Workdir() as w:

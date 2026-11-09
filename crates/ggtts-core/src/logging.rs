@@ -139,6 +139,7 @@ impl Settings {
                             | "--trace-level"
                             | "--timing-report"
                             | "--voice"
+                            | "--speaker"
                             | "--stream"
                             | "--stream-format"
                             | "--stream-level-seconds"
@@ -261,5 +262,9 @@ mod tests {
         assert_eq!(settings.level, Level::Debug);
         assert_eq!(settings.format, Format::Json);
         assert_eq!(rest, ["--text", "--log-level"]);
+        let args = ["--speaker", "--log-level", "--log-level", "debug"].map(str::to_string);
+        let (settings, rest) = Settings::from_args(&args).unwrap();
+        assert_eq!(settings.level, Level::Debug);
+        assert_eq!(rest, ["--speaker", "--log-level"]);
     }
 }

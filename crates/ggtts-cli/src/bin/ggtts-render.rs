@@ -2,13 +2,15 @@
 //!
 //! ```text
 //! ggtts-render --model M.gguf [--codec C.gguf] --out x.flac [--engine auto|qwen3-tts|kitten-tts-2|fake]
-//!              [--threads N] [--device cpu|cuda] [--trace trace.jsonl [--trace-level 1|2]] [--timing-report FILE] [--voice REF.json]
+//!              [--threads N] [--device cpu|cuda] [--trace trace.jsonl [--trace-level 1|2]] [--timing-report FILE] [--voice REF.json] [--speaker NAME]
 //!              [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text "..." [--seed S] | --story story.txt)
 //!              [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE.yaml] [--require NAME]...
 //!              [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID]
 //! ```
 //!
 //! `--voice` is a reference voice for an engine that clones one; an engine that does not ignores it.
+//! `--speaker` selects a named Qwen3-TTS speaker (for example `hk_voice_343`); it is refused for other engines.
+//! Without it Qwen retains the legacy `hk_cantonese_speaker` default; an absent or unknown speaker is an error.
 //! `--engine auto` (the default) picks the engine from the model's `general.architecture`. `--text` renders one
 //! request at one seed (default 20260905). `--story` reads a story file (title line, then one paragraph per line)
 //! and renders it on the core's story path. For stories `--trace` writes a complete ggtts-trace/2 event stream;
@@ -108,7 +110,7 @@ impl StreamTiming {
     }
 }
 const USAGE: &str = "usage: ggtts-render --model M.gguf [--codec C.gguf] --out x.flac \
-[--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] \
+[--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--speaker NAME] \
 [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
 [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID] \
@@ -148,6 +150,8 @@ struct Args {
     timing_report: Option<PathBuf>,
     /// A reference voice, for engines that clone one (kitten-tts-2: a `ggtts-kitten prepare` JSON). Others ignore it.
     voice: Option<PathBuf>,
+    /// Named speaker in a Qwen talker; distinct from a cloned reference voice.
+    speaker: Option<String>,
     stream: Option<String>,
     stream_format: Option<String>,
     stream_raw: bool,
@@ -189,6 +193,13 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 a.trace_level = Some(level);
             }
             "--voice" => a.voice = Some(value()?.into()),
+            "--speaker" => {
+                let speaker = value()?;
+                if speaker.trim().is_empty() {
+                    return Err("--speaker must not be empty".into());
+                }
+                a.speaker = Some(speaker);
+            }
             "--stream" => a.stream = Some(value()?),
             "--stream-format" => a.stream_format = Some(value()?),
             "--stream-raw" => a.stream_raw = true,
@@ -212,6 +223,22 @@ fn parse(args: &[String]) -> Result<Args, String> {
 /// `engine_lines` lists them when the build has them. `every_engine_has_a_load_arm` holds the two together.
 const ENGINES: &[&str] = &["qwen3-tts", "kitten-tts-2"];
 
+#[cfg(feature = "ggml")]
+fn qwen_voice(a: &Args) -> Result<ggtts_qwen3_tts::engine::Voice, String> {
+    let device = a.device.as_deref().unwrap_or("cpu");
+    let mut voice = ggtts_qwen3_tts::engine::Voice {
+        device: ggtts_qwen3_tts::cpu::Device::parse(device)
+            .ok_or(format!("--device must be cpu or cuda, not {device}"))?,
+        // A story's --trace is the pipeline event stream, not the engine's legacy step-only file.
+        trace: if a.story.is_some() { None } else { a.trace.clone() },
+        ..Default::default()
+    };
+    if let Some(speaker) = &a.speaker {
+        voice.speaker.clone_from(speaker);
+    }
+    Ok(voice)
+}
+
 /// The engine for a model, by architecture name. One arm per engine; an engine left out of the build is reported,
 /// not hidden.
 fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, String> {
@@ -220,14 +247,7 @@ fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, St
         #[cfg(feature = "ggml")]
         "qwen3-tts" => {
             let codec = a.codec.as_ref().ok_or("the qwen3-tts engine needs --codec")?;
-            let device = a.device.as_deref().unwrap_or("cpu");
-            let voice = ggtts_qwen3_tts::engine::Voice {
-                device: ggtts_qwen3_tts::cpu::Device::parse(device)
-                    .ok_or(format!("--device must be cpu or cuda, not {device}"))?,
-                // A story's --trace is the pipeline event stream, not the engine's legacy step-only file.
-                trace: if a.story.is_some() { None } else { a.trace.clone() },
-                ..Default::default()
-            };
+            let voice = qwen_voice(a)?;
             ggtts_qwen3_tts::engine::Qwen3Tts::load(model, codec, threads, voice)
                 .map(|e| Box::new(e) as Box<dyn Engine>)
                 .map_err(|e| e.to_string())
@@ -364,6 +384,9 @@ fn render_with_story_reader(
         None | Some("auto") => gguf_arch::architecture(&model).map_err(|e| format!("{}: {e}", model.display()))?,
         Some(e) => e.to_string(),
     };
+    if a.speaker.is_some() && name != "qwen3-tts" {
+        return Err("--speaker is only supported by the qwen3-tts engine".into());
+    }
     // Validate and plan before opening output files or loading model weights.
     let preplanned = if let Some((title, paragraphs)) = story_input {
         let profile = match name.as_str() {
@@ -782,6 +805,60 @@ mod tests {
     use super::*;
     use ggtts_core::engine::{Codes, EngineError, EngineInfo, Generated, Pcm};
     use ggtts_core::profile::Profile;
+
+    #[cfg(feature = "ggml")]
+    #[test]
+    fn qwen_voice_uses_explicit_speaker_or_legacy_default() {
+        assert_eq!(qwen_voice(&Args::default()).unwrap().speaker, "hk_cantonese_speaker");
+        let args = Args {
+            speaker: Some("hk_voice_343".into()),
+            ..Args::default()
+        };
+        assert_eq!(qwen_voice(&args).unwrap().speaker, "hk_voice_343");
+        let args = Args {
+            speaker: Some("hk_voice_777".into()),
+            story: Some("story".into()),
+            ..Args::default()
+        };
+        assert_eq!(qwen_voice(&args).unwrap().speaker, "hk_voice_777");
+    }
+
+    #[test]
+    fn speaker_selection_is_qwen_only_and_reaches_the_loader() {
+        let a = parse(&["--speaker".into(), "hk_voice_343".into()]).unwrap();
+        assert_eq!(a.speaker.as_deref(), Some("hk_voice_343"));
+        assert!(parse(&["--speaker".into(), "  ".into()]).is_err());
+        assert!(parse(&["--speaker".into()]).is_err());
+        let log = LogSettings {
+            level: LogLevel::Error,
+            format: LogFormat::Text,
+        };
+        let args = Args {
+            engine: Some("qwen3-tts".into()),
+            model: Some("unused".into()),
+            text: Some("hello".into()),
+            out: Some("unused.flac".into()),
+            speaker: a.speaker,
+            ..Args::default()
+        };
+        let err = render_with_loader(args, log, |name, a, _| {
+            assert_eq!(name, "qwen3-tts");
+            assert_eq!(a.speaker.as_deref(), Some("hk_voice_343"));
+            Err("loader reached".into())
+        })
+        .unwrap_err();
+        assert_eq!(err, "loader reached");
+        let args = Args {
+            engine: Some("fake".into()),
+            text: Some("hello".into()),
+            out: Some("unused.flac".into()),
+            speaker: Some("hk_voice_343".into()),
+            ..Args::default()
+        };
+        let err = render_with_loader(args, log, |_, _, _| panic!("must reject before loading"))
+            .unwrap_err();
+        assert!(err.contains("only supported by the qwen3-tts engine"));
+    }
 
     struct EmptyThenAudio {
         inner: ggtts_fake::FakeEngine,

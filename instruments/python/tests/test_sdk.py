@@ -235,7 +235,7 @@ class Cli(unittest.TestCase):
         from ggtts_instrument.audio import _decoder
         for paths in ([], ["not-a-real-file"], ["one", "two"]):
             with patch("ggtts_instrument.audio._loaded_sndfile_paths", return_value=paths):
-                self.assertEqual(_decoder("libsndfile"), {"kind": "libsndfile", "sha256": None})
+                self.assertEqual(_decoder("libsndfile", "input.flac"), {"kind": "libsndfile", "sha256": None})
 
     def test_real_native_flac_decoder_identifies_its_loaded_library(self):
         try:
@@ -244,7 +244,16 @@ class Cli(unittest.TestCase):
             self.skipTest("soundfile is optional")
         from ggtts_instrument.audio import _loaded_sndfile_paths, sha256_of
         with patch("ggtts_instrument.audio._bound_module_path", side_effect=["first", "second", "first"]):
-            self.assertEqual(_loaded_sndfile_paths(), [], "mixed bound modules must be unknown")
+            self.assertEqual(_loaded_sndfile_paths("input.flac"), [], "mixed bound modules must be unknown")
+        if sys.platform == "win32":
+            with patch("ggtts_instrument.audio._bound_module_path", return_value="module") as module:
+                _loaded_sndfile_paths("input.flac")
+                want = int(soundfile._ffi.cast("uintptr_t", soundfile._snd.sf_wchar_open))
+                self.assertEqual(module.call_args_list[0].args[0], want)
+            with patch("ggtts_instrument.audio._bound_module_path", return_value="module") as module:
+                _loaded_sndfile_paths(b"input.flac")
+                want = int(soundfile._ffi.cast("uintptr_t", soundfile._snd.sf_open))
+                self.assertEqual(module.call_args_list[0].args[0], want)
         if not (sys.platform.startswith("linux") or sys.platform == "win32"):
             self.skipTest("native module enumeration unavailable on this platform")
         with Workdir() as w:
@@ -254,7 +263,7 @@ class Cli(unittest.TestCase):
                                  argv=["--audio", audio, "--envelope", out]), 0)
             with open(out, encoding="utf-8") as f:
                 env = json.load(f)
-            paths = _loaded_sndfile_paths()
+            paths = _loaded_sndfile_paths(audio)
             self.assertEqual(len(paths), 1, "actual loaded decoder must be unambiguous")
             digest = sha256_of(paths[0])
             self.assertEqual(env["provenance"]["config"]["ggtts_audio_decoders"],

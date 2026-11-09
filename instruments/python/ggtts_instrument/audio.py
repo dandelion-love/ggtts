@@ -28,7 +28,7 @@ def _stop_decoder_capture(token):
     _DECODERS.reset(token)
 
 
-def _loaded_sndfile_paths():
+def _loaded_sndfile_paths(audio_path):
     """Resolve the modules backing the open/read/close functions soundfile uses.
 
     A mapped library with a matching filename alone is insufficient: another
@@ -36,7 +36,9 @@ def _loaded_sndfile_paths():
     """
     import soundfile
     paths = []
-    for symbol in ("sf_open", "sf_readf_float", "sf_close"):
+    path = os.fspath(audio_path)
+    opener = "sf_wchar_open" if sys.platform == "win32" and isinstance(path, str) else "sf_open"
+    for symbol in (opener, "sf_readf_float", "sf_close"):
         address = int(soundfile._ffi.cast("uintptr_t", getattr(soundfile._snd, symbol)))
         path = _bound_module_path(address)
         if not path:
@@ -79,12 +81,12 @@ def _bound_module_path(address):
     return None
 
 
-def _decoder(kind):
+def _decoder(kind, audio_path=None):
     """Identify decoder code without exposing local paths; never guess on ambiguity."""
     digest = None
     try:
         if kind == "libsndfile":
-            paths = _loaded_sndfile_paths()
+            paths = _loaded_sndfile_paths(audio_path)
             if len(paths) == 1:
                 digest = sha256_of(paths[0])
         else:
@@ -294,7 +296,7 @@ def read_audio(path, prefer_soundfile=True):
     elif data[:4] == b"fLaC":
         got = _soundfile(path) if prefer_soundfile else None
         samples, rate = got if got is not None else _read_flac(data)
-        decoder = _decoder("libsndfile" if got is not None else "ggtts-python-flac")
+        decoder = _decoder("libsndfile" if got is not None else "ggtts-python-flac", path)
     else:
         raise AudioError("%s is neither WAV nor FLAC" % path)
     return Audio(samples, rate, str(path), sha256_of(path), decoder)

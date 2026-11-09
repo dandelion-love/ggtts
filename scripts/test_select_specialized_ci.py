@@ -290,5 +290,9 @@ class SelectionTest(unittest.TestCase):
             self.assertEqual(result.stdout.count("=true"), 6)
 
 
+# CI invokes this suite explicitly; include the logging probe launch test.
+from test_logging_overhead_probe import SpeakerPassthroughTest
+
+
 if __name__ == "__main__":
     unittest.main()

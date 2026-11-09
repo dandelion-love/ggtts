@@ -1,4 +1,4 @@
-//! Host-side signal processing for reference-clip preparation: reading a WAV file, torchaudio's sinc resampler,
+//! Host-side signal processing for reference-clip preparation: reading WAV or FLAC, torchaudio's sinc resampler,
 //! librosa's Slaney mel filterbank, S3Gen's 24 kHz log-mel (`kittenml/s3gen.py` `mel_spectrogram`), the S3
 //! tokenizer's Whisper-style log-mel (`S3Tokenizer.log_mel_spectrogram`) and Kaldi's fbank
 //! (`torchaudio.compliance.kaldi.fbank` with its defaults, as CAMPPlus's `extract_feature` calls it).
@@ -8,9 +8,35 @@
 use std::f64::consts::PI;
 use std::path::Path;
 
-/// Mono samples and their rate from a RIFF WAV file: PCM 16, 24 or 32 bit, or IEEE float 32. Channels are averaged.
+/// Mono samples and their rate from FLAC or RIFF WAV. Channels are averaged.
 pub fn read_wav(path: &Path) -> Result<(Vec<f32>, u32), String> {
     let b = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if b.starts_with(b"fLaC") {
+        let mut reader = claxon::FlacReader::new(std::io::Cursor::new(&b))
+            .map_err(|e| format!("{}: invalid FLAC: {e}", path.display()))?;
+        let info = reader.streaminfo();
+        let channels = info.channels as usize;
+        if channels == 0 || info.sample_rate == 0 || !(4..=32).contains(&info.bits_per_sample) {
+            return Err(format!("{}: unsupported FLAC stream parameters", path.display()));
+        }
+        let scale = 2f64.powi(info.bits_per_sample as i32 - 1);
+        let mut mono = Vec::new();
+        let (mut sum, mut count) = (0f64, 0usize);
+        for sample in reader.samples() {
+            let value = sample.map_err(|e| format!("{}: invalid FLAC samples: {e}", path.display()))?;
+            sum += f64::from(value) / scale;
+            count += 1;
+            if count == channels {
+                mono.push((sum / channels as f64) as f32);
+                sum = 0.0;
+                count = 0;
+            }
+        }
+        if count != 0 || info.samples.is_some_and(|expected| expected != mono.len() as u64) {
+            return Err(format!("{}: incomplete FLAC frame", path.display()));
+        }
+        return Ok((mono, info.sample_rate));
+    }
     if b.len() < 12 || &b[0..4] != b"RIFF" || &b[8..12] != b"WAVE" {
         return Err(format!("{}: not a RIFF WAVE file", path.display()));
     }
@@ -374,6 +400,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn flac_and_wav_decode_the_same_mono_samples() {
+        let dir = std::env::temp_dir().join(format!("ggtts-kitten-flac-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = [-1.0, -0.5, 0.0, 0.25, 1.0];
+        let flac = ggtts_core::flac::write_flac(&dir.join("input"), &input, 24000).unwrap();
+        let pcm: Vec<i16> = input.iter().map(|&v| ggtts_core::flac::to_i16(v)).collect();
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36u32 + pcm.len() as u32 * 2).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt \x10\0\0\0\x01\0\x01\0");
+        wav.extend_from_slice(&24000u32.to_le_bytes());
+        wav.extend_from_slice(&48000u32.to_le_bytes());
+        wav.extend_from_slice(&[2, 0, 16, 0]);
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(pcm.len() as u32 * 2).to_le_bytes());
+        for sample in pcm {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        let wav_path = dir.join("input.wav");
+        std::fs::write(&wav_path, wav).unwrap();
+        let (flac_samples, rate) = read_wav(&flac).unwrap();
+        let (wav_samples, wav_rate) = read_wav(&wav_path).unwrap();
+        assert_eq!(rate, 24000);
+        assert_eq!(wav_rate, rate);
+        assert_eq!(flac_samples, wav_samples);
+        assert!(flac_samples.iter().any(|v| *v != 0.0));
+        let corrupt = dir.join("corrupt.flac");
+        std::fs::write(&corrupt, b"fLaC\0\0").unwrap();
+        assert!(read_wav(&corrupt).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stereo_flac_is_averaged_and_truncation_rejected() {
+        // Three synthetic stereo PCM16 frames, encoded losslessly at 16 kHz.
+        let encoded = [
+            102, 76, 97, 67, 128, 0, 0, 34, 4, 128, 4, 128, 0, 0, 23, 0, 0, 23, 3, 232, 2, 240, 0, 0, 0, 3, 185, 193,
+            80, 168, 90, 199, 47, 254, 242, 37, 1, 234, 152, 107, 108, 47, 255, 248, 101, 24, 0, 2, 89, 2, 127, 255,
+            64, 0, 0, 0, 2, 128, 0, 32, 0, 224, 0, 64, 225,
+        ];
+        let path = std::env::temp_dir().join(format!("ggtts-kitten-stereo-{}.flac", std::process::id()));
+        std::fs::write(&path, encoded).unwrap();
+        let (samples, rate) = read_wav(&path).unwrap();
+        assert_eq!(rate, 16000);
+        assert_eq!(samples, vec![-1.0 / 65536.0, 0.375, -0.125]);
+        std::fs::write(&path, &encoded[..50]).unwrap();
+        assert!(read_wav(&path).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn resample_keeps_a_low_tone_and_the_length() {
         let x: Vec<f32> = (0..2400)
             .map(|i| (2.0 * PI * 440.0 * i as f64 / 24000.0).sin() as f32)
@@ -399,3 +476,4 @@ mod tests {
         assert!((0..128).all(|m| w[m * 201..(m + 1) * 201].iter().any(|&v| v > 0.0)));
     }
 }
+

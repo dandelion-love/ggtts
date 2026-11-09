@@ -1,5 +1,26 @@
 # Instruments
 
+## Device selection
+
+`ggtts-render --device cuda` requests CUDA from every instrument through the generic
+`GGTTS_INSTRUMENT_DEVICE` child environment. CPU-only instruments may ignore the
+hint and must not report GPU use. The two ASR instruments honor it, fail visibly
+when CUDA is unavailable or their model is not placed on CUDA, and report the
+requested and actual device. For example:
+
+```sh
+ggtts-render --device cuda --model talker.gguf --codec codec.gguf --text "Hello" --out out.flac \
+  --instrument asr-sensevoice,arg.model_dir=MODEL,arg.reference_file=REF \
+  --instrument asr-qwen,arg.model_dir=MODEL2,arg.reference_file=REF
+```
+
+Use `--instrument-device cpu|cuda|auto` (or top-level YAML `device:`) to override
+the renderer for the whole instrument chain. Standalone `ggtts-measure` uses the
+same flag and defaults to CPU. A device-aware instrument can override its own
+choice with e.g. `--instrument asr-qwen,arg.device=cpu`. `auto` chooses CUDA
+only if available, otherwise CPU; an explicit `cuda` never silently falls back.
+Device selection does not install GPU dependencies or prove GPU execution on a host.
+
 An instrument measures a render without changing it. This folder holds what you need to write one.
 
 | Path | What it is |
@@ -48,3 +69,4 @@ the CPU build-and-test job. It needs Python 3.8 or later; `GGTTS_SKIP_PYTHON=1` 
 
 Without the cargo harness, each self-test runs on a small synthetic render, so Python alone is enough while you
 write one.
+

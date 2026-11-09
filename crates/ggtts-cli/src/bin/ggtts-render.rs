@@ -5,7 +5,7 @@
 //!              [--threads N] [--device cpu|cuda] [--trace trace.jsonl [--trace-level 1|2]] [--timing-report FILE] [--voice REF.json] [--speaker NAME]
 //!              [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text "..." [--seed S] | --story story.txt)
 //!              [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE.yaml] [--require NAME]...
-//!              [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID]
+//!              [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID]
 //! ```
 //!
 //! `--voice` is a reference voice for an engine that clones one; an engine that does not ignores it.
@@ -113,7 +113,7 @@ const USAGE: &str = "usage: ggtts-render --model M.gguf [--codec C.gguf] --out x
 [--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--speaker NAME] \
 [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
-[--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID] \
+[--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID] \
 [--log-level error|warn|info|debug|trace] [--log-format text|json] [--timing-report FILE]\n       ggtts-render --version";
 
 /// Which stream to ask for, printed by `--help`.
@@ -368,7 +368,7 @@ fn render_with_story_reader(
         if a.out.is_none() {
             return Err("instruments measure the --out FLAC: give --out".into());
         }
-        let c = a.instruments.resolve()?;
+        let c = resolve_instrument_config(&a)?;
         ggtts_instruments::runner::check(&c)?;
         Some(c)
     } else {
@@ -736,6 +736,14 @@ fn render_with_story_reader(
     Ok(summary.exit_code())
 }
 
+fn resolve_instrument_config(a: &Args) -> Result<ggtts_instruments::Config, String> {
+    let mut config = a.instruments.resolve()?;
+    if config.device.is_none() {
+        config.set_device(a.device.as_deref().unwrap_or("cpu"))?;
+    }
+    Ok(config)
+}
+
 /// The model engines compiled into this binary, one line each, with the backends each can run on. Read from the
 /// build's features, not written by hand, so a build that dropped an engine says so (`scripts/buildinfo_engines.sh`
 /// turns these lines into the release's BUILDINFO list and refuses an empty or short one). The fake engine is a test
@@ -802,6 +810,25 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn instrument_device_inherits_render_and_respects_override() {
+        let args = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let parsed = super::parse(&args(&["--device", "cuda"])).unwrap();
+        assert_eq!(
+            super::resolve_instrument_config(&parsed).unwrap().device.as_deref(),
+            Some("cuda")
+        );
+        let parsed = super::parse(&args(&["--device", "cuda", "--instrument-device", "cpu"])).unwrap();
+        assert_eq!(
+            super::resolve_instrument_config(&parsed).unwrap().device.as_deref(),
+            Some("cpu")
+        );
+        let parsed = super::parse(&args(&[])).unwrap();
+        assert_eq!(
+            super::resolve_instrument_config(&parsed).unwrap().device.as_deref(),
+            Some("cpu")
+        );
+    }
     use super::*;
     use ggtts_core::engine::{Codes, EngineError, EngineInfo, Generated, Pcm};
     use ggtts_core::profile::Profile;
@@ -1135,3 +1162,4 @@ mod tests {
         assert!(refused("not-an-engine").starts_with("no engine for architecture"));
     }
 }
+

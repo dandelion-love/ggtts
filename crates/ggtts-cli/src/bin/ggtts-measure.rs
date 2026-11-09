@@ -3,7 +3,7 @@
 //! ```text
 //! ggtts-measure --audio IN.flac [--events E.jsonl] [--render ID] [--run ID] --report DIR
 //!               [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]...
-//!               [--on-instrument-error continue|abort] [--instrument-timeout S]
+//!               [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S]
 //! ```
 //!
 //! The instrument phase of `ggtts-render`, on a file you already have: a render kept from an earlier run, a release
@@ -29,7 +29,7 @@ const BINARY: &str = "ggtts-measure";
 const USAGE: &str = "usage: ggtts-measure --audio IN.flac [--events E.jsonl] [--render ID] [--run ID] --report DIR \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
 [--audio-state raw|trimmed|unknown] \
-[--on-instrument-error continue|abort] [--instrument-timeout S] \
+[--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] \
 [--log-level error|warn|info|debug|trace] [--log-format text|json]\n\
   --report DIR must not already exist";
 
@@ -243,3 +243,4 @@ fn main() -> ExitCode {
         },
     }
 }
+

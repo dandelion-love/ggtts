@@ -169,6 +169,10 @@ pub fn input_file(path: &Path) -> Option<InputFile> {
 /// The entry's effective configuration, defaults included, for the envelope's provenance.
 fn entry_config(config: &Config, entry: &Entry, needs_events: bool) -> Map<String, Value> {
     let mut m = Map::new();
+    m.insert(
+        "requested_device".into(),
+        json!(config.device.as_deref().unwrap_or("cpu")),
+    );
     m.insert("timeout_s".into(), json!(config.timeout_for(entry)));
     m.insert("needs_events".into(), json!(needs_events));
     if let Some(c) = &entry.command {
@@ -490,6 +494,9 @@ fn one(
         }
         None => Command::new(&program),
     };
+    // A generic hint for every instrument; it is not a claim that an instrument used a GPU.
+    // Device-aware instruments report their actual device and may support an explicit override.
+    cmd.env("GGTTS_INSTRUMENT_DEVICE", config.device.as_deref().unwrap_or("cpu"));
     cmd.arg("--run").arg(&inputs.run).arg("--render").arg(&inputs.render);
     if let Some(ev) = &inputs.events {
         cmd.arg("--events").arg(ev);
@@ -683,3 +690,4 @@ where
         error,
     }
 }
+

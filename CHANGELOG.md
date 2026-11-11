@@ -21,6 +21,15 @@ that a merge places under a released heading is caught.
   build and loads without the NVIDIA driver. It exports the C ABI only, not the JNI entry points. `BUILDINFO.json`
   lists it under `"libraries"`, and the Linux library is held to the same Ubuntu 22.04 glibc floor as the binaries.
   Where the files are and how to link them: the README's "The C library" section.
+- **A Python binding: `import ggtts`.** `crates/ggtts-py` (PyO3, an abi3 wheel for Python 3.9 and later, built
+  with maturin) loads Qwen3-TTS and Kitten-TTS 2 with the settings of `ggtts_load_with` (a speaker, a style
+  instruction) and a device (`cpu` or `cuda`), and with no model loads the default model as `ggtts-render` does,
+  with an `offline` mode. `TTS.render` returns float32 samples (a numpy array when numpy is installed, else an
+  `array.array`, or the bytes) and their rate, `Audio.write_flac` writes FLAC with the library's writer, and
+  `TTS.stream` (or `render_stream` with a callback) yields the chunks in order and can be stopped. An invalid
+  argument or a refusal raises `ggtts.GgttsError` with the C-ABI's `code` and the `message`; a panic is caught and
+  raised as `ERR_PANIC`, and the GIL is released while an engine loads and renders. It is built from a checkout
+  (README, "Python") and is not on PyPI; release wheels are to follow.
 
 ### Changed
 

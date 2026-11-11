@@ -37,9 +37,10 @@ int32_t ggtts_load(const char *engine, const char *model, const char *codec, con
                    uint64_t *handle);
 
 /* Voice settings for ggtts_load_with (version 2). Set size to sizeof(ggtts_settings); start from
- * GGTTS_SETTINGS_INIT so a field you do not set is NULL. Strings are UTF-8 and NUL-terminated, owned by the caller
- * and read only during the call. A NULL or empty string is no setting. Both are Qwen3-TTS settings: another engine
- * refuses either one.
+ * GGTTS_SETTINGS_INIT so a field you do not set is NULL. Later versions accept any earlier sizeof(ggtts_settings) and
+ * treat the fields it lacks as unset; a size this library does not know is GGTTS_ERR_ARG. Strings are UTF-8 and
+ * NUL-terminated, owned by the caller and read only during the call. A NULL or empty string is no setting. Both are
+ * Qwen3-TTS settings: another engine refuses either one with GGTTS_ERR_ARG.
  *   speaker      a speaker the model has, case ignored (for example "hk_voice_777"); NULL: the speaker ggtts_load
  *                uses ("hk_cantonese_speaker"). An unknown speaker is GGTTS_ERR_ENGINE, and the message lists the
  *                model's speakers.

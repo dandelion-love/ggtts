@@ -284,7 +284,8 @@ impl<'a> Settings<'a> {
     }
 
     /// The engines other than Qwen3-TTS take neither setting, and refuse one before any file is read rather than
-    /// ignore it. An instruction is refused with the library's own message for an engine that takes none.
+    /// ignore it. Both are [`GGTTS_ERR_ARG`], an argument the engine does not take; an instruction carries the
+    /// library's own message for an engine that takes none.
     fn refuse_for(&self, engine: &str) -> Result<(), Fail> {
         if self.speaker.is_some() {
             return Err((
@@ -299,7 +300,7 @@ impl<'a> Settings<'a> {
             draw: 0,
             instruction: self.instruction,
         };
-        refuse_instruction(&req, engine).map_err(|e| (GGTTS_ERR_ENGINE, e.0))
+        refuse_instruction(&req, engine).map_err(|e| (GGTTS_ERR_ARG, e.0))
     }
 }
 
@@ -465,7 +466,7 @@ pub unsafe extern "C" fn ggtts_load(
 /// no setting: with neither set, the engine and its output are what `ggtts_load` gives. A setting is refused, never
 /// ignored: an unknown speaker is [`GGTTS_ERR_ENGINE`] with the model's speakers in the message; an instruction on a
 /// checkpoint that takes none (a Base checkpoint, or a `custom_voice` one below 1.7B) is `GGTTS_ERR_ENGINE` with the
-/// library's message; either setting on an engine other than `qwen3-tts` is refused too. Each refusal comes before
+/// library's message; either setting on an engine other than `qwen3-tts` is [`GGTTS_ERR_ARG`]. Each refusal comes before
 /// any text is rendered, and no handle is written.
 ///
 /// # Safety

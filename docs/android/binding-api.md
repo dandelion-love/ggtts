@@ -39,7 +39,9 @@ Codes: `GGTTS_OK 0`, `GGTTS_ERR_ARG -1` (a NULL or non-UTF-8 argument), `GGTTS_E
 `GGTTS_ERR_BUSY -6`.
 
 **Voice settings (version 2).** `ggtts_settings` is passed by pointer and starts with its own size, so a later
-version can add a field and still tell an older caller's struct apart; a struct of another size is `GGTTS_ERR_ARG`.
+version can add a field and still tell an older caller's struct apart: later versions accept any earlier
+`sizeof(ggtts_settings)` and treat the fields it lacks as unset. A size this library does not know is
+`GGTTS_ERR_ARG`.
 
 ```c
 typedef struct ggtts_settings {
@@ -60,7 +62,7 @@ rendered, and a refused one writes no handle:
 * **Instruction.** A natural-language style instruction given to every chunk, as `ggtts-render --instruction`. A
   checkpoint that takes none (Base, or `custom_voice` below 1.7B) refuses it with `GGTTS_ERR_ENGINE` and the
   library's message.
-* **Another engine** refuses either one: a speaker is `GGTTS_ERR_ARG`, an instruction `GGTTS_ERR_ENGINE`.
+* **Another engine** refuses either one with `GGTTS_ERR_ARG`: the refusal is about the engine, not a checkpoint.
 
 ```c
 ggtts_settings s = GGTTS_SETTINGS_INIT;
@@ -77,7 +79,8 @@ is the six functions above `ggtts_load_with`; version 2 added `ggtts_load_with`,
 `ggtts_abi_version`.
 
 The binding does not download models: it loads the paths it is given. Resolving the default model files the way
-`ggtts-render` does with no `--model` is a separate change.
+`ggtts-render` does with no `--model`, and its default speaker with them, is a separate change
+([#164](https://github.com/dandelion-love/ggtts/issues/164)).
 
 Left out, for now: per-render speakers and instructions (the settings are per engine), Kitten-TTS 2 voices beyond the
 reference voice file, per-chunk seeds, tracing and instruments over the binding (#37 AC6 is a later story), and FLAC

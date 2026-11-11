@@ -128,7 +128,7 @@ fun main() {
     throwsCode(Ggtts.ERR_ARG, "a speaker on the fake engine", "speaker is only supported by the qwen3-tts engine") {
         Ggtts.load("fake", speaker = "hk_voice_777")
     }
-    throwsCode(Ggtts.ERR_ENGINE, "an instruction on the fake engine", "takes no style instruction") {
+    throwsCode(Ggtts.ERR_ARG, "an instruction on the fake engine", "takes no style instruction") {
         Ggtts.load("fake", instruction = "Speak slowly and softly.")
     }
     qwenSettings()

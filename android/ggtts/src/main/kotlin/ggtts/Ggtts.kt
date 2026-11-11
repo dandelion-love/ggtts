@@ -59,7 +59,7 @@ class Ggtts private constructor(private var handle: Long) : AutoCloseable {
          * as without them. [speaker] is a speaker the model has (for example "hk_voice_777"); an unknown one throws
          * GGTTS_ERR_ENGINE with the model's speakers in the message. [instruction] is a style instruction for every
          * render (for example "Speak slowly and softly."); a checkpoint that takes none (Base, or custom_voice below
-         * 1.7B) throws GGTTS_ERR_ENGINE. Another engine refuses either one.
+         * 1.7B) throws GGTTS_ERR_ENGINE. Another engine refuses either one with GGTTS_ERR_ARG.
          */
         fun load(
             engine: String,
@@ -70,6 +70,14 @@ class Ggtts private constructor(private var handle: Long) : AutoCloseable {
             speaker: String? = null,
             instruction: String? = null,
         ): Ggtts = Ggtts(Native.loadWith(engine, model, codec, voice, threads, speaker, instruction))
+
+        /**
+         * The five-parameter `load` from before the voice settings, kept so code compiled against it (including its
+         * default-argument form) still links. Hidden from source, where the `load` above covers every call.
+         */
+        @Deprecated("Kept for binary compatibility; call load with speaker and instruction", level = DeprecationLevel.HIDDEN)
+        fun load(engine: String, model: String? = null, codec: String? = null, voice: String? = null, threads: Int = 4): Ggtts =
+            load(engine, model, codec, voice, threads, null, null)
     }
 
     /** Render [text] (one paragraph per line) to levelled PCM. */

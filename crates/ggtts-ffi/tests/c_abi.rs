@@ -236,8 +236,9 @@ fn a_refused_setting_is_a_code_and_a_message_and_no_handle() {
         "a speaker is only supported by the qwen3-tts engine, not fake"
     );
 
+    // Both settings on another engine are the same code: an argument that engine does not take.
     let (code, h) = load_with("fake", Some((None, Some("Speak slowly and softly."))));
-    assert_eq!((code, h), (GGTTS_ERR_ENGINE, 0));
+    assert_eq!((code, h), (GGTTS_ERR_ARG, 0));
     assert!(
         last_error().contains("the fake engine takes no style instruction"),
         "{}",

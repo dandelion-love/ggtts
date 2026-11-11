@@ -1,6 +1,7 @@
 # Third-party sources
 
-What ggtts takes from other projects, and under which licence.
+What ggtts takes from other projects, and under which licence. Release archives carry this file, `LICENSE`,
+`licenses/` and the licence files beside the vendored sources under `instruments/`.
 
 | Source | Licence | Used as | What is taken |
 |---|---|---|---|
@@ -10,4 +11,10 @@ What ggtts takes from other projects, and under which licence.
 | [`claxon`](https://crates.io/crates/claxon) | Apache-2.0 | test dependency only | decodes the FLAC the core writes, as an independent check |
 | [`serde_json`](https://crates.io/crates/serde_json) | MIT OR Apache-2.0 | test dependency only | reads the fixtures |
 | [qwen3-tts.cpp](https://github.com/Danmoreng/qwen3-tts.cpp) at `16bb5af` | MIT | reference runtime | `spike/layer0/reference/layer0_ref.cpp` transcribes layer 0 of the talker graph (`src/transformer/transformer_graph_talker.cpp:39-172`) and its prefill inputs (`src/transformer/transformer_runtime.cpp:101-205`) for a parity spike; `spike/layer0/layer0/src/main.rs` builds the same graph in Rust. `crates/ggtts-qwen3-tts` ports, with the reference's file and lines named at each part: the codec decoder (`src/decoder/`), the talker, code predictor, prompt, generation loop and sampler (`src/transformer/`), and the text tokenizer (`src/text_tokenizer.cpp`, `src/tokenizer_unicode.cpp`, and the codepoint classes of `src/tokenizer_unicode_data.cpp` as a run table). Its `reference/` harnesses link the reference's libraries for the parity checks. Copyright (c) 2026 Danmoreng, MIT |
+| [`tracing`](https://crates.io/crates/tracing) 0.1 and [`tracing-subscriber`](https://crates.io/crates/tracing-subscriber) 0.3 | MIT | dependencies of `ggtts-core`, linked into the released binaries | the structured logging behind the binaries' log output; nothing copied |
+| [`unicode-general-category`](https://crates.io/crates/unicode-general-category) 1.1 | Apache-2.0 (`licenses/Apache-2.0.txt`) | dependency of `ggtts-core`, linked into the released binaries | Unicode general-category lookup for the text checks; nothing copied |
+| [`jsonschema`](https://crates.io/crates/jsonschema) 0.60 | MIT | test dependency only | validates traces and reports against `schemas/` |
+| [Pitchy](https://github.com/ianprime0509/pitchy) 4.1.0 | MIT (`instruments/vendor/pitchy-4.1.0/LICENSE`, Copyright 2018-2021 Ian Johnson) | vendored and redistributed in every archive: `instruments/vendor/pitchy-4.1.0/index.js`, unmodified from the npm package | the pitch detector the `pitch-range` instrument runs under Node.js |
+| [fft.js](https://github.com/indutny/fft.js) 4.0.4 | MIT (`instruments/vendor/fft.js-4.0.4/LICENSE`, Copyright Fedor Indutny, 2017) | vendored and redistributed in every archive: `instruments/vendor/fft.js-4.0.4/fft.js` and `package.json`, unmodified from the npm package | the FFT Pitchy imports. The licence file is the `LICENSE` section of upstream's `README.md` at tag `v4.0.4` (commit `f8be92e`); upstream has no separate licence file |
+| Speech-core selection from an unpublished analysis tool for speech by the ggtts authors | Apache-2.0 (`instruments/examples/python/loudness-ends/LICENSE-APACHE-2.0`) | reimplemented in `instruments/examples/python/loudness-ends/core_selection.py`, redistributed in every archive | the rule that picks the main stretch of speech from a 10 ms level track. Modified: only the core selection is carried, not the edge-event detector. The source carried no copyright header and no NOTICE file |
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) at `cd959bae` | MIT | reference code only, never linked | the command-line conventions (`-hf`, the `*_ARG_*` environment mirror); no code yet |

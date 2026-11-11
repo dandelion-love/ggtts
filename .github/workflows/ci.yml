@@ -323,6 +323,21 @@ jobs:
           fi
           cat planted-measure.err
           grep -F "no ggtts-measure in" planted-measure.err
+      - name: Planted, the same directory without a licence notice must fail, naming it
+        run: |
+          set -u
+          for notice in THIRD_PARTY.md licenses/Apache-2.0.txt instruments/vendor/fft.js-4.0.4/LICENSE instruments/vendor/pitchy-4.1.0/LICENSE; do
+            rm -rf dist/planted-notice
+            cp -r dist/ggtts-ci dist/planted-notice
+            rm "dist/planted-notice/$notice"
+            if scripts/package_and_smoke.sh smoke dist/planted-notice 2> planted-notice.err; then
+              cat planted-notice.err
+              echo "::error::the smoke passed without $notice"
+              exit 1
+            fi
+            cat planted-notice.err
+            grep -F "missing licence notice in dist/planted-notice: $notice" planted-notice.err
+          done
 
   binding:
     needs: specialized-selection

@@ -17,9 +17,10 @@ link without a floor for it). `--floor NAME=VERSION` replaces one namespace's fl
 impossible floor and require red.
 
 `--packed DIR` checks a directory `scripts/package_and_smoke.sh pack` made: the binaries are the ones its
-BUILDINFO.json "binaries" names (the list pack printed), and it fails when that list is missing or empty, names a
-file that is not there, or leaves out an ELF file that is in DIR. So a binary that is packed is always checked,
-with no list kept by hand.
+BUILDINFO.json "binaries" names (the list pack printed), with the shared libraries its "libraries" names (paths
+under DIR, the list `package_and_smoke.sh libraries` printed: lib/libggtts_ffi.so), and it fails when "binaries" is
+missing or empty, when either list names a file that is not there, or when an ELF file anywhere under DIR is in
+neither. So a binary or library that is packed is always checked, with no list kept by hand.
 """
 import argparse
 import json
@@ -116,25 +117,33 @@ def evaluate(path, version_info, dyn_syms, floor):
 
 
 def packed_binaries(directory):
-    """The binaries in a packed DIR, from its BUILDINFO.json "binaries"; ([paths], [problems])."""
+    """The binaries and libraries in a packed DIR, from its BUILDINFO.json "binaries" and "libraries" (paths relative
+    to DIR, such as lib/libggtts_ffi.so); ([paths], [problems]). Every ELF file anywhere under DIR must be listed."""
     directory = os.path.abspath(directory)
     info = os.path.join(directory, "BUILDINFO.json")
     try:
         with open(info, encoding="utf-8") as f:
-            listed = json.load(f).get("binaries")
-    except (OSError, ValueError) as error:
+            data = json.load(f)
+        listed, libraries = data.get("binaries"), data.get("libraries", [])
+    except (OSError, ValueError, AttributeError) as error:
         return [], [f"{info}: cannot read the packed binaries list: {error}"]
     if not isinstance(listed, list) or not listed or not all(isinstance(n, str) for n in listed):
         return [], [f"{info}: \"binaries\" is not a non-empty list of names: {listed!r}"]
+    if not isinstance(libraries, list) or not all(isinstance(n, str) for n in libraries):
+        return [], [f"{info}: \"libraries\" is not a list of paths: {libraries!r}"]
+    listed = listed + libraries
     problems = [f"{directory}: BUILDINFO.json names {name}, which is not in the directory"
                 for name in listed if not os.path.isfile(os.path.join(directory, name))]
-    for name in sorted(os.listdir(directory)):
-        path = os.path.join(directory, name)
-        if name not in listed and os.path.isfile(path):
-            with open(path, "rb") as f:
-                if f.read(4) == b"\x7fELF":
-                    problems.append(f"{directory}: {name} is an ELF file that BUILDINFO.json's binaries leaves out, "
-                                    "so it would ship unchecked")
+    known = {os.path.normpath(name) for name in listed}
+    for parent, _, files in os.walk(directory):
+        for file in sorted(files):
+            path = os.path.join(parent, file)
+            name = os.path.relpath(path, directory)
+            if os.path.normpath(name) not in known:
+                with open(path, "rb") as f:
+                    if f.read(4) == b"\x7fELF":
+                        problems.append(f"{directory}: {name} is an ELF file that BUILDINFO.json's binaries and "
+                                        "libraries leave out, so it would ship unchecked")
     return [os.path.join(directory, name) for name in listed if os.path.isfile(os.path.join(directory, name))], problems
 
 

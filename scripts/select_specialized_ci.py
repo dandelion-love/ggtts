@@ -252,6 +252,10 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
             if path.startswith(("crates/ggtts-ggml-sys/", "crates/ggtts-ffi/")):
                 # Direct changes to native build or bindings need their targeted checks.
                 selected.update(("binding", "android", "ggml"))
+                if path.startswith("crates/ggtts-ffi/"):
+                    # The C library and ggtts.h ship in the archives: the package smoke compiles a C program
+                    # against them and renders through them.
+                    selected.add("package")
             else:
                 # Ordinary source PRs get the CPU checks and package smoke; promotion
                 # above still runs the CPU native, binding and release jobs.
@@ -260,7 +264,8 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
             selected.update(("android", "binding"))
         if path.startswith(("scripts/kotlin_binding_test.sh",)):
             selected.add("binding")
-        if path.startswith(("scripts/package_and_smoke.sh", "scripts/check_release_version.py", "instruments/", "fixtures/")):
+        if path.startswith(("scripts/package_and_smoke.sh", "scripts/check_release_version.py", "instruments/", "fixtures/",
+                            "scripts/ffi_smoke.c", "scripts/check_pe_imports.py", "scripts/test_check_pe_imports.py")):
             selected.add("package")
         if path == "scripts/buildinfo_engines.sh":
             selected.update(("ggml", "release"))

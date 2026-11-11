@@ -5,6 +5,8 @@
 #   scripts/package_and_smoke.sh pack BINARY DIR    # DIR gets the binaries (and the Kitten tools when built),
 #                                                   # LICENSE, THIRD_PARTY.md, licenses/,
 #                                                   # README.md and instruments/
+#                                                   # and the C library: lib/ and include/ggtts.h
+#   scripts/package_and_smoke.sh libraries DIR      # the library files pack put in DIR, as a JSON list
 #   scripts/package_and_smoke.sh archive DIR zip|tar.gz   # DIR.zip or DIR.tar.gz beside DIR, as released
 #   scripts/package_and_smoke.sh smoke PATH [TAG]   # unpack; if TAG is set, check both binaries and BUILDINFO
 #
@@ -33,6 +35,18 @@
 # crate), and the licence file beside each vendored or derived source under instruments/. A missing one fails the
 # smoke with "missing licence notice", naming it. `pack` first runs scripts/third_party_notices.py --check, which
 # refuses when a crate linked into the binaries has no notice in licenses/rust-crates.txt.
+#
+# The C library. `pack` also copies the ggtts-ffi library built beside BINARY into lib/ (libggtts_ffi.so on Linux;
+# ggtts_ffi.dll and its MSVC import library ggtts_ffi.dll.lib on Windows) and crates/ggtts-ffi/include/ggtts.h into
+# include/, and refuses when the library is missing (build it with `-p ggtts-ffi`). `libraries DIR` prints the files
+# it put in lib/, for BUILDINFO's "libraries", which scripts/check_glibc_floor.py reads. `smoke` compiles
+# scripts/ffi_smoke.c against the packed include/ggtts.h and lib/ (cc, gcc or clang; GGTTS_CC overrides; on Windows
+# LLVM's clang, which links the import library), runs it with only the packed library on the loader's path, and passes
+# only when it prints "ffi smoke: ok": ggtts_abi_version() equals the header's GGTTS_ABI_VERSION, and the fake engine
+# loads through ggtts_load_with and renders through ggtts_render. A missing header, library or import library fails
+# with "no <path> in", naming it; no C compiler fails too, since a skipped smoke is not a pass. On Windows it then runs
+# scripts/check_pe_imports.py --packed, which refuses an .exe or .dll that needs a DLL neither Windows, the Visual
+# C++ runtime nor the archive provides.
 set -euo pipefail
 
 say() { echo "package_and_smoke: $*" >&2; }
@@ -40,10 +54,24 @@ say() { echo "package_and_smoke: $*" >&2; }
 KITTEN_TOOLS="ggtts-kitten-convert ggtts-kitten"
 root=$(cd "$(dirname "$0")/.." && pwd)
 
+# The C library's files, as cargo builds them and as they are packed under lib/: the shared library, and on Windows
+# the import library a C program links against.
+ffi_files() {
+    case "$1" in
+        .exe) echo "ggtts_ffi.dll ggtts_ffi.dll.lib" ;;
+        *) echo "libggtts_ffi.so" ;;
+    esac
+}
+
 pack() {
     local bin=$1 dir=$2 ext="" b list=""
     case "$bin" in *.exe) ext=.exe ;; esac
-    mkdir -p "$dir/instruments/python"
+    for b in $(ffi_files "$ext"); do
+        [ -f "$(dirname "$bin")/$b" ] || { say "no $b beside $bin (build the C library with -p ggtts-ffi)"; return 1; }
+    done
+    mkdir -p "$dir/instruments/python" "$dir/lib" "$dir/include"
+    for b in $(ffi_files "$ext"); do cp "$(dirname "$bin")/$b" "$dir/lib/"; done
+    cp "$root/crates/ggtts-ffi/include/ggtts.h" "$dir/include/"
     for b in ggtts-render ggtts-measure; do
         [ -f "$(dirname "$bin")/$b$ext" ] || { say "no $b$ext beside $bin"; return 1; }
         cp "$(dirname "$bin")/$b$ext" "$dir/"
@@ -67,6 +95,78 @@ pack() {
     find "$dir/instruments" -name __pycache__ -prune -exec rm -rf {} +
     say "packed $dir"
     echo "[$list]"
+}
+
+libraries() {
+    local dir=$1 f list=""
+    [ -d "$dir/lib" ] || { say "no lib/ in $dir"; return 1; }
+    for f in "$dir"/lib/*; do
+        [ -f "$f" ] || continue
+        list="$list${list:+,}\"lib/$(basename "$f")\""
+    done
+    [ -n "$list" ] || { say "lib/ in $dir is empty"; return 1; }
+    echo "[$list]"
+}
+
+# Compile scripts/ffi_smoke.c against DIR's include/ggtts.h and lib/, and run it on the packed library alone.
+ffi_smoke() {
+    local dir=$1 path=$2 work=$3 ext=$4 f cc="" out code
+    [ -s "$dir/include/ggtts.h" ] || { say "no include/ggtts.h in $path"; return 1; }
+    for f in $(ffi_files "$ext"); do
+        [ -s "$dir/lib/$f" ] || { say "no lib/$f in $path"; return 1; }
+    done
+    if [ -n "${GGTTS_CC:-}" ]; then cc=$GGTTS_CC
+    elif [ "$ext" = .exe ]; then
+        # The MSVC import library needs an MSVC-compatible linker: LLVM's clang (on the Windows runners) finds it.
+        if command -v clang >/dev/null 2>&1; then cc=clang
+        elif [ -x "/c/Program Files/LLVM/bin/clang.exe" ]; then cc="/c/Program Files/LLVM/bin/clang.exe"
+        fi
+    else
+        for f in cc gcc clang; do command -v "$f" >/dev/null 2>&1 && { cc=$f; break; }; done
+    fi
+    [ -n "$cc" ] || { say "FAILED on $path: no C compiler to build the library smoke (set GGTTS_CC)"; return 1; }
+    set +e
+    if [ "$ext" = .exe ]; then
+        "$cc" -Wall -I "$dir/include" "$root/scripts/ffi_smoke.c" "$dir/lib/ggtts_ffi.dll.lib" \
+            -o "$work/ffi-smoke.exe" > "$work/ffi-cc.txt" 2>&1
+        code=$?
+        out="$work/ffi-smoke.exe"
+    else
+        "$cc" -std=c99 -Wall -Werror -I "$dir/include" "$root/scripts/ffi_smoke.c" -L "$dir/lib" -lggtts_ffi \
+            -Wl,-rpath,"$dir/lib" -o "$work/ffi-smoke" > "$work/ffi-cc.txt" 2>&1
+        code=$?
+        out="$work/ffi-smoke"
+    fi
+    set -e
+    if [ "$code" -ne 0 ]; then
+        say "FAILED on $path: the C smoke did not compile against include/ggtts.h and lib/ with $cc (exit $code)"
+        cat "$work/ffi-cc.txt" >&2
+        return 1
+    fi
+    set +e
+    if [ "$ext" = .exe ]; then
+        # Windows looks for a DLL beside the program and then on PATH: put only the packed lib/ first.
+        (cd "$work" && PATH="$dir/lib:$PATH" "$out") > "$work/ffi-out.txt" 2>&1
+    else
+        (cd "$work" && env -u LD_LIBRARY_PATH "$out") > "$work/ffi-out.txt" 2>&1
+    fi
+    code=$?
+    set -e
+    cat "$work/ffi-out.txt" >&2
+    if [ "$code" -ne 0 ] || ! grep -q '^ffi smoke: ok' "$work/ffi-out.txt"; then
+        say "FAILED on $path: the C library smoke exited $code"
+        return 1
+    fi
+    if [ "$ext" != .exe ] && command -v ldd >/dev/null 2>&1; then
+        # The program must have run on the packed library, not another one on the loader's path.
+        ldd "$out" | grep -F "$dir/lib/libggtts_ffi.so" >/dev/null \
+            || { say "FAILED on $path: the C smoke did not load lib/libggtts_ffi.so from the archive"; ldd "$out" >&2; return 1; }
+    fi
+    say "ok on $path: a C program built against include/ggtts.h and lib/ loaded and rendered on the fake engine"
+    if [ "$ext" = .exe ]; then
+        "${GGTTS_PYTHON:-python3}" "$root/scripts/check_pe_imports.py" --packed "$dir" \
+            || { say "FAILED on $path: a packed .exe or .dll needs a DLL the archive does not provide"; return 1; }
+    fi
 }
 
 archive() {
@@ -157,6 +257,9 @@ smoke() {
         [ -s "$dir/$notice" ] || { say "missing licence notice in $path: $notice"; return 1; }
     done
     say "ok on $path: the licence notices are present"
+    local exe_ext=""
+    case "$exe" in *.exe) exe_ext=.exe ;; esac
+    ffi_smoke "$dir" "$path" "$work" "$exe_ext"
     if command -v "${GGTTS_NODE:-node}" >/dev/null 2>&1; then
         set +e
         (unset GGTTS_INSTRUMENTS_DIR; cd "$work" && "$measure" --audio out.flac --report pitch-report \
@@ -204,7 +307,8 @@ smoke() {
 
 case "${1:-}" in
     pack) pack "$2" "$3" ;;
+    libraries) libraries "$2" ;;
     archive) archive "$2" "$3" ;;
     smoke) smoke "$2" "${3:-}" ;;
-    *) echo "usage: $0 pack BINARY DIR | archive DIR zip|tar.gz | smoke PATH [TAG]" >&2; exit 2 ;;
+    *) echo "usage: $0 pack BINARY DIR | libraries DIR | archive DIR zip|tar.gz | smoke PATH [TAG]" >&2; exit 2 ;;
 esac

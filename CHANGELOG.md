@@ -37,6 +37,14 @@ new requirements. Internal refactors and test changes are not listed.
 
 ### Added
 
+- **The release archives ship the C library and `ggtts.h`.** Until now the C ABI (and with it
+  `ggtts_load_with` and `ggtts_abi_version`) could only be had by building from source. Every archive now has
+  `include/ggtts.h` and the library in `lib/`: `libggtts_ffi.so` in the Linux CPU and CUDA archives, and
+  `ggtts_ffi.dll` with its MSVC import library `ggtts_ffi.dll.lib` in the Windows archive. The library carries the
+  same engines as `ggtts-render` and renders on the CPU, including in the CUDA archive, whose library is the CPU
+  build and loads without the NVIDIA driver. It exports the C ABI only, not the JNI entry points. `BUILDINFO.json`
+  lists it under `"libraries"`, and the Linux library is held to the same Ubuntu 22.04 glibc floor as the binaries.
+  Where the files are and how to link them: the README's "The C library" section.
 - **`ggtts-render --instruction TEXT`** passes a natural-language style instruction ("Speak slowly and softly.") to a
   Qwen3-TTS checkpoint that takes one: `custom_voice` at 1.7B, or `voice_design`. It is placed before the prompt as
   the reference runtime places it, and the tokens match the reference's on CPU. A `base` checkpoint, a 0.6B

@@ -54,6 +54,15 @@ new requirements. Internal refactors and test changes are not listed.
   `instruction` when there is one; a strict `ggtts-trace/2` reader built against the older schema must allow that
   field. Code that builds a `ChunkRequest` must now set `instruction` (`None` for none). The C and Kotlin binding
   carries it through `ggtts_load_with` (below).
+- **A Python binding: `import ggtts`.** `crates/ggtts-py` (PyO3, an abi3 wheel for Python 3.9 and later, built
+  with maturin) loads Qwen3-TTS and Kitten-TTS 2 with the settings of `ggtts_load_with` (a speaker, a style
+  instruction) and a device (`cpu` or `cuda`), and with no model loads the default model as `ggtts-render` does,
+  with an `offline` mode. `TTS.render` returns float32 samples (a numpy array when numpy is installed, else an
+  `array.array`, or the bytes) and their rate, `Audio.write_flac` writes FLAC with the library's writer, and
+  `TTS.stream` (or `render_stream` with a callback) yields the chunks in order and can be stopped. An invalid
+  argument or a refusal raises `ggtts.GgttsError` with the C-ABI's `code` and the `message`; a panic is caught and
+  raised as `ERR_PANIC`, and the GIL is released while an engine loads and renders. It is built from a checkout
+  (README, "Python") and is not on PyPI; release wheels are to follow.
 - **The C and Kotlin binding take a Qwen3-TTS speaker and style instruction.** The C-ABI is now version 2:
   `GGTTS_ABI_VERSION` in `ggtts.h` and `ggtts_abi_version()` in the library. `ggtts_load_with` is `ggtts_load` plus
   a `ggtts_settings` struct (`size`, `speaker`, `instruction`; start from `GGTTS_SETTINGS_INIT`), and in Kotlin

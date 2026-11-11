@@ -1,0 +1,36 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "ggtts"
+description = "Text-to-speech over ggml (Qwen3-TTS, Kitten-TTS 2): load a model and render from Python"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dynamic = ["version"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+
+[project.optional-dependencies]
+numpy = ["numpy"]
+test = ["pytest", "numpy"]
+
+[project.urls]
+Repository = "https://github.com/dandelion-love/ggtts"
+
+[tool.maturin]
+python-source = "python"
+module-name = "ggtts._native"
+bindings = "pyo3"
+# The Python module, linked as an extension (no libpython); without the ggml feature only the fake engine loads.
+# Features given to `maturin build --features` replace this list rather than add to it, so a build with the engines
+# names all of them: `--features python,pyo3/extension-module,ggml` (`bindgen` in place of `ggml` on Windows).
+features = ["python", "pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

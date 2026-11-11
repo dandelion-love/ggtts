@@ -261,6 +261,23 @@ jobs:
         run: python3 scripts/test_check_glibc_floor.py
       - name: Test the release version check (a wrong tag or commit, an unknown commit and a missing binary are refused)
         run: python3 scripts/test_check_release_version.py
+      - name: Test the promotion gate and its probes (a planted reuse fault in rc_gate.py is red)
+        run: |
+          set -u
+          for t in test_rc_gate test_instrument_promotion_gate test_logging_overhead_probe test_qwen_event_instrument_probe; do
+            python3 "scripts/$t.py"
+          done
+          cp scripts/rc_gate.py "$RUNNER_TEMP/rc_gate.py"
+          sed -i 's/^    if changed:$/    if False:/' scripts/rc_gate.py
+          grep -qx '    if False:' scripts/rc_gate.py
+          if python3 scripts/test_rc_gate.py > planted-gate.txt 2>&1; then
+            cat planted-gate.txt
+            echo "::error::the gate's tests passed with probe reuse ignoring changed inputs"
+            exit 1
+          fi
+          grep -F 'test_a_touched_input_reruns' planted-gate.txt
+          cp "$RUNNER_TEMP/rc_gate.py" scripts/rc_gate.py
+          rm planted-gate.txt
       - name: Select checks
         id: select
         env:

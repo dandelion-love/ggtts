@@ -102,8 +102,40 @@ promotion and path decisions without building the specialized jobs on that PR.
 pull request is merged, someone with a supported GPU runs `scripts/rc_gate.sh --ref origin/rc --work /path/to/scratch`
 and attaches the resulting `rc-gate.json` and the logs it names. The gate runs CPU checks and both engines' CUDA
 probes; missing prerequisites make the result incomplete, never a pass. That includes `TQ1_GGUF`, the Kitten probe's
-experimental TQ1 model: without it the report's `gpu.kitten.tq1` reads "tq1: not run" and the result is incomplete. It requires Python 3, Rust at the pinned
+experimental TQ1 model: without it the report's `gpu.kitten.tq1` reads "tq1: not run" and the result is incomplete.
+The report records the TQ1 model's sha256 beside the expected value, `TQ1_GGUF_SHA256`; a different model fails, and
+checks that passed with no expected value are incomplete. No public TQ1_0 model or converter command is published
+yet, so the operator supplies both the file and its sha256 ([#153](https://github.com/dandelion-love/ggtts/issues/153)
+tracks publishing one). It requires Python 3, Rust at the pinned
 version, CUDA and the model/reference inputs documented at the top of each engine's `scripts/cuda_probe.sh`.
+
+The gate checks its Python requirements before anything is built: every package pinned in
+`instruments/examples/python/loudness-ends/requirements.txt` (NumPy, SciPy, librosa, soundfile), at the pinned
+version, for the interpreter the instruments run under (`GGTTS_PYTHON`, else `python3`). A missing or different one
+stops the gate with an incomplete result naming the package and the file. Install them into a virtual environment
+with `python3 -m pip install -r instruments/examples/python/loudness-ends/requirements.txt` and put it first on
+`PATH`, or point `GGTTS_PYTHON` at its interpreter.
+
+**What a gate run may take from earlier evidence.** Two stages need not rerun on every release candidate:
+
+* **The CPU stage** (fmt, clippy, build, test) is taken from CI when every required CI check run on the gated
+  commit concluded `success`: `check (fmt, clippy)` and `build-test` on Ubuntu and Windows, read with `gh api`.
+  Skipped, cancelled, pending, absent or unreadable is not a pass, and the gate then runs the stage itself. The
+  report's `cpu_source` says which. `--cpu-stage` always runs it.
+* **An engine's CUDA probe** is reused from the last passing report (`--previous`, by default the `--out` file it is
+  about to overwrite) when nothing the probe reads changed since the commit it actually ran on: the engine crates
+  it builds and their path dependencies (from `cargo metadata`), `crates/ggtts-ggml-sys` with the ggml submodule
+  pin, `crates/ggtts-core`, `Cargo.lock`, `Cargo.toml`, `rust-toolchain.toml`, `schemas/`, `fixtures/`, its
+  `cuda_probe.sh`, and the sha256 of every model and reference input it hashes (and, for Kitten, the TQ1 model and
+  its expected sha256). The stage then reads `reused from <sha> (<report>)`, keeps the earlier log path, and counts
+  as a pass. Reuse is refused, and the probe runs, when the earlier report is missing, unreadable, of another
+  `schema`, or did not pass, when that probe did not pass in it, or when its commit is unknown here; `reuse_refused`
+  says why. `--no-reuse` runs every probe. A reused probe proves what it proved on the commit it names, on that
+  run's device: it is evidence that nothing it depends on has changed, not a new run. The instrument identity proof
+  always runs. To undo this rule, pass `--no-reuse --cpu-stage`, or revert the change that added it.
+
+The probe list is `PROBES` in `scripts/rc_gate.py`: adding a probe (for example one for `crates/ggtts-ffi`) is one
+entry naming its script, the packages it builds and the inputs it reads, and makes that probe required for a pass.
 Set their environment variables before running; the gate assigns separate `WORK` and `CARGO_TARGET_DIR` directories
 under the persistent scratch directory. Use `--wait-file` for a busy GPU. The report identifies the commit, model
 and fixture hashes, device, probe commands and logs. External CUDA library build provenance must be checked separately.

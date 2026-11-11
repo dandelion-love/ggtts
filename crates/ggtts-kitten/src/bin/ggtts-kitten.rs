@@ -3,7 +3,7 @@
 //! Every command takes `--device cpu|cuda` (default `cpu`; `cuda` needs ggml built with CUDA).
 //!
 //! ```text
-//! ggtts-kitten parity --gguf FILE --ref DIR [--weights f32|ternary|ternary-f32head] [--threads N]
+//! ggtts-kitten parity --gguf FILE --ref DIR [--weights f32|ternary|ternary-f32head] [--threads N] [--write-ref DIR]
 //! ggtts-kitten step-parity --gguf FILE [--ref DIR] [--steps N] [--weights f32|ternary] [--threads N]
 //! ggtts-kitten tokcheck --tokenizer tokenizer.json --expect FILE
 //! ggtts-kitten block-parity --s3gguf FILE --ref DIR [--blocks 25,50] [--contexts 0,25,50,all] [--lookahead 3]
@@ -22,6 +22,10 @@
 //!
 //! `parity` runs the teacher-forced forward pass on the inputs `tools/kitten_ref.py logits` recorded in `DIR`
 //! and compares the hidden state after every layer and the logits with PyTorch's, against the arm's bar.
+//! With `--write-ref OUT`, `parity` instead records its own forward pass into `OUT` in the same format (the ids
+//! and speaker of `--ref DIR`, this run's hidden states and logits) and compares nothing: the reference for a GGUF
+//! with no PyTorch recording, such as a `TQ1_0` one, whose CPU f32 arm then stands in for PyTorch. It also
+//! prints the byte range of one ternary matrix, so a probe can zero it in a copy as its planted fault.
 //! `step-parity` runs the same positions batched and one token at a time, as generation does, and compares the
 //! logits (the prompt recorded in `--ref DIR`, or fixed pseudo-random ids; the last `--steps`, default 16, one by one).
 
@@ -71,6 +75,9 @@ impl Args {
     }
 }
 
+/// The matrix whose byte range `parity --write-ref` reports.
+const PLANT_MATRIX: &str = "model.layers.0.mlp.down_proj.weight";
+
 fn parity_cmd(a: &Args) -> Result<bool, String> {
     let weights = match a.or("weights", "ternary") {
         "f32" => Weights::F32,
@@ -95,6 +102,8 @@ fn parity_cmd(a: &Args) -> Result<bool, String> {
     let t0 = Instant::now();
     let gguf = Gguf::open(Path::new(a.get("gguf")?))?;
     let model = Model::load(&gguf, weights, be.clone())?;
+    // Where one ternary matrix's bytes are in the file, for a probe that plants a fault in a copy of it.
+    let plant_span = gguf.tensors.get(PLANT_MATRIX).map(|t| (t.start, t.len));
     drop(gguf);
     eprintln!("loaded ({weights:?}) in {:.1}s", t0.elapsed().as_secs_f64());
     println!(
@@ -128,8 +137,40 @@ fn parity_cmd(a: &Args) -> Result<bool, String> {
         t1.elapsed().as_secs_f64()
     );
 
-    let hidden_ref = read_f32(&dir.join("hidden.f32"))?;
     let tn = ids.len() * hp.n_embd;
+    if let Some(out_dir) = a.map.get("write-ref") {
+        // hidden.f32 as `tools/kitten_ref.py logits` lays it out: the embeddings (not compared, zeros here), the
+        // residual after layers 1..n_layer-1, then a block whose last `n_last` rows are the final norm's output.
+        let out_dir = PathBuf::from(out_dir);
+        std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+        let mut hidden = vec![0f32; tn];
+        for h in &out.hidden[..hp.n_layer - 1] {
+            hidden.extend_from_slice(h);
+        }
+        hidden.resize((hp.n_layer + 1) * tn - out.hidden[hp.n_layer].len(), 0.0);
+        hidden.extend_from_slice(&out.hidden[hp.n_layer]);
+        let le = |v: &[f32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+        for (name, data) in [
+            ("hidden.f32", le(&hidden)),
+            ("logits.f32", le(&out.logits)),
+            ("speaker_raw.f32", le(&spk_raw)),
+            ("speaker_proj.f32", le(&spk)),
+            ("meta.json", serde_json::to_vec(&meta).map_err(|e| e.to_string())?),
+        ] {
+            std::fs::write(out_dir.join(name), data).map_err(|e| format!("{name}: {e}"))?;
+        }
+        if let Some((start, len)) = plant_span {
+            println!("PLANT SPAN: {PLANT_MATRIX} bytes {start} {len}");
+        }
+        println!(
+            "REFERENCE WRITTEN: {} ({weights:?} on {:?}, {} positions, logits of the last {n_last})",
+            out_dir.display(),
+            be.device,
+            ids.len()
+        );
+        return Ok(true);
+    }
+    let hidden_ref = read_f32(&dir.join("hidden.f32"))?;
     let mut worst = 0f64;
     for l in 1..hp.n_layer {
         let e = parity::rel_l2(&out.hidden[l - 1], &hidden_ref[l * tn..(l + 1) * tn]);

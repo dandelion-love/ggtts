@@ -408,6 +408,7 @@ dependencies = [
 name = "ggtts-kitten"
 version = "0.0.1"
 dependencies = [
+ "claxon",
  "ggtts-core",
  "ggtts-ggml-sys",
  "serde_json",

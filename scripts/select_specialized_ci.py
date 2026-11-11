@@ -50,6 +50,7 @@ JOB_MAP = {
 GGML_GATED_CRATES = ("crates/ggtts-kitten/", "crates/ggtts-qwen3-tts/")
 GGML_GATED_FILES = {
     "crates/ggtts-cli/src/bin/ggtts-render.rs",
+    "crates/ggtts-cli/tests/default_models_cli.rs",
     "crates/ggtts-cli/tests/kitten_refusals.rs",
     "crates/ggtts-cli/tests/no_change_real.rs",
     "crates/ggtts-cli/tests/version_engines.rs",

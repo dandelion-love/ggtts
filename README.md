@@ -68,6 +68,79 @@ lists the included engines and backends.
   before its level step. The FLAC is this stream times the gain printed at the end. Tests and `stream_probe.sh` ask
   for it by name.
 
+### Default model files: what ggtts downloads, and when
+
+With no `--model`, `ggtts-render` renders with the Qwen3-TTS engine on its default files, so text is all a render
+needs:
+
+```bash
+ggtts-render --text "我哋聽日一齊去海邊睇日落。" --out x.flac
+```
+
+The first such run downloads the two files below (2.33 GB in all) into a per-user cache, checks each against its
+pinned sha256, and renders; later runs download nothing. Before it starts, the run says what it will download, from
+where, how large, and where it will be stored, and it reports progress every 5 seconds. These lines print at every
+`--log-level`, so a download is never silent. The default speaker is `hk_voice_343`; the model's other speaker is
+`hk_voice_777`.
+
+| Role | File | Size | sha256 | Licence |
+|---|---|---|---|---|
+| talker | `qwen-talker-hk-cantonese-cc0-v0.0.5-q8_0.gguf` | 2,042,834,144 bytes | `4eb27e5a3434d15ca818814b8e4f0f1941716654afb8543866732b62f9227041` | Apache-2.0 |
+| codec | `qwen-tokenizer-12hz-q8_0.gguf` | 291,150,624 bytes | `7771c653aea5d26cdbf461cf00279b78e6c97af5f313da3a8cb3d2b61b837824` | Apache-2.0 |
+
+Both come from [jmtl/hk-cantonese-cc0-qwen3-tts-GGUF](https://huggingface.co/jmtl/hk-cantonese-cc0-qwen3-tts-GGUF)
+at its `v0.0.5` tag, fetched by the exact commit `e6a823291c0189031086865033d0f5e4ad02a8ac` so the files cannot
+change under a pinned hash. "Latest" means the newest release this build of ggtts knows about; a newer release
+arrives with a new ggtts. The table is `ggtts_models::QWEN3_TTS` in `crates/ggtts-models`.
+
+**Licences of the files ggtts can fetch.** The repository's card gives the licence of the weights as "Apache-2.0,
+matching Qwen3-TTS 12Hz 1.7B, which these weights derive from", and describes the codec as an unmodified conversion
+of `Qwen/Qwen3-TTS-Tokenizer-12Hz` (Apache-2.0). The card also says the voice is one pseudonymous Common Voice
+contributor's, dedicated under CC-0, and sets out responsible-use terms (the voice is a real person's: no
+impersonation, and label synthetic audio); read the card before using the voice. These licences are the models',
+not this repository's.
+
+**A path you give always wins.** `--model` and `--codec` name files to use as they are: they are never downloaded
+over and are not required to match a pinned hash, so ggtts renders unreleased models for experiments. A mix is
+allowed: `--model my-talker.gguf` with no `--codec` uses your talker and the default codec. A given talker keeps
+the legacy speaker default (see `--speaker` below). An engine with no default files (Kitten-TTS 2, for now) needs
+its paths.
+
+**Where the cache is.** `$XDG_CACHE_HOME/ggtts` (else `~/.cache/ggtts`) on Linux, `~/Library/Caches/ggtts` on macOS,
+and `%LOCALAPPDATA%\ggtts\cache` on Windows. `GGTTS_CACHE_DIR` overrides it. Each file is stored at
+`models/<sha256>/<file name>`, so a file from another release never takes its place. Deleting the directory is
+safe; the next default render downloads again.
+
+**How a file is checked.** A download goes to a temporary name beside its final one and is hashed as it arrives.
+Only when its size and sha256 match the table is it renamed into place; on a mismatch the run fails naming the file
+and both hashes, and on an interruption it fails naming how much arrived. Either way the partial file is deleted.
+Hashing 2 GB on every render would cost seconds, so after a file is verified a sidecar (`<file name>.verified`)
+records its hash, size and modification time, and later runs trust the file while all three still match. Anything
+else (a missing or edited sidecar, a changed size or time) makes the run hash the file again, and a file that no
+longer matches is removed and downloaded again. The trade-off: an edit that keeps both the size and the
+modification time goes unnoticed until the sidecar is deleted. Two renders starting at once each download to their
+own temporary name and the rename is atomic, so a race costs a second download, never a corrupt file. Each temporary
+file is locked by the process writing it (an exclusive `flock` on Linux and macOS; on Windows it is opened without
+delete sharing), and a run removes a temporary file only when that lock shows its writer has exited, never by its
+age. A render stopped mid-download (Ctrl-C, or killed) leaves its temporary file; the next render that needs that
+file removes it at once.
+
+**Network.** Downloads use HTTPS only: the hub's redirect to its download host is followed, but a redirect to plain
+HTTP is refused. A download that receives nothing for 60 seconds fails, naming the file and how many bytes arrived,
+and its temporary file is deleted.
+
+**Offline.** `--offline` never downloads. A default file that is not already in the cache is then an error that
+names the file and its URL, so it can be fetched by other means and placed in the cache, or given with
+`--model`/`--codec`.
+
+**What the reports record.** Every render prints one line per model file at the default log level, with its role,
+path, sha256 and `cache` or `path`. Every report the render writes carries the same `models` list (role, path,
+sha256, `source`, and a cached file's URL): the `--timing-report`, the `--duration-report` and the instrument
+report directory's `duration.json`, the instrument report's `report.json` and `run.log`, and the `--trace` header
+(which also fills its `model_sha256` and `codec_sha256`). A cached file's hash is the pinned one it was verified
+against. A given file is hashed once per run, after the model loads: about 1.3 s for the 2 GB talker on one desktop
+CPU. It is not cached by size and modification time, so the recorded hash is always of the bytes that were used.
+
 ### Render and listen: Qwen and Kitten
 
 These Bash examples use the `ggtts-render` from an unpacked [release](https://github.com/dandelion-love/ggtts/releases)
@@ -96,8 +169,9 @@ to its GGUFs and to audio rendered with it (its outputs may not be used to train
 `README-kitten.md`.
 
 For a Qwen model with named speakers, select the name in its model card with `--speaker NAME`. The Cantonese
-v0.0.5 model uses `--speaker hk_voice_343` (or `hk_voice_777` for its other voice). Without the option, ggtts
-uses the legacy `hk_cantonese_speaker` name, as for v0.0.1. An unknown or absent speaker is an error; ggtts does
+v0.0.5 model uses `--speaker hk_voice_343` (or `hk_voice_777` for its other voice). Without the option, the
+default model uses `hk_voice_343`, and a talker given with `--model` uses the legacy `hk_cantonese_speaker` name,
+as for v0.0.1. An unknown or absent speaker is an error; ggtts does
 not choose an arbitrary voice. `--speaker` applies only to Qwen, while `--voice` supplies Kitten's reference JSON.
 
 ```bash

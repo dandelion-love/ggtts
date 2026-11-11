@@ -37,6 +37,23 @@ new requirements. Internal refactors and test changes are not listed.
 
 ### Added
 
+- **A render with no model downloads the default one.** `ggtts-render --text "..." --out x.flac` with no `--model`
+  renders with Qwen3-TTS on the talker and codec of `jmtl/hk-cantonese-cc0-qwen3-tts-GGUF` v0.0.5 (2.33 GB, pinned
+  by commit and sha256) and the speaker `hk_voice_343`. The first run says what it will download, from where, how
+  large and where to (at every log level), reports progress every 5 s, then downloads over HTTPS only into a
+  per-user cache and verifies each file before use; later runs download nothing. A download that receives nothing
+  for 60 s fails. `GGTTS_CACHE_DIR` moves the cache. `--offline` never downloads, and names any missing file and its URL.
+  A path given with `--model` or `--codec` is used as it is, never downloaded over or held to a pinned hash, and may
+  be mixed with a default file. Until now a render without `--model` was an error. See "Default model files" in
+  the README.
+- **Every report records the model files** under a new `models` list: role, path, sha256, whether the file came
+  from the cache or a given path, and a cached file's URL. It is in the timing report, the duration report, the
+  instrument `report.json` (a render's, not `ggtts-measure`'s) and `run.log`, and the trace header, which now also
+  fills `model_sha256` and `codec_sha256`. Every render prints the same at the default log level. A given file is
+  hashed once per run. The formats keep their versions (`ggtts-timing/1`, `ggtts-duration/1`, `ggtts-report/2`,
+  `ggtts-trace/2`); a document without `models` is still valid.
+- **ggtts-render links an HTTPS client** (ureq with rustls and its bundled Mozilla roots; no OpenSSL or other
+  system TLS library). `licenses/rust-crates.txt` lists the crates it adds.
 - **The Kitten tools ship in every archive.** `ggtts-kitten-convert` (the language model and decoder GGUFs from the
   published model) and `ggtts-kitten` (`prepare`, a reference voice from a clip) sit beside `ggtts-render`, so a
   Kitten render needs only an archive and the upstream model files, and no Python. A Kitten GGUF converted before

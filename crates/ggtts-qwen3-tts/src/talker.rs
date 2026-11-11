@@ -44,19 +44,21 @@ fn speaker_names(speakers: &HashMap<String, i32>) -> Vec<String> {
 }
 
 /// Looks a speaker up by name, ignoring case. An unknown name is an error that lists every speaker the model has,
-/// in alphabetical order, and names the flag that chooses one.
+/// in alphabetical order, and names the flag that chooses one; a model with no named speakers gets neither.
 fn find_speaker(speakers: &HashMap<String, i32>, name: &str) -> Result<i32, EngineError> {
     if let Some(id) = speakers.get(&name.to_lowercase()) {
         return Ok(*id);
     }
     let names = speaker_names(speakers);
-    let have = if names.is_empty() {
-        "this model has no named speakers".to_string()
-    } else {
-        format!("this model's speakers are: {}", names.join(", "))
-    };
+    if names.is_empty() {
+        // Nothing to choose from, so --speaker is not offered.
+        return Err(err(format!(
+            "the talker has no speaker {name}: this model has no named speakers"
+        )));
+    }
     Err(err(format!(
-        "the talker has no speaker {name}; {have}. Choose one with --speaker"
+        "the talker has no speaker {name}; this model's speakers are: {}. Choose one with --speaker",
+        names.join(", ")
     )))
 }
 
@@ -1718,9 +1720,8 @@ mod tests {
     #[test]
     fn an_unknown_speaker_error_says_so_when_the_model_names_none() {
         let e = find_speaker(&HashMap::new(), "anyone").unwrap_err().0;
-        assert!(e.contains("no speaker anyone"), "{e}");
-        assert!(e.contains("this model has no named speakers"), "{e}");
-        assert!(e.contains("--speaker"), "{e}");
+        assert_eq!(e, "the talker has no speaker anyone: this model has no named speakers");
+        assert!(!e.contains("--speaker"), "{e}");
     }
 
     // Frozen pre-refactor sampler control. It must stay independent of sampler_weights.

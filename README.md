@@ -257,6 +257,10 @@ and [`DESIGN.md`](crates/ggtts-kitten/DESIGN.md).
 License, and their outputs, including audio rendered here, must not be used to train any other model. No weights,
 GGUFs or rendered audio are kept in this repository.
 
+## Upgrading
+
+What changed between releases, and what to check before upgrading, is in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## Licence
 
 MIT. Third-party sources and what is taken from each are listed in [`THIRD_PARTY.md`](THIRD_PARTY.md).

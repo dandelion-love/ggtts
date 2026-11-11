@@ -3,11 +3,24 @@
 What changes for someone using ggtts, release by release: new options, changed file formats, changed output, and
 new requirements. Internal refactors and test changes are not listed.
 
-Each release has a section headed `## <tag> (<date published>)`. The release workflow publishes that section as the
-release's notes, and refuses to publish a tag that has none (`scripts/publish_release.sh`). Add new entries under
-**Unreleased**; at release the heading becomes the tag.
+Each release has a section headed `## <tag> (<date published, UTC>)`. The release workflow publishes that section as
+the release's notes, and refuses to publish a tag that has none (`scripts/publish_release.sh`). Add new entries under
+**Unreleased**; at release the heading becomes the tag. A released section does not change afterwards:
+`scripts/check_changelog.sh` holds each one to the hash recorded in `scripts/changelog-released.sha256`, so an entry
+that a merge places under a released heading is caught.
 
 ## Unreleased
+
+### Added
+
+- **The release archives ship the C library and `ggtts.h`.** Until now the C ABI (and with it
+  `ggtts_load_with` and `ggtts_abi_version`) could only be had by building from source. Every archive now has
+  `include/ggtts.h` and the library in `lib/`: `libggtts_ffi.so` in the Linux CPU and CUDA archives, and
+  `ggtts_ffi.dll` with its MSVC import library `ggtts_ffi.dll.lib` in the Windows archive. The library carries the
+  same engines as `ggtts-render` and renders on the CPU, including in the CUDA archive, whose library is the CPU
+  build and loads without the NVIDIA driver. It exports the C ABI only, not the JNI entry points. `BUILDINFO.json`
+  lists it under `"libraries"`, and the Linux library is held to the same Ubuntu 22.04 glibc floor as the binaries.
+  Where the files are and how to link them: the README's "The C library" section.
 
 ### Changed
 
@@ -65,14 +78,6 @@ Superseded by v0.1.0-rc.10, which renders the same from the command line.
 
 ### Added
 
-- **The release archives ship the C library and `ggtts.h`.** Until now the C ABI (and with it
-  `ggtts_load_with` and `ggtts_abi_version`) could only be had by building from source. Every archive now has
-  `include/ggtts.h` and the library in `lib/`: `libggtts_ffi.so` in the Linux CPU and CUDA archives, and
-  `ggtts_ffi.dll` with its MSVC import library `ggtts_ffi.dll.lib` in the Windows archive. The library carries the
-  same engines as `ggtts-render` and renders on the CPU, including in the CUDA archive, whose library is the CPU
-  build and loads without the NVIDIA driver. It exports the C ABI only, not the JNI entry points. `BUILDINFO.json`
-  lists it under `"libraries"`, and the Linux library is held to the same Ubuntu 22.04 glibc floor as the binaries.
-  Where the files are and how to link them: the README's "The C library" section.
 - **`ggtts-render --instruction TEXT`** passes a natural-language style instruction ("Speak slowly and softly.") to a
   Qwen3-TTS checkpoint that takes one: `custom_voice` at 1.7B, or `voice_design`. It is placed before the prompt as
   the reference runtime places it, and the tokens match the reference's on CPU. A `base` checkpoint, a 0.6B
@@ -170,25 +175,28 @@ archives cannot render Kitten-TTS 2 models without building the Kitten tools fro
   linked into the two binaries; and the licence file beside each bundled third-party source (Pitchy, fft.js, the
   speech-core selection). The CUDA and cuBLAS libraries are not bundled and are not covered.
 
-Pull requests: [#86](https://github.com/dandelion-love/ggtts/pull/86), [#90](https://github.com/dandelion-love/ggtts/pull/90),
-[#92](https://github.com/dandelion-love/ggtts/pull/92), [#93](https://github.com/dandelion-love/ggtts/pull/93),
-[#95](https://github.com/dandelion-love/ggtts/pull/95), [#96](https://github.com/dandelion-love/ggtts/pull/96),
-[#97](https://github.com/dandelion-love/ggtts/pull/97), [#98](https://github.com/dandelion-love/ggtts/pull/98),
-[#99](https://github.com/dandelion-love/ggtts/pull/99), [#100](https://github.com/dandelion-love/ggtts/pull/100),
-[#102](https://github.com/dandelion-love/ggtts/pull/102), [#103](https://github.com/dandelion-love/ggtts/pull/103),
-[#105](https://github.com/dandelion-love/ggtts/pull/105), [#109](https://github.com/dandelion-love/ggtts/pull/109),
+Pull requests: [#86](https://github.com/dandelion-love/ggtts/pull/86),
+[#90](https://github.com/dandelion-love/ggtts/pull/90), [#92](https://github.com/dandelion-love/ggtts/pull/92),
+[#93](https://github.com/dandelion-love/ggtts/pull/93), [#95](https://github.com/dandelion-love/ggtts/pull/95),
+[#96](https://github.com/dandelion-love/ggtts/pull/96), [#97](https://github.com/dandelion-love/ggtts/pull/97),
+[#98](https://github.com/dandelion-love/ggtts/pull/98), [#99](https://github.com/dandelion-love/ggtts/pull/99),
+[#100](https://github.com/dandelion-love/ggtts/pull/100), [#103](https://github.com/dandelion-love/ggtts/pull/103),
 [#114](https://github.com/dandelion-love/ggtts/pull/114), [#115](https://github.com/dandelion-love/ggtts/pull/115),
-[#116](https://github.com/dandelion-love/ggtts/pull/116), [#117](https://github.com/dandelion-love/ggtts/pull/117),
-[#122](https://github.com/dandelion-love/ggtts/pull/122), [#123](https://github.com/dandelion-love/ggtts/pull/123),
-[#125](https://github.com/dandelion-love/ggtts/pull/125), [#126](https://github.com/dandelion-love/ggtts/pull/126),
-[#128](https://github.com/dandelion-love/ggtts/pull/128), [#129](https://github.com/dandelion-love/ggtts/pull/129),
-[#133](https://github.com/dandelion-love/ggtts/pull/133), [#142](https://github.com/dandelion-love/ggtts/pull/142),
-[#146](https://github.com/dandelion-love/ggtts/pull/146), [#148](https://github.com/dandelion-love/ggtts/pull/148),
-[#149](https://github.com/dandelion-love/ggtts/pull/149), [#151](https://github.com/dandelion-love/ggtts/pull/151),
-promoted in [#84](https://github.com/dandelion-love/ggtts/pull/84) and
-[#131](https://github.com/dandelion-love/ggtts/pull/131).
+[#117](https://github.com/dandelion-love/ggtts/pull/117), [#122](https://github.com/dandelion-love/ggtts/pull/122),
+[#123](https://github.com/dandelion-love/ggtts/pull/123), [#125](https://github.com/dandelion-love/ggtts/pull/125),
+[#126](https://github.com/dandelion-love/ggtts/pull/126), [#128](https://github.com/dandelion-love/ggtts/pull/128),
+[#129](https://github.com/dandelion-love/ggtts/pull/129), [#133](https://github.com/dandelion-love/ggtts/pull/133),
+[#134](https://github.com/dandelion-love/ggtts/pull/134), [#135](https://github.com/dandelion-love/ggtts/pull/135),
+[#136](https://github.com/dandelion-love/ggtts/pull/136), [#138](https://github.com/dandelion-love/ggtts/pull/138),
+[#141](https://github.com/dandelion-love/ggtts/pull/141), [#142](https://github.com/dandelion-love/ggtts/pull/142),
+[#144](https://github.com/dandelion-love/ggtts/pull/144), [#146](https://github.com/dandelion-love/ggtts/pull/146),
+[#148](https://github.com/dandelion-love/ggtts/pull/148), [#149](https://github.com/dandelion-love/ggtts/pull/149),
+and [#151](https://github.com/dandelion-love/ggtts/pull/151), promoted in
+[#131](https://github.com/dandelion-love/ggtts/pull/131). #102, #105, #109 and #116 were merged into feature branches
+and reached rc through the pull requests above.
 
 ## v0.1.0-rc.7
 
-The first release candidate with a changelog entry. Its release page is no longer published; the tag
+Released before this changelog existed; the tree at the tag has no CHANGELOG.md. It reached `main` through
+[#84](https://github.com/dandelion-love/ggtts/pull/84). Its release page is no longer published; the tag
 `v0.1.0-rc.7` remains.

@@ -40,6 +40,12 @@ section=$(awk -v h="## $TAG" '
     echo "CHANGELOG.md has no section for $TAG: add a \"## $TAG (date)\" section before tagging" >&2
     exit 1
 }
+# The released sections, this one included, must be as recorded (scripts/check_changelog.sh), so the notes are the
+# section that was reviewed and no later merge has slipped an entry into it.
+CHANGELOG=$changelog bash "$(dirname "$0")/check_changelog.sh" > /dev/null || {
+    echo "CHANGELOG.md's released sections are not as recorded: refusing to publish $TAG" >&2
+    exit 1
+}
 
 # Verify even the existing-release path resolves the tag to the commit that built these artifacts.
 actual=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)

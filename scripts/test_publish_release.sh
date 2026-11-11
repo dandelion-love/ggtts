@@ -75,7 +75,8 @@ ggtts-render --one
 - Older.
 EOF
 export PATH="$tmp/bin:$PATH" TAG=v0.1.0-rc.6 GITHUB_REPOSITORY=example/repo GITHUB_SHA=abc MOCK_LOG="$tmp/log" \
-    MOCK_NOTES="$tmp/notes" CHANGELOG="$tmp/CHANGELOG.md"
+    MOCK_NOTES="$tmp/notes" CHANGELOG="$tmp/CHANGELOG.md" CHANGELOG_FROZEN="$tmp/frozen"
+bash "$root/scripts/check_changelog.sh" --print > "$CHANGELOG_FROZEN"
 run() { bash "$root/scripts/publish_release.sh" "$tmp/linux.tar.gz" "$tmp/windows.zip"; }
 fail() { echo "$*" >&2; exit 1; }
 
@@ -141,9 +142,51 @@ mv "$CHANGELOG" "$tmp/moved.md"
 if run 2> "$tmp/err"; then fail "a missing changelog unexpectedly published"; fi
 grep -Fq 'no changelog at' "$tmp/err"
 mv "$tmp/moved.md" "$CHANGELOG"
+# A released section that changed after it was recorded is not published, even when the tag's own section is intact.
+cp "$CHANGELOG" "$tmp/kept.md"
+sed -i 's/^- Older\.$/- Older, and an entry that arrived later./' "$CHANGELOG"
+: > "$MOCK_LOG"
+if run 2> "$tmp/err"; then fail "a changed released section unexpectedly published"; fi
+grep -Fq 'v0.1.0-rc.3: the released section changed' "$tmp/err" || fail "wrong refusal: $(cat "$tmp/err")"
+[ ! -s "$MOCK_LOG" ] || fail "gh was called before the frozen-section refusal"
+mv "$tmp/kept.md" "$CHANGELOG"
+
+# scripts/check_changelog.sh: released sections are frozen. First this repository's own file, as committed.
+check() { bash "$root/scripts/check_changelog.sh"; }
+(unset CHANGELOG CHANGELOG_FROZEN; check > /dev/null) || fail "this repository's CHANGELOG.md fails its own check"
+own="$tmp/own.md"
+cp "$root/CHANGELOG.md" "$own"
+cp "$root/scripts/changelog-released.sha256" "$tmp/own.sha256"
+export CHANGELOG="$own" CHANGELOG_FROZEN="$tmp/own.sha256"
+check > /dev/null
+# What a merge did once: a branch cut before v0.1.0-rc.10 added its entry under the first "### Added" it saw, and
+# after the merge that heading belonged to the released v0.1.0-rc.9 section.
+awk '{ print } /^## v0\.1\.0-rc\.9/ { s = 1 } s && /^### Added$/ { getline; print; print "- **An entry merged after the release.**"; s = 0 }' \
+    "$root/CHANGELOG.md" > "$own"
+grep -Fq -- '- **An entry merged after the release.**' "$own" || fail "the planted entry was not placed"
+if check 2> "$tmp/err"; then fail "an entry in a released section was not caught"; fi
+grep -Fq 'v0.1.0-rc.9: the released section changed' "$tmp/err" || fail "wrong message: $(cat "$tmp/err")"
+# The same entry under Unreleased is fine.
+awk '{ print } /^## Unreleased$/ { getline; print; print "- **An entry merged after the release.**" }' \
+    "$root/CHANGELOG.md" > "$own"
+check > /dev/null || fail "an entry under Unreleased was refused"
+# A released section with no recorded hash, a recorded tag with no section, and Unreleased not on top: each red.
+sed 's/^## Unreleased$/## Unreleased\n\n- New.\n\n## v9.9.9 (2099-01-01)/' "$root/CHANGELOG.md" > "$own"
+grep -q '^## v9.9.9' "$own" || fail "the unrecorded section was not placed"
+if check 2> "$tmp/err"; then fail "an unrecorded released section passed"; fi
+grep -Fq 'v9.9.9: no recorded hash' "$tmp/err" || fail "wrong message: $(cat "$tmp/err")"
+bash "$root/scripts/check_changelog.sh" --print v9.9.9 >> "$CHANGELOG_FROZEN"
+check > /dev/null || fail "a section recorded with --print still fails"
+cp "$root/CHANGELOG.md" "$own"
+if check 2> "$tmp/err"; then fail "a recorded tag with no section passed"; fi
+grep -Fq 'v9.9.9: recorded as released, but' "$tmp/err" || fail "wrong message: $(cat "$tmp/err")"
+cp "$root/scripts/changelog-released.sha256" "$CHANGELOG_FROZEN"
+sed '0,/^## Unreleased$/s//## Next/' "$root/CHANGELOG.md" > "$own"
+if check 2> "$tmp/err"; then fail "a changelog without Unreleased on top passed"; fi
+grep -Fq 'must be "## Unreleased"' "$tmp/err" || fail "wrong message: $(cat "$tmp/err")"
 
 # This repository's own CHANGELOG.md has a section for every published release candidate since it was started.
-unset CHANGELOG
+unset CHANGELOG CHANGELOG_FROZEN
 for tag in v0.1.0-rc.8 v0.1.0-rc.9 v0.1.0-rc.10; do
     export TAG="$tag" MOCK_MODE=new
     : > "$MOCK_LOG"

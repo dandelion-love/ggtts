@@ -331,6 +331,16 @@ fn render_with_story_reader(
     loader: impl FnOnce(&str, &Args, &Path) -> Result<Box<dyn Engine>, String>,
     read_story: impl FnOnce(&Path) -> Result<String, String>,
 ) -> Result<u8, String> {
+    render_with_stream_opener(a, log, loader, read_story, open_stream)
+}
+
+fn render_with_stream_opener(
+    a: Args,
+    log: LogSettings,
+    loader: impl FnOnce(&str, &Args, &Path) -> Result<Box<dyn Engine>, String>,
+    read_story: impl FnOnce(&Path) -> Result<String, String>,
+    stream_opener: impl FnOnce(&Args) -> Result<Option<StreamWriter<Box<dyn std::io::Write>>>, String>,
+) -> Result<u8, String> {
     if a.trace_level.is_some() && (a.trace.is_none() || a.story.is_none()) {
         return Err("--trace-level requires a story and --trace".into());
     }
@@ -404,7 +414,7 @@ fn render_with_story_reader(
     } else {
         None
     };
-    let mut stream = open_stream(&a)?;
+    let mut stream = stream_opener(&a)?;
     let t0 = Instant::now();
     let mut engine = loader(&name, &a, &model)?;
     let load_ms = t0.elapsed().as_millis();
@@ -1059,6 +1069,87 @@ mod tests {
             elapsed.saturating_sub(render_ms) >= 900,
             "story read delay was included in render timing"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn slow_stream_handoff_is_in_the_cli_timing_report_without_changing_output() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        struct Capture {
+            bytes: Arc<Mutex<Vec<u8>>>,
+            delay: Option<Duration>,
+        }
+        impl Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if let Some(delay) = self.delay.take() {
+                    std::thread::sleep(delay);
+                }
+                self.bytes.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let root = std::env::temp_dir().join(format!("ggtts-handoff-control-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let run = |name: &str, delay: Option<Duration>| {
+            let timing_path = root.join(format!("{name}-timing.json"));
+            let trace_path = root.join(format!("{name}-trace.jsonl"));
+            let args = Args {
+                engine: Some("fake".into()),
+                story: Some(root.join("story.txt")),
+                stream: Some("in-memory".into()),
+                stream_raw: true,
+                timing_report: Some(timing_path.clone()),
+                trace: Some(trace_path.clone()),
+                trace_level: Some(2),
+                ..Args::default()
+            };
+            let log = LogSettings {
+                level: LogLevel::Error,
+                format: LogFormat::Text,
+            };
+            let bytes = Arc::new(Mutex::new(Vec::new()));
+            let capture = bytes.clone();
+            let code = render_with_stream_opener(
+                args,
+                log,
+                |_, _, _| Ok(Box::new(ggtts_fake::FakeEngine::default())),
+                |_| Ok("Title\nA short sentence.\nAnother sentence.\n".into()),
+                move |_| {
+                    Ok(Some(StreamWriter::new(
+                        Box::new(Capture { bytes: capture, delay }),
+                        Container::RawS16,
+                    )))
+                },
+            )
+            .unwrap();
+            assert_eq!(code, 0);
+            let timing: serde_json::Value = serde_json::from_slice(&std::fs::read(timing_path).unwrap()).unwrap();
+            let tokens: Vec<_> = std::fs::read_to_string(trace_path)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .filter(|event| event["ev"] == "step")
+                .map(|event| (event["token"].clone(), event["cb"].clone()))
+                .collect();
+            let audio = bytes.lock().unwrap().clone();
+            (timing, tokens, audio)
+        };
+        let (baseline, baseline_tokens, baseline_audio) = run("baseline", None);
+        let (slow, slow_tokens, slow_audio) = run("slow", Some(Duration::from_millis(150)));
+        assert!(!baseline_audio.is_empty());
+        assert!(!baseline_tokens.is_empty());
+        assert_eq!(baseline_audio, slow_audio);
+        assert_eq!(baseline_tokens, slow_tokens);
+        assert!(baseline["stream"]["write_ns"].is_number());
+        assert!(slow["stream"]["write_ns"].as_u64().unwrap() >= 150_000_000);
+        assert!(slow["render_ms"].as_u64().unwrap() >= 150);
+        assert!(slow["stream"]["writes"].as_u64().unwrap() > 0);
         std::fs::remove_dir_all(root).unwrap();
     }
 

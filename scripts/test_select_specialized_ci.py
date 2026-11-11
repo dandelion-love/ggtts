@@ -315,7 +315,8 @@ class SelectionTest(unittest.TestCase):
         self.assertFalse(compare_event(event_after.replace('ggtts traces', 'different traces')))
         self.assertFalse(compare_event('not valid TOML = ='))
         paths = ["Cargo.lock", "crates/ggtts-core/Cargo.toml"]
-        self.assertEqual(decide("pull_request", "rc", "feature", True, paths, logging_lock_safe=True), {"package"})
+        # The core manifest is linked into the Python binding too.
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths, logging_lock_safe=True), {"package", "python"})
         self.assertEqual(decide("pull_request", "main", "rc", True, paths, logging_lock_safe=True), set(JOBS))
         self.assertEqual(decide("pull_request", "rc", "feature", True, paths), set(JOBS))
         self.assertEqual(decide("pull_request", "rc", "feature", True, paths + ["Cargo.toml"],
@@ -344,7 +345,8 @@ class SelectionTest(unittest.TestCase):
             with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
                 main()
                 self.assertIn("package=true", stdout.getvalue())
-                self.assertEqual(stdout.getvalue().count("=true"), 1)
+                self.assertIn("python=true", stdout.getvalue())
+                self.assertEqual(stdout.getvalue().count("=true"), 2)
             paths.append(".github/workflows/ci.yml")
             blob["base:.github/workflows/ci.yml"] = "name: CI\njobs:\n  ggml:\n    run: old\n"
             blob["head:.github/workflows/ci.yml"] = "name: CI\njobs:\n  ggml:\n    run: new\n"
@@ -368,8 +370,9 @@ class SelectionTest(unittest.TestCase):
             blob["head:" + event_path] = event_after
             with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
                 main()
-                self.assertEqual(stdout.getvalue().count("=true"), 1)
+                self.assertEqual(stdout.getvalue().count("=true"), 2)
                 self.assertIn("package=true", stdout.getvalue())
+                self.assertIn("python=true", stdout.getvalue())
             for altered in (event_after.replace('serde_json = "1"', 'serde_json = "2"'),
                             event_after + '[features]\nextra = []\n',
                             event_after.replace('[dependencies]', 'build = "build.rs"\n[dependencies]')):

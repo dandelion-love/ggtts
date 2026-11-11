@@ -80,9 +80,11 @@ configuration conservatively select all remaining specialized checks. Selector c
 tests; other changed paths select their own jobs. Pushes skip specialized jobs; general checks still run.
 
 Ordinary PRs do not compile the CUDA archive. The `cuda-compile` job builds and smokes it on a hosted runner
-without a GPU, with the image, tools and command of `release.yml`'s `cuda-build` (its first step refuses a
+without a GPU, as `release.yml`'s `cuda-build` does, line for line (the selection job refuses a
 difference), in two cases only: every pull request into `main` (the promotion), and a push to `rc` that changes a
-crate's `build.rs`, the ggml submodule pointer, `Cargo.lock` or a workflow. The mandatory exact-head on-device gate
+crate's `build.rs`, anything in `crates/ggtts-ggml-sys/` (the ggml submodule pointer included), a `Cargo.toml`,
+`Cargo.lock`, `scripts/package_cuda_release.sh` or a workflow. Push runs are never cancelled, so each push is judged
+by its own range. The mandatory exact-head on-device gate
 still runs both CUDA engines and instrument identity checks, but it uses external ggml libraries and does not build
 the shipped CUDA archive. A skipped hosted compile is not a pass, and a passed one is not evidence of GPU runtime
 behavior.

@@ -43,13 +43,17 @@ class SelectionTest(unittest.TestCase):
                                            ["Cargo.lock", ".github/workflows/ci.yml", "crates/ggtts-ggml-sys/build.rs"]))
         # A push to rc, only for a path that can break the CUDA build.
         for path in ("Cargo.lock", "crates/ggtts-ggml-sys/ggml", ".gitmodules", ".github/workflows/ci.yml",
-                     ".github/workflows/release.yml", "crates/ggtts-ggml-sys/build.rs", "crates/ggtts-core/build.rs"):
+                     ".github/workflows/release.yml", "crates/ggtts-ggml-sys/build.rs", "crates/ggtts-core/build.rs",
+                     "scripts/package_cuda_release.sh", "Cargo.toml", "crates/ggtts-cli/Cargo.toml",
+                     "instruments/templates/rust/event/Cargo.toml", "crates/ggtts-ggml-sys/src/lib.rs",
+                     "crates/ggtts-ggml-sys/src/bindings/x86_64-unknown-linux-gnu.rs"):
             self.assertTrue(cuda_push_path(path), path)
             self.assertTrue(cuda_decision("push", "", "refs/heads/rc", ["README.md", path]), path)
             self.assertFalse(cuda_decision("push", "", "refs/heads/main", [path]), path)
             self.assertFalse(cuda_decision("push", "", "refs/heads/feature", [path]), path)
-        for path in ("README.md", "crates/ggtts-core/src/lib.rs", "scripts/build.rs", "crates/ggtts-cli/Cargo.toml",
-                     "crates/ggtts-ggml-sys/ggml-notes.md", "docs/build.rs.md"):
+        for path in ("README.md", "crates/ggtts-core/src/lib.rs", "scripts/build.rs", "docs/Cargo.toml.md",
+                     "crates/ggtts-ggml-sys-notes.md", "docs/build.rs.md", "scripts/package_and_smoke.sh",
+                     "scripts/package_cuda_release.sh.bak"):
             self.assertFalse(cuda_push_path(path), path)
             self.assertFalse(cuda_decision("push", "", "refs/heads/rc", [path]), path)
         self.assertFalse(cuda_decision("push", "", "refs/heads/rc", []))
@@ -65,20 +69,46 @@ class SelectionTest(unittest.TestCase):
         ci = (root / '.github/workflows/ci.yml').read_text()
         release = (root / '.github/workflows/release.yml').read_text()
         self.assertEqual(cuda_drift(ci, release), [])
-        block = workflow_sections(ci)[1]['cuda-compile']
-        self.assertIn("needs.specialized-selection.outputs.cuda == 'true'", block)
-        self.assertIn("--check-cuda-drift", block)
-        # Planted drift in each compared part must be reported.
-        self.assertIn("nvidia/cuda:12.6.3-devel-ubuntu22.04@sha256:", release)
-        planted = release.replace("nvidia/cuda:12.6.3-devel-ubuntu22.04@sha256:", "nvidia/cuda:12.9.9-devel-ubuntu22.04@sha256:")
-        self.assertTrue(any(d.startswith("image:") for d in cuda_drift(ci, planted)))
-        planted = release.replace("run: bash scripts/package_cuda_release.sh", "run: bash scripts/package_cuda_release.sh --fast")
-        self.assertTrue(any(d.startswith("command:") for d in cuda_drift(ci, planted)))
-        planted = release.replace("cmake g++ make python3", "cmake g++ make ninja-build python3")
-        self.assertNotEqual(planted, release)
-        self.assertTrue(any(d.startswith("tools:") for d in cuda_drift(ci, planted)))
+        jobs = workflow_sections(ci)[1]
+        self.assertIn("needs.specialized-selection.outputs.cuda == 'true'", jobs['cuda-compile'])
+        # The check runs in the job every CI run has, not only where the compile is selected.
+        self.assertIn("--check-cuda-drift", jobs['specialized-selection'])
+        # Planted in either workflow, each of these must be reported.
+        plants = {
+            "image": ("nvidia/cuda:12.6.3-devel-ubuntu22.04@sha256:", "nvidia/cuda:12.9.9-devel-ubuntu22.04@sha256:"),
+            "command": ("run: bash scripts/package_cuda_release.sh", "run: bash scripts/package_cuda_release.sh --fast"),
+            "tools": ("cmake g++ make python3", "cmake g++ make ninja-build python3"),
+            "no submodule init": ("          git submodule update --init crates/ggtts-ggml-sys/ggml\n", ""),
+            "toolchain": ("--default-toolchain none", "--default-toolchain stable"),
+            "added env": ("        env:\n          TAG:", "        env:\n          GGML_NATIVE: \"1\"\n          TAG:"),
+            "no apt retry": ("            sleep 20\n", ""),
+            "timeout": ("    timeout-minutes: 90\n", "    timeout-minutes: 30\n"),
+            "no pin check": ('          test "$(git -C crates/ggtts-ggml-sys/ggml rev-parse HEAD)" = "$pin"\n', ""),
+            "step shell": ("      - name: Fetch the pinned ggml\n", "      - name: Fetch the pinned ggml\n        shell: bash\n"),
+        }
+        for name, (old, new) in plants.items():
+            for which in ("release", "ci"):
+                text = release if which == "release" else ci
+                blocks = workflow_sections(text)[1]
+                job = "cuda-build" if which == "release" else "cuda-compile"
+                self.assertIn(old, blocks[job], (name, which))
+                planted = text.replace(blocks[job], blocks[job].replace(old, new))
+                self.assertNotEqual(planted, text, (name, which))
+                drift = cuda_drift(ci, planted) if which == "release" else cuda_drift(planted, release)
+                self.assertTrue(drift, (name, which))
+        # What may differ does not count: the tag, comments, and steps after the build.
+        self.assertEqual(cuda_drift(ci.replace("          TAG: ci\n", "          TAG: other\n"), release), [])
         self.assertEqual(cuda_drift(ci.replace("  cuda-compile:\n", "  cuda-other:\n"), release),
                          ["ci.yml has no cuda-compile job"])
+
+    def test_a_push_run_is_never_cancelled_or_superseded(self):
+        root = Path(__file__).resolve().parent.parent
+        header = workflow_sections((root / '.github/workflows/ci.yml').read_text())[0]
+        # Per-run group for pushes: a shared group would let a later push cancel a pending earlier one, and with it
+        # the CUDA selection for that push's range.
+        self.assertIn("group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}", header)
+        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", header)
+        self.assertNotIn("cancel-in-progress: true", header)
 
     def test_cuda_is_not_a_selected_job_and_release_still_builds_cuda(self):
         promotion = decide("pull_request", "main", "rc", True, ["Cargo.lock"])

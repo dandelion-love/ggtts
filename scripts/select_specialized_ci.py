@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Select specialized CI jobs. A skipped job is not a pass."""
+import difflib
 import os
 from pathlib import Path
 import re
@@ -239,8 +240,15 @@ GGML_SUBMODULE = "crates/ggtts-ggml-sys/ggml"
 
 
 def cuda_push_path(path):
-    """A path whose change can break the CUDA archive build: a build script, the ggml pin, the lockfile, a workflow."""
-    return (path in ("Cargo.lock", GGML_SUBMODULE, ".gitmodules") or path.startswith(".github/workflows/")
+    """A path whose change can break the CUDA archive build.
+
+    A crate's build script, anything in the ggml bindings crate (its submodule pointer included), any manifest, the
+    lockfile, the script the archive is built with, and the workflows.
+    """
+    return (path in ("Cargo.lock", ".gitmodules", "Cargo.toml", "scripts/package_cuda_release.sh")
+            or path.endswith("/Cargo.toml")
+            or path == GGML_SUBMODULE or path.startswith("crates/ggtts-ggml-sys/")
+            or path.startswith(".github/workflows/")
             or (path.startswith("crates/") and path.endswith("/build.rs")))
 
 
@@ -249,7 +257,8 @@ def cuda_decision(event, base_ref, ref, paths):
 
     It runs on every pull request into main (the promotion), and on a push to rc that touches a cuda_push_path. It
     never runs on a pull request into any other branch, whatever that pull request changes. `paths` is None when the
-    pushed range could not be read, which runs the compile.
+    pushed range could not be read, which runs the compile. Each push is judged by its own range, so ci.yml must
+    never cancel or supersede a push run (its concurrency group is per run for pushes; a test holds it to that).
     """
     if event == "pull_request":
         return base_ref == "main"
@@ -270,15 +279,22 @@ def pushed_paths(before, after):
         return None
 
 
-def cuda_build_shape(block):
-    """What a CUDA archive job builds with: its container image, its build command, and the tools it installs."""
-    image = re.findall(r"^\s*image:\s*(\S+)\s*$", block, re.M)
-    runs = re.findall(r"^\s*run:\s*(.*package_cuda_release\.sh.*?)\s*$", block, re.M)
-    install = re.findall(r"apt-get install (.*?)\s*$", block, re.M)
-    if len(image) != 1 or len(runs) != 1 or len(install) != 1:
-        raise ValueError("a CUDA archive job must have one container image, one package_cuda_release.sh run "
-                         "and one apt-get install")
-    return {"image": image[0], "command": runs[0], "tools": sorted(install[0].split())}
+def cuda_recipe(block):
+    """A CUDA archive job from its runner to its build command, as lines, without what may differ.
+
+    What may differ between ci.yml and release.yml: the job's key, name, needs and if; comments; the value of TAG;
+    and anything after the build command (the release uploads the archive). Everything else is the recipe: the
+    runner, the timeout, the container image, every step with its name, shell, environment and script.
+    """
+    lines = []
+    for line in block.splitlines()[1:]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or re.match(r"^    (name|needs|if):", line):
+            continue
+        lines.append(re.sub(r"^(\s*TAG:).*$", r"\1 <tag>", line.rstrip()))
+        if stripped.startswith("run:") and "scripts/package_cuda_release.sh" in stripped:
+            return lines
+    raise ValueError("a CUDA archive job must end its recipe with a run of scripts/package_cuda_release.sh")
 
 
 def cuda_drift(ci_text, release_text):
@@ -288,8 +304,10 @@ def cuda_drift(ci_text, release_text):
         return ["ci.yml has no cuda-compile job"]
     if "cuda-build" not in release_jobs:
         return ["release.yml has no cuda-build job"]
-    ci, release = cuda_build_shape(ci_jobs["cuda-compile"]), cuda_build_shape(release_jobs["cuda-build"])
-    return [f"{key}: ci.yml has {ci[key]!r}, release.yml has {release[key]!r}" for key in ci if ci[key] != release[key]]
+    ci, release = cuda_recipe(ci_jobs["cuda-compile"]), cuda_recipe(release_jobs["cuda-build"])
+    return [line for line in difflib.unified_diff(release, ci, "release.yml cuda-build", "ci.yml cuda-compile",
+                                                  lineterm="", n=0)
+            if line[:1] in "+-" and not line.startswith(("+++", "---"))]
 
 
 def check_cuda_drift():
@@ -298,7 +316,8 @@ def check_cuda_drift():
     for line in drift:
         print("CUDA build drift: " + line, file=sys.stderr)
     if not drift:
-        print("cuda-compile builds as release.yml's cuda-build does: same image, command and tools", file=sys.stderr)
+        print("cuda-compile is release.yml's cuda-build, line for line, from the runner to the build command",
+              file=sys.stderr)
     return 1 if drift else 0
 
 

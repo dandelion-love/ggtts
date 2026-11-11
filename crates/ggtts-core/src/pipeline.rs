@@ -58,6 +58,10 @@ pub struct ChunkRecord {
     pub seed: u32,
     /// Redraws taken: the kept draw's index.
     pub redraws: u32,
+    /// The kept draw only, decoded before edge trimming. Rejected draws are excluded.
+    pub decoded_samples: usize,
+    /// Decoder-reported rate for this chunk (which may differ from the output rate).
+    pub decoded_sample_rate: u32,
     pub first_draw_defect: Option<Verdict>,
     pub final_defect: Option<Verdict>,
     /// The kept draw's seconds of speech per character, unrounded.
@@ -354,6 +358,8 @@ fn render(
             text: c.text.clone(),
             seed,
             redraws: k,
+            decoded_samples: pcm.samples.len(),
+            decoded_sample_rate: pcm.sample_rate,
             first_draw_defect: first.verdict,
             final_defect: j.verdict,
             s_per_char: j.s_per_char,

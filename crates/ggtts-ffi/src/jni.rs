@@ -16,8 +16,8 @@ use jni::sys::{jboolean, jint, jlong};
 use jni::JNIEnv;
 
 use crate::{
-    ggtts_free, ggtts_load, ggtts_pcm_free, ggtts_render, ggtts_render_stream, last_error, GGTTS_ERR_ARG,
-    GGTTS_ERR_PANIC,
+    ggtts_free, ggtts_load, ggtts_load_with, ggtts_pcm_free, ggtts_render, ggtts_render_stream, last_error,
+    GgttsSettings, GGTTS_ERR_ARG, GGTTS_ERR_PANIC,
 };
 
 /// Whether an exception is pending. A failed check is read as pending, so nothing is thrown over an unknown state.
@@ -125,6 +125,69 @@ pub extern "system" fn Java_ggtts_Native_load<'l>(
                     or_null(&codec),
                     or_null(&voice),
                     threads,
+                    &mut handle,
+                )
+            };
+            if code != 0 {
+                throw(env, code, &last_error());
+                return 0;
+            }
+            handle as jlong
+        },
+    )
+}
+
+/// `Native.loadWith`: `load` with a Qwen3-TTS speaker and style instruction, each nullable, through
+/// [`ggtts_load_with`].
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_ggtts_Native_loadWith<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    engine: JString<'l>,
+    model: JString<'l>,
+    codec: JString<'l>,
+    voice: JString<'l>,
+    threads: jint,
+    speaker: JString<'l>,
+    instruction: JString<'l>,
+) -> jlong {
+    jni_guard(
+        &mut env,
+        || 0,
+        |env| {
+            let Ok(engine) = cstr(env, &engine, "engine") else {
+                return 0;
+            };
+            let Ok(model) = cstr(env, &model, "model") else {
+                return 0;
+            };
+            let Ok(codec) = cstr(env, &codec, "codec") else {
+                return 0;
+            };
+            let Ok(voice) = cstr(env, &voice, "voice") else {
+                return 0;
+            };
+            let Ok(speaker) = cstr(env, &speaker, "speaker") else {
+                return 0;
+            };
+            let Ok(instruction) = cstr(env, &instruction, "instruction") else {
+                return 0;
+            };
+            let settings = GgttsSettings {
+                size: std::mem::size_of::<GgttsSettings>(),
+                speaker: or_null(&speaker),
+                instruction: or_null(&instruction),
+            };
+            let mut handle = 0u64;
+            let code = unsafe {
+                ggtts_load_with(
+                    or_null(&engine),
+                    or_null(&model),
+                    or_null(&codec),
+                    or_null(&voice),
+                    threads,
+                    &settings,
                     &mut handle,
                 )
             };

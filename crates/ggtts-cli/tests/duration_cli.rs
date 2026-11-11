@@ -21,7 +21,9 @@ fn samples_of(seconds: f64) -> u64 {
 
 fn flac_samples(path: &Path) -> u64 {
     let mut reader = claxon::FlacReader::open(path).unwrap();
-    reader.samples().map(|s| s.unwrap()).count() as u64
+    reader.samples().fold(0, |n, s| {
+        n + u64::from(s.is_ok() || panic!("a FLAC sample failed to decode"))
+    })
 }
 
 fn json(path: &Path) -> serde_json::Value {

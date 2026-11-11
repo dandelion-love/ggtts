@@ -546,3 +546,22 @@ fn a_valid_envelope_round_trips() {
         assert_eq!(back, e, "{name}");
     }
 }
+
+#[test]
+fn the_merged_report_carries_the_model_files_when_known() {
+    let mut r = merge(RUN, &inputs(), &REQUIRED);
+    assert!(
+        r.to_json().get("models").is_none(),
+        "unknown model files are left out, not invented"
+    );
+    r.models = Some(vec![
+        json!({"role": "talker", "path": "/cache/models/t.gguf", "sha256": sha('a'),
+        "source": "cache", "url": "https://example.invalid/t.gguf"}),
+    ]);
+    let v = r.to_json();
+    assert_eq!(v["models"][0]["sha256"], sha('a'));
+    assert!(validator(Some("report")).is_valid(&v));
+    let mut bad = v.clone();
+    bad["models"][0]["source"] = json!("web");
+    assert!(!validator(Some("report")).is_valid(&bad));
+}

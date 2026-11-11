@@ -82,6 +82,11 @@ pub struct Header {
     /// Non-default flags and versioned producer semantics. Secret values must never be written here.
     pub flags: Map<String, Value>,
     pub trace_level: u8,
+    /// Every model file the render uses (role, path, sha256, source, url), as the CLI's reports list them. Absent
+    /// from the line when empty.
+    pub models: Vec<Value>,
+    /// The render's style instruction, when it has a non-empty one. Absent from the line otherwise.
+    pub instruction: Option<String>,
 }
 
 impl Header {
@@ -101,6 +106,8 @@ impl Header {
                 Map::from_iter([("p_stop_semantics".into(), semantics.into())])
             }),
             trace_level,
+            models: Vec::new(),
+            instruction: None,
         }
     }
 }
@@ -195,6 +202,10 @@ impl Event<'_> {
                 m.insert("protocol".into(), h.protocol.clone().into());
                 m.insert("flags".into(), Value::Object(h.flags.clone()));
                 m.insert("trace_level".into(), h.trace_level.into());
+                if !h.models.is_empty() {
+                    m.insert("models".into(), Value::Array(h.models.clone()));
+                }
+                put(&mut m, "instruction", h.instruction.clone());
             }
             Event::ChunkBegin {
                 chunk,

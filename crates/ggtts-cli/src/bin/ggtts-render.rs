@@ -1,7 +1,7 @@
 //! ggtts-render: text in, FLAC out.
 //!
 //! ```text
-//! ggtts-render --model M.gguf [--codec C.gguf] --out x.flac [--engine auto|qwen3-tts|kitten-tts-2|fake]
+//! ggtts-render [--model M.gguf] [--codec C.gguf] [--offline] --out x.flac [--engine auto|qwen3-tts|kitten-tts-2|fake]
 //!              [--threads N] [--device cpu|cuda] [--trace trace.jsonl [--trace-level 1|2]] [--timing-report FILE] [--voice REF.json] [--speaker NAME]
 //!              [--instruction TEXT]
 //!              [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text "..." [--seed S] | --story story.txt)
@@ -9,9 +9,15 @@
 //!              [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID]
 //! ```
 //!
+//! **Model files.** A path given with `--model` or `--codec` is used as it is. A file not given is the engine's
+//! default (`ggtts_models`): Qwen3-TTS's talker and codec, pinned by sha256, downloaded into the per-user cache
+//! (`GGTTS_CACHE_DIR` overrides where) the first time and verified before use. With no `--model` the engine is
+//! qwen3-tts. `--offline` never downloads: a default file not already in the cache is an error naming its URL.
+//!
 //! `--voice` is a reference voice for an engine that clones one; an engine that does not ignores it.
 //! `--speaker` selects a named Qwen3-TTS speaker (for example `hk_voice_343`); it is refused for other engines.
-//! Without it Qwen retains the legacy `hk_cantonese_speaker` default; an absent or unknown speaker is an error.
+//! Without it the default talker uses its default speaker (`hk_voice_343`), and a given talker retains the legacy
+//! `hk_cantonese_speaker` default; an absent or unknown speaker is an error.
 //! `--instruction` is a natural-language style instruction (for example "Speak slowly and softly"), placed before the
 //! prompt as the reference runtime places it. A Qwen3-TTS custom_voice checkpoint of 1.7B or a voice_design
 //! checkpoint takes one; any other checkpoint, and any other engine, refuses it before rendering. An empty
@@ -114,7 +120,7 @@ impl StreamTiming {
         Ok(())
     }
 }
-const USAGE: &str = "usage: ggtts-render --model M.gguf [--codec C.gguf] --out x.flac \
+const USAGE: &str = "usage: ggtts-render [--model M.gguf] [--codec C.gguf] [--offline] --out x.flac \
 [--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--speaker NAME] [--instruction TEXT] \
 [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
@@ -132,6 +138,15 @@ const STREAMS: &str = concat!(
     "                              the FLAC is it times the gain printed at the end\n",
     "  --stream-format wav|s16le   wav (default: plays as it arrives) or raw s16le after a one-line header",
 );
+
+/// What `--help` says about the default model files.
+const MODELS_HELP: &str =
+    "\nmodel files: a path given with --model or --codec is used as it is. A file not given is the engine's \
+default, pinned by sha256 and downloaded once into the per-user cache (GGTTS_CACHE_DIR overrides where). With no \
+--model the engine is qwen3-tts and the speaker hk_voice_343. --offline never downloads.";
+
+/// The engine a render with no `--model` uses: the one whose default files `ggtts_models` pins.
+const DEFAULT_ENGINE: &str = "qwen3-tts";
 
 /// Where `--help` says the script instruments are found.
 const INSTRUMENTS_HELP: &str = "\ninstruments: --instrument NAME runs a shipped instrument on the finished render \
@@ -169,6 +184,8 @@ struct Args {
     report: Option<PathBuf>,
     /// The run's identity, for every envelope.
     run: Option<String>,
+    /// Never download a default model file.
+    offline: bool,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -185,6 +202,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--run" => a.run = Some(value()?),
             "--model" => a.model = Some(value()?.into()),
             "--codec" => a.codec = Some(value()?.into()),
+            "--offline" => a.offline = true,
             "--out" | "-o" => a.out = Some(value()?.into()),
             "--engine" => a.engine = Some(value()?),
             "--text" | "-t" => a.text = Some(value()?),
@@ -266,14 +284,12 @@ fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, St
         // Kitten-TTS 2: --model is the LM GGUF, --codec the S3Gen GGUF, --voice the reference (`ggtts-kitten prepare`).
         #[cfg(feature = "ggml")]
         "kitten-tts-2" => {
-            let codec = a
-                .codec
-                .as_ref()
-                .ok_or("the kitten-tts-2 engine needs --codec (the S3Gen GGUF)")?;
-            let voice = a
-                .voice
-                .as_ref()
-                .ok_or("the kitten-tts-2 engine needs --voice, a ggtts-kitten prepare JSON")?;
+            let codec = a.codec.as_ref().ok_or(
+                "the kitten-tts-2 engine needs --codec, the S3Gen GGUF that ggtts-kitten-convert --s3gen writes",
+            )?;
+            let voice = a.voice.as_ref().ok_or(
+                "the kitten-tts-2 engine needs --voice, a reference voice JSON that ggtts-kitten prepare writes",
+            )?;
             let device = match a.device.as_deref().unwrap_or("cpu") {
                 "cuda" => ggtts_kitten::backend::Device::Cuda,
                 _ => ggtts_kitten::backend::Device::Cpu,
@@ -289,6 +305,86 @@ fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, St
         "fake" => Ok(Box::new(ggtts_fake::FakeEngine::default())),
         other => Err(format!("no engine for architecture {other:?}")),
     }
+}
+
+/// The model files a render of engine `name` uses, in the order of its command-line paths (`--model`, `--codec`,
+/// `--voice`). A given path is used as it is. A path not given is the engine's pinned default, from the cache,
+/// downloaded first when missing (never with `--offline`). Fills the paths in `a`, and the default speaker when the
+/// talker is the default one and no `--speaker` was given.
+fn resolve_models(a: &mut Args, name: &str, log: LogSettings) -> Result<Vec<ggtts_models::ModelFile>, String> {
+    resolve_models_with(
+        a,
+        name,
+        log,
+        cfg!(feature = "ggml"),
+        &|| ggtts_models::Cache::default_root().map(ggtts_models::Cache::new),
+        &ggtts_models::Http::default(),
+        &mut std::io::stderr(),
+    )
+}
+
+/// The download notice and progress, on `out`: at every log level, because a download of gigabytes is never silent.
+fn model_notice(log: LogSettings, out: &mut dyn std::io::Write, message: &str) {
+    let always = if log.enabled(LogLevel::Info) {
+        log
+    } else {
+        LogSettings {
+            level: LogLevel::Info,
+            format: log.format,
+        }
+    };
+    let _ = always.write(out, LogLevel::Info, BINARY, "models", format_args!("{message}"));
+}
+
+/// [`resolve_models`] with its environment passed in: whether this build has engines, the cache, the fetcher, and
+/// where the download notice goes.
+fn resolve_models_with(
+    a: &mut Args,
+    name: &str,
+    log: LogSettings,
+    engines_built: bool,
+    cache: &dyn Fn() -> Result<ggtts_models::Cache, String>,
+    fetch: &dyn ggtts_models::Fetch,
+    notice: &mut dyn std::io::Write,
+) -> Result<Vec<ggtts_models::ModelFile>, String> {
+    let given = [a.model.clone(), a.codec.clone(), a.voice.clone()];
+    let Some(defaults) = ggtts_models::defaults_for(name) else {
+        if a.model.is_none() && name != "fake" {
+            return Err(format!(
+                "--model is required: the {name} engine has no default model files"
+            ));
+        }
+        let roles = ["model", "codec", "voice"];
+        return Ok(roles
+            .iter()
+            .zip(given)
+            .filter_map(|(role, path)| path.map(|p| ggtts_models::ModelFile::given(role, p)))
+            .collect());
+    };
+    let n = defaults.files.len();
+    if given[..n].iter().all(Option::is_some) {
+        return Ok(defaults
+            .files
+            .iter()
+            .zip(given)
+            .filter_map(|(p, path)| path.map(|path| ggtts_models::ModelFile::given(p.role, path)))
+            .collect());
+    }
+    // Nothing is fetched for a build that cannot render it.
+    if !engines_built {
+        return Err("this build has no engines: rebuild with --features ggml".into());
+    }
+    let files = ggtts_models::resolve(defaults, &given[..n], &cache()?, a.offline, fetch, &mut |m| {
+        model_notice(log, notice, m)
+    })?;
+    if a.model.is_none() && a.speaker.is_none() {
+        a.speaker = defaults.default_speaker.map(str::to_string);
+    }
+    let mut paths = files.iter().map(|f| Some(f.path.clone()));
+    a.model = paths.next().flatten();
+    a.codec = paths.next().flatten().or(a.codec.take());
+    a.voice = paths.next().flatten().or(a.voice.take());
+    Ok(files)
 }
 
 /// Where `--stream` writes: a file, or stdout for `-`.
@@ -372,6 +468,19 @@ fn render_with_stream_opener(
     read_story: impl FnOnce(&Path) -> Result<String, String>,
     stream_opener: impl FnOnce(&Args) -> Result<Option<StreamWriter<Box<dyn std::io::Write>>>, String>,
 ) -> Result<u8, String> {
+    render_with_models(a, log, loader, read_story, stream_opener, resolve_models)
+}
+
+/// [`render_with_stream_opener`] with the model resolution passed in, so a test can resolve the default files from a
+/// prepared cache without the network.
+fn render_with_models(
+    mut a: Args,
+    log: LogSettings,
+    loader: impl FnOnce(&str, &Args, &Path) -> Result<Box<dyn Engine>, String>,
+    read_story: impl FnOnce(&Path) -> Result<String, String>,
+    stream_opener: impl FnOnce(&Args) -> Result<Option<StreamWriter<Box<dyn std::io::Write>>>, String>,
+    resolve: impl FnOnce(&mut Args, &str, LogSettings) -> Result<Vec<ggtts_models::ModelFile>, String>,
+) -> Result<u8, String> {
     if a.trace_level.is_some() && (a.trace.is_none() || a.story.is_none()) {
         return Err("--trace-level requires a story and --trace".into());
     }
@@ -438,15 +547,13 @@ fn render_with_stream_opener(
             return Err(format!("--duration-report: {} is not a directory", parent.display()));
         }
     }
-    let fake = a.engine.as_deref() == Some("fake");
-    let model = match (&a.model, fake) {
-        (Some(m), _) => m.clone(),
-        (None, true) => PathBuf::new(),
-        (None, false) => return Err("--model is required".into()),
-    };
-    let name = match a.engine.as_deref() {
-        None | Some("auto") => gguf_arch::architecture(&model).map_err(|e| format!("{}: {e}", model.display()))?,
-        Some(e) => e.to_string(),
+    let name = match (a.engine.as_deref(), &a.model) {
+        (None | Some("auto"), Some(model)) => {
+            gguf_arch::architecture(model).map_err(|e| format!("{}: {e}", model.display()))?
+        }
+        // No model: the default engine, on its default files.
+        (None | Some("auto"), None) => DEFAULT_ENGINE.to_string(),
+        (Some(e), _) => e.to_string(),
     };
     if a.speaker.is_some() && name != "qwen3-tts" {
         return Err("--speaker is only supported by the qwen3-tts engine".into());
@@ -471,10 +578,49 @@ fn render_with_stream_opener(
     } else {
         None
     };
+    // Every check that needs no model has passed: only now is anything downloaded.
+    let mut models = resolve(&mut a, &name, log)?;
+    let model = a.model.clone().unwrap_or_default();
     let mut stream = stream_opener(&a)?;
     let t0 = Instant::now();
     let mut engine = loader(&name, &a, &model)?;
     let load_ms = t0.elapsed().as_millis();
+    // Every model file the render uses goes in every report it writes, by sha256: a cached file's is the pinned hash
+    // it was verified against, a given file is hashed here, once (after loading, which has shown it exists).
+    for m in &mut models {
+        let hashed = m.ensure_sha256()?;
+        log.stderr(
+            LogLevel::Info,
+            BINARY,
+            "model_file",
+            format_args!(
+                "{} {} sha256 {} ({}{})",
+                m.role,
+                m.path.display(),
+                m.sha256.as_deref().unwrap_or("unknown"),
+                m.source.as_str(),
+                hashed.map_or(String::new(), |d| format!(", hashed in {:.1} s", d.as_secs_f64()))
+            ),
+        );
+    }
+    let model_files = models
+        .iter()
+        .map(ggtts_models::ModelFile::report)
+        .collect::<Result<Vec<_>, _>>()?;
+    // The instruction goes beside the model files in every report, when there is one: an empty one is none.
+    let instruction = a.instruction.clone().filter(|i| !i.is_empty());
+    let with_instruction = |mut doc: serde_json::Value| {
+        if let Some(i) = &instruction {
+            doc["instruction"] = i.as_str().into();
+        }
+        doc
+    };
+    let sha_of = |roles: &[&str]| {
+        models
+            .iter()
+            .find(|m| roles.contains(&m.role.as_str()))
+            .and_then(|m| m.sha256.clone())
+    };
     let t1 = Instant::now();
     let measured_render_ms;
     let frames_generated;
@@ -553,7 +699,12 @@ fn render_with_stream_opener(
                 inner: events,
                 end: None,
             };
-            emit_header(&mut events, &Header::for_engine(engine.as_ref(), trace_level));
+            let mut header = Header::for_engine(engine.as_ref(), trace_level);
+            header.model_sha256 = sha_of(&["talker", "model"]);
+            header.codec_sha256 = sha_of(&["codec"]);
+            header.models = model_files.clone();
+            header.instruction.clone_from(&instruction);
+            emit_header(&mut events, &header);
             let mut options = RenderOptions::for_profile(&profile);
             options.measure_timings = a.timing_report.is_some();
             options.instruction.clone_from(&a.instruction);
@@ -690,8 +841,9 @@ fn render_with_stream_opener(
             .as_ref()
             .map(|chunks| chunks.iter().filter_map(|c| c["trimmed_samples"].as_u64()).sum::<u64>());
         let joins = chunk_samples.and_then(|n| (samples.len() as u64).checked_sub(n));
-        Some(serde_json::json!({
+        Some(with_instruction(serde_json::json!({
             "format": "ggtts-duration/1", "path": if story { "story" } else { "text" },
+            "models": model_files,
             "chunks": duration_chunks,
             "discarded_draws_included": false,
             "output_sample_rate": (rate > 0).then_some(rate), "output_samples": samples.len(),
@@ -701,7 +853,7 @@ fn render_with_stream_opener(
             "text_decoded_samples": (!story).then_some(samples.len()),
             "text_decoded_seconds": (!story && rate > 0).then(|| samples.len() as f64 / f64::from(rate)),
             "rate_note": "Chunk seconds use each decoder rate. The pipeline concatenates without resampling and outputs at the first chunk rate; differing rates change playback duration. Output and join seconds use the output rate."
-        }))
+        })))
     } else {
         None
     };
@@ -769,7 +921,8 @@ fn render_with_stream_opener(
             },
         );
         let audio_seconds = (rate > 0).then(|| samples.len() as f64 / f64::from(rate));
-        let report = serde_json::json!({
+        let report = with_instruction(serde_json::json!({
+            "models": model_files,
             "format": "ggtts-timing/1", "engine": engine_info.family, "backend": engine_info.backend,
             "parity": engine_info.parity, "load_ms": load_ms as u64, "render_ms": render_ms as u64,
             "audio_seconds": audio_seconds, "frames_generated": frames_generated, "stages": stage,
@@ -779,7 +932,7 @@ fn render_with_stream_opener(
             "logging": {"level": log.level.name(), "format": log.format.name(), "records": log_records,
                         "sink_ns": log_sink_ns, "lock_wait_ns": log_lock_wait_ns},
             "limits": "generation is host wall time including observer callbacks; no exclusive GPU or asynchronous synchronization claim; timings overlap; logger counters omit caller preparation and external child logs"
-        });
+        }));
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -819,6 +972,8 @@ fn render_with_stream_opener(
         events: a.trace.clone(),
         bin_dir: None,
         instruments_dir: None,
+        models: Some(model_files.clone()),
+        instruction: instruction.clone(),
     };
     let summary = ggtts_instruments::runner::run_with_logging(&config, &inputs, log)?;
     if let Some(data) = &duration_data {
@@ -945,19 +1100,28 @@ fn main() -> ExitCode {
         }
         Some("-h") | Some("--help") => {
             println!("{USAGE}\n\n{STREAMS}");
+            println!("{MODELS_HELP}");
             println!("{INSTRUMENTS_HELP}");
             ExitCode::SUCCESS
         }
-        Some(_) => match parse(&args).and_then(|a| render(a, log)) {
-            Ok(code) => ExitCode::from(code),
-            Err(e) => {
-                log.stderr(LogLevel::Error, "error", "command_failed", format_args!("{e}"));
-                if log.format == LogFormat::Text {
-                    eprintln!("{USAGE}");
+        Some(_) => {
+            // The usage helps after a command line that did not parse; after a refused model, voice or render it
+            // only buries the reason.
+            let (result, bad_arguments) = match parse(&args) {
+                Ok(a) => (render(a, log), false),
+                Err(e) => (Err(e), true),
+            };
+            match result {
+                Ok(code) => ExitCode::from(code),
+                Err(e) => {
+                    log.stderr(LogLevel::Error, "error", "command_failed", format_args!("{e}"));
+                    if bad_arguments && log.format == LogFormat::Text {
+                        eprintln!("{USAGE}");
+                    }
+                    ExitCode::from(ggtts_instruments::runner::EXIT_RENDER_FAILED)
                 }
-                ExitCode::from(ggtts_instruments::runner::EXIT_RENDER_FAILED)
             }
-        },
+        }
     }
 }
 
@@ -1096,6 +1260,8 @@ mod tests {
         let args = Args {
             engine: Some("qwen3-tts".into()),
             model: Some("unused".into()),
+            // Both paths given, so nothing is resolved from the cache.
+            codec: Some("unused-codec".into()),
             text: Some("hello".into()),
             out: Some("unused.flac".into()),
             speaker: a.speaker,
@@ -1160,14 +1326,14 @@ mod tests {
             level: LogLevel::Error,
             format: LogFormat::Text,
         };
-        let dir = std::env::temp_dir().join(format!("ggtts-instruction-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        // The model files come from a prepared cache, so nothing is downloaded or hashed.
+        let (dir, cache) = prepared_cache("instruction-flag");
         // The text path and the story path both hand the instruction to every request, as given.
         for story in [false, true] {
             let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let args = Args {
                 engine: Some("qwen3-tts".into()),
-                model: Some("unused".into()),
+                offline: true,
                 text: (!story).then(|| "今日天氣好好。".into()),
                 story: story.then(|| "story.txt".into()),
                 out: Some(dir.join(format!("{story}.flac"))),
@@ -1175,7 +1341,7 @@ mod tests {
                 ..Args::default()
             };
             let s = seen.clone();
-            render_with_story_reader(
+            render_with_models(
                 args,
                 log,
                 move |name, a, _| {
@@ -1187,6 +1353,10 @@ mod tests {
                     }) as Box<dyn Engine>)
                 },
                 |_| Ok("Title\n今日天氣好好，我哋去公園行下。佢話聽日會早啲返嚟食飯。\n".into()),
+                open_stream,
+                |a, name, log| {
+                    resolve_models_with(a, name, log, true, &|| Ok(cache.clone()), &NoNetwork, &mut Vec::new())
+                },
             )
             .unwrap();
             let seen = seen.borrow();
@@ -1554,6 +1724,205 @@ mod tests {
         .unwrap();
         assert_eq!(envelope["status"], "ok");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn model_resolution_uses_given_paths_and_never_fetches_for_them() {
+        let log = LogSettings {
+            level: LogLevel::Error,
+            format: LogFormat::Text,
+        };
+        // The fake engine needs no model; a given one is still recorded.
+        let mut a = Args::default();
+        assert!(resolve_models(&mut a, "fake", log).unwrap().is_empty());
+        let mut a = Args {
+            model: Some("m.bin".into()),
+            ..Args::default()
+        };
+        let files = resolve_models(&mut a, "fake", log).unwrap();
+        assert_eq!(
+            (files[0].role.as_str(), files[0].source),
+            ("model", ggtts_models::Source::Path)
+        );
+        // An engine with no default files needs its paths.
+        let mut a = Args::default();
+        let err = resolve_models(&mut a, "kitten-tts-2", log).unwrap_err();
+        assert!(err.contains("--model is required"), "{err}");
+        // Both Qwen paths given: used as they are, in the table's roles, with nothing downloaded or hashed.
+        let mut a = Args {
+            model: Some("talker.gguf".into()),
+            codec: Some("codec.gguf".into()),
+            offline: true,
+            ..Args::default()
+        };
+        let files = resolve_models(&mut a, "qwen3-tts", log).unwrap();
+        let got: Vec<_> = files
+            .iter()
+            .map(|f| (f.role.as_str(), f.path.clone(), f.sha256.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("talker", PathBuf::from("talker.gguf"), None),
+                ("codec", PathBuf::from("codec.gguf"), None)
+            ]
+        );
+        assert_eq!(a.speaker, None, "a given talker keeps its own default speaker");
+        // A build without engines downloads nothing for a render it cannot run.
+        if !cfg!(feature = "ggml") {
+            let mut a = Args::default();
+            let err = resolve_models(&mut a, "qwen3-tts", log).unwrap_err();
+            assert!(err.contains("no engines"), "{err}");
+        }
+    }
+
+    #[test]
+    fn the_download_notice_prints_at_every_log_level() {
+        for format in [LogFormat::Text, LogFormat::Json] {
+            for level in [LogLevel::Error, LogLevel::Warn, LogLevel::Info] {
+                let mut out = Vec::new();
+                model_notice(
+                    LogSettings { level, format },
+                    &mut out,
+                    "downloading 2 file(s) of a release",
+                );
+                let text = String::from_utf8(out).unwrap();
+                assert!(text.contains("downloading 2 file(s)"), "{level:?} {format:?}: {text:?}");
+            }
+        }
+    }
+
+    /// A fetcher that must not be reached.
+    struct NoNetwork;
+    impl ggtts_models::Fetch for NoNetwork {
+        fn open(&self, url: &str) -> Result<Box<dyn std::io::Read>, String> {
+            panic!("fetched {url}")
+        }
+    }
+
+    /// A cache already holding the default files: each a sparse file of the pinned size, with the record of an
+    /// earlier check, so nothing is downloaded or hashed.
+    fn prepared_cache(name: &str) -> (PathBuf, ggtts_models::Cache) {
+        let root = std::env::temp_dir().join(format!("ggtts-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cache = ggtts_models::Cache::new(root.clone());
+        for p in ggtts_models::QWEN3_TTS.files {
+            let path = cache.path_for(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::File::create(&path).unwrap().set_len(p.size).unwrap();
+            let mtime = std::fs::metadata(&path)
+                .unwrap()
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let record = serde_json::json!({"sha256": p.sha256, "size": p.size, "mtime_ns": mtime.to_string()});
+            std::fs::write(
+                path.with_file_name(format!("{}.verified", p.file_name)),
+                record.to_string(),
+            )
+            .unwrap();
+        }
+        (root, cache)
+    }
+
+    /// `--instruction` with no `--model`: the default talker (the v0.0.5 custom_voice export at 1.7B, which takes an
+    /// instruction) is resolved from the cache, and the instruction reaches the loader and the request, and is
+    /// recorded beside the model files in the timing and duration reports. Nothing is downloaded.
+    #[test]
+    fn an_instruction_works_with_the_default_model() {
+        let (root, cache) = prepared_cache("default-instruction");
+        let log = LogSettings {
+            level: LogLevel::Error,
+            format: LogFormat::Text,
+        };
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let s = seen.clone();
+        let talker = cache.path_for(&ggtts_models::QWEN3_TTS.files[0]);
+        let args = Args {
+            text: Some("今日天氣好好。".into()),
+            out: Some(root.join("out.flac")),
+            timing_report: Some(root.join("timing.json")),
+            duration_report: Some(root.join("duration.json")),
+            offline: true,
+            instruction: Some("Speak slowly and softly.".into()),
+            ..Args::default()
+        };
+        let code = render_with_models(
+            args,
+            log,
+            move |name, a, model| {
+                assert_eq!(name, "qwen3-tts");
+                assert_eq!(model, talker.as_path());
+                assert_eq!(a.speaker.as_deref(), Some("hk_voice_343"));
+                assert_eq!(a.instruction.as_deref(), Some("Speak slowly and softly."));
+                Ok(Box::new(Instructed {
+                    inner: ggtts_fake::FakeEngine::default(),
+                    seen: s,
+                }) as Box<dyn Engine>)
+            },
+            |_| unreachable!("no story"),
+            open_stream,
+            |a, name, log| resolve_models_with(a, name, log, true, &|| Ok(cache.clone()), &NoNetwork, &mut Vec::new()),
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(*seen.borrow(), [Some("Speak slowly and softly.".to_string())]);
+        for report in ["timing.json", "duration.json"] {
+            let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join(report)).unwrap()).unwrap();
+            assert_eq!(doc["instruction"], "Speak slowly and softly.", "{report}");
+            assert_eq!(doc["models"][0]["source"], "cache", "{report}");
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_default_talker_gets_the_default_speaker() {
+        let (root, cache) = prepared_cache("default-speaker");
+        let log = LogSettings {
+            level: LogLevel::Error,
+            format: LogFormat::Text,
+        };
+        let resolve = |a: &mut Args| {
+            let mut notice = Vec::new();
+            resolve_models_with(
+                a,
+                "qwen3-tts",
+                log,
+                true,
+                &|| Ok(cache.clone()),
+                &NoNetwork,
+                &mut notice,
+            )
+        };
+        let mut a = Args {
+            offline: true,
+            ..Args::default()
+        };
+        let files = resolve(&mut a).unwrap();
+        assert_eq!(a.speaker.as_deref(), Some("hk_voice_343"));
+        assert_eq!(a.model.as_deref(), Some(files[0].path.as_path()));
+        assert_eq!(a.codec.as_deref(), Some(files[1].path.as_path()));
+        // A speaker asked for is kept.
+        let mut a = Args {
+            offline: true,
+            speaker: Some("hk_voice_777".into()),
+            ..Args::default()
+        };
+        resolve(&mut a).unwrap();
+        assert_eq!(a.speaker.as_deref(), Some("hk_voice_777"));
+        // A given talker with the default codec keeps the talker's own default.
+        let mut a = Args {
+            offline: true,
+            model: Some("my-talker.gguf".into()),
+            ..Args::default()
+        };
+        let files = resolve(&mut a).unwrap();
+        assert_eq!(a.speaker, None);
+        assert_eq!(files[0].source, ggtts_models::Source::Path);
+        assert_eq!(files[1].source, ggtts_models::Source::Cache);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// Every engine `--version` can list reaches its own arm in `load_engine`, never the unknown-architecture refusal.

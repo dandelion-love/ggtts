@@ -2,6 +2,7 @@
 """Refuse a Linux release binary that needs a newer C or C++ runtime than the stated floor.
 
     python3 scripts/check_glibc_floor.py [--floor NAME=VERSION ...] ELF...
+    python3 scripts/check_glibc_floor.py [--floor NAME=VERSION ...] --packed DIR
 
 The floor is what Ubuntu 22.04 ships (glibc 2.35, and the GCC 12 runtime libraries from jammy-updates: libstdc++,
 libgcc_s, libgomp). For each ELF it reads the symbol versions the binary needs from the dynamic loader's point of
@@ -14,8 +15,14 @@ binary needs no GLIBC version at all (it was not read, or it is not the dynamica
 for), and when a binary needs a version namespace the floor does not name (GLIBC_PRIVATE, or a library added to the
 link without a floor for it). `--floor NAME=VERSION` replaces one namespace's floor; CI uses it to plant an
 impossible floor and require red.
+
+`--packed DIR` checks a directory `scripts/package_and_smoke.sh pack` made: the binaries are the ones its
+BUILDINFO.json "binaries" names (the list pack printed), and it fails when that list is missing or empty, names a
+file that is not there, or leaves out an ELF file that is in DIR. So a binary that is packed is always checked,
+with no list kept by hand.
 """
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -108,12 +115,39 @@ def evaluate(path, version_info, dyn_syms, floor):
     return problems, highest
 
 
+def packed_binaries(directory):
+    """The binaries in a packed DIR, from its BUILDINFO.json "binaries"; ([paths], [problems])."""
+    directory = os.path.abspath(directory)
+    info = os.path.join(directory, "BUILDINFO.json")
+    try:
+        with open(info, encoding="utf-8") as f:
+            listed = json.load(f).get("binaries")
+    except (OSError, ValueError) as error:
+        return [], [f"{info}: cannot read the packed binaries list: {error}"]
+    if not isinstance(listed, list) or not listed or not all(isinstance(n, str) for n in listed):
+        return [], [f"{info}: \"binaries\" is not a non-empty list of names: {listed!r}"]
+    problems = [f"{directory}: BUILDINFO.json names {name}, which is not in the directory"
+                for name in listed if not os.path.isfile(os.path.join(directory, name))]
+    for name in sorted(os.listdir(directory)):
+        path = os.path.join(directory, name)
+        if name not in listed and os.path.isfile(path):
+            with open(path, "rb") as f:
+                if f.read(4) == b"\x7fELF":
+                    problems.append(f"{directory}: {name} is an ELF file that BUILDINFO.json's binaries leaves out, "
+                                    "so it would ship unchecked")
+    return [os.path.join(directory, name) for name in listed if os.path.isfile(os.path.join(directory, name))], problems
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--floor", action="append", default=[], metavar="NAME=VERSION",
                         help="replace one namespace's floor (for a planted check)")
-    parser.add_argument("binaries", nargs="+", metavar="ELF")
+    parser.add_argument("--packed", metavar="DIR",
+                        help="check every binary a packed release directory's BUILDINFO.json lists")
+    parser.add_argument("binaries", nargs="*", metavar="ELF")
     args = parser.parse_args(argv)
+    if bool(args.packed) == bool(args.binaries):
+        parser.error("give either ELF files or --packed DIR")
     floor = dict(FLOOR)
     for item in args.floor:
         name, sep, version = item.partition("=")
@@ -123,6 +157,8 @@ def main(argv=None):
     print("floor: " + ", ".join(f"{name}_{floor[name]}" for name in sorted(floor))
           + ("" if floor == FLOOR else f" (not the {FLOOR_NAME} floor: overridden)"), file=sys.stderr)
     problems = []
+    if args.packed:
+        args.binaries, problems = packed_binaries(args.packed)
     for path in args.binaries:
         try:
             found, highest = check(path, floor)

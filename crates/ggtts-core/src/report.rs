@@ -682,6 +682,11 @@ pub struct Report {
     pub entries: Vec<Entry>,
     /// The run's required instruments, in the order the run declared them.
     pub required: Vec<Requirement>,
+    /// Every model file the measured render used (role, path, sha256, source, url), when the run knows them: a
+    /// render does, a measurement of existing audio does not. Written to `report.json` only when known.
+    pub models: Option<Vec<Value>>,
+    /// The measured render's style instruction, when it had a non-empty one. Written to `report.json` only then.
+    pub instruction: Option<String>,
 }
 
 /// The name an invalid envelope is listed under: its own `name` when that is a valid name, else its source's
@@ -819,6 +824,8 @@ pub fn merge(run: &str, inputs: &[Input], required: &[&str]) -> Report {
         run: run.into(),
         entries,
         required,
+        models: None,
+        instruction: None,
     }
 }
 
@@ -869,8 +876,15 @@ impl Report {
                 o
             })
             .collect();
-        json!({"format": FORMAT, "run": self.run, "measurement": self.verdict(), "summary": summary,
-               "completeness": completeness, "instruments": instruments})
+        let mut report = json!({"format": FORMAT, "run": self.run, "measurement": self.verdict(), "summary": summary,
+               "completeness": completeness, "instruments": instruments});
+        if let Some(models) = &self.models {
+            report["models"] = json!(models);
+        }
+        if let Some(instruction) = &self.instruction {
+            report["instruction"] = json!(instruction);
+        }
+        report
     }
 
     fn summary_line(&self) -> String {

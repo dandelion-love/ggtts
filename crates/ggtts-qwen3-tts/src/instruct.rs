@@ -2,9 +2,10 @@
 //! that does not.
 //!
 //! The checkpoint type is qwen3-tts.cpp's `tts_model_type` at `16bb5af`: the `qwen3-tts.model_type` metadata
-//! (`transformer_loader_metadata.cpp:235-238`, default `base`, lower-cased), then a file name containing
-//! `customvoice` or `voicedesign` (`transformer_loader.cpp:200-210`), then `custom_voice` for a `base` checkpoint
-//! with named speakers (`transformer_loader_metadata.cpp:350-353`). Whether it takes an instruction is
+//! (`transformer_loader_metadata.cpp:235-238`, default `base`, lower-cased), then `custom_voice` for a `base`
+//! checkpoint with named speakers (`transformer_loader_metadata.cpp:350-353`, still inside `parse_config`), and only
+//! then, for a checkpoint still `base`, a file name containing `customvoice` or `voicedesign`
+//! (`transformer_loader.cpp:200-210`, after `parse_config` returns). Whether it takes an instruction is
 //! `get_model_capabilities` (`pipeline_models.cpp:471-479`): the `qwen3-tts.supports_instruction` flag when the file
 //! has one, else `custom_voice` at a hidden size of 2048 or more (the 1.7B; the upstream Python package drops the
 //! instruction for the 0.6B), `voice_design` always, and nothing else.
@@ -32,6 +33,9 @@ pub fn model_type(declared: Option<&str>, file_name: &str, has_speakers: bool) -
         .filter(|s| !s.is_empty())
         .unwrap_or("base")
         .to_ascii_lowercase();
+    if t == "base" && has_speakers {
+        t = "custom_voice".into();
+    }
     let name = file_name.to_ascii_lowercase();
     if t == "base" {
         if name.contains("customvoice") {
@@ -39,9 +43,6 @@ pub fn model_type(declared: Option<&str>, file_name: &str, has_speakers: bool) -
         } else if name.contains("voicedesign") {
             t = "voice_design".into();
         }
-    }
-    if t == "base" && has_speakers {
-        t = "custom_voice".into();
     }
     t
 }
@@ -88,6 +89,12 @@ mod tests {
         );
         assert_eq!(model_type(None, "talker-voicedesign-q8_0.gguf", false), "voice_design");
         assert_eq!(model_type(Some("base"), "x.gguf", true), "custom_voice");
+        // The speakers decide before the file name, as in the reference: a base checkpoint with speakers is
+        // custom_voice whatever its name says.
+        assert_eq!(
+            model_type(Some("base"), "x-voicedesign-q8_0.gguf", true),
+            "custom_voice"
+        );
         // A declared type other than base is never overridden.
         assert_eq!(
             model_type(Some("voice_design"), "customvoice.gguf", true),
@@ -103,6 +110,16 @@ mod tests {
         assert!(!supports_instruction("base", 2048, None));
         assert!(supports_instruction("base", 2048, Some(true)));
         assert!(!supports_instruction("custom_voice", 2048, Some(false)));
+    }
+
+    /// Declared base, with speakers, 0.6B (hidden size 1024), named like a VoiceDesign file: the reference makes it
+    /// custom_voice from its speakers before it reads the name, and a 0.6B custom_voice takes no instruction.
+    #[test]
+    fn speakers_before_the_file_name_decide_a_small_checkpoint_takes_no_instruction() {
+        let t = model_type(Some("base"), "qwen-talker-0.6b-voicedesign-q8_0.gguf", true);
+        assert_eq!(t, "custom_voice");
+        assert!(!supports_instruction(&t, 1024, None));
+        assert!(check(Some("Speak slowly."), &t, 1024, false).is_err());
     }
 
     #[test]

@@ -51,9 +51,13 @@ for t in decoder_identity:decoder_samples_are_bit_identical_to_the_reference \
     verdict=FAILED
     status=1
   fi
-  grep -E '^(IDENTICAL|DIFFERS) |identity \(|^test |panicked|assertion' "$log" | grep -v '^test result:'
+  # Identity checks print IDENTICAL/DIFFERS per case; difference checks print ' frames with the instruction' per case.
+  grep -E '^(IDENTICAL|DIFFERS) |identity \(| frames with the instruction, |^test |panicked|assertion' "$log" \
+    | grep -v '^test result:'
   case $name in
     planted::*) meaning="the plant was seen" ;;
+    # A test that asserts a difference, not an identity.
+    an_instruction_changes_the_codes) meaning="the instruction changed the codes of every case" ;;
     *) meaning="identical to the reference" ;;
   esac
   [ $verdict = passed ] && echo "verdict: passed ($meaning), $(($(date +%s) - start)) s" \

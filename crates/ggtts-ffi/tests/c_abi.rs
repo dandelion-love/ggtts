@@ -191,15 +191,42 @@ fn load_with(engine: &str, settings: Option<(Option<&str>, Option<&str>)>) -> (i
     (code, h)
 }
 
+/// The header's lines with their endings and trailing space removed, so a checkout with CRLF endings (Windows) reads
+/// as one with LF.
+fn header_lines(header: &str) -> Vec<&str> {
+    header.lines().map(str::trim_end).collect()
+}
+
+/// The value of `#define GGTTS_ABI_VERSION`, whatever the line endings.
+fn header_version(header: &str) -> Option<u32> {
+    header_lines(header).iter().find_map(|l| {
+        let mut words = l.split_whitespace();
+        match (words.next(), words.next(), words.next()) {
+            (Some("#define"), Some("GGTTS_ABI_VERSION"), Some(v)) => v.parse().ok(),
+            _ => None,
+        }
+    })
+}
+
+#[test]
+fn the_header_reads_the_same_with_lf_and_crlf_endings() {
+    let lf = "/* x */\n#define GGTTS_ABI_VERSION 2\ntypedef struct a {\n    size_t size;\n} a;\n";
+    let crlf = lf.replace('\n', "\r\n");
+    assert_eq!(header_version(lf), Some(2));
+    assert_eq!(header_version(&crlf), Some(2), "a CRLF header");
+    assert_eq!(header_lines(&crlf), header_lines(lf));
+    assert_eq!(header_version("#define GGTTS_ABI_VERSIONS 2\n"), None);
+}
+
 #[test]
 fn the_abi_version_is_2_in_the_library_and_the_header() {
     assert_eq!(ggtts_abi_version(), 2);
     assert_eq!(GGTTS_ABI_VERSION, 2);
     let header = include_str!("../include/ggtts.h");
-    assert!(header.contains("#define GGTTS_ABI_VERSION 2\n"), "the header's version");
+    assert_eq!(header_version(header), Some(2), "the header's version");
     // The header's struct is the library's: three fields, size first.
     assert!(
-        header.contains("typedef struct ggtts_settings {\n    size_t size;\n    const char *speaker;\n    const char *instruction;\n} ggtts_settings;"),
+        header_lines(header).join("\n").contains("typedef struct ggtts_settings {\n    size_t size;\n    const char *speaker;\n    const char *instruction;\n} ggtts_settings;"),
         "the header's ggtts_settings"
     );
     assert_eq!(std::mem::size_of::<GgttsSettings>(), 3 * std::mem::size_of::<usize>());

@@ -7,8 +7,8 @@ the sampler's random stream is not used by the measurement. It reports normalize
 exact continuous distribution for the finite-precision random draw. Trace headers and standalone hook records label
 the new semantics; an unmarked older record remains unknown.
 Existing `p-stop-early` reports derived from unmarked traces cannot establish which probability definition they
-used. This change does not recompute those reports, and no same-input comparison with the lab's stop-probability
-measure has yet been established; do not treat it as lab parity.
+used. This change does not recompute those reports, and no same-input comparison with the reference stop-probability
+measure has yet been established; do not treat it as reference parity.
 
 The sampler refactor was compared against the previous sampler for 100 seeds across greedy, temperature, top-k,
 top-p, ties and the cutoff case; sampled tokens, weights and subsequent RNG state matched. One existing real-Qwen

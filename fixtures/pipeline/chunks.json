@@ -1,7 +1,7 @@
 {
  "format": "ggtts-pipeline-cases/1",
  "spec": "story-v1",
- "source": "Corrected references, compared on every case at 26 and 45: lab synthesize_long.py sha256 477f61093c49f986670f6ed29a823dcc08db313b6e38a8d4d7327a923b966a7d, lab render_story.py sha256 b8c32c75bf71187c708e78f88ef9551a725dea2921ca448b79f8162657e9b5e5, lab chunks.json sha256 1f52055f824aef5deb26de78a51a3dd2fc707ff73aacabc7861785469a7d7c8e; recipe commit 82e33d1, chunking.py sha256 2bed07ccee4b90e52544cd1cae970ff0ce312934b1c3b55a681a56b191c444d2. Invented text.",
+ "source": "Corrected references, compared on every case at 26 and 45: the reference long-form synthesizer sha256 477f61093c49f986670f6ed29a823dcc08db313b6e38a8d4d7327a923b966a7d, the reference story renderer sha256 b8c32c75bf71187c708e78f88ef9551a725dea2921ca448b79f8162657e9b5e5, the reference chunk cases sha256 1f52055f824aef5deb26de78a51a3dd2fc707ff73aacabc7861785469a7d7c8e, and the reference chunker sha256 2bed07ccee4b90e52544cd1cae970ff0ce312934b1c3b55a681a56b191c444d2. Invented text.",
  "cases": [
   {
    "id": "punct-cantonese",

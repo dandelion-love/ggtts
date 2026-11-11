@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Run the bundled Pitchy detector on mono float32 samples from stdin. The statistic and gating mirror the lab booth.
+// Run the bundled Pitchy detector on mono float32 samples from stdin. The statistic and gating mirror the reference booth.
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");

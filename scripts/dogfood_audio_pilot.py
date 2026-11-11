@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Compare ggtts instruments with lab measures on retained audio and planted controls.
+"""Compare ggtts instruments with reference measures on retained audio and planted controls.
 
 No input audio is committed. Reports and derived FLACs are written only below --output.
-The lab checkout and the ggtts-measure binary are supplied explicitly.
+The reference implementation and the ggtts-measure binary are supplied explicitly: --reference is a directory put on
+the import path, --levels-module names a module in it exporting `room_stats(samples)` (a dict with `peak_dbfs` and
+`rms_dbfs`), and --silence-module one exporting `silence_report(samples, rate, top_db=, gap_min_s=)` (a dict with
+`n_gaps`).
 """
 import argparse
 import hashlib
+import importlib
 import json
 import os
 from pathlib import Path
@@ -23,18 +27,21 @@ def sha(path):
 
 def main():
     ap = argparse.ArgumentParser()
-    for name in ("lab", "measure", "qwen", "kitten", "output"):
+    for name in ("reference", "measure", "qwen", "kitten", "output"):
         ap.add_argument("--" + name, type=Path, required=True)
+    for name in ("levels-module", "silence-module"):
+        ap.add_argument("--" + name, required=True, help="dotted module name under --reference")
     args = ap.parse_args()
     out = args.output.resolve()
-    lab = args.lab.resolve()
+    reference = args.reference.resolve()
     root = Path(__file__).resolve().parents[1]
-    if out == root or root in out.parents or out == lab or lab in out.parents:
+    if out == root or root in out.parents or out == reference or reference in out.parents:
         raise ValueError("--output must be outside both repositories")
     out.mkdir(parents=True, exist_ok=False)
-    sys.path.insert(0, str(lab))
-    from scripts.common.audio_trim import silence_report
-    from scripts.recording.serve import room_stats
+    sys.path.insert(0, str(reference))
+    levels_module = importlib.import_module(args.levels_module)
+    silence_module = importlib.import_module(args.silence_module)
+    room_stats, silence_report = levels_module.room_stats, silence_module.silence_report
 
     env = dict(os.environ, GGTTS_INSTRUMENTS_DIR=str(root / "instruments"), GGTTS_PYTHON=sys.executable)
     results = {}
@@ -68,19 +75,19 @@ def main():
             level = room_stats(audio)
             rows[name] = {"sha256": sha(path), "sample_count": len(audio), "rate": rate,
                           "ggtts_levels": metrics("audio-levels"), "ggtts_pauses": metrics("internal-pauses"),
-                          "lab_levels": {k: level[k] for k in ("peak_dbfs", "rms_dbfs")},
-                          "lab_silence": silence_report(audio, rate, top_db=40.0, gap_min_s=1.5)}
+                          "reference_levels": {k: level[k] for k in ("peak_dbfs", "rms_dbfs")},
+                          "reference_silence": silence_report(audio, rate, top_db=40.0, gap_min_s=1.5)}
         results[engine] = rows
         original, noop, gain, gap = (rows[k] for k in ("original", "noop", "half_gain", "two_second_gap"))
-        if any(original[k] != noop[k] for k in ("sha256", "ggtts_levels", "ggtts_pauses", "lab_levels", "lab_silence")):
+        if any(original[k] != noop[k] for k in ("sha256", "ggtts_levels", "ggtts_pauses", "reference_levels", "reference_silence")):
             raise AssertionError(engine + ": no-op changed the measurement")
         for key in ("peak_dbfs", "rms_dbfs"):
             if abs(gain["ggtts_levels"][key] - original["ggtts_levels"][key] + 6.0206) > 0.02:
                 raise AssertionError(engine + ": gain plant not detected by ggtts " + key)
-            if abs(gain["lab_levels"][key] - original["lab_levels"][key] + 6.0206) > 0.02:
-                raise AssertionError(engine + ": gain plant not detected by lab " + key)
+            if abs(gain["reference_levels"][key] - original["reference_levels"][key] + 6.0206) > 0.02:
+                raise AssertionError(engine + ": gain plant not detected by the reference " + key)
         if not (gap["ggtts_pauses"]["internal_pauses"] > original["ggtts_pauses"]["internal_pauses"] and
-                gap["lab_silence"]["n_gaps"] > original["lab_silence"]["n_gaps"]):
+                gap["reference_silence"]["n_gaps"] > original["reference_silence"]["n_gaps"]):
             raise AssertionError(engine + ": planted gap not detected by both measures")
     missing = subprocess.run([str(args.measure.resolve()), "--audio", str(out / "missing.flac"),
                               "--report", str(out / "missing-report"), "--instrument", "audio-levels",
@@ -90,8 +97,8 @@ def main():
     if missing.returncode != 2 or (out / "missing-report").exists():
         raise AssertionError("missing audio was not refused before creating a report")
     results["versions"] = {"numpy": np.__version__, "soundfile": sf.__version__,
-                           "lab_audio_trim_sha256": sha(lab / "scripts/common/audio_trim.py"),
-                           "lab_recording_serve_sha256": sha(lab / "scripts/recording/serve.py"),
+                           "reference_silence_module_sha256": sha(silence_module.__file__),
+                           "reference_levels_module_sha256": sha(levels_module.__file__),
                            "measure_sha256": sha(args.measure)}
     (out / "summary.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(results, indent=2))

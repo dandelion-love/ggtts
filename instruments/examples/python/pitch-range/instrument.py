@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pitch range from the same pinned detector and frame rules as the lab recording booth."""
+"""Pitch range from the same pinned detector and frame rules as the reference recording booth."""
 import array
 import json
 import os

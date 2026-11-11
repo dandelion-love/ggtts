@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Run the lab's checkpoint-card loud/soft-end calculation on one external audio file.
+"""Run a reference loud/soft-end calculation on one external audio file.
 
-This read-only probe loads pinned companion analysis code and writes aggregate values to stdout. It does not save
+This read-only probe loads a reference implementation you supply (--reference-dir: a directory holding its
+`steps.py` and `store.py`, checked against the hashes you give) and writes aggregate values to stdout. It does not save
 audio or text. NumPy, SciPy, soundfile and librosa are needed in the chosen Python environment.
 """
 import argparse
@@ -21,13 +22,14 @@ def digest(path):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--companion", type=Path, required=True, help="cantonese-speech-analysis checkout")
+    ap.add_argument("--reference-dir", type=Path, required=True,
+                    help="directory holding the reference implementation's steps.py and store.py")
     ap.add_argument("--audio", type=Path, required=True)
     ap.add_argument("--steps-sha256", required=True)
     ap.add_argument("--store-sha256", required=True)
     ap.add_argument("--export-voicing", type=Path, help="write the derived pYIN track to a new external JSON file")
     args = ap.parse_args()
-    canto = args.companion.resolve() / "scripts/analysis/canto"
+    canto = args.reference_dir.resolve()
     for name, expected in (("steps.py", args.steps_sha256), ("store.py", args.store_sha256)):
         if digest(canto / name) != expected:
             raise ValueError(name + " does not match the supplied reference hash")
@@ -59,9 +61,8 @@ def main():
         if args.export_voicing:
             out = args.export_voicing.resolve()
             repo = Path(__file__).resolve().parents[1]
-            companion = args.companion.resolve()
-            if out == repo or repo in out.parents or out == companion or companion in out.parents:
-                raise ValueError("voicing output must be outside both checkouts")
+            if out == repo or repo in out.parents or out == canto or canto in out.parents:
+                raise ValueError("voicing output must be outside this checkout and the reference directory")
             track = {"format": "ggtts-voicing/1", "audio_sha256": result["audio_sha256"], "hop_s": 0.01,
                      "method": "librosa.pyin", "fmin_hz": 65.0, "fmax_hz": 500.0, "frame_length": 1024,
                      "core_method": "canto-edges/2", "steps_sha256": args.steps_sha256,

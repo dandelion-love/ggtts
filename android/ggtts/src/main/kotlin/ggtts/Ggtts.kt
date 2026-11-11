@@ -22,6 +22,15 @@ internal object Native {
     }
 
     @JvmStatic external fun load(engine: String, model: String?, codec: String?, voice: String?, threads: Int): Long
+    @JvmStatic external fun loadWith(
+        engine: String,
+        model: String?,
+        codec: String?,
+        voice: String?,
+        threads: Int,
+        speaker: String?,
+        instruction: String?,
+    ): Long
     @JvmStatic external fun render(handle: Long, text: String, seed: Long, rateOut: IntArray): FloatArray
     @JvmStatic external fun renderStream(handle: Long, text: String, seed: Long, listener: PieceListener): Boolean
     @JvmStatic external fun free(handle: Long)
@@ -43,9 +52,32 @@ class Ggtts private constructor(private var handle: Long) : AutoCloseable {
         const val ERR_BUSY = -6
         const val DEFAULT_SEED = 20260905L
 
-        /** [engine]: "qwen3-tts", "kitten-tts-2" or "fake". [voice] is Kitten-TTS 2's reference voice. */
+        /**
+         * [engine]: "qwen3-tts", "kitten-tts-2" or "fake". [voice] is Kitten-TTS 2's reference voice.
+         *
+         * [speaker] and [instruction] are Qwen3-TTS settings; null or empty is no setting, and the result is the same
+         * as without them. [speaker] is a speaker the model has (for example "hk_voice_777"); an unknown one throws
+         * GGTTS_ERR_ENGINE with the model's speakers in the message. [instruction] is a style instruction for every
+         * render (for example "Speak slowly and softly."); a checkpoint that takes none (Base, or custom_voice below
+         * 1.7B) throws GGTTS_ERR_ENGINE. Another engine refuses either one with GGTTS_ERR_ARG.
+         */
+        fun load(
+            engine: String,
+            model: String? = null,
+            codec: String? = null,
+            voice: String? = null,
+            threads: Int = 4,
+            speaker: String? = null,
+            instruction: String? = null,
+        ): Ggtts = Ggtts(Native.loadWith(engine, model, codec, voice, threads, speaker, instruction))
+
+        /**
+         * The five-parameter `load` from before the voice settings, kept so code compiled against it (including its
+         * default-argument form) still links. Hidden from source, where the `load` above covers every call.
+         */
+        @Deprecated("Kept for binary compatibility; call load with speaker and instruction", level = DeprecationLevel.HIDDEN)
         fun load(engine: String, model: String? = null, codec: String? = null, voice: String? = null, threads: Int = 4): Ggtts =
-            Ggtts(Native.load(engine, model, codec, voice, threads))
+            load(engine, model, codec, voice, threads, null, null)
     }
 
     /** Render [text] (one paragraph per line) to levelled PCM. */

@@ -8,12 +8,16 @@
 //!   is [`GGTTS_ERR_BUSY`], never a deadlock. Different engines render at once, and [`ggtts_free`] never waits for a
 //!   render: it drops the registry's reference, and the engine goes when the render holding it returns.
 //! * **No panic unwinds across the boundary.** The entry points that reach an engine or the registry
-//!   ([`ggtts_load`], [`ggtts_render`], [`ggtts_render_stream`], [`ggtts_free`]) run inside `catch_unwind`, and a
-//!   panic comes back as [`GGTTS_ERR_PANIC`] with its message; the engine that panicked is dropped from the
-//!   registry. [`ggtts_pcm_free`] and [`ggtts_last_error`] are not wrapped: one drops a box, the other reads a
-//!   thread-local. `catch_unwind` catches unwinding panics only: an abort, a stack overflow or a crash in C code
+//!   ([`ggtts_load`], [`ggtts_load_with`], [`ggtts_render`], [`ggtts_render_stream`], [`ggtts_free`]) run inside
+//!   `catch_unwind`, and a panic comes back as [`GGTTS_ERR_PANIC`] with its message; the engine that panicked is
+//!   dropped from the registry. [`ggtts_pcm_free`], [`ggtts_last_error`] and [`ggtts_abi_version`] are not wrapped:
+//!   one drops a box, one reads a thread-local, one returns a constant. `catch_unwind` catches unwinding panics only: an abort, a stack overflow or a crash in C code
 //!   still ends the process.
 //! * **Errors are a code plus a message:** [`ggtts_last_error`] holds the calling thread's last message.
+//! * **The surface is versioned and only grows.** [`GGTTS_ABI_VERSION`] (and [`ggtts_abi_version`]) goes up by one
+//!   whenever a function, a struct or a code is added; an exported function never changes its signature or its
+//!   behaviour. Version 2 added [`ggtts_load_with`] and [`GgttsSettings`] (a Qwen3-TTS speaker and style
+//!   instruction).
 //!
 //! With the `jni` feature, `jni.rs` adds the `Java_ggtts_Native_*` entry points over the same functions.
 
@@ -25,7 +29,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
-use ggtts_core::engine::Engine;
+use ggtts_core::engine::{refuse_instruction, ChunkRequest, Engine};
 use ggtts_core::pipeline::{plan_story, render_story, render_story_streamed, RenderError, RenderOptions};
 use ggtts_core::trace::NullEvents;
 
@@ -45,6 +49,30 @@ pub const GGTTS_ERR_PANIC: i32 = -4;
 pub const GGTTS_ERR_STOPPED: i32 = -5;
 /// The engine is rendering: a call on it from its own stream callback, or from another thread meanwhile.
 pub const GGTTS_ERR_BUSY: i32 = -6;
+
+/// The C-ABI's version: 1 was the surface before [`ggtts_load_with`]; 2 added it and [`GgttsSettings`].
+pub const GGTTS_ABI_VERSION: u32 = 2;
+
+/// The settings [`ggtts_load_with`] takes, by pointer. `size` is `sizeof(ggtts_settings)` as the caller's header
+/// declares it, so a later version can add fields and still tell an older caller's struct apart. A NULL or empty
+/// string is no setting: the result is what [`ggtts_load`] gives.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct GgttsSettings {
+    /// `sizeof(ggtts_settings)`.
+    pub size: usize,
+    /// A Qwen3-TTS speaker name (case is ignored); NULL or empty for the default speaker `ggtts_load` uses.
+    pub speaker: *const c_char,
+    /// A Qwen3-TTS style instruction ("Speak slowly and softly."); NULL or empty for none.
+    pub instruction: *const c_char,
+}
+
+/// The C-ABI's version, [`GGTTS_ABI_VERSION`] of the library actually loaded: a caller built against a newer header
+/// checks it before calling a function the library may not have.
+#[no_mangle]
+pub extern "C" fn ggtts_abi_version() -> u32 {
+    GGTTS_ABI_VERSION
+}
 
 /// The story id every binding render uses: the seed of each chunk is derived from it, the text and the seed given.
 const STORY: &str = "ggtts-binding";
@@ -86,12 +114,18 @@ fn guard(f: impl FnOnce() -> Result<(), Fail>) -> i32 {
 /// An engine in the registry. `Engine` has no `Send` bound, and the real engines are not `Send` to the compiler (raw
 /// ggml pointers; Kitten-TTS 2 shares its backend through `Rc`), so a `Held` is built in one of two ways only:
 /// [`Held::checked`], where the compiler proves the engine `Send`, or [`Held::assume_send`], whose every caller argues
-/// it for that one engine.
-struct Held(Box<dyn Engine>);
+/// it for that one engine. It carries the style instruction its renders use, given at load (`None` for none).
+struct Held {
+    engine: Box<dyn Engine>,
+    instruction: Option<String>,
+}
 
 impl Held {
     fn checked(e: Box<dyn Engine + Send>) -> Self {
-        Held(e)
+        Held {
+            engine: e,
+            instruction: None,
+        }
     }
 
     /// # Safety
@@ -99,7 +133,16 @@ impl Held {
     /// to the thread that made it, and nothing it shares (an `Rc`, a pointer) is reachable from outside it.
     #[cfg_attr(not(feature = "ggml"), allow(dead_code))]
     unsafe fn assume_send(e: Box<dyn Engine>) -> Self {
-        Held(e)
+        Held {
+            engine: e,
+            instruction: None,
+        }
+    }
+
+    #[cfg_attr(not(any(feature = "ggml", test)), allow(dead_code))]
+    fn with_instruction(mut self, instruction: Option<&str>) -> Self {
+        self.instruction = instruction.map(String::from);
+        self
     }
 }
 
@@ -128,7 +171,8 @@ fn no_engine(handle: u64) -> Fail {
 /// Run `f` on the engine. The registry lock is released before `f` runs, so `f` (and a stream callback inside it) may
 /// call any entry point; the engine's own lock is taken with `try_lock`, so a second call on a rendering engine is
 /// [`GGTTS_ERR_BUSY`]. If `f` panics, the engine is dropped from the registry before the panic goes on to [`guard`].
-fn with_engine<T>(handle: u64, f: impl FnOnce(&mut dyn Engine) -> Result<T, Fail>) -> Result<T, Fail> {
+/// `f` gets the engine and the instruction it was loaded with.
+fn with_engine<T>(handle: u64, f: impl FnOnce(&mut dyn Engine, Option<&str>) -> Result<T, Fail>) -> Result<T, Fail> {
     let slot = registry()
         .get_or_insert_with(HashMap::new)
         .get(&handle)
@@ -149,7 +193,8 @@ fn with_engine<T>(handle: u64, f: impl FnOnce(&mut dyn Engine) -> Result<T, Fail
         // before the eviction never uses it either.
         Err(TryLockError::Poisoned(_)) => return Err(no_engine(handle)),
     };
-    match catch_unwind(AssertUnwindSafe(|| f(held.0.as_mut()))) {
+    let h = &mut *held;
+    match catch_unwind(AssertUnwindSafe(|| f(h.engine.as_mut(), h.instruction.as_deref()))) {
         Ok(r) => r,
         Err(p) => {
             // The registry is never locked while an engine's lock is waited on, so taking it here cannot deadlock.
@@ -196,6 +241,69 @@ fn check_gguf(what: &str, path: &str) -> Result<(), Fail> {
     }
 }
 
+/// The voice settings of one load: a Qwen3-TTS speaker and style instruction, `None` for each one not given. An empty
+/// string is no setting.
+#[derive(Debug, Clone, Copy, Default)]
+struct Settings<'a> {
+    speaker: Option<&'a str>,
+    instruction: Option<&'a str>,
+}
+
+impl<'a> Settings<'a> {
+    fn new(speaker: Option<&'a str>, instruction: Option<&'a str>) -> Self {
+        Settings {
+            speaker: speaker.filter(|s| !s.is_empty()),
+            instruction: instruction.filter(|s| !s.is_empty()),
+        }
+    }
+
+    /// The settings struct a C caller passed: NULL is no settings.
+    ///
+    /// # Safety
+    /// `p` is NULL or points to a readable [`GgttsSettings`] whose strings are NULL or NUL-terminated.
+    unsafe fn from_c(p: *const GgttsSettings) -> Result<Self, Fail> {
+        if p.is_null() {
+            return Ok(Settings::default());
+        }
+        let size = unsafe { std::ptr::addr_of!((*p).size).read_unaligned() };
+        let known = std::mem::size_of::<GgttsSettings>();
+        if size != known {
+            return Err((
+                GGTTS_ERR_ARG,
+                format!(
+                    "settings.size is {size}; this library (C-ABI version {GGTTS_ABI_VERSION}) reads a ggtts_settings \
+                     of {known} bytes: set size to sizeof(ggtts_settings)"
+                ),
+            ));
+        }
+        let s = unsafe { &*p };
+        Ok(Settings::new(
+            unsafe { opt_arg(s.speaker, "settings.speaker") }?,
+            unsafe { opt_arg(s.instruction, "settings.instruction") }?,
+        ))
+    }
+
+    /// The engines other than Qwen3-TTS take neither setting, and refuse one before any file is read rather than
+    /// ignore it. Both are [`GGTTS_ERR_ARG`], an argument the engine does not take; an instruction carries the
+    /// library's own message for an engine that takes none.
+    fn refuse_for(&self, engine: &str) -> Result<(), Fail> {
+        if self.speaker.is_some() {
+            return Err((
+                GGTTS_ERR_ARG,
+                format!("a speaker is only supported by the qwen3-tts engine, not {engine}"),
+            ));
+        }
+        let req = ChunkRequest {
+            text: "",
+            seed: 0,
+            chunk: 0,
+            draw: 0,
+            instruction: self.instruction,
+        };
+        refuse_instruction(&req, engine).map_err(|e| (GGTTS_ERR_ARG, e.0))
+    }
+}
+
 /// The engine for a name. The fake engine needs no files.
 fn open_engine(
     engine: &str,
@@ -203,8 +311,12 @@ fn open_engine(
     codec: Option<&str>,
     voice: Option<&str>,
     threads: i32,
+    settings: Settings<'_>,
 ) -> Result<Held, Fail> {
     let threads = if threads <= 0 { 4 } else { threads };
+    if engine != "qwen3-tts" {
+        settings.refuse_for(engine)?;
+    }
     if engine == "fake" {
         return Ok(Held::checked(Box::new(ggtts_fake::FakeEngine::default())));
     }
@@ -214,6 +326,10 @@ fn open_engine(
             ggtts_fake::FakeEngine::default(),
         ))));
     }
+    #[cfg(feature = "plant")]
+    if engine == "panic-load" {
+        panic!("planted panic in load");
+    }
     if !matches!(engine, "qwen3-tts" | "kitten-tts-2") {
         return Err((GGTTS_ERR_ENGINE, format!("no engine named {engine:?}")));
     }
@@ -221,20 +337,55 @@ fn open_engine(
     check_gguf("model", model)?;
     let codec = codec.ok_or((GGTTS_ERR_ARG, format!("the {engine} engine needs a codec")))?;
     check_gguf("codec", codec)?;
-    load_real(engine, Path::new(model), Path::new(codec), voice, threads)
+    load_real(engine, Path::new(model), Path::new(codec), voice, threads, settings)
+}
+
+/// The Qwen3-TTS voice for the settings: the library's default voice, with the speaker given in place of its
+/// default speaker.
+#[cfg(feature = "ggml")]
+fn qwen_voice(settings: Settings<'_>) -> ggtts_qwen3_tts::engine::Voice {
+    let mut voice = ggtts_qwen3_tts::engine::Voice::default();
+    if let Some(speaker) = settings.speaker {
+        voice.speaker = speaker.to_string();
+    }
+    voice
+}
+
+/// The library's load error, as a binding caller reads it: its unknown-speaker message names the CLI flag, which a
+/// binding caller does not have.
+#[cfg(feature = "ggml")]
+fn qwen_load_error(e: ggtts_core::engine::EngineError) -> Fail {
+    let msg =
+        e.0.replace(". Choose one with --speaker", ". Choose one with the speaker setting");
+    (GGTTS_ERR_ENGINE, msg)
 }
 
 #[cfg(feature = "ggml")]
-fn load_real(engine: &str, model: &Path, codec: &Path, voice: Option<&str>, threads: i32) -> Result<Held, Fail> {
+fn load_real(
+    engine: &str,
+    model: &Path,
+    codec: &Path,
+    voice: Option<&str>,
+    threads: i32,
+    settings: Settings<'_>,
+) -> Result<Held, Fail> {
     let refused = |e: String| (GGTTS_ERR_ENGINE, e);
     match engine {
-        "qwen3-tts" => ggtts_qwen3_tts::engine::Qwen3Tts::load(model, codec, threads, Default::default())
-            // SAFETY: Qwen3-TTS is not `Send` to the compiler only for its raw ggml pointers (contexts, tensors,
-            // graphs, backend buffers), every one allocated by this engine and reachable only through it. It holds no
-            // `Rc` and no thread-local, and ggml's CPU backend keeps no per-thread state between graph runs, so the
-            // engine is sound to move whole and use from one thread at a time.
-            .map(|e| unsafe { Held::assume_send(Box::new(e)) })
-            .map_err(|e| refused(e.to_string())),
+        // The library checks both settings while loading, before any text is rendered: an instruction the checkpoint
+        // takes none of, then a speaker the model does not have (with the model's speakers in the message).
+        "qwen3-tts" => ggtts_qwen3_tts::engine::Qwen3Tts::load_for(
+            model,
+            codec,
+            threads,
+            qwen_voice(settings),
+            settings.instruction,
+        )
+        // SAFETY: Qwen3-TTS is not `Send` to the compiler only for its raw ggml pointers (contexts, tensors,
+        // graphs, backend buffers), every one allocated by this engine and reachable only through it. It holds no
+        // `Rc` and no thread-local, and ggml's CPU backend keeps no per-thread state between graph runs, so the
+        // engine is sound to move whole and use from one thread at a time.
+        .map(|e| unsafe { Held::assume_send(Box::new(e)) }.with_instruction(settings.instruction))
+        .map_err(qwen_load_error),
         _ => {
             let voice = voice.ok_or((GGTTS_ERR_ARG, "the kitten-tts-2 engine needs a voice".to_string()))?;
             ggtts_kitten::engine::KittenEngine::open(
@@ -255,7 +406,7 @@ fn load_real(engine: &str, model: &Path, codec: &Path, voice: Option<&str>, thre
 }
 
 #[cfg(not(feature = "ggml"))]
-fn load_real(engine: &str, _: &Path, _: &Path, _: Option<&str>, _: i32) -> Result<Held, Fail> {
+fn load_real(engine: &str, _: &Path, _: &Path, _: Option<&str>, _: i32, _: Settings<'_>) -> Result<Held, Fail> {
     Err((
         GGTTS_ERR_ENGINE,
         format!("this build has no {engine} engine (built without the ggml feature)"),
@@ -276,9 +427,12 @@ fn plan(engine: &dyn Engine, text: &str) -> Result<Vec<ggtts_core::text::Planned
     plan_story(engine.profile(), &paragraphs).map_err(|e| (GGTTS_ERR_ARG, e.to_string()))
 }
 
-fn options(engine: &dyn Engine, seed: u64) -> RenderOptions {
+/// The story options: the seed as the salt, and the instruction the engine was loaded with (`None` renders exactly as
+/// before instructions existed).
+fn options(engine: &dyn Engine, seed: u64, instruction: Option<&str>) -> RenderOptions {
     RenderOptions {
         seed_salt: seed.to_string(),
+        instruction: instruction.map(String::from),
         ..RenderOptions::for_profile(engine.profile())
     }
 }
@@ -305,24 +459,64 @@ pub unsafe extern "C" fn ggtts_load(
     threads: i32,
     handle: *mut u64,
 ) -> i32 {
-    guard(|| {
-        if handle.is_null() {
-            return Err((GGTTS_ERR_ARG, "handle is NULL".into()));
-        }
-        let e = open_engine(
-            unsafe { arg(engine, "engine") }?,
-            unsafe { opt_arg(model, "model") }?,
-            unsafe { opt_arg(codec, "codec") }?,
-            unsafe { opt_arg(voice, "voice") }?,
-            threads,
-        )?;
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        registry()
-            .get_or_insert_with(HashMap::new)
-            .insert(id, Arc::new(Mutex::new(e)));
-        unsafe { *handle = id };
-        Ok(())
+    guard(|| unsafe { load(engine, model, codec, voice, threads, Settings::default(), handle) })
+}
+
+/// [`ggtts_load`] with voice settings (C-ABI version 2). `settings` may be NULL, and a NULL or empty string in it is
+/// no setting: with neither set, the engine and its output are what `ggtts_load` gives. A setting is refused, never
+/// ignored: an unknown speaker is [`GGTTS_ERR_ENGINE`] with the model's speakers in the message; an instruction on a
+/// checkpoint that takes none (a Base checkpoint, or a `custom_voice` one below 1.7B) is `GGTTS_ERR_ENGINE` with the
+/// library's message; either setting on an engine other than `qwen3-tts` is [`GGTTS_ERR_ARG`]. Each refusal comes before
+/// any text is rendered, and no handle is written.
+///
+/// # Safety
+/// As [`ggtts_load`]; `settings` is NULL or points to a readable [`GgttsSettings`] whose `size` is set.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_load_with(
+    engine: *const c_char,
+    model: *const c_char,
+    codec: *const c_char,
+    voice: *const c_char,
+    threads: i32,
+    settings: *const GgttsSettings,
+    handle: *mut u64,
+) -> i32 {
+    guard(|| unsafe {
+        let settings = Settings::from_c(settings)?;
+        load(engine, model, codec, voice, threads, settings, handle)
     })
+}
+
+/// The body of both loads.
+///
+/// # Safety
+/// As [`ggtts_load`].
+unsafe fn load(
+    engine: *const c_char,
+    model: *const c_char,
+    codec: *const c_char,
+    voice: *const c_char,
+    threads: i32,
+    settings: Settings<'_>,
+    handle: *mut u64,
+) -> Result<(), Fail> {
+    if handle.is_null() {
+        return Err((GGTTS_ERR_ARG, "handle is NULL".into()));
+    }
+    let e = open_engine(
+        unsafe { arg(engine, "engine") }?,
+        unsafe { opt_arg(model, "model") }?,
+        unsafe { opt_arg(codec, "codec") }?,
+        unsafe { opt_arg(voice, "voice") }?,
+        threads,
+        settings,
+    )?;
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    registry()
+        .get_or_insert_with(HashMap::new)
+        .insert(id, Arc::new(Mutex::new(e)));
+    unsafe { *handle = id };
+    Ok(())
 }
 
 /// Render `text` to mono f32 PCM. Free the buffer with [`ggtts_pcm_free`].
@@ -343,9 +537,9 @@ pub unsafe extern "C" fn ggtts_render(
             return Err((GGTTS_ERR_ARG, "pcm, len and rate must not be NULL".into()));
         }
         let text = unsafe { arg(text, "text") }?;
-        let read = with_engine(handle, |e| {
+        let read = with_engine(handle, |e, instruction| {
             let chunks = plan(e, text)?;
-            let opts = options(e, seed);
+            let opts = options(e, seed, instruction);
             render_story(e, STORY, &chunks, &opts).map_err(render_error)
         })?;
         let boxed = read.samples.into_boxed_slice();
@@ -377,9 +571,9 @@ pub unsafe extern "C" fn ggtts_render_stream(
     guard(|| {
         let on_piece = on_piece.ok_or((GGTTS_ERR_ARG, "on_piece is NULL".to_string()))?;
         let text = unsafe { arg(text, "text") }?;
-        with_engine(handle, |e| {
+        with_engine(handle, |e, instruction| {
             let chunks = plan(e, text)?;
-            let opts = options(e, seed);
+            let opts = options(e, seed, instruction);
             let mut sink = |p: ggtts_core::pipeline::StreamPiece<'_>| {
                 if on_piece(user, p.samples.as_ptr(), p.samples.len(), p.sample_rate) == 0 {
                     Ok(())
@@ -531,5 +725,101 @@ mod chunk_input_tests {
         assert_eq!(callbacks, 0);
         assert_eq!(calls.load(Ordering::SeqCst), 0, "invalid input invoked generate");
         assert_eq!(ggtts_free(handle), GGTTS_OK);
+    }
+
+    /// The fake engine, recording each request's instruction and rendering it as none.
+    struct Recording {
+        inner: ggtts_fake::FakeEngine,
+        seen: Arc<Mutex<Vec<Option<String>>>>,
+    }
+
+    impl Engine for Recording {
+        fn info(&self) -> &ggtts_core::engine::EngineInfo {
+            self.inner.info()
+        }
+        fn profile(&self) -> &ggtts_core::profile::Profile {
+            self.inner.profile()
+        }
+        fn generate(
+            &mut self,
+            req: &ggtts_core::engine::ChunkRequest<'_>,
+        ) -> Result<ggtts_core::engine::Generated, ggtts_core::engine::EngineError> {
+            self.seen.lock().unwrap().push(req.instruction.map(String::from));
+            self.inner.generate(&ggtts_core::engine::ChunkRequest {
+                instruction: None,
+                ..*req
+            })
+        }
+        fn decode(
+            &mut self,
+            codes: &ggtts_core::engine::Codes,
+        ) -> Result<ggtts_core::engine::Pcm, ggtts_core::engine::EngineError> {
+            self.inner.decode(codes)
+        }
+    }
+
+    /// What every request of a render and a stream carries, on an engine held with `instruction`.
+    fn seen_with(instruction: Option<&str>) -> Vec<Option<String>> {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let engine = Recording {
+            inner: ggtts_fake::FakeEngine::default(),
+            seen: seen.clone(),
+        };
+        let handle = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        registry().get_or_insert_with(HashMap::new).insert(
+            handle,
+            Arc::new(Mutex::new(
+                Held::checked(Box::new(engine)).with_instruction(instruction),
+            )),
+        );
+        let text = std::ffi::CString::new("今日天氣好好，我哋去海邊行下。\n行完之後，去食飯。").unwrap();
+        let (mut pcm, mut len, mut rate) = (std::ptr::null_mut(), 0, 0);
+        assert_eq!(
+            unsafe { ggtts_render(handle, text.as_ptr(), 1, &mut pcm, &mut len, &mut rate) },
+            GGTTS_OK,
+            "{}",
+            last_error()
+        );
+        unsafe { ggtts_pcm_free(pcm, len) };
+        let mut pieces = 0usize;
+        assert_eq!(
+            unsafe {
+                ggtts_render_stream(
+                    handle,
+                    text.as_ptr(),
+                    1,
+                    Some(count),
+                    &mut pieces as *mut usize as *mut std::ffi::c_void,
+                )
+            },
+            GGTTS_OK,
+            "{}",
+            last_error()
+        );
+        assert_eq!(ggtts_free(handle), GGTTS_OK);
+        let seen = seen.lock().unwrap().clone();
+        assert!(seen.len() >= 4, "two chunks on each path: {seen:?}");
+        seen
+    }
+
+    /// The instruction an engine is loaded with reaches every request of its renders and streams; without one, none.
+    #[test]
+    fn the_loaded_instruction_reaches_every_request() {
+        let seen = seen_with(Some("Speak slowly."));
+        assert!(seen.iter().all(|i| i.as_deref() == Some("Speak slowly.")), "{seen:?}");
+        let seen = seen_with(None);
+        assert!(seen.iter().all(Option::is_none), "{seen:?}");
+    }
+
+    /// An empty string in the settings is no setting, so a caller passing `""` gets what `ggtts_load` gives.
+    #[test]
+    fn empty_settings_are_no_settings() {
+        let s = Settings::new(Some(""), Some(""));
+        assert_eq!((s.speaker, s.instruction), (None, None));
+        let s = Settings::new(Some("hk_voice_777"), Some("Speak slowly."));
+        assert_eq!(
+            (s.speaker, s.instruction),
+            (Some("hk_voice_777"), Some("Speak slowly."))
+        );
     }
 }

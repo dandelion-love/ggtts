@@ -45,7 +45,18 @@ new requirements. Internal refactors and test changes are not listed.
   `ChunkRequest::instruction` and `RenderOptions::instruction`. A story trace's `chunk_begin` records it as
   `instruction` when there is one; a strict `ggtts-trace/2` reader built against the older schema must allow that
   field. Code that builds a `ChunkRequest` must now set `instruction` (`None` for none). The C and Kotlin binding
-  does not carry an instruction yet.
+  carries it through `ggtts_load_with` (below).
+- **The C and Kotlin binding take a Qwen3-TTS speaker and style instruction.** The C-ABI is now version 2:
+  `GGTTS_ABI_VERSION` in `ggtts.h` and `ggtts_abi_version()` in the library. `ggtts_load_with` is `ggtts_load` plus
+  a `ggtts_settings` struct (`size`, `speaker`, `instruction`; start from `GGTTS_SETTINGS_INIT`), and in Kotlin
+  `Ggtts.load` takes `speaker` and `instruction` as nullable named parameters. NULL or empty is no setting, and the
+  output is then what `ggtts_load` gives, sample for sample. An unknown speaker (the message lists the model's
+  speakers) and an instruction on a checkpoint that takes none are refused while loading with `GGTTS_ERR_ENGINE`
+  (a `GgttsException` in Kotlin); either setting on another engine is `GGTTS_ERR_ARG`. The existing functions keep
+  their signatures and behaviour, and the five-parameter Kotlin `Ggtts.load` stays in the compiled class, so code
+  built against it runs without recompiling. Without a speaker the binding still uses `hk_cantonese_speaker`, so the
+  v0.0.5 talker (`hk_voice_343`, `hk_voice_777`) needs one; resolving the default model and its default speaker in
+  the binding is [#164](https://github.com/dandelion-love/ggtts/issues/164).
 - **A render with no model downloads the default one.** `ggtts-render --text "..." --out x.flac` with no `--model`
   renders with Qwen3-TTS on the talker and codec of `jmtl/hk-cantonese-cc0-qwen3-tts-GGUF` v0.0.5 (2.33 GB, pinned
   by commit and sha256) and the speaker `hk_voice_343`. The first run says what it will download, from where, how

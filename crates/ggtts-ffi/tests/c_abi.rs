@@ -166,6 +166,135 @@ fn a_freed_or_null_handle_is_an_error_never_a_crash() {
     assert_eq!(ggtts_free(h2), GGTTS_OK);
 }
 
+/// `ggtts_load_with` with `settings` NULL (`None`) or a struct of the given speaker and instruction.
+fn load_with(engine: &str, settings: Option<(Option<&str>, Option<&str>)>) -> (i32, u64) {
+    let e = c(engine);
+    let strings = settings.map(|(s, i)| (s.map(c), i.map(c)));
+    let ptr_of = |s: &Option<CString>| s.as_ref().map_or(ptr::null(), |s| s.as_ptr());
+    let st = strings.as_ref().map(|(s, i)| GgttsSettings {
+        size: std::mem::size_of::<GgttsSettings>(),
+        speaker: ptr_of(s),
+        instruction: ptr_of(i),
+    });
+    let mut h = 0u64;
+    let code = unsafe {
+        ggtts_load_with(
+            e.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            st.as_ref().map_or(ptr::null(), |s| s as *const GgttsSettings),
+            &mut h,
+        )
+    };
+    (code, h)
+}
+
+#[test]
+fn the_abi_version_is_2_in_the_library_and_the_header() {
+    assert_eq!(ggtts_abi_version(), 2);
+    assert_eq!(GGTTS_ABI_VERSION, 2);
+    let header = include_str!("../include/ggtts.h");
+    assert!(header.contains("#define GGTTS_ABI_VERSION 2\n"), "the header's version");
+    // The header's struct is the library's: three fields, size first.
+    assert!(
+        header.contains("typedef struct ggtts_settings {\n    size_t size;\n    const char *speaker;\n    const char *instruction;\n} ggtts_settings;"),
+        "the header's ggtts_settings"
+    );
+    assert_eq!(std::mem::size_of::<GgttsSettings>(), 3 * std::mem::size_of::<usize>());
+}
+
+/// AC3: a caller that sets neither speaker nor instruction gets today's output, sample for sample, whether it calls
+/// `ggtts_load`, or `ggtts_load_with` with NULL settings, NULL strings or empty strings (fresh engines, same seed).
+#[test]
+fn neither_setting_renders_exactly_as_ggtts_load() {
+    let (code, h) = load("fake", None, None);
+    assert_eq!(code, GGTTS_OK, "{}", last_error());
+    let today = render(h, TEXT).1;
+    assert_eq!(ggtts_free(h), GGTTS_OK);
+    assert!(!today.is_empty());
+    for settings in [None, Some((None, None)), Some((Some(""), Some("")))] {
+        let (code, h) = load_with("fake", settings);
+        assert_eq!(code, GGTTS_OK, "{settings:?}: {}", last_error());
+        let (code, pcm, _) = render(h, TEXT);
+        assert_eq!(code, GGTTS_OK, "{settings:?}: {}", last_error());
+        assert_eq!(pcm, today, "{settings:?}: the samples differ from ggtts_load's");
+        assert_eq!(ggtts_free(h), GGTTS_OK);
+    }
+}
+
+/// AC4 and the struct's own refusals: each a code and a message, no handle written, and the process goes on. A
+/// setting on an engine that does not take it is refused, never ignored (the instruction with the library's message);
+/// the Qwen3-TTS refusals of an unknown speaker and of an instruction on a Base checkpoint are in `qwen_settings.rs`.
+#[test]
+fn a_refused_setting_is_a_code_and_a_message_and_no_handle() {
+    let (code, h) = load_with("fake", Some((Some("hk_voice_777"), None)));
+    assert_eq!((code, h), (GGTTS_ERR_ARG, 0));
+    assert_eq!(
+        last_error(),
+        "a speaker is only supported by the qwen3-tts engine, not fake"
+    );
+
+    let (code, h) = load_with("fake", Some((None, Some("Speak slowly and softly."))));
+    assert_eq!((code, h), (GGTTS_ERR_ENGINE, 0));
+    assert!(
+        last_error().contains("the fake engine takes no style instruction"),
+        "{}",
+        last_error()
+    );
+
+    // A struct of another size (a caller built against another header) is refused, not misread.
+    let e = c("fake");
+    let wrong = GgttsSettings {
+        size: 8,
+        speaker: ptr::null(),
+        instruction: ptr::null(),
+    };
+    let mut h = 0u64;
+    let code = unsafe { ggtts_load_with(e.as_ptr(), ptr::null(), ptr::null(), ptr::null(), 0, &wrong, &mut h) };
+    assert_eq!((code, h), (GGTTS_ERR_ARG, 0));
+    assert!(last_error().starts_with("settings.size is 8;"), "{}", last_error());
+
+    // A speaker that is not UTF-8.
+    let bad = [0xffu8, 0xfe, 0];
+    let st = GgttsSettings {
+        size: std::mem::size_of::<GgttsSettings>(),
+        speaker: bad.as_ptr() as *const std::ffi::c_char,
+        instruction: ptr::null(),
+    };
+    let code = unsafe { ggtts_load_with(e.as_ptr(), ptr::null(), ptr::null(), ptr::null(), 0, &st, &mut h) };
+    assert_eq!((code, h), (GGTTS_ERR_ARG, 0));
+    assert_eq!(last_error(), "settings.speaker is not UTF-8");
+
+    // The engine still loads and renders after every refusal.
+    let (code, h) = load_with("fake", None);
+    assert_eq!(code, GGTTS_OK);
+    assert_eq!(render(h, TEXT).0, GGTTS_OK);
+    assert_eq!(ggtts_free(h), GGTTS_OK);
+}
+
+/// The new entry point keeps the boundary: a panic while loading, and one while rendering an engine it loaded, each
+/// come back as `GGTTS_ERR_PANIC` with the message, and the process goes on.
+#[cfg(feature = "plant")]
+#[test]
+fn a_panic_on_the_new_path_is_caught_at_the_boundary() {
+    let (code, h) = load_with("panic-load", Some((None, None)));
+    assert_eq!((code, h), (GGTTS_ERR_PANIC, 0));
+    assert!(last_error().contains("planted panic in load"), "{}", last_error());
+
+    let (code, h) = load_with("panic", Some((Some(""), Some(""))));
+    assert_eq!(code, GGTTS_OK, "{}", last_error());
+    assert_eq!(render(h, TEXT).0, GGTTS_ERR_PANIC);
+    assert!(last_error().contains("planted panic in generate"), "{}", last_error());
+    assert_eq!(render(h, TEXT).0, GGTTS_ERR_HANDLE);
+
+    let (code, ok) = load_with("fake", None);
+    assert_eq!(code, GGTTS_OK);
+    assert_eq!(render(ok, TEXT).0, GGTTS_OK);
+    assert_eq!(ggtts_free(ok), GGTTS_OK);
+}
+
 #[cfg(feature = "plant")]
 #[test]
 fn a_panic_inside_is_caught_at_the_boundary_and_the_process_goes_on() {

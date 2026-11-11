@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use ggtts_kitten::gguf::{Gguf, Value};
 
 const BIN: &str = env!("CARGO_BIN_EXE_ggtts-kitten-convert");
-const TOKENIZER: &str = r#"{"version":"1.0","model":{"type":"BPE","vocab":{},"merges":[]}}"#;
+const TOKENIZER: &str = r#"{"version":"1.0","model":{"type":"BPE","vocab":{},"merges":[]},"added_tokens":[]}"#;
 
 fn dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("ggtts-kitten-convert-cli-{}-{tag}", std::process::id()));
@@ -148,22 +148,7 @@ fn version_names_the_tag_the_ggtts_commit_and_the_ggml_pin() {
 #[test]
 fn a_gguf_without_a_tokenizer_is_refused_naming_the_shipped_converter() {
     let d = dir("old-gguf");
-    write_repo(&d, false);
-    let st = ggtts_kitten::safetensors::SafeTensors::open(&d.join("lm/model.safetensors")).unwrap();
-    let read = |p: &str| -> serde_json::Value { serde_json::from_slice(&std::fs::read(d.join(p)).unwrap()).unwrap() };
-    let lm = d.join("old.gguf");
-    ggtts_kitten::convert::convert(
-        &st,
-        &read("config.json"),
-        &read("lm/config.json"),
-        "tiny",
-        &lm,
-        ggtts_kitten::ternary::Rule::KITTEN,
-        true,
-        ggtts_kitten::ternary::Layout::Q4,
-        None,
-    )
-    .unwrap();
+    let lm = lm_gguf(&d, false);
     let e = ggtts_kitten::engine::KittenEngine::open(
         &lm,
         &d.join("absent-s3gen.gguf"),
@@ -179,4 +164,122 @@ fn a_gguf_without_a_tokenizer_is_refused_naming_the_shipped_converter() {
         "{e}"
     );
     std::fs::remove_dir_all(&d).unwrap();
+}
+
+/// A synthetic language model GGUF, with or without its tokenizer, written by the library converter.
+#[cfg(feature = "ggml")]
+fn lm_gguf(d: &Path, tokenizer: bool) -> PathBuf {
+    write_repo(d, false);
+    let st = ggtts_kitten::safetensors::SafeTensors::open(&d.join("lm/model.safetensors")).unwrap();
+    let read = |p: &str| -> serde_json::Value { serde_json::from_slice(&std::fs::read(d.join(p)).unwrap()).unwrap() };
+    let out = d.join(if tokenizer { "lm.gguf" } else { "old.gguf" });
+    ggtts_kitten::convert::convert(
+        &st,
+        &read("config.json"),
+        &read("lm/config.json"),
+        "tiny",
+        &out,
+        ggtts_kitten::ternary::Rule::KITTEN,
+        true,
+        ggtts_kitten::ternary::Layout::Q4,
+        tokenizer.then_some(TOKENIZER),
+    )
+    .unwrap();
+    out
+}
+
+/// An S3Gen GGUF with the right architecture and no tensors: enough to pass the identity check and nothing more.
+#[cfg(feature = "ggml")]
+fn empty_s3gen(d: &Path) -> PathBuf {
+    let out = d.join("s3gen.gguf");
+    let mut kv = std::collections::BTreeMap::new();
+    kv.insert(
+        "general.architecture".to_string(),
+        Value::Str(ggtts_kitten::s3convert::ARCH.into()),
+    );
+    ggtts_kitten::gguf::write(&out, &kv, &[]).unwrap();
+    out
+}
+
+#[cfg(feature = "ggml")]
+fn open_err(lm: &Path, s3: &Path, voice: &Path) -> String {
+    ggtts_kitten::engine::KittenEngine::open(lm, s3, voice, 1, ggtts_kitten::backend::Device::Cpu)
+        .err()
+        .expect("the engine opened")
+}
+
+#[cfg(feature = "ggml")]
+#[test]
+fn the_language_model_given_as_codec_is_named_with_the_command_that_makes_a_codec() {
+    let d = dir("lm-as-codec");
+    let lm = lm_gguf(&d, true);
+    let e = open_err(&lm, &lm, &d.join("voice.json"));
+    assert!(e.contains("(--codec): expected the Kitten S3Gen decoder GGUF"), "{e}");
+    assert!(
+        e.contains("found a Kitten-TTS 2 language model GGUF (that one is --model)"),
+        "{e}"
+    );
+    assert!(e.contains("ggtts-kitten-convert --s3gen"), "{e}");
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[cfg(feature = "ggml")]
+#[test]
+fn a_missing_voice_names_the_command_that_prepares_one() {
+    let d = dir("no-voice");
+    let lm = lm_gguf(&d, true);
+    let s3 = empty_s3gen(&d);
+    let e = open_err(&lm, &s3, &d.join("absent-voice.json"));
+    assert!(e.contains("absent-voice.json"), "{e}");
+    assert!(e.ends_with(ggtts_kitten::engine::PREPARE_HINT), "{e}");
+    std::fs::write(d.join("clip.json"), b"RIFF not json").unwrap();
+    let e = open_err(&lm, &s3, &d.join("clip.json"));
+    assert!(
+        e.contains("not a reference voice JSON") && e.contains("ggtts-kitten prepare"),
+        "{e}"
+    );
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[cfg(feature = "ggml")]
+#[test]
+fn prepare_refuses_the_language_model_and_a_decoder_without_conditioning_naming_the_converter() {
+    let d = dir("prepare");
+    let lm = lm_gguf(&d, true);
+    let s3 = empty_s3gen(&d);
+    let prepare = |s3gguf: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_ggtts-kitten"))
+            .args(["prepare", "--s3gguf", s3gguf.to_str().unwrap(), "--wav"])
+            .arg(d.join("absent.wav"))
+            .args(["--transcript", "words", "--out"])
+            .arg(d.join("voice.json"))
+            .output()
+            .unwrap()
+    };
+    let o = prepare(&lm);
+    assert_eq!(o.status.code(), Some(2));
+    let e = text(&o.stderr);
+    assert!(
+        e.contains("(--s3gguf): expected the Kitten S3Gen decoder GGUF, found a Kitten-TTS 2"),
+        "{e}"
+    );
+    assert!(e.contains("ggtts-kitten-convert --s3gen"), "{e}");
+    let e = text(&prepare(&s3).stderr);
+    assert!(
+        e.contains("lacks the S3 tokenizer, which preparing a voice needs"),
+        "{e}"
+    );
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[cfg(feature = "ggml")]
+#[test]
+fn ggtts_kitten_help_and_version() {
+    let bin = env!("CARGO_BIN_EXE_ggtts-kitten");
+    let o = Command::new(bin).arg("--help").output().unwrap();
+    assert!(o.status.success());
+    assert!(text(&o.stdout).contains("ggtts-kitten prepare --s3gguf"));
+    let o = Command::new(bin).arg("--version").output().unwrap();
+    let lines: Vec<String> = text(&o.stdout).lines().map(str::to_string).collect();
+    assert_eq!(lines, ggtts_core::version_lines("ggtts-kitten").to_vec());
 }

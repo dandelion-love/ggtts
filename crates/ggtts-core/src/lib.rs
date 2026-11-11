@@ -91,12 +91,17 @@ mod tests {
     }
 
     #[test]
-    fn ggtts_commit_is_a_full_sha() {
-        // Every build this test runs in is a git checkout or a GitHub Actions run, so build.rs found a commit.
-        assert_eq!(SOURCE_COMMIT.len(), 40, "GGTTS_COMMIT is {SOURCE_COMMIT:?}");
-        assert!(SOURCE_COMMIT
-            .bytes()
-            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+    fn ggtts_commit_is_a_full_sha_or_unknown() {
+        // build.rs writes `unknown` for a build with neither GITHUB_SHA nor git (a source tarball); a release build
+        // refuses that, and the release smoke compares the printed commit with BUILDINFO's.
+        assert!(
+            SOURCE_COMMIT == "unknown"
+                || (SOURCE_COMMIT.len() == 40
+                    && SOURCE_COMMIT
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())),
+            "GGTTS_COMMIT is {SOURCE_COMMIT:?}"
+        );
         assert!(REPOSITORY.starts_with("https://"), "{REPOSITORY}");
     }
 }

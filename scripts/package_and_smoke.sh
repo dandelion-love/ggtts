@@ -58,6 +58,8 @@ pack() {
     # Refuse to pack when a crate linked into the binaries, or ggml, has no licence notice.
     python3 "$root/scripts/third_party_notices.py" --check >&2 || { say "the licence notices are incomplete"; return 1; }
     cp "$root/LICENSE" "$root/README.md" "$root/THIRD_PARTY.md" "$dir/"
+    # The Kitten engine's guide, with the model's pass-through terms, which the archive README points to.
+    cp "$root/crates/ggtts-kitten/README.md" "$dir/README-kitten.md"
     cp -r "$root/licenses" "$dir/"
     cp -r "$root/instruments/python/ggtts_instrument" "$dir/instruments/python/"
     cp -r "$root/instruments/templates" "$root/instruments/examples" "$root/instruments/vendor" "$root/instruments/README.md" \
@@ -147,7 +149,9 @@ smoke() {
         [ -f "$dir/instruments/vendor/fft.js-4.0.4/fft.js" ] || \
         { say "missing bundled pitch detector or FFT in $path"; return 1; }
     local notice
-    for notice in LICENSE THIRD_PARTY.md licenses/Apache-2.0.txt licenses/ggml-LICENSE.txt licenses/rust-crates.txt \
+    for notice in LICENSE THIRD_PARTY.md README-kitten.md licenses/Apache-2.0.txt licenses/ggml-LICENSE.txt \
+        licenses/rust-crates.txt licenses/chatterbox-LICENSE.txt licenses/pyannote-audio-LICENSE.txt \
+        licenses/asteroid-filterbanks-LICENSE.txt \
         instruments/vendor/fft.js-4.0.4/LICENSE \
         instruments/vendor/pitchy-4.1.0/LICENSE instruments/examples/python/loudness-ends/LICENSE-APACHE-2.0; do
         [ -s "$dir/$notice" ] || { say "missing licence notice in $path: $notice"; return 1; }

@@ -77,8 +77,10 @@ weights, a prepared Kitten voice, or `ffplay`. The examples were checked on Linu
 binary pipelines rather than a shell that converts piped output to text.
 On Linux/WSL, use the CUDA archive and `DEVICE=cuda` for a supported NVIDIA GPU with the CUDA runtime installed;
 set `DEVICE=cpu` for a CPU archive. On Windows use the CPU archive and its `ggtts-render.exe`.
-RC 7's Linux CPU archive requires glibc 2.39 and does not start on Ubuntu 22.04; see
-[#85](https://github.com/dandelion-love/ggtts/issues/85). The Linux CUDA archive was tested on Ubuntu 22.04;
+Both Linux archives need glibc 2.35 or newer (Ubuntu 22.04 or later), with the matching libstdc++, libgcc_s and
+libgomp (see [Building](#building)). A minimal system (a slim container image, for one) may lack libgomp: install
+the `libgomp1` package (`apt-get install libgomp1` on Debian and Ubuntu). The CPU archives of v0.1.0-rc.7 and rc.8 needed glibc 2.39 and did not
+start on Ubuntu 22.04 ([#85](https://github.com/dandelion-love/ggtts/issues/85)). The Linux CUDA archive was tested on Ubuntu 22.04;
 it needs the NVIDIA driver and CUDA runtime libraries even when its CPU backend is selected.
 
 `--engine` chooses the model architecture. `--model` is its language-model GGUF and `--codec` is its **audio
@@ -88,8 +90,10 @@ and codec used by this project are in [jmtl/hk-cantonese-cc0-qwen3-tts-GGUF](htt
 and described in the [Qwen README](https://github.com/dandelion-love/ggtts/blob/main/crates/ggtts-qwen3-tts/README.md).
 No ggtts-ready Kitten files are published: make them once from the upstream model with the archive's own
 `ggtts-kitten-convert` and `ggtts-kitten`, as the [Kitten README](https://github.com/dandelion-love/ggtts/blob/main/crates/ggtts-kitten/README.md#convert-prepare-render)
-shows. A Kitten GGUF converted before the tokenizer was embedded is refused; convert it again the same way. The
-models' own licences apply.
+shows (an archive carries it as `README-kitten.md`). A Kitten GGUF converted before the tokenizer was embedded is
+refused; convert it again the same way. The models' own licences apply: Kitten-TTS 2's terms, which pass through
+to its GGUFs and to audio rendered with it (its outputs may not be used to train other models), are summarised in
+`README-kitten.md`.
 
 For a Qwen model with named speakers, select the name in its model card with `--speaker NAME`. The Cantonese
 v0.0.5 model uses `--speaker hk_voice_343` (or `hk_voice_777` for its other voice). Without the option, ggtts
@@ -224,6 +228,14 @@ build the CUDA archive; the promotion PR into `main` builds and smokes it withou
 with a `BUILDINFO.json` and a build provenance attestation (`gh attestation verify <file> -R dandelion-love/ggtts`).
 
 The `x86_64` CPU release archives require AVX2, FMA, F16C and BMI2 CPU support, plus operating-system support for AVX state. They do not require AVX-512. Other x86-64 CPUs are not covered by this release baseline.
+
+The Linux archives' floor is Ubuntu 22.04: glibc 2.35, and the GCC 12 runtime libraries it ships (libstdc++ up to
+`GLIBCXX_3.4.30` and `CXXABI_1.3.13`, libgcc_s `GCC_12.0.0`, libgomp `GOMP_5.1`/`OMP_5.1`). They link these
+dynamically and bundle none of them. The CPU archive is built on GitHub's `ubuntu-22.04` runner and the CUDA archive
+in an Ubuntu 22.04 container, because a binary needs the glibc it was linked against or newer.
+`scripts/check_glibc_floor.py` reads the symbol versions each binary of the CPU archive needs
+(`readelf --version-info`) and fails the release, and CI's release build, when any is above the floor. Older
+systems (Ubuntu 20.04, glibc 2.31) are not supported.
 
 Linux releases also include a separate `x86_64-linux-cuda` archive. It includes CUDA code for NVIDIA compute
 capabilities 8.6 and 8.9; other GPU architectures are not covered by the tested release. It requires an NVIDIA

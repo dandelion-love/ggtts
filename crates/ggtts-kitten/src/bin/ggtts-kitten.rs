@@ -923,8 +923,10 @@ fn prepare_cmd(a: &Args) -> Result<bool, String> {
     if transcript.is_empty() {
         return Err("--transcript must not be empty".into());
     }
+    let s3path = Path::new(a.get("s3gguf")?);
+    let gguf = Gguf::open(s3path).map_err(|e| format!("{} (--s3gguf): {e}", s3path.display()))?;
+    ggtts_kitten::s3convert::require(&gguf, s3path, "--s3gguf", true)?;
     let (samples, sr) = ggtts_kitten::refdsp::read_wav(&wav)?;
-    let gguf = Gguf::open(Path::new(a.get("s3gguf")?))?;
     let nets = CondNets::load(&gguf, be.clone())?;
     let t0 = Instant::now();
     let p = nets.prepare(&samples, sr)?;

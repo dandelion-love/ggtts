@@ -63,7 +63,7 @@ pub const PREPARE_HINT: &str = "make a reference voice with ggtts-kitten, which 
 impl Reference {
     pub fn open(path: &Path) -> Result<Self, String> {
         let bad = |why: String| format!("{}: {why}; {PREPARE_HINT}", path.display());
-        let s = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let s = std::fs::read(path).map_err(|e| bad(e.to_string()))?;
         let j: serde_json::Value =
             serde_json::from_slice(&s).map_err(|e| bad(format!("not a reference voice JSON ({e})")))?;
         Ok(Reference {
@@ -273,14 +273,22 @@ impl KittenEngine {
                 .and_then(Value::as_str)
                 .ok_or(NO_TOKENIZER)?;
         let tok = Tokenizer::from_json(json)?;
+        // Every input is checked for what it is before the slow loads, so a wrong file is named at once. The decoder
+        // GGUF is read twice rather than held beside the language model's while that loads.
+        let open_s3 = || {
+            let s3 = crate::gguf::Gguf::open(s3gen).map_err(|e| format!("{} (--codec): {e}", s3gen.display()))?;
+            crate::s3convert::require(&s3, s3gen, "--codec", false)?;
+            Ok::<_, String>(s3)
+        };
+        drop(open_s3()?);
+        let reference = Reference::open(reference)?;
         let model = Model::load(&g, crate::model::Weights::Ternary, be.clone())?;
         drop(g);
-        let s3 = crate::gguf::Gguf::open(s3gen).map_err(|e| format!("{} (--codec): {e}", s3gen.display()))?;
+        let s3 = open_s3()?;
         let decoder = Decoder::Ggml(Box::new(GgmlDecoder {
             flow: Flow::load(&s3, be.clone())?,
             hift: Hift::load(&s3, be.clone())?,
         }));
-        let reference = Reference::open(reference)?;
         KittenEngine::new(model, tok, reference, decoder, threads)
     }
 }

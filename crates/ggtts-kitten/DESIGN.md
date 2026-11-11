@@ -14,7 +14,7 @@ is corrected in place with the date, never silently.
 
 | Source | Pin | Licence | Used for |
 |---|---|---|---|
-| [KittenML/kitten-tts-2-cpp](https://github.com/KittenML/kitten-tts-2-cpp) | `2b9912e72245f5597c664d2be44a6e7ba0a3f293` | MIT | the C++ reference: prompt, sampler, TQ2_1, export rules |
+| [KittenML/kitten-tts-2-cpp](https://github.com/KittenML/kitten-tts-2-cpp) | `2b9912e72245f5597c664d2be44a6e7ba0a3f293` | Apache-2.0 (`tools/kitten-tts/LICENSE-KITTENTTS`; the repository root is llama.cpp's MIT) | the C++ reference: prompt, sampler, TQ2_1, export rules |
 | KittenML/kitten-tts-2 (Hugging Face) | `c93cb7c271baa51d9ae8204d5277988906f235a2` | Stellon Labs Community License | the weights, config, tokenizer, voices |
 | `kittenml` Python package | 0.9.7 | Apache-2.0 | the PyTorch path the parity checks measure against |
 | ResembleAI/chatterbox-turbo (Hugging Face) | `749d1c1a46eb10492095d68fbcf55691ccf137cd` | MIT | S3Gen, the decoder (`s3gen_meanflow.safetensors`) |

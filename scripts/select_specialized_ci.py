@@ -50,6 +50,7 @@ JOB_MAP = {
 GGML_GATED_CRATES = ("crates/ggtts-kitten/", "crates/ggtts-qwen3-tts/")
 GGML_GATED_FILES = {
     "crates/ggtts-cli/src/bin/ggtts-render.rs",
+    "crates/ggtts-cli/tests/kitten_refusals.rs",
     "crates/ggtts-cli/tests/no_change_real.rs",
     "crates/ggtts-cli/tests/version_engines.rs",
 }
@@ -243,6 +244,9 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
             selected.add("package")
         if path == "scripts/buildinfo_engines.sh":
             selected.update(("ggml", "release"))
+        if path == "scripts/check_glibc_floor.py":
+            # The release build runs it on the real binaries; its tests run in the selection job on every run.
+            selected.add("release")
         if path in (".github/workflows/release.yml", "scripts/package_cuda_release.sh"):
             selected.update(("package", "release"))
     return selected

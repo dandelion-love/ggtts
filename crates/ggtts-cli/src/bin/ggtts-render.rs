@@ -932,16 +932,24 @@ fn main() -> ExitCode {
             println!("{INSTRUMENTS_HELP}");
             ExitCode::SUCCESS
         }
-        Some(_) => match parse(&args).and_then(|a| render(a, log)) {
-            Ok(code) => ExitCode::from(code),
-            Err(e) => {
-                log.stderr(LogLevel::Error, "error", "command_failed", format_args!("{e}"));
-                if log.format == LogFormat::Text {
-                    eprintln!("{USAGE}");
+        Some(_) => {
+            // The usage helps after a command line that did not parse; after a refused model, voice or render it
+            // only buries the reason.
+            let (result, bad_arguments) = match parse(&args) {
+                Ok(a) => (render(a, log), false),
+                Err(e) => (Err(e), true),
+            };
+            match result {
+                Ok(code) => ExitCode::from(code),
+                Err(e) => {
+                    log.stderr(LogLevel::Error, "error", "command_failed", format_args!("{e}"));
+                    if bad_arguments && log.format == LogFormat::Text {
+                        eprintln!("{USAGE}");
+                    }
+                    ExitCode::from(ggtts_instruments::runner::EXIT_RENDER_FAILED)
                 }
-                ExitCode::from(ggtts_instruments::runner::EXIT_RENDER_FAILED)
             }
-        },
+        }
     }
 }
 

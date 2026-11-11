@@ -33,6 +33,8 @@ def main(directory, tag):
         exe = directory / (name + ".exe")
         if not exe.is_file():
             exe = directory / name
+        if not exe.is_file():
+            raise ValueError(f"{name} is listed in BUILDINFO binaries or required, and is not in {directory}")
         output = subprocess.run([str(exe), "--version"], check=True, capture_output=True, text=True)
         lines = output.stdout.splitlines()
         first = lines[0] if lines else ""

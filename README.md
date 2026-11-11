@@ -2,7 +2,8 @@
 An instrumented text-to-speech engine on ggml, written in Rust: one engine per model architecture, a pluggable compute stack, and token-exact parity tests
 
 > **Status: release candidate.** Qwen3-TTS and Kitten-TTS 2 render with ggml on CPU and, in the Linux CUDA build,
-> on supported NVIDIA GPUs. Release archives include `ggtts-render` and `ggtts-measure`; model files are separate.
+> on supported NVIDIA GPUs. Release archives include `ggtts-render`, `ggtts-measure` and the C library with
+> `ggtts.h`; model files are separate.
 
 ## What it is
 
@@ -56,6 +57,54 @@ refused so report files cannot overwrite an input through a path, symlink or har
 The release archives ship all four. None needs Python. Every binary's `--version` prints its release tag, the ggtts
 commit it was built from (as in the archive's `BUILDINFO.json`) and the ggml pin; `ggtts-render --version` also
 lists the included engines and backends.
+
+### The C library: `lib/` and `include/ggtts.h`
+
+Every release archive also ships ggtts behind its C ABI, for programs that render without running `ggtts-render`:
+
+| Archive | Library, in `lib/` | Header |
+|---|---|---|
+| Linux CPU and Linux CUDA | `libggtts_ffi.so` | `include/ggtts.h` |
+| Windows | `ggtts_ffi.dll`, and `ggtts_ffi.dll.lib` (the MSVC import library you link against) | `include/ggtts.h` |
+
+The library carries the Qwen3-TTS, Kitten-TTS 2 and fake engines and renders on the CPU backend. That is true in
+the CUDA archive too: that archive ships the CPU build of the library, which loads without the NVIDIA driver or the
+CUDA runtime, so it refuses the C ABI's `device = "cuda"` setting (version 3) with `GGTTS_ERR_ENGINE`. A library
+that renders on the GPU is built from source with `cargo build --release -p ggtts-ffi --features cuda`. With engine
+`qwen3-tts` and no model path, the library loads the same default model as `ggtts-render`, from the same cache; it
+downloads it only when the caller allows (`allow_download`). `BUILDINFO.json` lists the files under `"libraries"`. The
+functions, codes and threading rules are in the header's comments and in
+[docs/android/binding-api.md](docs/android/binding-api.md). The header's `GGTTS_ABI_VERSION` and the library's
+`ggtts_abi_version()` say which functions exist; check one against the other before calling a function newer than
+version 1. The library exports the C ABI only, not the JNI entry points the Kotlin binding calls; build those from
+source with `--features jni` ([scripts/kotlin_binding_test.sh](scripts/kotlin_binding_test.sh) shows how).
+
+On Linux, link against the archive's `lib/` and tell the loader where it is. The library has no soname, so either
+keep the rpath to the archive as below, or copy `libggtts_ffi.so` beside your program and link with
+`-Wl,-rpath,'$ORIGIN'`:
+
+```sh
+GGTTS=/path/to/the/unpacked/archive
+cc -I"$GGTTS/include" app.c -L"$GGTTS/lib" -lggtts_ffi -Wl,-rpath,"$GGTTS/lib" -o app
+```
+
+It needs what the Linux binaries need: glibc 2.35 or newer, libstdc++, libgcc_s and libgomp (install `libgomp1`
+on a minimal system; see [Render and listen](#render-and-listen-qwen-and-kitten)).
+
+On Windows, link the import library and put `ggtts_ffi.dll` beside your `.exe` (or `lib\` on `PATH`) when it runs:
+
+```bat
+cl /I %GGTTS%\include app.c %GGTTS%\lib\ggtts_ffi.dll.lib
+rem or, with LLVM: clang -I %GGTTS%\include app.c %GGTTS%\lib\ggtts_ffi.dll.lib -o app.exe
+```
+
+The DLL, like the archive's `.exe` files, needs the Microsoft Visual C++ Redistributable for x64 (`VCRUNTIME140`,
+`VCRUNTIME140_1`, `MSVCP140`, and `VCOMP140` for OpenMP), which the archive does not include; it depends on no other
+DLL that Windows lacks. MinGW is not tested.
+
+The release smoke builds a small C program ([scripts/ffi_smoke.c](scripts/ffi_smoke.c)) against each archive's
+header and library, checks that `ggtts_abi_version()` equals `GGTTS_ABI_VERSION`, and renders a line on the fake
+engine through it.
 
 ### Streaming: which stream
 
@@ -148,13 +197,27 @@ and `ffplay` from FFmpeg (on Ubuntu/WSL,
 install the `ffmpeg` package). Replace the paths below with your own files. Releases do **not** include model
 weights, a prepared Kitten voice, or `ffplay`. The examples were checked on Linux/WSL; use a Bash shell for the
 binary pipelines rather than a shell that converts piped output to text.
-On Linux/WSL, use the CUDA archive and `DEVICE=cuda` for a supported NVIDIA GPU with the CUDA runtime installed;
-set `DEVICE=cpu` for a CPU archive. On Windows use the CPU archive and its `ggtts-render.exe`.
-Both Linux archives need glibc 2.35 or newer (Ubuntu 22.04 or later), with the matching libstdc++, libgcc_s and
-libgomp (see [Building](#building)). A minimal system (a slim container image, for one) may lack libgomp: install
-the `libgomp1` package (`apt-get install libgomp1` on Debian and Ubuntu). The CPU archives of v0.1.0-rc.7 and rc.8 needed glibc 2.39 and did not
-start on Ubuntu 22.04 ([#85](https://github.com/dandelion-love/ggtts/issues/85)). The Linux CUDA archive was tested on Ubuntu 22.04;
-it needs the NVIDIA driver and CUDA runtime libraries even when its CPU backend is selected.
+#### Which archive to download
+
+Each release has three archives, named `ggtts-<tag>-<platform>-ggml-<ggml pin>`. All three need an x86-64 CPU with
+AVX2, FMA, F16C and BMI2 (AVX-512 is not needed).
+
+| Your machine | Archive | `--device` | What the machine must have |
+|---|---|---|---|
+| Linux, NVIDIA GPU of compute capability 8.6 or 8.9 (RTX 30xx, RTX 40xx) | `x86_64-linux-cuda` (`.tar.gz`) | `cuda`, or `cpu` | glibc 2.35 or newer (Ubuntu 22.04 or later), libgomp, **the NVIDIA driver and the CUDA 12.6 runtime and cuBLAS libraries**, findable by the dynamic loader. The libraries are not in the archive, and the binaries need them to start **even with `--device cpu`**. |
+| Linux, any other machine (no NVIDIA GPU, another GPU, or no CUDA runtime installed) | `x86_64-linux-cpu` (`.tar.gz`) | `cpu` | glibc 2.35 or newer (Ubuntu 22.04 or later), libgomp. No driver or CUDA. |
+| Windows | `x86_64-windows-cpu` (`.zip`) | `cpu` | No GPU or CUDA: no CUDA archive is released for Windows. |
+
+Both Linux archives link glibc, libstdc++, libgcc_s and libgomp dynamically (see [Building](#building)). A minimal
+system (a slim container image, for one) may lack libgomp: install the `libgomp1` package (`apt-get install libgomp1`
+on Debian and Ubuntu). The CPU archives of v0.1.0-rc.7 and rc.8 needed glibc 2.39 and did not start on Ubuntu 22.04
+([#85](https://github.com/dandelion-love/ggtts/issues/85)). The Linux CUDA archive was tested on Ubuntu 22.04.
+In the examples below, set `DEVICE=cuda` with the CUDA archive and `DEVICE=cpu` with a CPU archive; on Windows the
+binary is `ggtts-render.exe`.
+
+The archives do not give byte-identical audio for the same model, text and seed: see
+[How parity is tested](#how-parity-is-tested). A Kitten model in the `TQ1_0` layout differs between the CPU and
+CUDA by more than that, for a known reason ([The Kitten-TTS 2 engine](#the-kitten-tts-2-engine)).
 
 `--engine` chooses the model architecture. `--model` is its language-model GGUF and `--codec` is its **audio
 decoder GGUF**, not an output file format or an audio encoder selector. Qwen needs the talker and its matching
@@ -274,11 +337,48 @@ stream receives that line only after the engine has generated and decoded it. `-
 the story hold at the cost of potentially uneven loudness. The stream formats are WAV and s16le; FLAC is the
 completed-file format. There is no native MP3, AAC or Opus encoder selection in `ggtts-render`.
 
+## Python
+
+`crates/ggtts-py` is the Python binding: `import ggtts`, with the engines and settings of the C-ABI's
+`ggtts_load_with` (Qwen3-TTS with a speaker and a style instruction, Kitten-TTS 2). It is not on PyPI; build the
+wheel from a checkout (Rust, Python 3.9 or later, and for the engines CMake and a C++ compiler):
+
+```sh
+pip install maturin
+cd crates/ggtts-py
+maturin build --release --features python,pyo3/extension-module,ggml   # Windows: bindgen in place of ggml (needs libclang)
+pip install target/wheels/ggtts-*.whl
+```
+
+```python
+import ggtts
+
+with ggtts.load() as tts:                      # Qwen3-TTS and its default model, downloaded once into the cache
+    audio = tts.render("今日天氣好好，我哋去海邊行下。")
+    audio.write_flac("out.flac")               # 16-bit mono FLAC; the suffix is forced to .flac
+    samples, rate = audio.samples, audio.sample_rate   # float32: a numpy array when numpy is installed
+
+    for chunk in tts.stream("第一段。\n第二段。"):    # the chunks in order, as each is ready; break stops it
+        ...
+
+tts = ggtts.load(model="talker.gguf", codec="codec.gguf", speaker="hk_voice_777",
+                 instruction="Speak slowly and softly.", offline=True)
+```
+
+`ggtts.load(engine="qwen3-tts", model=None, codec=None, voice=None, speaker=None, instruction=None, device="cpu",
+threads=None, offline=False, progress=None)`. With no model given, Qwen3-TTS loads its default model files (above)
+from the cache, downloading them first unless `offline=True`; `progress` receives the download messages, which
+otherwise go to stderr. A setting the engine does not take is refused, never ignored. Every error is a
+`ggtts.GgttsError` with `code` (`ggtts.ERR_ARG`, `ERR_ENGINE`, `ERR_HANDLE`, `ERR_BUSY`, `ERR_PANIC`: the C-ABI's
+codes) and `message`; a panic inside ggtts is a `GgttsError` with `ERR_PANIC`, never an unwind into Python. The GIL is
+released while an engine loads and renders, so other threads run. A render at a seed (`seed=`, default 20260905) is
+the C-ABI's render at that seed. Without the `ggml` feature only the `fake` test engine loads.
+
 ## How parity is tested
 
 The tests compare outputs, not impressions. They form a ladder:
 
-1. **Codec tokens are identical.** For the same GGUF, text, seed and hardware class, the ggml backend must produce
+1. **Codec tokens are identical.** For the same GGUF, text, seed and platform, the ggml backend must produce
    exactly the tokens a reference runtime produced. A mismatch reports the first chunk, frame and codebook that
    differ. A fixture recorded on a different model, ggml commit or hardware class is refused rather than compared.
 2. **Decoder audio is identical** for identical tokens, or within a tolerance that is stated and justified where a
@@ -291,6 +391,18 @@ The tests compare outputs, not impressions. They form a ladder:
 
 The reference runtime is [qwen3-tts.cpp](https://github.com/Danmoreng/qwen3-tts.cpp) (MIT), which builds on ggml
 commit `af97976` (v0.16.0+7). ggtts pins the same commit, because identical tokens need identical kernels.
+
+**A platform is the hardware class, the operating system and the compiler, not the hardware class alone.** The
+same release, model, text and seed rendered by the Windows and the Linux CPU archives are not byte-identical. In
+the v0.1.0-rc.10 release smoke, one Qwen render came out at 62 frames on Windows and 65 on Linux: the per-step stop
+probability differed by about 1e-10, and Kitten's text embedding by up to 5e-8. The two archives are built by
+different compilers (MSVC on Windows, GCC on Linux), which vectorize and order floating-point sums differently, and
+sampling can turn a difference that small into a different token, after which the rest of the render differs. A
+render is reproducible byte for byte on the platform that made it; across platforms, compare distributions.
+
+**A Kitten `TQ1_0` model differs between the CPU and CUDA by design**, by more than that rounding: the CPU's packed
+kernel rounds the activations to 8 bits before each ternary matrix product, and CUDA does not. See
+[The Kitten-TTS 2 engine](#the-kitten-tts-2-engine).
 
 Fixture text in this repository is written by a language model for the purpose. Fixtures hold text, seeds, token ids
 and hashes, never audio.
@@ -350,6 +462,17 @@ ternary weights survive conversion exactly; LM logits are within stated bars of 
 is at 89 dB SNR with recorded noise. It is `exact` against itself: the same inputs and seed give a byte-identical
 FLAC. What it needs, how to convert and render, and the measurements: [`crates/ggtts-kitten/README.md`](crates/ggtts-kitten/README.md)
 and [`DESIGN.md`](crates/ggtts-kitten/DESIGN.md).
+
+**The same `TQ1_0` model and seed give different audio on the CPU and on CUDA**
+([#152](https://github.com/dandelion-love/ggtts/issues/152)). A model in the experimental `TQ1_0` layout
+([docs/tq1-cpu.md](docs/tq1-cpu.md)) is run packed on the CPU. ggml's CPU kernel for it
+(`ggml_vec_dot_tq1_0_q8_K`) reads the ternary weights exactly but first rounds the activations to Q8_K: 8-bit
+integers with one scale per block of 256 values. On CUDA the same weights are held as exact f16 and the activations
+stay in floating point. Measured on one model against the float reading of the same file, the CPU's logits reach a
+minimum cosine of 0.99983, below the ternary parity bar of 0.9999, and on 45 lines the sampled token sequences part
+after a median of 15 tokens, so the two renders are different speech of the same text. Speech-recognition error
+rates on those 45 lines did not differ measurably (the paired difference's 95% interval includes zero, and is wide
+enough that about five points either way is not excluded), and nobody has compared them by ear. `ggtts-render` has no option to run a `TQ1_0` model on the CPU with float activations.
 
 **The model's licence is not this repository's.** Kitten-TTS 2's weights are under the Stellon Labs Community
 License, and their outputs, including audio rendered here, must not be used to train any other model. No weights,

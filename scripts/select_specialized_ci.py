@@ -14,7 +14,7 @@ try:
 except ImportError:
     tomllib = None  # Without a TOML parser the full matrix is mandatory.
 
-JOBS = ("package", "binding", "android", "release", "ggml")
+JOBS = ("package", "binding", "android", "release", "ggml", "python")
 WORKFLOW = ".github/workflows/ci.yml"
 CORE_MANIFEST = "crates/ggtts-core/Cargo.toml"
 CLI_MANIFEST = "crates/ggtts-cli/Cargo.toml"
@@ -41,7 +41,7 @@ JOB_MAP = {
     # cuda-compile never runs on an ordinary PR (cuda_decision below), so an edit to it selects nothing here; the
     # push to rc that lands a workflow edit runs it.
     "cuda-compile": set(), "specialized-selection": set(JOBS),
-    "check": set(), "build-test": set(), "planted-ceiling": set(),
+    "check": set(), "build-test": set(), "planted-ceiling": set(), "python": {"python"},
 }
 
 # Where `feature = "ggml"` gates code: the default build compiles none of it, so only the ggml job runs its tests.
@@ -55,6 +55,21 @@ GGML_GATED_FILES = {
     "crates/ggtts-cli/tests/no_change_real.rs",
     "crates/ggtts-cli/tests/version_engines.rs",
 }
+
+# The Python binding (crates/ggtts-py) is its own workspace, built and tested by the python job only, which compiles
+# its ggml-gated code on Linux. It links these crates (ggtts-ffi only for a test that holds the error codes equal), so a
+# change to their source or manifest also runs it. Their own tests do not reach the binding.
+PYTHON_CRATE = "crates/ggtts-py/"
+PYTHON_ENGINE_CRATES = ("crates/ggtts-core/", "crates/ggtts-fake/", "crates/ggtts-qwen3-tts/", "crates/ggtts-kitten/",
+                        "crates/ggtts-ggml-sys/", "crates/ggtts-models/", "crates/ggtts-ffi/")
+
+
+def python_path(path):
+    """A path whose change can break the Python binding's build or behaviour."""
+    if path.startswith(PYTHON_CRATE):
+        return True
+    return path.startswith(PYTHON_ENGINE_CRATES) and "/tests/" not in path and "/benches/" not in path
+
 
 # Generic measurement/reporting paths are compiled and tested on both CPU hosts for every PR.
 # CPU release, Android and binding builds run on the rc-to-main promotion.
@@ -212,6 +227,10 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
             continue
         if path in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".gitmodules"):
             return set(JOBS)
+        if python_path(path):
+            selected.add("python")
+            if path.startswith(PYTHON_CRATE):
+                continue
         if path.startswith(GGML_GATED_CRATES) or path in GGML_GATED_FILES:
             # Code behind `feature = "ggml"` is compiled and tested only by the ggml job.
             selected.add("ggml")
@@ -233,6 +252,10 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
             if path.startswith(("crates/ggtts-ggml-sys/", "crates/ggtts-ffi/")):
                 # Direct changes to native build or bindings need their targeted checks.
                 selected.update(("binding", "android", "ggml"))
+                if path.startswith("crates/ggtts-ffi/"):
+                    # The C library and ggtts.h ship in the archives: the package smoke compiles a C program
+                    # against them and renders through them.
+                    selected.add("package")
             else:
                 # Ordinary source PRs get the CPU checks and package smoke; promotion
                 # above still runs the CPU native, binding and release jobs.
@@ -241,7 +264,8 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
             selected.update(("android", "binding"))
         if path.startswith(("scripts/kotlin_binding_test.sh",)):
             selected.add("binding")
-        if path.startswith(("scripts/package_and_smoke.sh", "scripts/check_release_version.py", "instruments/", "fixtures/")):
+        if path.startswith(("scripts/package_and_smoke.sh", "scripts/check_release_version.py", "instruments/", "fixtures/",
+                            "scripts/ffi_smoke.c", "scripts/check_pe_imports.py", "scripts/test_check_pe_imports.py")):
             selected.add("package")
         if path == "scripts/buildinfo_engines.sh":
             selected.update(("ggml", "release"))

@@ -247,6 +247,7 @@ jobs:
       android: ${{ steps.select.outputs.android }}
       release: ${{ steps.select.outputs.release }}
       ggml: ${{ steps.select.outputs.ggml }}
+      python: ${{ steps.select.outputs.python }}
       cuda: ${{ steps.select.outputs.cuda }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -261,6 +262,23 @@ jobs:
         run: python3 scripts/test_check_glibc_floor.py
       - name: Test the release version check (a wrong tag or commit, an unknown commit and a missing binary are refused)
         run: python3 scripts/test_check_release_version.py
+      - name: Test the promotion gate and its probes (a planted reuse fault in rc_gate.py is red)
+        run: |
+          set -u
+          for t in test_rc_gate test_instrument_promotion_gate test_logging_overhead_probe test_qwen_event_instrument_probe; do
+            python3 "scripts/$t.py"
+          done
+          cp scripts/rc_gate.py "$RUNNER_TEMP/rc_gate.py"
+          sed -i 's/^    if changed:$/    if False:/' scripts/rc_gate.py
+          grep -qx '    if False:' scripts/rc_gate.py
+          if python3 scripts/test_rc_gate.py > planted-gate.txt 2>&1; then
+            cat planted-gate.txt
+            echo "::error::the gate's tests passed with probe reuse ignoring changed inputs"
+            exit 1
+          fi
+          grep -F 'test_a_touched_input_reruns' planted-gate.txt
+          cp "$RUNNER_TEMP/rc_gate.py" scripts/rc_gate.py
+          rm planted-gate.txt
       - name: Select checks
         id: select
         env:
@@ -280,7 +298,7 @@ jobs:
   package-smoke:
     needs: specialized-selection
     if: needs.specialized-selection.outputs.package == 'true'
-    name: package-smoke (${{ matrix.os }}; script instruments run from a packed release directory, and a planted missing instruments/ is red)
+    name: package-smoke (${{ matrix.os }}; script instruments and the C library run from a packed release directory, and planted missing pieces are red)
     strategy:
       fail-fast: false
       matrix:
@@ -302,21 +320,36 @@ jobs:
           persist-credentials: false
       - run: rustup show active-toolchain || rustup toolchain install
       # The fake engine needs no ggml, so this builds without it; release.yml packs its ggml build with the same script.
-      - run: cargo build --release --locked -p ggtts-cli
+      - run: cargo build --release --locked -p ggtts-cli -p ggtts-ffi
         env:
           GGTTS_RELEASE_VERSION: v0.1.0-rc.999
-      - name: Pack, as release.yml does (it must list both binaries)
+      - name: The PE import check reads real and built images (a DLL the archive lacks is red, shipped beside it green)
+        env:
+          GGTTS_PE_SAMPLE: ${{ runner.os == 'Windows' && 'target/release/ggtts_ffi.dll' || '' }}
+        run: python3 scripts/test_check_pe_imports.py -v
+      - name: Pack, as release.yml does (it must list both binaries, and the C library)
+        env:
+          LIBS: ${{ runner.os == 'Windows' && '["lib/ggtts_ffi.dll","lib/ggtts_ffi.dll.lib"]' || '["lib/libggtts_ffi.so"]' }}
         run: |
           set -eu
           list=$(scripts/package_and_smoke.sh pack "target/release/ggtts-render${{ matrix.exe }}" dist/ggtts-ci)
           echo "binaries: $list"
           test "$list" = '["ggtts-render${{ matrix.exe }}","ggtts-measure${{ matrix.exe }}"]'
+          libs=$(scripts/package_and_smoke.sh libraries dist/ggtts-ci)
+          echo "libraries: $libs"
+          test "$libs" = "$LIBS"
+          cmp crates/ggtts-ffi/include/ggtts.h dist/ggtts-ci/include/ggtts.h
           # Match the release's metadata, so the archive smoke reaches the same check. GITHUB_SHA is also what the
           # build embedded for --version (crates/ggtts-core/build.rs).
-          printf '{"ggtts": "v0.1.0-rc.999", "ggtts_commit": "%s", "binaries": %s}\n' "$GITHUB_SHA" "$list" \
-            > dist/ggtts-ci/BUILDINFO.json
-      - name: Smoke the packed directory (a shipped Python instrument runs from it)
-        run: scripts/package_and_smoke.sh smoke dist/ggtts-ci
+          printf '{"ggtts": "v0.1.0-rc.999", "ggtts_commit": "%s", "binaries": %s, "libraries": %s}\n' "$GITHUB_SHA" \
+            "$list" "$libs" > dist/ggtts-ci/BUILDINFO.json
+      - name: Smoke the packed directory (a shipped Python instrument runs from it; a C program builds and renders against lib/ and include/)
+        run: |
+          set -eu
+          scripts/package_and_smoke.sh smoke dist/ggtts-ci 2> smoke.err || { cat smoke.err; exit 1; }
+          cat smoke.err
+          grep -F "ffi smoke: ok: ABI version" smoke.err
+          grep -F "a C program built against include/ggtts.h and lib/ loaded and rendered on the fake engine" smoke.err
       - name: Archive it as release.yml does (a .zip on windows) and smoke the archive by its relative path
         run: |
           set -eu
@@ -418,6 +451,54 @@ jobs:
             cat planted-notice.err
             grep -F "missing licence notice in dist/planted-notice: $notice" planted-notice.err
           done
+      - name: Planted, the same directory without the header or a library file must fail, naming it
+        env:
+          LIBFILES: ${{ runner.os == 'Windows' && 'lib/ggtts_ffi.dll lib/ggtts_ffi.dll.lib' || 'lib/libggtts_ffi.so' }}
+        run: |
+          set -u
+          for f in include/ggtts.h $LIBFILES; do
+            rm -rf dist/planted-ffi
+            cp -r dist/ggtts-ci dist/planted-ffi
+            rm "dist/planted-ffi/$f"
+            if scripts/package_and_smoke.sh smoke dist/planted-ffi 2> planted-ffi.err; then
+              cat planted-ffi.err
+              echo "::error::the smoke passed without $f"
+              exit 1
+            fi
+            cat planted-ffi.err
+            grep -F "no $f in dist/planted-ffi" planted-ffi.err
+          done
+      - name: Planted, a header whose GGTTS_ABI_VERSION is not the library's must fail, naming both
+        run: |
+          set -u
+          rm -rf dist/planted-abi
+          cp -r dist/ggtts-ci dist/planted-abi
+          sed -i 's/^#define GGTTS_ABI_VERSION \([0-9][0-9]*\)/#define GGTTS_ABI_VERSION 9\1/' dist/planted-abi/include/ggtts.h
+          grep -E '^#define GGTTS_ABI_VERSION 9[0-9]+' dist/planted-abi/include/ggtts.h
+          if scripts/package_and_smoke.sh smoke dist/planted-abi 2> planted-abi.err; then
+            cat planted-abi.err
+            echo "::error::the smoke passed with a header of another ABI version"
+            exit 1
+          fi
+          cat planted-abi.err
+          grep -E "ffi smoke: FAILED: the library's ggtts_abi_version\(\) is [0-9]+, the header's GGTTS_ABI_VERSION is 9[0-9]+" planted-abi.err
+      - name: Planted, a packed DLL needing a DLL that neither Windows nor the archive has must fail, naming it
+        if: runner.os == 'Windows'
+        run: |
+          set -u
+          if python3 scripts/check_pe_imports.py --deny vcruntime140.dll --packed dist/ggtts-ci 2> pe.err; then
+            cat pe.err
+            echo "::error::the PE import check passed with VCRUNTIME140.dll treated as missing"
+            exit 1
+          fi
+          cat pe.err
+          grep -E "ggtts_ffi.dll: needs VCRUNTIME140.dll, which is neither" pe.err
+          # The no-op: a file of that name beside each importer (the root and lib/) passes the same check.
+          rm -rf dist/planted-pe
+          cp -r dist/ggtts-ci dist/planted-pe
+          cp dist/planted-pe/lib/ggtts_ffi.dll dist/planted-pe/VCRUNTIME140.dll
+          cp dist/planted-pe/lib/ggtts_ffi.dll dist/planted-pe/lib/VCRUNTIME140.dll
+          python3 scripts/check_pe_imports.py --deny vcruntime140.dll --packed dist/planted-pe
 
   binding:
     needs: specialized-selection
@@ -496,10 +577,10 @@ jobs:
           # The release's glibc floor is its build host's: Ubuntu 22.04, as in release.yml.
           - os: ubuntu-22.04
             target: x86_64-linux
-            features: ggtts-cli/ggml
+            features: ggtts-cli/ggml,ggtts-ffi/ggml
           - os: windows-latest
             target: x86_64-windows
-            features: ggtts-cli/bindgen
+            features: ggtts-cli/bindgen,ggtts-ffi/ggml
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     defaults:
@@ -535,19 +616,21 @@ jobs:
           echo "this job's build:  ${ours:-<none>}"
           test -n "$ours"
           test "$(release_cmd .github/workflows/release.yml)" = "$ours"
-          # Planted: release.yml without -p ggtts-kitten must not match.
-          sed 's/ -p ggtts-kitten / /' .github/workflows/release.yml > "$RUNNER_TEMP/release-drift.yml"
-          if [ "$(release_cmd "$RUNNER_TEMP/release-drift.yml")" = "$ours" ]; then
-            echo "::error::the drift check passed a release.yml that no longer builds ggtts-kitten"
-            exit 1
-          fi
+          # Planted: release.yml without -p ggtts-kitten, or without -p ggtts-ffi (the C library), must not match.
+          for crate in ggtts-kitten ggtts-ffi; do
+            sed "s/ -p $crate / /" .github/workflows/release.yml > "$RUNNER_TEMP/release-drift.yml"
+            if [ "$(release_cmd "$RUNNER_TEMP/release-drift.yml")" = "$ours" ]; then
+              echo "::error::the drift check passed a release.yml that no longer builds $crate"
+              exit 1
+            fi
+          done
       - run: rustup show active-toolchain || rustup toolchain install
       - run: git submodule update --init crates/ggtts-ggml-sys/ggml
       - name: Build ggtts-render and the Kitten tools exactly as release.yml does
         env:
           LIBCLANG_PATH: ${{ runner.os == 'Windows' && 'C:\Program Files\LLVM\bin' || '' }}
           GGML_PORTABLE: "1"
-        run: cargo build --release --locked -p ggtts-cli -p ggtts-kitten --features "${{ matrix.features }}"
+        run: cargo build --release --locked -p ggtts-cli -p ggtts-kitten -p ggtts-ffi --features "${{ matrix.features }}"
       - name: Verify the CPU build does not target the build host
         run: |
           set -euo pipefail
@@ -559,7 +642,7 @@ jobs:
           grep -qx 'GGML_AVX512_VNNI:BOOL=OFF' "$cache"
           grep -qx 'GGML_AVX512_BF16:BOOL=OFF' "$cache"
           grep -qx 'GGML_AVX_VNNI:BOOL=OFF' "$cache"
-      - name: Pack and smoke as release.yml does (the Kitten tools run --help from it; a planted missing one is red)
+      - name: Pack and smoke as release.yml does (the Kitten tools run --help from it, a C program renders on its library; a planted missing tool is red)
         env:
           EXE: ${{ runner.os == 'Windows' && '.exe' || '' }}
         run: |
@@ -567,9 +650,11 @@ jobs:
           list=$(scripts/package_and_smoke.sh pack "target/release/ggtts-render$EXE" dist/release-ci)
           echo "binaries: $list"
           test "$list" = "[\"ggtts-render$EXE\",\"ggtts-measure$EXE\",\"ggtts-kitten-convert$EXE\",\"ggtts-kitten$EXE\"]"
+          libs=$(scripts/package_and_smoke.sh libraries dist/release-ci)
+          echo "libraries: $libs"
           tag=$("dist/release-ci/ggtts-render$EXE" --version | sed -n '1s/^ggtts-render //p')
-          printf '{"ggtts": "%s", "ggtts_commit": "%s", "binaries": %s}\n' "$tag" "$GITHUB_SHA" "$list" \
-            > dist/release-ci/BUILDINFO.json
+          printf '{"ggtts": "%s", "ggtts_commit": "%s", "binaries": %s, "libraries": %s}\n' "$tag" "$GITHUB_SHA" \
+            "$list" "$libs" > dist/release-ci/BUILDINFO.json
           scripts/package_and_smoke.sh smoke dist/release-ci "$tag"
           for b in ggtts-kitten-convert ggtts-kitten; do
             rm -rf dist/planted-kitten
@@ -583,12 +668,15 @@ jobs:
             cat planted-kitten.err
             grep -F "no $b$EXE in dist/planted-kitten" planted-kitten.err
           done
-      - name: The Linux binaries need no newer glibc, libstdc++, libgcc_s or libgomp than Ubuntu 22.04 ships
+      - name: The Linux binaries and the C library need no newer glibc, libstdc++, libgcc_s or libgomp than Ubuntu 22.04 ships
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          # Every binary pack put in the directory, from its BUILDINFO "binaries", never a list kept here.
-          python3 scripts/check_glibc_floor.py --packed dist/release-ci
+          # Every binary and library pack put in the directory, from its BUILDINFO "binaries" and "libraries", never a
+          # list kept here.
+          python3 scripts/check_glibc_floor.py --packed dist/release-ci 2> floor.err || { cat floor.err; exit 1; }
+          cat floor.err
+          grep -F "lib/libggtts_ffi.so: highest needed:" floor.err
           # Planted: a packed ELF that the list leaves out is refused, naming it.
           rm -rf dist/planted-glibc
           cp -r dist/release-ci dist/planted-glibc
@@ -599,7 +687,18 @@ jobs:
             exit 1
           fi
           cat planted-glibc.err
-          grep -F "ggtts-unlisted is an ELF file that BUILDINFO.json's binaries leaves out" planted-glibc.err
+          grep -F "ggtts-unlisted is an ELF file that BUILDINFO.json's binaries and libraries leave out" planted-glibc.err
+          # Planted: the C library left out of "libraries" is refused the same way.
+          rm -rf dist/planted-glibc
+          cp -r dist/release-ci dist/planted-glibc
+          sed -i 's/, "libraries": \[[^]]*\]//' dist/planted-glibc/BUILDINFO.json
+          if python3 scripts/check_glibc_floor.py --packed dist/planted-glibc 2> planted-glibc.err; then
+            cat planted-glibc.err
+            echo "::error::the glibc floor check passed a packed library BUILDINFO does not list"
+            exit 1
+          fi
+          cat planted-glibc.err
+          grep -F "lib/libggtts_ffi.so is an ELF file that BUILDINFO.json's binaries and libraries leave out" planted-glibc.err
       - name: Planted, the same binary against a floor below what it needs must fail, naming the version
         if: runner.os == 'Linux'
         run: |
@@ -613,3 +712,64 @@ jobs:
           cat planted-floor.err
           grep -E 'ggtts-render: GLIBC_2\.[0-9.]+ from libc\.so\.6 exceeds the floor GLIBC_2\.17' planted-floor.err
           grep -E 'GLIBCXX_3\.4\.[0-9]+ from libstdc\+\+\.so\.6 exceeds the floor GLIBCXX_3\.4\.19' planted-floor.err
+
+  python:
+    needs: specialized-selection
+    if: needs.specialized-selection.outputs.python == 'true'
+    # The Python binding (crates/ggtts-py, its own workspace): its Rust layer checked and tested without Python, then
+    # the wheel built with maturin, installed, and tested with pytest. Linux builds the engines too (the committed ggml
+    # bindings), so the binding's ggml-gated code compiles here, on Python 3.9, the floor the abi3 wheel claims.
+    name: python (${{ matrix.os }}, Python ${{ matrix.python }}; wheel built with maturin, then pytest)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04: the runner that has a Python 3.9 build, and the release archives' build host.
+          - os: ubuntu-22.04
+            python: "3.9"
+            engines: ",ggml"
+          - os: windows-latest
+            python: "3.13"
+            engines: ""
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Fetch the ggml submodule at its pin
+        if: matrix.engines != ''
+        run: git submodule update --init crates/ggtts-ggml-sys/ggml
+      - name: The binding's Rust layer (fmt, clippy with the Python module, and its tests, which need no Python)
+        working-directory: crates/ggtts-py
+        run: |
+          set -eu
+          cargo fmt --check
+          cargo clippy --locked --all-targets --features "python,plant${{ matrix.engines }}" -- -D warnings
+          cargo test --locked --features "plant${{ matrix.engines }}" -- --nocapture
+      - name: Build the wheel with maturin (pinned) and install it
+        run: |
+          set -eu
+          # patchelf: maturin's manylinux repair bundles the engines' shared libraries (OpenMP) into the Linux wheel.
+          python -m pip install "maturin==1.9.4" pytest numpy
+          if [ "$RUNNER_OS" = Linux ]; then python -m pip install "patchelf==0.19.1.0"; fi
+          cd crates/ggtts-py
+          maturin build --release --locked --out dist --features "python,pyo3/extension-module,plant${{ matrix.engines }}"
+          ls dist
+          # One abi3 wheel serves every Python from 3.9.
+          ls dist | grep -E '^ggtts-[^-]+-cp39-abi3-'
+          python -m pip install --no-index --find-links dist ggtts
+      - name: pytest (the fake engine, the planted panic and the GIL; the real-model tests report skipped)
+        run: |
+          set -eu
+          # Away from the source, so the installed wheel is what is imported.
+          cd "$RUNNER_TEMP"
+          python -c "import ggtts; print(ggtts.VERSION, ggtts.COMMIT, ggtts.ENGINES)"
+          python -m pytest -v -rs "$GITHUB_WORKSPACE/crates/ggtts-py/tests"

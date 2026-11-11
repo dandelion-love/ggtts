@@ -257,6 +257,8 @@ jobs:
         run: python3 scripts/test_select_specialized_ci.py
       - name: cuda-compile is release.yml's cuda-build, line for line
         run: python3 scripts/select_specialized_ci.py --check-cuda-drift
+      - name: Test the glibc floor check (a planted Ubuntu 24.04 binary is refused, and nothing read is never a pass)
+        run: python3 scripts/test_check_glibc_floor.py
       - name: Select checks
         id: select
         env:
@@ -477,7 +479,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # The release's glibc floor is its build host's: Ubuntu 22.04, as in release.yml.
+          - os: ubuntu-22.04
             target: x86_64-linux
             features: ggtts-cli/ggml
           - os: windows-latest
@@ -492,8 +495,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: The release matrix carries the same target and features
+      - name: The release matrix carries the same runner, target and features
         env:
+          OS: ${{ matrix.os }}
           TARGET: ${{ matrix.target }}
           FEATURES: ${{ matrix.features }}
         run: |
@@ -503,6 +507,11 @@ jobs:
             .github/workflows/release.yml)
           echo "release.yml features for ${TARGET}: ${got:-<none>}"
           test "$got" = "$FEATURES"
+          # The "- os:" line that opens this target's matrix entry: the runner decides the glibc the binary needs.
+          os=$(awk -v t="${TARGET}" '$1 == "-" && $2 == "os:" {o=$3} $1 == "target:" && $2 == t {print o; exit}' \
+            .github/workflows/release.yml)
+          echo "release.yml runner for ${TARGET}: ${os:-<none>}"
+          test "$os" = "$OS"
       - run: rustup show active-toolchain || rustup toolchain install
       - run: git submodule update --init crates/ggtts-ggml-sys/ggml
       - name: Build ggtts-render exactly as release.yml does
@@ -521,3 +530,19 @@ jobs:
           grep -qx 'GGML_AVX512_VNNI:BOOL=OFF' "$cache"
           grep -qx 'GGML_AVX512_BF16:BOOL=OFF' "$cache"
           grep -qx 'GGML_AVX_VNNI:BOOL=OFF' "$cache"
+      - name: The Linux binaries need no newer glibc, libstdc++, libgcc_s or libgomp than Ubuntu 22.04 ships
+        if: runner.os == 'Linux'
+        run: python3 scripts/check_glibc_floor.py target/release/ggtts-render target/release/ggtts-measure
+      - name: Planted, the same binary against a floor below what it needs must fail, naming the version
+        if: runner.os == 'Linux'
+        run: |
+          set -u
+          if python3 scripts/check_glibc_floor.py --floor GLIBC=2.17 --floor GLIBCXX=3.4.19 \
+              target/release/ggtts-render 2> planted-floor.err; then
+            cat planted-floor.err
+            echo "::error::the glibc floor check passed a binary above a planted floor of glibc 2.17"
+            exit 1
+          fi
+          cat planted-floor.err
+          grep -E 'ggtts-render: GLIBC_2\.[0-9.]+ from libc\.so\.6 exceeds the floor GLIBC_2\.17' planted-floor.err
+          grep -E 'GLIBCXX_3\.4\.[0-9]+ from libstdc\+\+\.so\.6 exceeds the floor GLIBCXX_3\.4\.19' planted-floor.err

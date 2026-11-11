@@ -50,10 +50,12 @@ refused so report files cannot overwrite an input through a path, symlink or har
 |---|---|
 | `ggtts-render` | Render text or a story to FLAC and/or a live PCM stream |
 | `ggtts-measure` | Run instruments on existing audio |
-| `ggtts-kitten` and `ggtts-kitten-convert` | Source-built Kitten voice preparation and GGUF conversion tools |
+| `ggtts-kitten-convert` | Convert the published Kitten-TTS 2 model and its decoder to the GGUFs `ggtts-render` loads |
+| `ggtts-kitten` | Prepare a Kitten reference voice (`ggtts-kitten prepare`) from a short clip and its transcript |
 
-The release archives ship `ggtts-render` and `ggtts-measure`; the Kitten preparation and conversion tools are built
-from source. `ggtts-render --version` lists the included engines and backends as well as the ggml pin.
+The release archives ship all four. None needs Python. Every binary's `--version` prints its release tag, the ggtts
+commit it was built from (as in the archive's `BUILDINFO.json`) and the ggml pin; `ggtts-render --version` also
+lists the included engines and backends.
 
 ### Streaming: which stream
 
@@ -84,8 +86,10 @@ decoder GGUF**, not an output file format or an audio encoder selector. Qwen nee
 12 Hz tokenizer/codec; Kitten needs its LM and S3Gen GGUFs plus a prepared reference-voice JSON. The Qwen model
 and codec used by this project are in [jmtl/hk-cantonese-cc0-qwen3-tts-GGUF](https://huggingface.co/jmtl/hk-cantonese-cc0-qwen3-tts-GGUF)
 and described in the [Qwen README](https://github.com/dandelion-love/ggtts/blob/main/crates/ggtts-qwen3-tts/README.md).
-To convert Kitten and prepare a voice, follow the [Kitten README](https://github.com/dandelion-love/ggtts/blob/main/crates/ggtts-kitten/README.md#convert-prepare-render).
-Those Kitten tools are source-built and are not in the release archive. The models' own licences apply.
+No ggtts-ready Kitten files are published: make them once from the upstream model with the archive's own
+`ggtts-kitten-convert` and `ggtts-kitten`, as the [Kitten README](https://github.com/dandelion-love/ggtts/blob/main/crates/ggtts-kitten/README.md#convert-prepare-render)
+shows. A Kitten GGUF converted before the tokenizer was embedded is refused; convert it again the same way. The
+models' own licences apply.
 
 For a Qwen model with named speakers, select the name in its model card with `--speaker NAME`. The Cantonese
 v0.0.5 model uses `--speaker hk_voice_343` (or `hk_voice_777` for its other voice). Without the option, ggtts

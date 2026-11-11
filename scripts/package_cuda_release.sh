@@ -7,7 +7,7 @@ export CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}
 export GGTTS_RELEASE_VERSION="$TAG"
 export CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL:-4}
 export PATH="$CUDA_HOME/bin:$PATH"
-cargo build --release --locked -p ggtts-cli --features ggtts-cli/cuda
+cargo build --release --locked -p ggtts-cli -p ggtts-kitten --features ggtts-cli/cuda
 bin=${CARGO_TARGET_DIR:-target}/release/ggtts-render
 # These are machine-code images, not just a CMake configuration claim.
 cuobjdump --list-elf "$bin" > cuda-images.txt

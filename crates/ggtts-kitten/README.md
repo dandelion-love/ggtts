@@ -14,16 +14,21 @@ How it was ported, from where, and the parity levels with their measurements: [`
   `speaker/model.safetensors`. A QAT export in Kitten's key layout works in place of `lm/model.safetensors`.
 - **The decoder.** `ResembleAI/chatterbox-turbo` at `749d1c1a46eb10492095d68fbcf55691ccf137cd`:
   `s3gen_meanflow.safetensors`.
-- **A build with the `ggml` feature**: `git submodule update --init crates/ggtts-ggml-sys/ggml`, cmake and a C/C++
-  compiler. For `--device cuda`, use the `cuda` feature with ggml built or linked with CUDA (`GGML_LIB_DIR`, see
-  `ggtts-ggml-sys`).
+- **The tools**: a [release archive](https://github.com/dandelion-love/ggtts/releases) ships `ggtts-kitten-convert`
+  and `ggtts-kitten` beside `ggtts-render`, so nothing below needs a build, Python or PyTorch. From source, build
+  with the `ggml` feature: `git submodule update --init crates/ggtts-ggml-sys/ggml`, cmake and a C/C++ compiler. For
+  `--device cuda`, use the `cuda` feature with ggml built or linked with CUDA (`GGML_LIB_DIR`, see `ggtts-ggml-sys`).
 - **A reference clip**, as a lossless FLAC or WAV file of about 5 to 30 seconds of one speaker, and its transcript.
+  The model's `voices/` holds clips, with their transcripts in `voices/voices.json`.
+
+No ggtts-ready GGUFs are published; the steps below make them once. A GGUF converted before the tokenizer was
+embedded is refused by `ggtts-render` ("this GGUF has no embedded tokenizer"): convert it again with the first step.
 
 ## Convert, prepare, render
 
 ```bash
-cargo build --release -p ggtts-kitten -p ggtts-cli --features ggtts-kitten/ggml,ggtts-cli/ggml
-K=target/release
+K=path/to/the/unpacked/archive    # or, from source: cargo build --release -p ggtts-kitten -p ggtts-cli \
+                                  #   --features ggtts-cli/ggml && K=target/release
 
 # The language model to a GGUF: Q4_0 by default (exact for ternary weights), and the readback check runs after it.
 $K/ggtts-kitten-convert --repo $KITTEN --out kitten-lm.gguf

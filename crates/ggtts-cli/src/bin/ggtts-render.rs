@@ -257,14 +257,12 @@ fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, St
         // Kitten-TTS 2: --model is the LM GGUF, --codec the S3Gen GGUF, --voice the reference (`ggtts-kitten prepare`).
         #[cfg(feature = "ggml")]
         "kitten-tts-2" => {
-            let codec = a
-                .codec
-                .as_ref()
-                .ok_or("the kitten-tts-2 engine needs --codec (the S3Gen GGUF)")?;
-            let voice = a
-                .voice
-                .as_ref()
-                .ok_or("the kitten-tts-2 engine needs --voice, a ggtts-kitten prepare JSON")?;
+            let codec = a.codec.as_ref().ok_or(
+                "the kitten-tts-2 engine needs --codec, the S3Gen GGUF that ggtts-kitten-convert --s3gen writes",
+            )?;
+            let voice = a.voice.as_ref().ok_or(
+                "the kitten-tts-2 engine needs --voice, a reference voice JSON that ggtts-kitten prepare writes",
+            )?;
             let device = match a.device.as_deref().unwrap_or("cpu") {
                 "cuda" => ggtts_kitten::backend::Device::Cuda,
                 _ => ggtts_kitten::backend::Device::Cpu,

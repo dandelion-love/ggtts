@@ -49,13 +49,13 @@ jobs:
           test "$(git -C crates/ggtts-ggml-sys/ggml rev-parse HEAD)" = "$pin"
       - name: Test before building the release
         run: cargo test --workspace --locked
-      - name: Build ggtts-render with both engines (Qwen3-TTS, Kitten-TTS 2) on ggml
+      - name: Build ggtts-render with both engines (Qwen3-TTS, Kitten-TTS 2) on ggml, and the Kitten tools
         env:
           LIBCLANG_PATH: ${{ runner.os == 'Windows' && 'C:\Program Files\LLVM\bin' || '' }}
           GGTTS_RELEASE_VERSION: ${{ github.ref_name }}
           # Do not bake the build host instruction set into shipped CPU binaries.
           GGML_PORTABLE: "1"
-        run: cargo build --release --locked -p ggtts-cli --features "${{ matrix.features }}"
+        run: cargo build --release --locked -p ggtts-cli -p ggtts-kitten --features "${{ matrix.features }}"
       - name: Package, named with the ggml pin
         id: pkg
         env:

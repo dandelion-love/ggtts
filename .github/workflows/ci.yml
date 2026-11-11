@@ -307,8 +307,10 @@ jobs:
           list=$(scripts/package_and_smoke.sh pack "target/release/ggtts-render${{ matrix.exe }}" dist/ggtts-ci)
           echo "binaries: $list"
           test "$list" = '["ggtts-render${{ matrix.exe }}","ggtts-measure${{ matrix.exe }}"]'
-          # Match the release's metadata, so the archive smoke reaches the same check.
-          printf '{"ggtts": "v0.1.0-rc.999", "binaries": %s}\n' "$list" > dist/ggtts-ci/BUILDINFO.json
+          # Match the release's metadata, so the archive smoke reaches the same check. GITHUB_SHA is also what the
+          # build embedded for --version (crates/ggtts-core/build.rs).
+          printf '{"ggtts": "v0.1.0-rc.999", "ggtts_commit": "%s", "binaries": %s}\n' "$GITHUB_SHA" "$list" \
+            > dist/ggtts-ci/BUILDINFO.json
       - name: Smoke the packed directory (a shipped Python instrument runs from it)
         run: scripts/package_and_smoke.sh smoke dist/ggtts-ci
       - name: Archive it as release.yml does (a .zip on windows) and smoke the archive by its relative path
@@ -325,6 +327,14 @@ jobs:
             echo '::error::wrong BUILDINFO version passed'; exit 1
           fi
           grep -F 'BUILDINFO ggtts' version.err
+          # A BUILDINFO whose ggtts_commit is not the commit the binaries were built from.
+          cp -r dist/ggtts-ci dist/version-bad-commit
+          printf '{"ggtts": "v0.1.0-rc.999", "ggtts_commit": "%s"}\n' 0000000000000000000000000000000000000000 \
+            > dist/version-bad-commit/BUILDINFO.json
+          if python3 scripts/check_release_version.py dist/version-bad-commit v0.1.0-rc.999 2> version.err; then
+            echo '::error::a wrong BUILDINFO ggtts_commit passed'; exit 1
+          fi
+          grep -F 'reports ggtts commit' version.err
           # Build the same cheap fake-engine binaries with a different embedded tag.
           GGTTS_RELEASE_VERSION=v0.1.0-rc.998 cargo build --release --locked -p ggtts-cli
           for binary in ggtts-render ggtts-measure; do
@@ -505,11 +515,11 @@ jobs:
           test "$got" = "$FEATURES"
       - run: rustup show active-toolchain || rustup toolchain install
       - run: git submodule update --init crates/ggtts-ggml-sys/ggml
-      - name: Build ggtts-render exactly as release.yml does
+      - name: Build ggtts-render and the Kitten tools exactly as release.yml does
         env:
           LIBCLANG_PATH: ${{ runner.os == 'Windows' && 'C:\Program Files\LLVM\bin' || '' }}
           GGML_PORTABLE: "1"
-        run: cargo build --release --locked -p ggtts-cli --features "${{ matrix.features }}"
+        run: cargo build --release --locked -p ggtts-cli -p ggtts-kitten --features "${{ matrix.features }}"
       - name: Verify the CPU build does not target the build host
         run: |
           set -euo pipefail
@@ -521,3 +531,27 @@ jobs:
           grep -qx 'GGML_AVX512_VNNI:BOOL=OFF' "$cache"
           grep -qx 'GGML_AVX512_BF16:BOOL=OFF' "$cache"
           grep -qx 'GGML_AVX_VNNI:BOOL=OFF' "$cache"
+      - name: Pack and smoke as release.yml does (the Kitten tools run --help from it; a planted missing one is red)
+        env:
+          EXE: ${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: |
+          set -euo pipefail
+          list=$(scripts/package_and_smoke.sh pack "target/release/ggtts-render$EXE" dist/release-ci)
+          echo "binaries: $list"
+          test "$list" = "[\"ggtts-render$EXE\",\"ggtts-measure$EXE\",\"ggtts-kitten-convert$EXE\",\"ggtts-kitten$EXE\"]"
+          tag=$("dist/release-ci/ggtts-render$EXE" --version | sed -n '1s/^ggtts-render //p')
+          printf '{"ggtts": "%s", "ggtts_commit": "%s", "binaries": %s}\n' "$tag" "$GITHUB_SHA" "$list" \
+            > dist/release-ci/BUILDINFO.json
+          scripts/package_and_smoke.sh smoke dist/release-ci "$tag"
+          for b in ggtts-kitten-convert ggtts-kitten; do
+            rm -rf dist/planted-kitten
+            cp -r dist/release-ci dist/planted-kitten
+            rm "dist/planted-kitten/$b$EXE"
+            if scripts/package_and_smoke.sh smoke dist/planted-kitten 2> planted-kitten.err; then
+              cat planted-kitten.err
+              echo "::error::the smoke passed without $b"
+              exit 1
+            fi
+            cat planted-kitten.err
+            grep -F "no $b$EXE in dist/planted-kitten" planted-kitten.err
+          done

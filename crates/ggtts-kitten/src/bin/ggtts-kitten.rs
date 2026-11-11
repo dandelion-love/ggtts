@@ -1050,9 +1050,34 @@ fn text_of(lines: &[String], i: usize) -> &str {
     &lines[i]
 }
 
+const USAGE: &str =
+    "usage: ggtts-kitten prepare --s3gguf S3GEN.gguf --wav CLIP.flac|CLIP.wav --transcript TEXT --out VOICE.json
+                            [--threads N] [--device cpu|cuda]
+       ggtts-kitten --version
+
+prepare: a reference voice for `ggtts-render --engine kitten-tts-2 --voice VOICE.json`, from 5 to 30 seconds of one
+  speaker (lossless FLAC or WAV) and what the clip says. S3GEN.gguf is ggtts-kitten-convert --s3gen's output.
+  No Python is needed.
+
+The other commands (parity, step-parity, tokcheck, render, hift-parity, decoder-parity, block-parity, cond-parity,
+bench) are development checks against recorded PyTorch references; see the ggtts-kitten source's header.";
+
 fn main() -> ExitCode {
     let mut it = std::env::args().skip(1);
     let cmd = it.next().unwrap_or_default();
+    match cmd.as_str() {
+        "--help" | "-h" | "help" => {
+            println!("{USAGE}");
+            return ExitCode::SUCCESS;
+        }
+        "--version" | "-V" => {
+            for line in ggtts_core::version_lines("ggtts-kitten") {
+                println!("{line}");
+            }
+            return ExitCode::SUCCESS;
+        }
+        _ => {}
+    }
     let res = Args::parse(it).and_then(|a| match cmd.as_str() {
         "parity" => parity_cmd(&a),
         "step-parity" => step_cmd(&a),
@@ -1064,7 +1089,10 @@ fn main() -> ExitCode {
         "cond-parity" => cond_cmd(&a),
         "prepare" => prepare_cmd(&a),
         "bench" => bench_cmd(&a),
-        _ => Err("usage: ggtts-kitten (parity|tokcheck|render) ...; see the source's header".into()),
+        _ => Err(format!(
+            "unknown command {cmd:?}
+{USAGE}"
+        )),
     });
     match res {
         Ok(true) => ExitCode::SUCCESS,

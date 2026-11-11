@@ -8,7 +8,14 @@
 use std::f64::consts::PI;
 use std::path::Path;
 
-/// Mono samples and their rate from FLAC or RIFF WAV. Channels are averaged.
+/// Mono samples and their rate from a native FLAC or RIFF WAV file, chosen by content. Channels are averaged.
+///
+/// A FLAC stream that fails to decode is refused: a frame cut part-way, a failed frame checksum, or a sample
+/// count that differs from the total STREAMINFO declares. One truncation cannot be seen. An encoder that
+/// writes to a pipe leaves the STREAMINFO total at 0, meaning unknown, and frames carry no end-of-stream
+/// marker, so such a file cut exactly on a frame boundary is a valid, shorter stream and is read as one. So
+/// is one cut a single byte past a boundary: the decoder takes a lone trailing byte for the end of the stream.
+/// The STREAMINFO MD5 signature is not checked.
 pub fn read_wav(path: &Path) -> Result<(Vec<f32>, u32), String> {
     let b = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if b.starts_with(b"fLaC") {
@@ -38,7 +45,10 @@ pub fn read_wav(path: &Path) -> Result<(Vec<f32>, u32), String> {
         return Ok((mono, info.sample_rate));
     }
     if b.len() < 12 || &b[0..4] != b"RIFF" || &b[8..12] != b"WAVE" {
-        return Err(format!("{}: not a RIFF WAVE file", path.display()));
+        return Err(format!(
+            "{}: neither a RIFF WAVE nor a native FLAC file",
+            path.display()
+        ));
     }
     let (mut fmt, mut channels, mut rate, mut bits, mut data) = (0u16, 0u16, 0u32, 0u16, None);
     let mut p = 12;
@@ -447,6 +457,137 @@ mod tests {
         assert_eq!(samples, vec![-1.0 / 65536.0, 0.375, -0.125]);
         std::fs::write(&path, &encoded[..50]).unwrap();
         assert!(read_wav(&path).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    fn crc(data: &[u8], width: u32, poly: u16) -> u16 {
+        let top = 1u16 << (width - 1);
+        let mut crc = 0u16;
+        for &b in data {
+            crc ^= u16::from(b) << (width - 8);
+            for _ in 0..8 {
+                crc = if crc & top != 0 { (crc << 1) ^ poly } else { crc << 1 };
+            }
+        }
+        if width == 8 {
+            crc & 0xff
+        } else {
+            crc
+        }
+    }
+
+    /// A mono 24-bit FLAC stream of VERBATIM subframes, one frame per block, with `declared` as the STREAMINFO
+    /// total (0 is "unknown"). Returns the bytes and the offset at which each frame starts.
+    fn verbatim_flac_24(blocks: &[&[i32]], rate: u32, declared: u64) -> (Vec<u8>, Vec<usize>) {
+        // STREAMINFO may not declare a block size under 16; a short frame carries its own size.
+        let longest = blocks.iter().map(|b| b.len()).max().unwrap().max(16) as u16;
+        let mut out = b"fLaC\x80\0\0\x22".to_vec();
+        out.extend(longest.to_be_bytes());
+        out.extend(longest.to_be_bytes());
+        out.extend([0u8; 6]); // frame sizes unknown
+        out.extend(((u64::from(rate) << 44) | (23 << 36) | declared).to_be_bytes()); // mono, 24 bits
+        out.extend([0u8; 16]); // MD5 unknown
+        let mut starts = Vec::new();
+        for (index, block) in blocks.iter().enumerate() {
+            starts.push(out.len());
+            // Sync, fixed block size; block size in the next 8 bits, rate from STREAMINFO; mono, 24 bits.
+            let mut frame = vec![0xff, 0xf8, 0x60, 0x0c, index as u8, (block.len() - 1) as u8];
+            frame.push(crc(&frame, 8, 0x07) as u8);
+            frame.push(0x02); // VERBATIM subframe, no wasted bits
+            for v in *block {
+                frame.extend(&v.to_be_bytes()[1..]);
+            }
+            frame.extend(crc(&frame, 16, 0x8005).to_be_bytes());
+            out.extend(frame);
+        }
+        (out, starts)
+    }
+
+    fn temp(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("ggtts-kitten-{}-{name}", std::process::id()))
+    }
+
+    fn scaled_24(pcm: &[i32]) -> Vec<f32> {
+        pcm.iter().map(|&v| (f64::from(v) / 8388608.0) as f32).collect()
+    }
+
+    #[test]
+    fn flac_and_wav_decode_the_same_24_bit_samples() {
+        let pcm = [-8388608, 8388607, -1, 1, 0, 0x123456, -0x123457, 4194304];
+        let (flac, _) = verbatim_flac_24(&[&pcm], 48000, pcm.len() as u64);
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36u32 + pcm.len() as u32 * 3).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt \x10\0\0\0\x01\0\x01\0");
+        wav.extend_from_slice(&48000u32.to_le_bytes());
+        wav.extend_from_slice(&144000u32.to_le_bytes());
+        wav.extend_from_slice(&[3, 0, 24, 0]);
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(pcm.len() as u32 * 3).to_le_bytes());
+        for sample in pcm {
+            wav.extend_from_slice(&sample.to_le_bytes()[..3]);
+        }
+        let (flac_path, wav_path) = (temp("24.flac"), temp("24.wav"));
+        std::fs::write(&flac_path, flac).unwrap();
+        std::fs::write(&wav_path, wav).unwrap();
+        let (flac_samples, rate) = read_wav(&flac_path).unwrap();
+        let (wav_samples, wav_rate) = read_wav(&wav_path).unwrap();
+        assert_eq!((rate, wav_rate), (48000, 48000));
+        assert_eq!(flac_samples, wav_samples);
+        assert_eq!(flac_samples, scaled_24(&pcm));
+        // 0x123456 needs more than 16 bits: a reader that dropped the low byte would not return it.
+        assert_eq!(flac_samples[5], 1193046.0 / 8388608.0);
+        std::fs::remove_file(flac_path).unwrap();
+        std::fs::remove_file(wav_path).unwrap();
+    }
+
+    #[test]
+    fn flac_truncation_is_refused_wherever_it_can_be_seen() {
+        let (first, second) = ([100, -200, 300, -400], [500, -600, 700]);
+        let path = temp("cut.flac");
+        let read = |bytes: &[u8]| {
+            std::fs::write(&path, bytes).unwrap();
+            read_wav(&path)
+        };
+
+        // A declared total: whole reads, and every cut is refused, on a frame boundary or inside a frame.
+        let (known, starts) = verbatim_flac_24(&[&first, &second], 24000, 7);
+        let whole = [first.as_slice(), second.as_slice()].concat();
+        assert_eq!(read(&known).unwrap().0, scaled_24(&whole));
+        assert!(read(&known[..starts[1]]).unwrap_err().contains("incomplete FLAC"));
+        for cut in starts[1] + 1..known.len() {
+            assert!(read(&known[..cut]).is_err(), "cut at {cut} of {}", known.len());
+        }
+
+        // An unknown total (0): whole reads, and a cut two or more bytes into a frame is still refused.
+        let (unknown, starts) = verbatim_flac_24(&[&first, &second], 24000, 0);
+        assert_eq!(read(&unknown).unwrap().0, scaled_24(&whole));
+        for cut in starts[1] + 2..unknown.len() {
+            assert!(read(&unknown[..cut]).is_err(), "cut at {cut} of {}", unknown.len());
+        }
+        // A flipped sample bit fails the frame checksum.
+        let mut flipped = unknown.clone();
+        flipped[starts[1] + 9] ^= 1;
+        assert!(read(&flipped).is_err());
+        // The documented limit: cut on the frame boundary, or one byte past it, it reads as a shorter stream.
+        assert_eq!(read(&unknown[..starts[1]]).unwrap().0, scaled_24(&first));
+        assert_eq!(read(&unknown[..starts[1] + 1]).unwrap().0, scaled_24(&first));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_file_that_is_neither_format_says_what_was_expected() {
+        let path = temp("other.flac");
+        for bytes in [
+            &b""[..],
+            b"OggS\0\x02\0\0\0\0\0\0\0\0\0\0",
+            b"ID3\x04\0\0\0\0\0\x0afLaC\0\0\0\x22",
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            let err = read_wav(&path).unwrap_err();
+            assert!(err.contains("neither a RIFF WAVE nor a native FLAC file"), "{err}");
+            assert!(err.contains(&path.display().to_string()), "{err}");
+        }
         std::fs::remove_file(path).unwrap();
     }
 

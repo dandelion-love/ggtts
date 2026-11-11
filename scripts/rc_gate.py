@@ -27,23 +27,36 @@ import time
 # The report's format. A report with any other value is never reused: what it recorded may mean something else.
 SCHEMA = "ggtts-rc-gate/2"
 
-# Read by every probe: the workspace manifest and lockfile, the toolchain pin, ggml (its submodule pointer is a path
-# under crates/ggtts-ggml-sys, so a moved pin is a change there), the core crate, and the two top-level directories
-# crates read files from (schemas/ by include_str!, fixtures/ by tests).
-COMMON_INPUTS = ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "crates/ggtts-ggml-sys", "crates/ggtts-core",
-                 "schemas", "fixtures")
+# Read by every probe: the workspace manifest and lockfile, the toolchain pin, cargo's own configuration (.cargo/
+# can set rustflags, linkers and target directories for every build), ggml (its submodule pointer is a path under
+# crates/ggtts-ggml-sys, so a moved pin is a change there), the core crate, and the two top-level directories crates
+# read files from (schemas/ by include_str!, fixtures/ by tests).
+COMMON_INPUTS = ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo", "crates/ggtts-ggml-sys",
+                 "crates/ggtts-core", "schemas", "fixtures")
 
-# One entry per CUDA probe. `packages` are what the probe builds; their path dependencies (from `cargo metadata`) are
-# inputs too. `env` names the files and directories it reads, all hashed except `env_paths_only`.
+# One entry per CUDA probe. What a probe's reuse compares (reuse_probe, probe_inputs, machine_inputs):
+#   * repository paths: COMMON_INPUTS, `script`, the crates in `packages` with every path dependency they have (from
+#     `cargo metadata`, so a new dependency is picked up), and `extra`, the paths outside those crates that the
+#     built code reads through CARGO_MANIFEST_DIR;
+#   * `env`: the model, reference and library files the probe reads, hashed (paths in ENV_PATHS_ONLY are recorded by
+#     commit and library hash instead);
+#   * the machine: GPU, driver, the resolved CUDA_HOME and its toolkit version, and RUSTFLAGS/CARGO_ENCODED_RUSTFLAGS.
+# The list covers what the probe's build and commands read. It leaves out files only the crates' own tests read and
+# the probe does not run, such as scripts/ (read by ggtts-instruments' tests); `extra` errs on the side of including.
 # An FFI probe (crates/ggtts-ffi) is meant to become one more entry here, once that crate has a CUDA probe script:
-#   "ffi": {"script": "crates/ggtts-ffi/scripts/cuda_probe.sh", "packages": ("ggtts-ffi",), "env": [...]},
+#   "ffi": {"script": "crates/ggtts-ffi/scripts/cuda_probe.sh", "packages": ("ggtts-ffi",), "extra": (), "env": [...]},
 # It is not registered: an entry here is required for a pass, so it lands with the script it names.
 PROBES = {
     "qwen": {"script": "crates/ggtts-qwen3-tts/scripts/cuda_probe.sh", "packages": ("ggtts-qwen3-tts",),
-             "env": ["QWEN3_TTS_CPP", "QWEN3_TTS_BUILD", "TALKER", "CODEC"]},
+             "extra": (), "env": ["QWEN3_TTS_CPP", "QWEN3_TTS_BUILD", "TALKER", "CODEC"]},
+    # ggtts-cli and ggtts-instruments read the instrument catalogue, the Python SDK and the instrument schema from
+    # instruments/ and docs/instruments/.
     "kitten": {"script": "crates/ggtts-kitten/scripts/cuda_probe.sh", "packages": ("ggtts-kitten", "ggtts-cli"),
+               "extra": ("instruments", "docs/instruments"),
                "env": ["GGML_LIB_DIR", "KITTEN_REPO", "S3_GGUF", "REF_LM", "REF_S3", "REF_COND", "VOICE"]},
 }
+# The machine fields every probe's inputs carry. A difference in any of them refuses reuse, naming it.
+MACHINE_KEYS = ("gpu", "driver", "cuda_home", "cuda_toolkit", "rustflags", "cargo_encoded_rustflags")
 ENV_PATHS_ONLY = ("QWEN3_TTS_CPP", "QWEN3_TTS_BUILD")  # recorded by commit and library hash instead (below)
 
 # CI jobs that run what the gate's CPU stage runs (ci.yml): fmt and clippy, then build and test on both CPU hosts.
@@ -268,8 +281,8 @@ def _quote(text):
 
 # ---- Probe reuse ---------------------------------------------------------------------------------------------------
 
-def probe_paths(work, name):
-    """Repository paths a probe reads: COMMON_INPUTS, its script, and its packages with their path dependencies."""
+def crate_paths(work, name):
+    """The directories of the crates probe `name` builds and of every path dependency they have (cargo metadata)."""
     meta = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1", "--offline"],
                                               cwd=work, text=True))
     work = Path(work).resolve()
@@ -284,9 +297,13 @@ def probe_paths(work, name):
             raise ValueError(f"cargo metadata has no package {package}")
         seen.add(package)
         todo.extend(deps.get(package, []))
-    paths = set(COMMON_INPUTS) | {PROBES[name]["script"]}
-    paths |= {dirs[p].relative_to(work).as_posix() for p in seen}
-    return sorted(paths)
+    return {dirs[p].relative_to(work).as_posix() for p in seen}
+
+
+def probe_paths(work, name):
+    """Repository paths a probe reads: COMMON_INPUTS, its script, its `extra` paths, and its crates (crate_paths)."""
+    probe = PROBES[name]
+    return sorted(set(COMMON_INPUTS) | {probe["script"]} | set(probe.get("extra", ())) | crate_paths(work, name))
 
 
 def fingerprint(inputs):
@@ -335,8 +352,18 @@ def reuse_probe(root, previous, previous_path, name, commit, paths, inputs, tq1=
         return None, f"the earlier report's {name} probe did not pass"
     origin = old.get("reused") or {"commit": previous["commit"], "report": str(previous_path)}
     base = origin.get("commit")
-    if fingerprint(old.get("inputs", {})) != fingerprint(inputs):
-        return None, "a model or reference input differs from the earlier report's (sha256)"
+    before, after = fingerprint(old.get("inputs", {})), fingerprint(inputs)
+    differ = sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k))
+    if differ:
+        machine = [k for k in differ if k in MACHINE_KEYS]
+        files = [k for k in differ if k not in MACHINE_KEYS]
+        parts = []
+        if machine:
+            parts.append("the machine differs from the earlier report's: " + ", ".join(
+                f"{k} {before.get(k)!r} -> {after.get(k)!r}" for k in machine))
+        if files:
+            parts.append("a model or reference input differs from the earlier report's (sha256): " + ", ".join(files))
+        return None, "; ".join(parts)
     if name == "kitten":
         old_tq1 = old.get("tq1") or {}
         if (old_tq1.get("status") != "pass" or tq1 is None or not tq1.get("expected_sha256")
@@ -360,6 +387,45 @@ def reuse_probe(root, previous, previous_path, name, commit, paths, inputs, tq1=
     if tq1 is not None:
         entry["tq1"] = dict(old.get("tq1"), **{"input": tq1["input"], "expected_sha256": tq1.get("expected_sha256")})
     return entry, None
+
+
+def device_identity(log):
+    """GPU names and driver versions from the gate's `nvidia-smi --query-gpu=name,driver_version` log."""
+    try:
+        lines = Path(log).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None, None
+    rows = [line.rsplit(",", 1) for line in lines if "," in line and not line.startswith("$ ")]
+    if not rows:
+        return None, None
+    return " | ".join(r[0].strip() for r in rows), " | ".join(r[1].strip() for r in rows)
+
+
+def cuda_toolkit(cuda_home):
+    """The toolkit's own version lines from `<CUDA_HOME>/bin/nvcc --version`."""
+    nvcc = Path(cuda_home) / "bin" / "nvcc"
+    try:
+        proc = subprocess.run([str(nvcc), "--version"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"unavailable ({type(exc).__name__})"
+    if proc.returncode:
+        return f"unavailable (nvcc exited {proc.returncode})"
+    lines = [line.strip() for line in proc.stdout.splitlines()
+             if line.strip().startswith(("Cuda compilation tools", "Build "))]
+    return " / ".join(lines) or proc.stdout.strip()
+
+
+def machine_inputs(device_ok, device_log):
+    """What the probes ran on and were built with, besides the repository and the model files.
+
+    The probes put CUDA_HOME/bin on PATH and link the CUDA runtime from it (default /usr/local/cuda, resolved, so a
+    re-pointed symlink is a different toolkit), and cargo applies RUSTFLAGS / CARGO_ENCODED_RUSTFLAGS to every build.
+    """
+    gpu, driver = device_identity(device_log) if device_ok else (None, None)
+    cuda_home = os.path.realpath(os.environ.get("CUDA_HOME") or "/usr/local/cuda")
+    return {"gpu": gpu or "unavailable", "driver": driver or "unavailable", "cuda_home": cuda_home,
+            "cuda_toolkit": cuda_toolkit(cuda_home), "rustflags": os.environ.get("RUSTFLAGS", ""),
+            "cargo_encoded_rustflags": os.environ.get("CARGO_ENCODED_RUSTFLAGS", "")}
 
 
 def probe_inputs(name, scratch):
@@ -449,7 +515,7 @@ def main():
                          "The Kitten TQ1_0 CUDA checks need TQ1_GGUF and its expected sha256 (TQ1_GGUF_SHA256); without them gpu.kitten.tq1 is incomplete, and so is the result.",
                          "Instrument checks compare within each backend; timing and external artifacts are not covered.",
                          "External CUDA library provenance is supplied by the operator; its build cannot be verified here.",
-                         "A reused probe ran on the commit it names, on the device that run used; inputs outside its listed paths and hashed models are not compared."]}
+                         "A reused probe ran on the commit it names; it is reused only on the same GPU, driver, CUDA toolkit and RUSTFLAGS, and inputs outside its listed paths, hashed models and those machine fields are not compared."]}
     root = Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip())
     work = root
     tmp = None
@@ -484,6 +550,7 @@ def main():
         device_ok = command(["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
                             work, device_log) == 0
         report["device_log"] = str(device_log)
+        report["machine"] = machine = machine_inputs(device_ok, device_log)
         for name, probe in PROBES.items():
             variables = probe["env"]
             entry = {"status": "incomplete", "backend": "cuda", "inputs": {}, "log": str(scratch / (name + ".log"))}
@@ -507,7 +574,7 @@ def main():
                 entry["reason"] = "missing: " + ", ".join(missing)
                 continue
             try:
-                entry["inputs"] = probe_inputs(name, scratch)
+                entry["inputs"] = dict(probe_inputs(name, scratch), **machine)
                 if previous is not None:
                     try:
                         paths = probe_paths(work, name)

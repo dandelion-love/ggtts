@@ -183,8 +183,11 @@ def commit(repo, message, **changes):
 
 QWEN_PATHS = ["Cargo.lock", "Cargo.toml", "crates/ggtts-core", "crates/ggtts-ggml-sys", "crates/ggtts-qwen3-tts",
               "rust-toolchain.toml"]
+MACHINE = {"gpu": "NVIDIA GeForce RTX 3080 Ti", "driver": "566.03", "cuda_home": "/usr/local/cuda-12.6",
+           "cuda_toolkit": "Cuda compilation tools, release 12.6, V12.6.85", "rustflags": "",
+           "cargo_encoded_rustflags": ""}
 INPUTS = {"TALKER": {"path": "/models/talker.gguf", "sha256_tree": "aa"}, "QWEN3_TTS_CPP": {"path": "/ref"},
-          "reference_commit": "r1"}
+          "reference_commit": "r1", **MACHINE}
 
 
 def passing(commit_sha, **gpu):
@@ -236,6 +239,22 @@ class ReuseTest(unittest.TestCase):
             entry, why = self.reuse(later, inputs=inputs)
             self.assertIsNone(entry)
             self.assertIn("sha256", why)
+
+    def test_a_different_machine_reruns(self):
+        # The same commit: only the machine differs, and the reason names what.
+        for key, value in (("driver", "570.10"), ("cuda_toolkit", "Cuda compilation tools, release 12.8, V12.8.61"),
+                           ("gpu", "NVIDIA GeForce RTX 4090"), ("cuda_home", "/usr/local/cuda-12.8"),
+                           ("rustflags", "-C target-cpu=native"), ("cargo_encoded_rustflags", "-Ctarget-cpu=native")):
+            entry, why = self.reuse(self.base, inputs=dict(INPUTS, **{key: value}))
+            self.assertIsNone(entry, key)
+            self.assertIn("the machine differs", why)
+            self.assertIn(key, why)
+            self.assertIn(value, why)
+        # A report from before the machine was recorded, or a machine field left out now, is a difference too.
+        entry, why = self.reuse(self.base, inputs={k: v for k, v in INPUTS.items() if k != "driver"})
+        self.assertIsNone(entry)
+        self.assertIn("driver", why)
+        self.assertIsNotNone(self.reuse(self.base)[0])
 
     def test_a_failed_earlier_report_never_reuses(self):
         later = commit(self.repo, "docs", **{"docs/notes.md": "x\n"})
@@ -360,6 +379,44 @@ class PythonRequirementsTest(unittest.TestCase):
             self.assertIn("librosa", gate.read_requirements(root / rel))
 
 
+class MachineTest(unittest.TestCase):
+    def test_device_identity_reads_the_query_log(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "device.log"
+            log.write_text("$ nvidia-smi --query-gpu=name,driver_version --format=csv,noheader\n"
+                           "NVIDIA GeForce RTX 3080 Ti, 566.03\nNVIDIA RTX A2000, 566.03\n")
+            self.assertEqual(gate.device_identity(log),
+                             ("NVIDIA GeForce RTX 3080 Ti | NVIDIA RTX A2000", "566.03 | 566.03"))
+            log.write_text("$ nvidia-smi\nNVIDIA-SMI has failed\n")
+            self.assertEqual(gate.device_identity(log), (None, None))
+            self.assertEqual(gate.device_identity(Path(d) / "absent.log"), (None, None))
+
+    @unittest.skipUnless(os.name == "posix", "a shell-script nvcc")
+    def test_cuda_toolkit_and_machine_inputs(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d) / "cuda-12.6"
+            (home / "bin").mkdir(parents=True)
+            nvcc = home / "bin" / "nvcc"
+            nvcc.write_text("#!/bin/sh\necho 'nvcc: NVIDIA (R) Cuda compiler driver'\n"
+                            "echo 'Cuda compilation tools, release 12.6, V12.6.85'\necho 'Build cuda_12.6.r12.6/compiler.1'\n")
+            nvcc.chmod(0o755)
+            self.assertEqual(gate.cuda_toolkit(home),
+                             "Cuda compilation tools, release 12.6, V12.6.85 / Build cuda_12.6.r12.6/compiler.1")
+            self.assertTrue(gate.cuda_toolkit(Path(d) / "none").startswith("unavailable"))
+            link = Path(d) / "cuda"
+            link.symlink_to(home)
+            log = Path(d) / "device.log"
+            log.write_text("NVIDIA GeForce RTX 3080 Ti, 566.03\n")
+            with patch.dict(os.environ, {"CUDA_HOME": str(link), "RUSTFLAGS": "-C opt-level=2",
+                                         "CARGO_ENCODED_RUSTFLAGS": "-Cdebuginfo=0"}):
+                machine = gate.machine_inputs(True, log)
+                self.assertEqual(machine, {"gpu": "NVIDIA GeForce RTX 3080 Ti", "driver": "566.03",
+                                           "cuda_home": str(home.resolve()), "cuda_toolkit": gate.cuda_toolkit(home),
+                                           "rustflags": "-C opt-level=2", "cargo_encoded_rustflags": "-Cdebuginfo=0"})
+                self.assertEqual(gate.machine_inputs(False, log)["gpu"], "unavailable")
+            self.assertEqual(set(machine), set(gate.MACHINE_KEYS))
+
+
 class MainTest(unittest.TestCase):
     """The gate end to end on a real repository, with the cargo, probe and GPU commands replaced."""
 
@@ -385,6 +442,8 @@ class MainTest(unittest.TestCase):
         model = self.top / "inputs" / "tq1.gguf"
         model.write_text("tq1 model")
         self.env.update(TQ1_GGUF=str(model), TQ1_GGUF_SHA256=gate.file_sha256(model))
+        self.gpu = "NVIDIA GeForce RTX 3080 Ti, 566.03"
+        self.toolkit = "Cuda compilation tools, release 12.6, V12.6.85"
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -404,6 +463,9 @@ class MainTest(unittest.TestCase):
 
         def command(cmd, cwd, log, env=None):
             calls.append(cmd)
+            if cmd[0] == "nvidia-smi":
+                log.parent.mkdir(parents=True, exist_ok=True)
+                log.write_text("$ nvidia-smi\n" + self.gpu + "\n")
             if cmd[0] == "bash" and "kitten" in cmd[1]:
                 log.parent.mkdir(parents=True, exist_ok=True)
                 log.write_text("== result: ALL PASS\n")
@@ -416,8 +478,9 @@ class MainTest(unittest.TestCase):
              patch.object(gate, "python_requirements", return_value=python), \
              patch.object(gate, "github_repo", return_value="o/r"), \
              patch.object(gate, "ci_cpu_checks", return_value=ci), \
-             patch.object(gate, "probe_paths", side_effect=lambda work, name: sorted(
-                 set(gate.COMMON_INPUTS) | {gate.PROBES[name]["script"], gate.PROBES[name]["script"].split("/scripts")[0]})), \
+             patch.object(gate, "crate_paths", side_effect=lambda work, name: {
+                 gate.PROBES[name]["script"].split("/scripts")[0]}), \
+             patch.object(gate, "cuda_toolkit", side_effect=lambda home: self.toolkit), \
              patch.object(gate, "instrument_proof", return_value={"cpu": {"status": "pass"}, "cuda": {"status": "pass"}}), \
              contextlib.redirect_stdout(io.StringIO()):
             code = gate.main()
@@ -450,6 +513,52 @@ class MainTest(unittest.TestCase):
         code, report, probes, _ = self.run_gate()
         self.assertEqual([("qwen" in p) for p in probes], [True])
         self.assertIn("sha256", report["gpu"]["qwen"]["reuse_refused"])
+
+    def assert_reruns(self, probes, report, names, reason):
+        self.assertEqual(sorted(p.split("/")[1] for p in probes), sorted(f"ggtts-{n}" for n in names))
+        for name, crate in (("qwen", "qwen3-tts"), ("kitten", "kitten")):
+            if crate in names:
+                self.assertIn(reason, report["gpu"][name]["reuse_refused"])
+            else:
+                self.assertIn("reused", report["gpu"][name])
+
+    def test_the_machine_is_an_input(self):
+        names = ("qwen3-tts", "kitten")
+        self.run_gate()
+        code, report, probes, _ = self.run_gate()
+        self.assertEqual((code, probes), (0, []))
+        self.assertEqual(report["gpu"]["qwen"]["inputs"]["driver"], "566.03")
+        self.assertEqual(report["machine"]["cuda_toolkit"], self.toolkit)
+        # The same commit throughout: a driver upgrade, a toolkit upgrade, another card, then RUSTFLAGS.
+        self.gpu = "NVIDIA GeForce RTX 3080 Ti, 570.10"
+        code, report, probes, _ = self.run_gate()
+        self.assert_reruns(probes, report, names, "driver '566.03' -> '570.10'")
+        self.toolkit = "Cuda compilation tools, release 12.8, V12.8.61"
+        code, report, probes, _ = self.run_gate()
+        self.assert_reruns(probes, report, names, "cuda_toolkit")
+        self.gpu = "NVIDIA GeForce RTX 4090, 570.10"
+        code, report, probes, _ = self.run_gate()
+        self.assert_reruns(probes, report, names, "gpu 'NVIDIA GeForce RTX 3080 Ti' -> 'NVIDIA GeForce RTX 4090'")
+        self.env["RUSTFLAGS"] = "-C target-cpu=native"
+        code, report, probes, _ = self.run_gate()
+        self.assert_reruns(probes, report, names, "rustflags")
+        self.assertEqual(report["result"], "pass")
+        code, report, probes, _ = self.run_gate()
+        self.assertEqual(probes, [])
+
+    def test_cargo_config_and_instrument_files_are_inputs(self):
+        self.run_gate()
+        commit(self.repo, "cargo config", **{".cargo/config.toml": '[build]\nrustflags = ["-C", "target-cpu=native"]\n'})
+        code, report, probes, _ = self.run_gate()
+        self.assert_reruns(probes, report, ("qwen3-tts", "kitten"), ".cargo/config.toml")
+        for rel in ("instruments/instruments.yaml", "docs/instruments/instruments.schema.json"):
+            commit(self.repo, rel, **{rel: "changed\n"})
+            code, report, probes, _ = self.run_gate()
+            self.assert_reruns(probes, report, ("kitten",), rel)
+        # Files only the crates' own tests read are not inputs.
+        commit(self.repo, "scripts", **{"scripts/elsewhere.py": "x\n"})
+        code, report, probes, _ = self.run_gate()
+        self.assertEqual(probes, [])
 
     def test_cpu_stage_comes_from_green_ci_or_runs_here(self):
         code, report, _, cargo = self.run_gate("--no-reuse", ci=(True, {"commit": self.base, "checks": {}}))

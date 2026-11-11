@@ -123,20 +123,30 @@ with `python3 -m pip install -r instruments/examples/python/loudness-ends/requir
   Skipped, cancelled, pending, absent or unreadable is not a pass, and the gate then runs the stage itself. The
   report's `cpu_source` says which. `--cpu-stage` always runs it.
 * **An engine's CUDA probe** is reused from the last passing report (`--previous`, by default the `--out` file it is
-  about to overwrite) when nothing the probe reads changed since the commit it actually ran on: the engine crates
-  it builds and their path dependencies (from `cargo metadata`), `crates/ggtts-ggml-sys` with the ggml submodule
-  pin, `crates/ggtts-core`, `Cargo.lock`, `Cargo.toml`, `rust-toolchain.toml`, `schemas/`, `fixtures/`, its
-  `cuda_probe.sh`, and the sha256 of every model and reference input it hashes (and, for Kitten, the TQ1 model and
-  its expected sha256). The stage then reads `reused from <sha> (<report>)`, keeps the earlier log path, and counts
-  as a pass. Reuse is refused, and the probe runs, when the earlier report is missing, unreadable, of another
-  `schema`, or did not pass, when that probe did not pass in it, or when its commit is unknown here; `reuse_refused`
-  says why. `--no-reuse` runs every probe. A reused probe proves what it proved on the commit it names, on that
-  run's device: it is evidence that nothing it depends on has changed, not a new run. The instrument identity proof
-  always runs. To undo this rule, pass `--no-reuse --cpu-stage`, or revert the change that added it.
+  about to overwrite) when nothing the probe reads changed since the commit it actually ran on:
+  * in the repository: the engine crates it builds and their path dependencies (from `cargo metadata`),
+    `crates/ggtts-ggml-sys` with the ggml submodule pin, `crates/ggtts-core`, `Cargo.lock`, `Cargo.toml`,
+    `rust-toolchain.toml`, `.cargo/`, `schemas/`, `fixtures/`, its `cuda_probe.sh`, and, for Kitten (whose build
+    includes `ggtts-cli` and `ggtts-instruments`), `instruments/` and `docs/instruments/`;
+  * the sha256 of every model and reference input it hashes (and, for Kitten, the TQ1 model and its expected sha256);
+  * the machine: the GPU name and driver version (`nvidia-smi`), the resolved `CUDA_HOME` (default
+    `/usr/local/cuda`) and its toolkit version (`nvcc --version`), and `RUSTFLAGS` / `CARGO_ENCODED_RUSTFLAGS`.
+    A driver or toolkit upgrade, another card, or different flags reruns every probe, and `reuse_refused` names the
+    field with its old and new values.
+
+  The stage then reads `reused from <sha> (<report>)`, keeps the earlier log path, and counts as a pass. Reuse is
+  refused, and the probe runs, when the earlier report is missing, unreadable, of another `schema`, or did not pass,
+  when that probe did not pass in it, or when its commit is unknown here; `reuse_refused` says why. `--no-reuse` runs
+  every probe. A reused probe proves what it proved on the commit it names: it is evidence that nothing it depends
+  on has changed, not a new run. The list covers what each probe's build and commands read; files only the crates'
+  own tests read (such as `scripts/`) are not in it. The instrument identity proof always runs. To undo this rule,
+  pass `--no-reuse --cpu-stage`, or revert the change that added it.
 
 The probe list is `PROBES` in `scripts/rc_gate.py`: adding a probe (for example one for `crates/ggtts-ffi`) is one
-entry naming its script, the packages it builds and the inputs it reads, and makes that probe required for a pass.
-Set their environment variables before running; the gate assigns separate `WORK` and `CARGO_TARGET_DIR` directories
+entry naming its script, the packages it builds, any other paths its build reads, and the files it hashes, and makes
+that probe required for a pass.
+
+Set the probes' environment variables before running; the gate assigns separate `WORK` and `CARGO_TARGET_DIR` directories
 under the persistent scratch directory. Use `--wait-file` for a busy GPU. The report identifies the commit, model
 and fixture hashes, device, probe commands and logs. External CUDA library build provenance must be checked separately.
 The probes compare each engine to its own reference; they do not prove CPU and GPU outputs identical. The gate also

@@ -1,6 +1,6 @@
 # ggtts-qwen3-tts identity checks and planted defects
-commit: 53fbd9d31b4bd50220544aad2507d3a73e3d5c8e
-date: 2026-11-11T04:43:01Z
+commit: f397bf71acef3d805294235a12891d004225443e
+date: 2026-11-11T05:09:33Z
 cpu: 12th Gen Intel(R) Core(TM) i9-12900K
 rustc: rustc 1.88.0 (6b00bc388 2025-06-23)
 device: cpu; fixtures: fixtures/cpu (committed); features: ggml,plant
@@ -18,7 +18,7 @@ IDENTICAL park: 76 frames, 145920 samples, sha256 c1a2a2ffdaaef33f
 IDENTICAL rainy-day: 89 frames, 170880 samples, sha256 01a1386209a2f80d
 decoder identity (no plant, 4 threads): 8 identical, 0 differ
 test decoder_samples_are_bit_identical_to_the_reference ... ok
-verdict: passed (identical to the reference), 55 s
+verdict: passed (identical to the reference), 31 s
 
 ## decoder_identity planted::rope_normal_is_seen
 DIFFERS beach: 83 frames, 159360 samples, sha256 533ed61d8694a9cc
@@ -31,7 +31,7 @@ DIFFERS park: 76 frames, 145920 samples, sha256 2f6c6f7f92a46394
 DIFFERS rainy-day: 89 frames, 170880 samples, sha256 03aba34dcf4dd93d
 decoder identity (planted RopeNormal, 4 threads): 0 identical, 8 differ
 test planted::rope_normal_is_seen ... ok
-verdict: passed (the plant was seen), 43 s
+verdict: passed (the plant was seen), 32 s
 
 ## decoder_identity planted::snake_no_epsilon_is_seen
 DIFFERS beach: 83 frames, 159360 samples, sha256 642e1424dd9801e1
@@ -44,7 +44,7 @@ DIFFERS park: 76 frames, 145920 samples, sha256 e9c5b7448aef7df5
 DIFFERS rainy-day: 89 frames, 170880 samples, sha256 295789f1acd86a1d
 decoder identity (planted SnakeNoEpsilon, 4 threads): 0 identical, 8 differ
 test planted::snake_no_epsilon_is_seen ... ok
-verdict: passed (the plant was seen), 37 s
+verdict: passed (the plant was seen), 31 s
 
 ## decoder_identity planted::window_off_by_one_is_seen
 DIFFERS beach: 83 frames, 159360 samples, sha256 fd2517d79b0e7ace
@@ -57,7 +57,7 @@ DIFFERS park: 76 frames, 145920 samples, sha256 348b33dc85ffc462
 DIFFERS rainy-day: 89 frames, 170880 samples, sha256 9a79d0df741fe0f0
 decoder identity (planted WindowOffByOne, 4 threads): 2 identical, 6 differ
 test planted::window_off_by_one_is_seen ... ok
-verdict: passed (the plant was seen), 39 s
+verdict: passed (the plant was seen), 31 s
 
 ## token_identity codec_tokens_are_identical_to_the_reference
 IDENTICAL beach: 83 frames
@@ -66,12 +66,12 @@ IDENTICAL cafe: 87 frames
 IDENTICAL dinner: 59 frames
 IDENTICAL first-meeting: 78 frames
 IDENTICAL greeting: 38 frames
-test codec_tokens_are_identical_to_the_reference has been running for over 60 seconds
 IDENTICAL park: 76 frames
+test codec_tokens_are_identical_to_the_reference has been running for over 60 seconds
 IDENTICAL rainy-day: 89 frames
 token identity (no plant, 4 threads): 8 identical, 0 differ
 test codec_tokens_are_identical_to_the_reference ... ok
-verdict: passed (identical to the reference), 76 s
+verdict: passed (identical to the reference), 63 s
 
 ## token_identity planted::rope_normal_is_seen
 DIFFERS beach: first at frame 0 codebook 2 (got 1086, reference 973); 134 frames against 83
@@ -85,7 +85,7 @@ DIFFERS park: first at frame 0 codebook 2 (got 966, reference 1086); 113 frames 
 DIFFERS rainy-day: first at frame 0 codebook 2 (got 966, reference 1086); 142 frames against 89
 token identity (planted RopeNormal, 4 threads): 0 identical, 8 differ
 test planted::rope_normal_is_seen ... ok
-verdict: passed (the plant was seen), 106 s
+verdict: passed (the plant was seen), 98 s
 
 ## token_identity planted::sampler_off_by_one_is_seen
 DIFFERS beach: first at frame 0 codebook 0 (got 1221, reference 1995); 89 frames against 83
@@ -94,12 +94,12 @@ DIFFERS cafe: first at frame 0 codebook 0 (got 1221, reference 1995); 92 frames 
 DIFFERS dinner: first at frame 0 codebook 0 (got 1221, reference 1995); 63 frames against 59
 DIFFERS first-meeting: first at frame 0 codebook 0 (got 1221, reference 1995); 76 frames against 78
 DIFFERS greeting: first at frame 0 codebook 0 (got 1221, reference 1995); 40 frames against 38
-test planted::sampler_off_by_one_is_seen has been running for over 60 seconds
 DIFFERS park: first at frame 0 codebook 0 (got 1221, reference 1995); 76 frames against 76
+test planted::sampler_off_by_one_is_seen has been running for over 60 seconds
 DIFFERS rainy-day: first at frame 0 codebook 0 (got 1221, reference 1995); 86 frames against 89
 token identity (planted SamplerOffByOne, 4 threads): 0 identical, 8 differ
 test planted::sampler_off_by_one_is_seen ... ok
-verdict: passed (the plant was seen), 69 s
+verdict: passed (the plant was seen), 66 s
 
 ## token_identity instructed_codec_tokens_are_identical_to_the_reference
 IDENTICAL dinner-excited: 60 frames
@@ -107,7 +107,7 @@ IDENTICAL greeting-happy: 25 frames
 IDENTICAL park-slowly: 61 frames
 token identity (instructions, 4 threads): 3 identical, 0 differ
 test instructed_codec_tokens_are_identical_to_the_reference ... ok
-verdict: passed (identical to the reference), 18 s
+verdict: passed (identical to the reference), 17 s
 
 ## token_identity an_empty_instruction_is_no_instruction
 IDENTICAL beach: 83 frames
@@ -121,11 +121,14 @@ test an_empty_instruction_is_no_instruction has been running for over 60 seconds
 IDENTICAL rainy-day: 89 frames
 token identity (empty instruction, 4 threads): 8 identical, 0 differ
 test an_empty_instruction_is_no_instruction ... ok
-verdict: passed (identical to the reference), 67 s
+verdict: passed (identical to the reference), 64 s
 
 ## token_identity an_instruction_changes_the_codes
+dinner-excited: 60 frames with the instruction, 59 without; first difference (frame, codebook) Some((0, 5))
+greeting-happy: 25 frames with the instruction, 38 without; first difference (frame, codebook) Some((0, 1))
+park-slowly: 61 frames with the instruction, 76 without; first difference (frame, codebook) Some((0, 1))
 test an_instruction_changes_the_codes ... ok
-verdict: passed (identical to the reference), 34 s
+verdict: passed (the instruction changed the codes of every case), 32 s
 
 ## token_identity planted::instruction_after_role_is_seen
 DIFFERS dinner-excited: first at frame 0 codebook 2 (got 1114, reference 1086); 75 frames against 60
@@ -133,6 +136,6 @@ DIFFERS greeting-happy: first at frame 0 codebook 1 (got 1276, reference 1159); 
 DIFFERS park-slowly: first at frame 1 codebook 1 (got 1445, reference 1402); 78 frames against 61
 token identity (planted InstructionAfterRole, 4 threads): 0 identical, 3 differ
 test planted::instruction_after_role_is_seen ... ok
-verdict: passed (the plant was seen), 22 s
+verdict: passed (the plant was seen), 21 s
 
 exit: 0

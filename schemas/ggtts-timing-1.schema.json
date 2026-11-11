@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:ggtts:schema:ggtts-timing:1",
   "title": "ggtts-timing/1: one completed render's timing boundaries",
+  "description": "models was added within ggtts-timing/1: a report without it is still valid, and one with it is still ggtts-timing/1.",
   "type": "object",
   "additionalProperties": false,
   "required": ["format", "engine", "backend", "parity", "load_ms", "render_ms", "audio_seconds",
@@ -32,7 +33,16 @@
       "properties": {"level": {"enum": ["error", "warn", "info", "debug", "trace"]},
         "format": {"enum": ["text", "json"]}, "records": {"$ref": "#/$defs/count"},
         "sink_ns": {"$ref": "#/$defs/count"}, "lock_wait_ns": {"$ref": "#/$defs/count"}}},
-    "limits": {"type": "string", "minLength": 1}
+    "limits": {"type": "string", "minLength": 1},
+    "models": {"description": "Every model file the render used: a default file from the cache by its verified pinned sha256, a path given on the command line by the sha256 of its content.",
+      "type": "array", "items": {"type": "object", "additionalProperties": false,
+      "required": ["role", "path", "sha256", "source", "url"],
+      "properties": {"role": {"type": "string", "minLength": 1}, "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source": {"enum": ["cache", "path"]},
+        "url": {"description": "Where a cached file was fetched from; null for a given path.", "type": ["string", "null"], "minLength": 1}},
+      "if": {"properties": {"source": {"const": "cache"}}}, "then": {"properties": {"url": {"type": "string"}}},
+      "else": {"properties": {"url": {"type": "null"}}}}}
   },
   "$defs": {
     "count": {"type": "integer", "minimum": 0},

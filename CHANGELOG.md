@@ -28,6 +28,19 @@ new requirements. Internal refactors and test changes are not listed.
 
 ### Added
 
+- **A render with no model downloads the default one.** `ggtts-render --text "..." --out x.flac` with no `--model`
+  renders with Qwen3-TTS on the talker and codec of `jmtl/hk-cantonese-cc0-qwen3-tts-GGUF` v0.0.5 (2.33 GB, pinned
+  by commit and sha256) and the speaker `hk_voice_343`. The first run says what it will download, from where, how
+  large and where to, then downloads into a per-user cache and verifies each file before use; later runs download
+  nothing. `GGTTS_CACHE_DIR` moves the cache. `--offline` never downloads, and names any missing file and its URL.
+  A path given with `--model` or `--codec` is used as it is, never downloaded over or held to a pinned hash, and may
+  be mixed with a default file. Until now a render without `--model` was an error. See "Default model files" in
+  the README.
+- **`--timing-report` records the model files** under a new `models` list: role, path, sha256, whether the file
+  came from the cache or a given path, and a cached file's URL. The format stays `ggtts-timing/1`; a report
+  without `models` is still valid.
+- **ggtts-render links an HTTPS client** (ureq with rustls and its bundled Mozilla roots; no OpenSSL or other
+  system TLS library). `licenses/rust-crates.txt` lists the crates it adds.
 - **`ggtts-render --speaker NAME`** selects a named speaker of a Qwen3-TTS model, for example
   `--speaker hk_voice_343` or `--speaker hk_voice_777` with `jmtl/hk-cantonese-cc0-qwen3-tts-GGUF` v0.0.5. Without
   it the default is still `hk_cantonese_speaker`. A name the model does not have is an error that lists the

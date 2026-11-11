@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 from io import StringIO
 
+from select_specialized_ci import GGML_GATED_CRATES, GGML_GATED_FILES
 from select_specialized_ci import cuda_decision, cuda_drift, cuda_push_path, pushed_paths
 from select_specialized_ci import JOBS, LOGGING_PACKAGES, decide, logging_lockfile_change, main, tomllib, workflow_changes, workflow_sections
 
@@ -157,7 +158,7 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(select([".github/workflows/release.yml"]), {"package", "release"})
         self.assertEqual(select(["scripts/package_cuda_release.sh"]), {"package", "release"})
         self.assertEqual(select(["scripts/buildinfo_engines.sh"]), {"ggml", "release"})
-        self.assertEqual(select(["crates/ggtts-qwen3-tts/src/lib.rs"]), {"package"})
+        self.assertEqual(select(["crates/ggtts-qwen3-tts/src/lib.rs"]), {"ggml", "package"})
         self.assertEqual(select(["crates/ggtts-core/src/pipeline.rs", "crates/ggtts-cli/Cargo.toml"]), {"package"})
         self.assertEqual(select(["crates/ggtts-ffi/src/lib.rs"]), {"binding", "android", "ggml"})
         self.assertEqual(select(["crates/ggtts-ggml-sys/build.rs"]), {"binding", "android", "ggml"})
@@ -183,9 +184,31 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(decide("pull_request", "rc", "feature", True,
                                 ["crates/ggtts-instruments/tests/no_change.rs"]), {"package"})
         self.assertEqual(decide("pull_request", "rc", "feature", True,
-                                ["crates/ggtts-qwen3-tts/tests/frame_hook.rs"]), set())
+                                ["crates/ggtts-qwen3-tts/tests/frame_hook.rs"]), {"ggml"})
         self.assertEqual(decide("pull_request", "rc", "feature", True,
-                                ["crates/ggtts-cli/tests/no_change_real.rs"]), {"package"})
+                                ["crates/ggtts-cli/tests/no_change_real.rs"]), {"ggml", "package"})
+
+    def test_ggml_gated_code_selects_the_ggml_job(self):
+        select = lambda paths: decide("pull_request", "rc", "feature", True, paths)
+        for path in ("crates/ggtts-kitten/src/model.rs", "crates/ggtts-kitten/src/refdsp.rs",
+                     "crates/ggtts-kitten/tests/parity.rs", "crates/ggtts-qwen3-tts/src/talker.rs",
+                     "crates/ggtts-qwen3-tts/src/engine.rs", "crates/ggtts-cli/tests/version_engines.rs",
+                     "crates/ggtts-cli/src/bin/ggtts-render.rs", "crates/ggtts-ffi/src/lib.rs",
+                     "crates/ggtts-ggml-sys/src/lib.rs"):
+            self.assertIn("ggml", select([path]), path)
+        # Ungated code does not pay for the ggml build.
+        for path in ("crates/ggtts-core/src/pipeline.rs", "crates/ggtts-fake/src/lib.rs",
+                     "crates/ggtts-cli/src/bin/ggtts-measure.rs", "crates/ggtts-instruments/src/runner.rs", "README.md"):
+            self.assertNotIn("ggml", select([path]), path)
+        # Every file in the tree that gates on the feature is covered, so a new gated file cannot go untested.
+        root = Path(__file__).resolve().parent.parent
+        gated = [p.relative_to(root).as_posix() for p in (root / "crates").rglob("*.rs")
+                 if "ggml-sys/ggml/" not in p.as_posix() and "/target/" not in p.as_posix()
+                 and 'feature = "ggml"' in p.read_text(encoding="utf-8", errors="replace")]
+        self.assertTrue(any(p.startswith(GGML_GATED_CRATES) for p in gated))
+        self.assertTrue(GGML_GATED_FILES <= set(gated), sorted(GGML_GATED_FILES - set(gated)))
+        for path in gated:
+            self.assertIn("ggml", select([path]), path + " gates on the ggml feature but does not select the ggml job")
 
     def test_logging_change_gets_lightweight_pr_and_cpu_promotion(self):
         paths = ["crates/ggtts-cli/Cargo.toml", "crates/ggtts-cli/src/bin/ggtts-render.rs",

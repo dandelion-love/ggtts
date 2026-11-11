@@ -44,6 +44,16 @@ JOB_MAP = {
     "check": set(), "build-test": set(), "planted-ceiling": set(),
 }
 
+# Where `feature = "ggml"` gates code: the default build compiles none of it, so only the ggml job runs its tests.
+# The engine crates are gated throughout; elsewhere it is these files. A test greps the tree and fails when a gated
+# file is in neither list. (crates/ggtts-ggml-sys/ and crates/ggtts-ffi/ select ggml by their own rule below.)
+GGML_GATED_CRATES = ("crates/ggtts-kitten/", "crates/ggtts-qwen3-tts/")
+GGML_GATED_FILES = {
+    "crates/ggtts-cli/src/bin/ggtts-render.rs",
+    "crates/ggtts-cli/tests/no_change_real.rs",
+    "crates/ggtts-cli/tests/version_engines.rs",
+}
+
 # Generic measurement/reporting paths are compiled and tested on both CPU hosts for every PR.
 # CPU release, Android and binding builds run on the rc-to-main promotion.
 MEASUREMENT_PATHS = {
@@ -200,6 +210,9 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
             continue
         if path in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".gitmodules"):
             return set(JOBS)
+        if path.startswith(GGML_GATED_CRATES) or path in GGML_GATED_FILES:
+            # Code behind `feature = "ggml"` is compiled and tested only by the ggml job.
+            selected.add("ggml")
         if path.startswith("crates/"):
             if path == "crates/ggtts-cli/src/bin/ggtts-render.rs":
                 # The renderer contains ggml-gated engine loading and routing. Default CPU

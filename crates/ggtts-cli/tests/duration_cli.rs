@@ -230,3 +230,35 @@ fn explicit_duration_report_is_checked_before_rendering() {
     assert_eq!(std::fs::read(dir.join("kept.json")).unwrap(), b"keep");
     assert!(!dir.join("existing.flac").exists());
 }
+
+/// The explicit report may name the not-yet-created instrument report directory by any spelling of it.
+fn shared_fresh_report_dir(name: &str, spell: &dyn Fn(&Path) -> PathBuf) {
+    let dir = scratch(name);
+    let instruments = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments");
+    let out = Command::new(env!("CARGO_BIN_EXE_ggtts-render"))
+        .current_dir(&dir)
+        .env("GGTTS_INSTRUMENTS_DIR", instruments)
+        .args(["--engine", "fake", "--text", "Hello.", "--out", "e.flac"])
+        .args(["--instrument", "audio-levels", "--duration-report"])
+        .arg(spell(&dir))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(json(&dir.join("e.report/duration.json"))["format"], "ggtts-duration/1");
+    assert!(dir.join("e.report/duration.md").exists());
+}
+
+#[test]
+fn explicit_duration_shares_fresh_report_dir_spelled_with_dot_slash() {
+    shared_fresh_report_dir("dot-slash", &|_| PathBuf::from("./e.report/duration.json"));
+}
+
+#[test]
+fn explicit_duration_shares_fresh_report_dir_spelled_absolute() {
+    shared_fresh_report_dir("absolute", &|dir| dir.join("e.report/duration.json"));
+}
+
+#[test]
+fn explicit_duration_shares_fresh_report_dir_spelled_with_dot_dot() {
+    shared_fresh_report_dir("dot-dot", &|_| PathBuf::from("e.report/../e.report/duration.json"));
+}

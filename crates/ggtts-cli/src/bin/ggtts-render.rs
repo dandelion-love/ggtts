@@ -327,6 +327,26 @@ fn render_with_loader(
     })
 }
 
+/// `path` made absolute against the current directory with `.` and `..` resolved by name only, so two spellings of
+/// a directory that does not exist yet compare equal. Symlinks are not followed.
+fn lexical_absolute(path: &Path) -> PathBuf {
+    let mut out = if path.is_absolute() {
+        PathBuf::new()
+    } else {
+        std::env::current_dir().unwrap_or_default()
+    };
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 fn render_with_story_reader(
     a: Args,
     log: LogSettings,
@@ -405,7 +425,7 @@ fn render_with_stream_opener(
                 .clone()
                 .unwrap_or_else(|| out.with_extension("flac").with_extension("report"))
         });
-        if report_dir.as_deref() != Some(parent) {
+        if report_dir.as_deref().map(lexical_absolute) != Some(lexical_absolute(parent)) {
             return Err(format!("--duration-report: {} is not a directory", parent.display()));
         }
     }

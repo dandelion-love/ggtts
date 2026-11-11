@@ -160,6 +160,7 @@ fn every_variant() -> Vec<Map<String, Value>> {
             text: "你好。",
             seed: u64::MAX,
             n_text_tokens: Some(4),
+            instruction: None,
         },
         Event::ChunkBegin {
             chunk: 0,
@@ -167,6 +168,15 @@ fn every_variant() -> Vec<Map<String, Value>> {
             text: "",
             seed: 0,
             n_text_tokens: None,
+            instruction: None,
+        },
+        Event::ChunkBegin {
+            chunk: 1,
+            draw: 0,
+            text: "今日天氣好好。",
+            seed: 20260905,
+            n_text_tokens: None,
+            instruction: Some("Speak slowly and softly."),
         },
         Event::Step {
             chunk: 0,
@@ -324,6 +334,11 @@ fn the_schema_refuses_planted_defects_and_ignores_the_clock() {
         ("an undeclared field", {
             let mut m = step.clone();
             m.insert("logits".into(), json!([0.1, 0.2]));
+            m
+        }),
+        ("an empty instruction, which the writer leaves out", {
+            let mut m = by("chunk_begin");
+            m.insert("instruction".into(), "".into());
             m
         }),
         ("cb without cb_p", {

@@ -10,6 +10,7 @@ its outputs are bit-identical to the reference's on CPU.
 | `codec` | the codec decoder, tokens to 24 kHz samples (`src/decoder/`, the non-streaming path) |
 | `talker` | the prompt, the talker, the code predictor, the generation loop and the sampler (`src/transformer/`) |
 | `tokenizer` | the text tokenizer and the TTS prompt wrappers (`src/text_tokenizer.cpp`, `src/tokenizer_unicode.cpp`) |
+| `instruct` | which checkpoints take a style instruction (`tts_model_type`, `get_model_capabilities`) |
 | `engine` | `Qwen3Tts`, the core's `Engine` trait over the three |
 
 Each function names the reference file and lines it follows.
@@ -31,6 +32,22 @@ cargo test --release -p ggtts-qwen3-tts --features ggml,plant -- --ignored --noc
 scripts/identity_runs.sh > records/identity-cpu.log   # the same, one test at a time, as a record
 ```
 
+**Style instructions.** `fixtures/instruct/` holds three more cases recorded the same way with the reference CLI's
+`--instruction` (`TEXTS=fixtures/instruct/texts.tsv OUT=fixtures/instruct scripts/record_fixtures.sh`; the third
+column of `texts.tsv` is the instruction). The instruction is tokenized as a user turn
+(`<|im_start|>user\n{instruction}<|im_end|>\n`), passed through the text embedding and the text projection, and its
+rows go before the role rows of the prompt (`transformer_embeddings.cpp:301-314` and `:656-668`).
+`token_identity`'s `instructed_codec_tokens_are_identical_to_the_reference` checks every frame and codebook of
+them; `an_empty_instruction_is_no_instruction` renders the plain fixtures with an empty instruction and needs the
+plain tokens; `an_instruction_changes_the_codes` renders each instruction case with and without its instruction;
+and `planted::instruction_after_role_is_seen` puts the instruction after the role rows and must see every case
+differ. Which checkpoints take an instruction follows the reference's capability rule (`src/instruct.rs`):
+`custom_voice` at hidden size 2048 or more, `voice_design`, or the file's own `qwen3-tts.supports_instruction`
+flag. The reference only reports that capability and renders an instruction on any checkpoint; here a checkpoint
+without it refuses one. `a_base_checkpoint_refuses_an_instruction` checks that on a Base talker given in
+`GGTTS_BASE_TALKER` (for example `Qwen/Qwen3-TTS-12Hz-1.7B-Base` converted with the reference's
+`scripts/convert_tts_to_gguf.py -t q8_0`).
+
 Each check has expected-failure tests beside it, `planted::*`, built only with the test-only `plant` feature: each
 plants one defect and passes only when the check then goes red. Without `plant` there is no way to plant a defect,
 and `codec::Plant`, `talker::Plant` and `load_planted` do not exist.
@@ -42,6 +59,7 @@ Measured on an i9-12900K, WSL2 Ubuntu 22.04, gcc 11.4, 4 threads, ggml built `-m
 |---|---|---|
 | `decoder_identity`: samples, sha256 of the f32 bytes | 8 of 8 identical | `rope-normal` 0 of 8; `snake-no-epsilon` 0 of 8; `window-off-by-one` 2 of 8 identical, the two fixtures shorter than the 72-frame window, which cannot see it |
 | `token_identity`: every codec token of every frame, and the frame count | 8 of 8 identical | `rope-normal` 0 of 8 (first difference at frame 0, codebooks 1 to 5); `sampler-off-by-one` 0 of 8 (frame 0, codebook 0) |
+| `token_identity`, the instruction fixtures | 3 of 3 identical | `instruction-after-role` 0 of 3 (first difference at frame 0 or 1, codebooks 1 to 2) |
 
 Both hold whether ggml is built by `ggtts-ggml-sys` or the reference's own archives are linked
 (`GGML_LIB_DIR=<reference build>/ggml/src`).
@@ -65,7 +83,7 @@ Both hold whether ggml is built by `ggtts-ggml-sys` or the reference's own archi
   this engine does not.
 * **The reference's CPU path.** It moves the talker's last hidden row to the code predictor through a device tensor;
   here it goes through the host as the same f32 bits. Its replay graphs, dedicated schedulers and CUDA-only greedy
-  chains are not ported. Instructions, voice cloning (ICL) and the reference's streaming decoder are not ported; ggtts streams
+  chains are not ported. Voice cloning (ICL) and the reference's streaming decoder are not ported; ggtts streams
   differently, by re-decoding the prefix (`src/stream.rs`).
 * **top-p below 1.** The reference sorts with `std::sort`, which is not stable; ties in probability may order
   differently here. The fixtures use top-p 1.0, which skips that branch.
@@ -78,6 +96,7 @@ cargo build --release -p ggtts-cli --features ggml
 target/release/ggtts-render --model "$GGTTS_TALKER" --codec "$GGTTS_CODEC" --out out.flac -j 4 \
   --text "今日天氣好好，我哋去公園行下"
 # or --story story.txt: title line, one paragraph per line, rendered on the core's story path
+# add --instruction "Speak slowly and softly." on a checkpoint that takes one (see above)
 ```
 
 `ggtts-render` picks the engine from the model's `general.architecture`; `--engine` overrides it.

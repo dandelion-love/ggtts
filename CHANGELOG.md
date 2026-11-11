@@ -37,6 +37,15 @@ new requirements. Internal refactors and test changes are not listed.
 
 ### Added
 
+- **`ggtts-render --instruction TEXT`** passes a natural-language style instruction ("Speak slowly and softly.") to a
+  Qwen3-TTS checkpoint that takes one: `custom_voice` at 1.7B, or `voice_design`. It is placed before the prompt as
+  the reference runtime places it, and the tokens match the reference's on CPU. A `base` checkpoint, a 0.6B
+  `custom_voice` checkpoint and the other engines refuse it with an error naming the checkpoint type; an empty
+  instruction is no instruction, and renders exactly as before. In the library it is
+  `ChunkRequest::instruction` and `RenderOptions::instruction`. A story trace's `chunk_begin` records it as
+  `instruction` when there is one; a strict `ggtts-trace/2` reader built against the older schema must allow that
+  field. Code that builds a `ChunkRequest` must now set `instruction` (`None` for none). The C and Kotlin binding
+  does not carry an instruction yet.
 - **`ggtts-render --speaker NAME`** selects a named speaker of a Qwen3-TTS model, for example
   `--speaker hk_voice_343` or `--speaker hk_voice_777` with `jmtl/hk-cantonese-cc0-qwen3-tts-GGUF` v0.0.5. Without
   it the default is still `hk_cantonese_speaker`. A name the model does not have is an error that lists the

@@ -115,6 +115,8 @@ pub enum Event<'a> {
         text: &'a str,
         seed: u64,
         n_text_tokens: Option<u32>,
+        /// The request's style instruction; absent when it has none (an empty instruction is none).
+        instruction: Option<&'a str>,
     },
     Step {
         chunk: u32,
@@ -200,6 +202,7 @@ impl Event<'_> {
                 text,
                 seed,
                 n_text_tokens,
+                instruction,
             } => {
                 m.insert("ev".into(), "chunk_begin".into());
                 m.insert("chunk".into(), (*chunk).into());
@@ -207,6 +210,7 @@ impl Event<'_> {
                 m.insert("text".into(), (*text).into());
                 m.insert("seed".into(), (*seed).into());
                 put(&mut m, "n_text_tokens", *n_text_tokens);
+                put(&mut m, "instruction", *instruction);
             }
             Event::Step {
                 chunk,
@@ -592,7 +596,7 @@ fn u32_of(m: &Map<String, Value>, k: &str) -> Result<u32, TraceError> {
         .ok_or_else(|| TraceError(format!("`{k}` missing or not a u32 in {}", Value::Object(m.clone()))))
 }
 
-/// Replay a recorded trace on `engine`: each `chunk_begin`'s request (text, seed, chunk, draw) is generated again,
+/// Replay a recorded trace on `engine`: each `chunk_begin`'s request (text, seed, chunk, draw, instruction) is generated again,
 /// in the recorded order, at the header's trace level, then decoded and judged; where the trace records a chunk's
 /// `trim`, the last regenerated draw of that chunk is trimmed again. The regenerated events are compared with the
 /// recorded ones field for field, ignoring the clock, so a decoder change is red as well as a generator change.
@@ -659,6 +663,7 @@ pub fn replay(engine: &mut dyn Engine, lines: &[Map<String, Value>]) -> Result<R
             seed,
             chunk: u32_of(m, "chunk")?,
             draw: u32_of(m, "draw")?,
+            instruction: m.get("instruction").and_then(Value::as_str),
         };
         let pcm = generate_chunk(engine, &req, &mut rec).map_err(|e| TraceError(format!("engine: {e}")))?;
         last = Some((req.chunk, pcm));
@@ -687,6 +692,7 @@ fn generate_chunk(
             text: req.text,
             seed: req.seed,
             n_text_tokens: None,
+            instruction: req.instruction(),
         });
     }
     let t0 = Instant::now();
@@ -773,6 +779,25 @@ pub fn emit_header(events: &mut dyn Events, header: &Header) {
 
 #[cfg(test)]
 mod tests {
+    /// A chunk_begin carries the request's instruction when it has one, and leaves the field out otherwise, as
+    /// `n_text_tokens` is left out: absent, never empty.
+    #[test]
+    fn chunk_begin_records_the_instruction_only_when_there_is_one() {
+        let begin = |instruction| {
+            super::Event::ChunkBegin {
+                chunk: 0,
+                draw: 0,
+                text: "好。",
+                seed: 1,
+                n_text_tokens: None,
+                instruction,
+            }
+            .to_json()
+        };
+        assert_eq!(begin(Some("Speak slowly."))["instruction"], "Speak slowly.");
+        assert!(!begin(None).contains_key("instruction"));
+    }
+
     use super::*;
     use serde_json::json;
 

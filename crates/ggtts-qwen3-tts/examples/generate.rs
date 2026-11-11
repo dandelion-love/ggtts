@@ -22,6 +22,7 @@ fn main() {
     let generation = talker
         .generate(
             &args[2],
+            None,
             "hk_cantonese_speaker",
             language_id("zh").unwrap(),
             seed,

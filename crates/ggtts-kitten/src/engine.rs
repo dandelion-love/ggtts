@@ -10,7 +10,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm, Stop};
+use ggtts_core::engine::{
+    refuse_instruction, ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm, Stop,
+};
 use ggtts_core::profile::Profile;
 
 use crate::backend::{Backend, Device};
@@ -436,6 +438,7 @@ impl Engine for KittenEngine {
     }
 
     fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
+        refuse_instruction(req, &self.info.family)?;
         let (ids, stop) = self.generate_ids(req.text, req.seed).map_err(EngineError)?;
         let (lo, hi) = (self.tm.audio_base, self.tm.audio_base + self.tm.audio_count);
         let frames = ids

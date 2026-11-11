@@ -140,6 +140,7 @@ impl Settings {
                             | "--timing-report"
                             | "--voice"
                             | "--speaker"
+                            | "--instruction"
                             | "--stream"
                             | "--stream-format"
                             | "--stream-level-seconds"

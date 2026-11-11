@@ -30,7 +30,9 @@
 use ggtts_core::hooks::{Hooks, Step as HookStep, Wants};
 use std::collections::HashMap;
 
-use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm, Stop};
+use ggtts_core::engine::{
+    refuse_instruction, ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm, Stop,
+};
 use ggtts_core::profile::Profile;
 use ggtts_core::text::cjk_len;
 use ggtts_core::trace::{Event, Events, NullEvents};
@@ -217,6 +219,7 @@ impl Engine for FakeEngine {
         events: &mut dyn Events,
         hooks: &mut Hooks,
     ) -> Result<Generated, EngineError> {
+        refuse_instruction(req, &self.info.family)?;
         let wants = hooks.wants();
         let text = req.text.to_string();
         let k = *self.draws.get(&text).unwrap_or(&0);
@@ -324,5 +327,59 @@ impl Engine for FakeEngine {
             samples: y,
             sample_rate: p.sample_rate,
         })
+    }
+}
+
+#[cfg(test)]
+mod instruction_tests {
+    use super::*;
+
+    fn req(instruction: Option<&str>) -> ChunkRequest<'_> {
+        ChunkRequest {
+            text: "今日天氣好好。",
+            seed: 7,
+            chunk: 0,
+            draw: 0,
+            instruction,
+        }
+    }
+
+    /// The fake engine takes no instruction: a non-empty one is an error on every path, never ignored, and an empty
+    /// one renders as none.
+    #[test]
+    fn the_fake_engine_refuses_an_instruction() {
+        let plain = FakeEngine::default().generate(&req(None)).unwrap();
+        assert_eq!(FakeEngine::default().generate(&req(Some(""))).unwrap(), plain);
+        let mut e = FakeEngine::default();
+        let err = e.generate(&req(Some("speak slowly"))).unwrap_err();
+        assert!(
+            err.0.contains("fake") && err.0.contains("no style instruction"),
+            "{err}"
+        );
+        assert!(e.generate_traced(&req(Some("speak slowly")), &mut NullEvents).is_err());
+    }
+}
+
+#[cfg(test)]
+mod story_instruction_tests {
+    use super::*;
+    use ggtts_core::pipeline::{plan_story, render_story, RenderOptions};
+
+    /// The story path hands its instruction to every chunk's request: an empty one renders as none, sample for
+    /// sample, and a non-empty one reaches the engine, which refuses it.
+    #[test]
+    fn the_story_instruction_reaches_every_chunk() {
+        let engine = FakeEngine::default();
+        let chunks = plan_story(engine.profile(), &["今日天氣好好，我哋去公園行下。".to_string()]).unwrap();
+        let render = |instruction: Option<&str>| {
+            let mut e = FakeEngine::default();
+            let mut opts = RenderOptions::for_profile(e.profile());
+            opts.instruction = instruction.map(str::to_string);
+            render_story(&mut e, "instruction", &chunks, &opts)
+        };
+        let plain = render(None).unwrap();
+        assert_eq!(render(Some("")).unwrap().samples, plain.samples);
+        let err = render(Some("Speak slowly.")).unwrap_err().to_string();
+        assert!(err.contains("no style instruction"), "{err}");
     }
 }

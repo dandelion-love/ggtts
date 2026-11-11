@@ -80,7 +80,8 @@
         "draw": { "$ref": "#/$defs/u32" },
         "text": { "type": "string" },
         "seed": { "$ref": "#/$defs/u64" },
-        "n_text_tokens": { "$ref": "#/$defs/u32" }
+        "n_text_tokens": { "$ref": "#/$defs/u32" },
+        "instruction": { "description": "The request's style instruction; absent when it has none.", "type": "string", "minLength": 1 }
       }
     },
     "step": {

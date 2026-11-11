@@ -139,6 +139,23 @@ fn own_trace_error(own: &Option<StopTrace<BufWriter<File>>>) -> Result<(), Engin
 }
 
 impl Qwen3Tts {
+    /// The checkpoint type: `base`, `custom_voice` or `voice_design`.
+    pub fn model_type(&self) -> &str {
+        self.talker.model_type()
+    }
+
+    /// Whether the checkpoint takes a style instruction ([`ChunkRequest::instruction`]): custom_voice at 1.7B and
+    /// voice_design. A request with an instruction on any other checkpoint is refused.
+    pub fn supports_instruction(&self) -> bool {
+        self.talker.supports_instruction()
+    }
+
+    /// `Ok` for no instruction or a checkpoint that takes one; the error [`generate`](Engine::generate) would
+    /// return otherwise, without rendering anything.
+    pub fn check_instruction(&self, instruction: Option<&str>) -> Result<(), EngineError> {
+        self.talker.check_instruction(instruction)
+    }
+
     /// Render one request with frame-level streaming: the talker hands each frame to an [`IncrementalDecoder`]
     /// as it is generated, and `sink` gets each batch of ready samples with the number of frames generated so far.
     /// `every` and `hold` are the decoder's (see [`crate::stream`]): at `hold = 32` the concatenated samples were
@@ -180,6 +197,7 @@ impl Qwen3Tts {
         };
         let g = talker.generate_streamed(
             req.text,
+            req.instruction(),
             &voice.speaker,
             *language_id,
             req.seed,
@@ -258,6 +276,7 @@ impl Engine for Qwen3Tts {
         };
         let g = self.talker.generate_streamed(
             req.text,
+            req.instruction(),
             &self.voice.speaker,
             self.language_id,
             req.seed,

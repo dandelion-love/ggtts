@@ -378,6 +378,7 @@ fn render_cmd(a: &Args) -> Result<bool, String> {
             seed: line_seed,
             chunk: i as u32,
             draw: 0,
+            instruction: None,
         };
         let tg = Instant::now();
         let gen = eng.generate(&req).map_err(|e| e.0)?;

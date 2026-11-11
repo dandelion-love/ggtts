@@ -390,7 +390,9 @@ Citations are `ggml/src/` at `af97976`. These were read, not measured op by op o
 * **The probe converts the LM fresh** into its work directory on every run, with the binaries it built, and refuses a
   GGUF without the embedded tokenizer. The converter now refuses to convert when `lm/tokenizer.json` is missing,
   instead of writing a GGUF that `ggtts-render` refuses later. `DEVICE=cpu STEPS=render` runs the conversion and the
-  render-twice step on the CPU, to check the probe's own render step without the card.
+  render-twice step on the CPU, to check the probe's own render step without the card. With `TQ1_GGUF`, the probe
+  also reports the CPU's packed TQ1 arm against the CPU f32 reference, clean and planted, with no bar on its numbers;
+  `DEVICE=cpu STEPS=tq1` runs only that ([docs/tq1-cpu.md](../../docs/tq1-cpu.md)).
 
 ### Predictions for the re-probe
 
@@ -619,7 +621,7 @@ parity cases against a PyTorch reference run with the same masks. It is not a st
 | `src/prompt.rs`, `src/sampler.rs`, `src/tokenizer.rs` | the prompt, the sampler in PyTorch's order, the BPE |
 | `src/engine.rs` | `KittenEngine`, the `Engine` trait, and the PyTorch S3Gen bridge (feature `ggml`) |
 | `src/backend.rs` | the device (CPU, or CUDA with a CPU fallback and TF32 off) and the scheduler every graph runs through |
-| `scripts/cuda_probe.sh` | the CUDA parity probe: build, a fresh LM conversion, every check with `--device cuda`, the plants, TF32 diagnostics, a render twice |
+| `scripts/cuda_probe.sh` | the CUDA parity probe: build, a fresh LM conversion, every check with `--device cuda`, the plants, TF32 diagnostics, a render twice; with a TQ1 model, the CPU packed arm reported against the CPU f32 arm |
 | `src/parity.rs` | the parity measures and the bars above |
 | `src/s3convert.rs` | S3Gen's safetensors to a GGUF, weight norm folded |
 | `src/flow.rs` | the S3Gen flow on ggml: conformer encoder and meanflow estimator (feature `ggml`) |

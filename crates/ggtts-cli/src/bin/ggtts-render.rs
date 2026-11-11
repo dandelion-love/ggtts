@@ -3,6 +3,7 @@
 //! ```text
 //! ggtts-render --model M.gguf [--codec C.gguf] --out x.flac [--engine auto|qwen3-tts|kitten-tts-2|fake]
 //!              [--threads N] [--device cpu|cuda] [--trace trace.jsonl [--trace-level 1|2]] [--timing-report FILE] [--voice REF.json] [--speaker NAME]
+//!              [--instruction TEXT]
 //!              [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text "..." [--seed S] | --story story.txt)
 //!              [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE.yaml] [--require NAME]...
 //!              [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID]
@@ -11,6 +12,10 @@
 //! `--voice` is a reference voice for an engine that clones one; an engine that does not ignores it.
 //! `--speaker` selects a named Qwen3-TTS speaker (for example `hk_voice_343`); it is refused for other engines.
 //! Without it Qwen retains the legacy `hk_cantonese_speaker` default; an absent or unknown speaker is an error.
+//! `--instruction` gives every request a style instruction in natural language (for example `"Speak slowly and
+//! sadly."`), as the reference CLI's `--instruction` does. Without it, or with an empty one, there is none. Only a
+//! Qwen3-TTS checkpoint that takes one accepts it (1.7B CustomVoice, or VoiceDesign); on a Base checkpoint it is an
+//! error, and other engines refuse it.
 //! `--engine auto` (the default) picks the engine from the model's `general.architecture`. `--text` renders one
 //! request at one seed (default 20260905). `--story` reads a story file (title line, then one paragraph per line)
 //! and renders it on the core's story path. For stories `--trace` writes a complete ggtts-trace/2 event stream;
@@ -110,7 +115,7 @@ impl StreamTiming {
     }
 }
 const USAGE: &str = "usage: ggtts-render --model M.gguf [--codec C.gguf] --out x.flac \
-[--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--speaker NAME] \
+[--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--speaker NAME] [--instruction TEXT] \
 [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
 [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID] \
@@ -153,6 +158,8 @@ struct Args {
     voice: Option<PathBuf>,
     /// Named speaker in a Qwen talker; distinct from a cloned reference voice.
     speaker: Option<String>,
+    /// A style instruction for a Qwen talker that takes one; empty is none.
+    instruction: Option<String>,
     stream: Option<String>,
     stream_format: Option<String>,
     stream_raw: bool,
@@ -202,6 +209,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 }
                 a.speaker = Some(speaker);
             }
+            "--instruction" => a.instruction = Some(value()?),
             "--stream" => a.stream = Some(value()?),
             "--stream-format" => a.stream_format = Some(value()?),
             "--stream-raw" => a.stream_raw = true,
@@ -238,6 +246,7 @@ fn qwen_voice(a: &Args) -> Result<ggtts_qwen3_tts::engine::Voice, String> {
     if let Some(speaker) = &a.speaker {
         voice.speaker.clone_from(speaker);
     }
+    voice.instruction.clone_from(&a.instruction);
     Ok(voice)
 }
 
@@ -441,6 +450,9 @@ fn render_with_stream_opener(
     };
     if a.speaker.is_some() && name != "qwen3-tts" {
         return Err("--speaker is only supported by the qwen3-tts engine".into());
+    }
+    if a.instruction.as_deref().is_some_and(|i| !i.is_empty()) && name != "qwen3-tts" {
+        return Err("--instruction is only supported by the qwen3-tts engine".into());
     }
     // Validate and plan before opening output files or loading model weights.
     let preplanned = if let Some((title, paragraphs)) = story_input {
@@ -1103,6 +1115,65 @@ mod tests {
         };
         let err = render_with_loader(args, log, |_, _, _| panic!("must reject before loading")).unwrap_err();
         assert!(err.contains("only supported by the qwen3-tts engine"));
+    }
+
+    #[test]
+    fn an_instruction_is_qwen_only_and_reaches_the_loader() {
+        let a = parse(&["--instruction".into(), "Speak slowly and sadly.".into()]).unwrap();
+        assert_eq!(a.instruction.as_deref(), Some("Speak slowly and sadly."));
+        assert!(parse(&["--instruction".into()]).is_err());
+        assert_eq!(parse(&[]).unwrap().instruction, None, "no instruction by default");
+        let log = LogSettings {
+            level: LogLevel::Error,
+            format: LogFormat::Text,
+        };
+        let args = Args {
+            engine: Some("qwen3-tts".into()),
+            model: Some("unused".into()),
+            text: Some("hello".into()),
+            out: Some("unused.flac".into()),
+            instruction: a.instruction,
+            ..Args::default()
+        };
+        let err = render_with_loader(args, log, |name, a, _| {
+            assert_eq!(name, "qwen3-tts");
+            assert_eq!(a.instruction.as_deref(), Some("Speak slowly and sadly."));
+            Err("loader reached".into())
+        })
+        .unwrap_err();
+        assert_eq!(err, "loader reached");
+        let fake = |instruction: &str| Args {
+            engine: Some("fake".into()),
+            text: Some("hello".into()),
+            out: Some("unused.flac".into()),
+            instruction: Some(instruction.into()),
+            ..Args::default()
+        };
+        let err = render_with_loader(fake("请用缓慢而悲伤的语气说。"), log, |_, _, _| {
+            panic!("must reject before loading")
+        })
+        .unwrap_err();
+        assert!(
+            err.contains("--instruction is only supported by the qwen3-tts engine"),
+            "{err}"
+        );
+        // An empty instruction is none, so another engine is not refused for it.
+        let err = render_with_loader(fake(""), log, |_, _, _| Err("loader reached".into())).unwrap_err();
+        assert_eq!(err, "loader reached");
+    }
+
+    #[cfg(feature = "ggml")]
+    #[test]
+    fn qwen_voice_carries_the_instruction_or_none() {
+        assert_eq!(qwen_voice(&Args::default()).unwrap().instruction, None);
+        let args = Args {
+            instruction: Some("Speak slowly and sadly.".into()),
+            ..Args::default()
+        };
+        assert_eq!(
+            qwen_voice(&args).unwrap().instruction.as_deref(),
+            Some("Speak slowly and sadly.")
+        );
     }
 
     struct EmptyThenAudio {

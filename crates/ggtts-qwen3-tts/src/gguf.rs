@@ -96,6 +96,28 @@ impl Gguf {
         }
     }
 
+    /// A boolean as the reference's `get_bool_any` reads one key (`transformer_loader_metadata.cpp:45-87`): a bool,
+    /// or any integer type read as non-zero. None when the key is absent or holds anything else, which the reference
+    /// also treats as not found.
+    pub fn flag(&self, key: &str) -> Option<bool> {
+        let id = self.key(key)?;
+        // SAFETY: as above; each read matches the type just checked.
+        unsafe {
+            Some(match g::gguf_get_kv_type(self.ctx, id) {
+                g::GGUF_TYPE_BOOL => g::gguf_get_val_bool(self.ctx, id),
+                g::GGUF_TYPE_UINT8 => g::gguf_get_val_u8(self.ctx, id) != 0,
+                g::GGUF_TYPE_INT8 => g::gguf_get_val_i8(self.ctx, id) != 0,
+                g::GGUF_TYPE_UINT16 => g::gguf_get_val_u16(self.ctx, id) != 0,
+                g::GGUF_TYPE_INT16 => g::gguf_get_val_i16(self.ctx, id) != 0,
+                g::GGUF_TYPE_UINT32 => g::gguf_get_val_u32(self.ctx, id) != 0,
+                g::GGUF_TYPE_INT32 => g::gguf_get_val_i32(self.ctx, id) != 0,
+                g::GGUF_TYPE_UINT64 => g::gguf_get_val_u64(self.ctx, id) != 0,
+                g::GGUF_TYPE_INT64 => g::gguf_get_val_i64(self.ctx, id) != 0,
+                _ => return None,
+            })
+        }
+    }
+
     /// A string array, or None if the key is absent or not an array of strings.
     pub fn strings(&self, key: &str) -> Option<Vec<String>> {
         let id = self.key(key)?;

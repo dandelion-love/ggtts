@@ -4,7 +4,8 @@
 //! Needs the published talker GGUF: `GGTTS_TALKER=<qwen-talker-...-q8_0.gguf> cargo test -p ggtts-qwen3-tts
 //! --features ggml --release --test token_identity -- --ignored --nocapture`. Without `GGTTS_TALKER` the test fails
 //! rather than passing quietly. The talker runs with the thread count the fixtures were recorded with.
-//! `GGTTS_ONLY=<name>` runs one fixture.
+//! `GGTTS_ONLY=<name>` runs one fixture. The style-instruction fixtures in `fixtures/instruct/` (recorded with the
+//! reference CLI's `--instruction`) are checked the same way, against the same talker.
 //!
 //! With the `plant` feature, the `planted::*` tests are the expected failures: each plants one defect and passes only
 //! if every fixture it runs then differs.
@@ -40,10 +41,10 @@ struct Outcome {
 
 /// Generates every fixture's request with the talker `load` gives, prints one line per fixture and a summary line,
 /// and returns the fixtures that differ. Refuses a talker the fixtures were not recorded with.
-fn check(label: &str, load: impl FnOnce(&Path, i32, Device) -> Result<Talker, EngineError>) -> Outcome {
+fn check(label: &str, dir: &Path, load: impl FnOnce(&Path, i32, Device) -> Result<Talker, EngineError>) -> Outcome {
     let path = PathBuf::from(std::env::var("GGTTS_TALKER").expect("set GGTTS_TALKER to the talker GGUF"));
     let only = std::env::var("GGTTS_ONLY").ok();
-    let goldens = Golden::load_all(&fixtures_dir()).unwrap();
+    let goldens = Golden::load_all(dir).unwrap();
     assert!(!goldens.is_empty());
     let threads = recorded_threads(&goldens).unwrap();
     let mut h = Sha256::new();
@@ -62,6 +63,7 @@ fn check(label: &str, load: impl FnOnce(&Path, i32, Device) -> Result<Talker, En
             .generate(
                 &gold.text,
                 &gold.speaker,
+                &gold.instruction,
                 lang,
                 gold.seed,
                 gold.max_tokens as i32,
@@ -106,7 +108,25 @@ fn check(label: &str, load: impl FnOnce(&Path, i32, Device) -> Result<Talker, En
 #[test]
 #[ignore = "needs GGTTS_TALKER, the published talker GGUF"]
 fn codec_tokens_are_identical_to_the_reference() {
-    let o = check("no plant", Talker::load_on);
+    let o = check("no plant", &fixtures_dir(), Talker::load_on);
+    assert!(o.same > 0);
+    assert!(
+        o.differ.is_empty(),
+        "tokens differ from the reference on {:?}",
+        o.differ
+    );
+}
+
+/// The style-instruction fixtures (`fixtures/instruct/`): the same talker and speaker, each request with an
+/// instruction the reference CLI was given as `--instruction`.
+fn instruct_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/instruct")
+}
+
+#[test]
+#[ignore = "needs GGTTS_TALKER, the published talker GGUF"]
+fn instructed_codec_tokens_are_identical_to_the_reference() {
+    let o = check("instruction, no plant", &instruct_dir(), Talker::load_on);
     assert!(o.same > 0);
     assert!(
         o.differ.is_empty(),
@@ -122,9 +142,30 @@ mod planted {
     use ggtts_qwen3_tts::talker::Plant;
 
     fn with(plant: Plant) -> Outcome {
-        check(&format!("planted {plant:?}"), |p, t, d| {
+        with_in(plant, &fixtures_dir())
+    }
+
+    fn with_in(plant: Plant, dir: &Path) -> Outcome {
+        check(&format!("planted {plant:?}"), dir, |p, t, d| {
             Talker::load_planted(p, t, d, plant)
         })
+    }
+
+    /// The no-instruction fixtures are the guard that an absent instruction adds nothing: a prefix leaking into
+    /// them must turn every one red.
+    #[test]
+    #[ignore = "needs GGTTS_TALKER, the published talker GGUF"]
+    fn instruction_leak_is_seen() {
+        let o = with(Plant::InstructionLeak);
+        assert_eq!(o.same, 0, "the leaked instruction left {} fixtures identical", o.same);
+    }
+
+    /// The instruction fixtures must see an instruction that never reaches the talker.
+    #[test]
+    #[ignore = "needs GGTTS_TALKER, the published talker GGUF"]
+    fn instruction_dropped_is_seen() {
+        let o = with_in(Plant::InstructionDropped, &instruct_dir());
+        assert_eq!(o.same, 0, "the dropped instruction left {} fixtures identical", o.same);
     }
 
     #[test]

@@ -164,6 +164,7 @@ fn a_hook_boundary_logit_mutation_is_detected_on_real_qwen() {
             .generate_streamed(
                 &gold.text,
                 &gold.speaker,
+                &gold.instruction,
                 language_id(&gold.language).unwrap(),
                 gold.seed,
                 gold.max_tokens as i32,
@@ -207,6 +208,7 @@ fn run(talker: &mut Talker, gold: &Golden, hook: bool) -> (Vec<i32>, Vec<i32>) {
         .generate_streamed(
             &gold.text,
             &gold.speaker,
+            &gold.instruction,
             lang,
             gold.seed,
             gold.max_tokens as i32,

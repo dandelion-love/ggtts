@@ -5,6 +5,11 @@
 #   QWEN3_TTS_CPP=<checkout at 16bb5af> QWEN3_TTS_BUILD=<its CPU build> TALKER=<talker.gguf> CODEC=<codec.gguf> \
 #   THREADS=4 scripts/record_fixtures.sh
 #
+# TEXTS (default fixtures/cpu/texts.tsv) lists the cases. A third column, when present and not empty, is a style
+# instruction, passed to the reference CLI as `--instruction` and recorded as `request.instruction`; the instruction
+# fixtures are recorded with `TEXTS=fixtures/instruct/texts.tsv OUT=fixtures/instruct`. SPEAKER (default
+# hk_cantonese_speaker) is the named speaker, for recording against another checkpoint.
+#
 # OUT (default fixtures/cpu) is where the fixture files go. BACKEND (default cpu) is the label recorded; it must say
 # what the build runs on, since a CUDA build of the reference picks the GPU by itself. With REPEAT_DRIFT=report a
 # case whose two recordings differ is reported and skipped, rather than stopping the script.
@@ -18,6 +23,8 @@ talker=${TALKER:?}
 codec=${CODEC:?}
 threads=${THREADS:-4}
 out_dir=${OUT:-$here/fixtures/cpu}
+texts=${TEXTS:-$here/fixtures/cpu/texts.tsv}
+speaker=${SPEAKER:-hk_cantonese_speaker}
 backend=${BACKEND:-cpu}
 mkdir -p "$out_dir"
 seed=20260905
@@ -34,11 +41,13 @@ if [ "$backend" = cuda ]; then
   cpu="$cpu; $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader | head -n 1)"
 fi
 
-while IFS=$'\t' read -r name text; do
+while IFS=$'\t' read -r name text instruction; do
   [ -n "$name" ] || continue
+  instruct=()
+  [ -z "$instruction" ] || instruct=(--instruction "$instruction")
   for take in 1 2; do
-    "$build/qwen3-tts-cli" -m "$work/model" --codec-model "$codec" --speaker hk_cantonese_speaker \
-      --max-tokens 1200 -l zh --seed "$seed" -j "$threads" -t "$text" -o "$work/$name.wav" \
+    "$build/qwen3-tts-cli" -m "$work/model" --codec-model "$codec" --speaker "$speaker" \
+      --max-tokens 1200 -l zh --seed "$seed" -j "$threads" -t "$text" "${instruct[@]}" -o "$work/$name.wav" \
       --dump-generated-codes "$work/$name.$take.codes" > "$work/$name.$take.log" 2>&1
   done
   if ! cmp -s "$work/$name.1.codes" "$work/$name.2.codes"; then
@@ -48,18 +57,23 @@ while IFS=$'\t' read -r name text; do
   fi
   "$work/bin/decode_ref" "$codec" "$work/$name.1.codes" "$work/$name.f32" "$threads" 2> /dev/null
   python3 - "$name" "$text" "$work/$name.1.codes" "$work/$name.f32" "$out_dir/$name.json" \
-    "$talker_sha" "$codec_sha" "$threads" "$cpu" "$seed" "$backend" <<'PY'
+    "$talker_sha" "$codec_sha" "$threads" "$cpu" "$seed" "$backend" "$speaker" "$instruction" <<'PY'
 import hashlib, json, sys
-name, text, codes_path, f32_path, out, talker_sha, codec_sha, threads, cpu, seed, backend = sys.argv[1:]
+(name, text, codes_path, f32_path, out, talker_sha, codec_sha, threads, cpu, seed, backend, speaker,
+ instruction) = sys.argv[1:]
 dump = json.load(open(codes_path))
 samples = open(f32_path, "rb").read()
+request = {"speaker": speaker}
+if instruction:
+    request["instruction"] = instruction
+request.update({"language": "zh", "seed": int(seed), "max_tokens": 1200,
+                "sampler": "the reference CLI defaults: temperature 0.9, top_k 50, top_p 1.0, repetition_penalty 1.05"})
 fixture = {
     "format": "ggtts-qwen3-tts-golden/1",
     "name": name,
     "text": text,
     "text_source": "written for this fixture set by a language model",
-    "request": {"speaker": "hk_cantonese_speaker", "language": "zh", "seed": int(seed), "max_tokens": 1200,
-                "sampler": "the reference CLI defaults: temperature 0.9, top_k 50, top_p 1.0, repetition_penalty 1.05"},
+    "request": request,
     "reference": {"engine": "qwen3-tts.cpp", "commit": "16bb5afcd06311031c72a8488f8d59660dc2fb46",
                   "ggml": "af97976c7810cdabb1863172f31c432dab767de7", "backend": backend,
                   "threads": int(threads), "cpu": cpu, "repeated": True},
@@ -78,4 +92,4 @@ with open(out, "w", encoding="utf-8", newline="\n") as f:
     f.write(body + "\n")
 print(f"{name}: {dump['frames']} frames, {len(samples) // 4} samples")
 PY
-done < "$here/fixtures/cpu/texts.tsv"
+done < "$texts"

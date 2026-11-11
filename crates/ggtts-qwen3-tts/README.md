@@ -65,7 +65,7 @@ Both hold whether ggml is built by `ggtts-ggml-sys` or the reference's own archi
   this engine does not.
 * **The reference's CPU path.** It moves the talker's last hidden row to the code predictor through a device tensor;
   here it goes through the host as the same f32 bits. Its replay graphs, dedicated schedulers and CUDA-only greedy
-  chains are not ported. Instructions, voice cloning (ICL) and the reference's streaming decoder are not ported; ggtts streams
+  chains are not ported. Voice cloning (ICL) and the reference's streaming decoder are not ported; ggtts streams
   differently, by re-decoding the prefix (`src/stream.rs`).
 * **top-p below 1.** The reference sorts with `std::sort`, which is not stable; ties in probability may order
   differently here. The fixtures use top-p 1.0, which skips that branch.
@@ -84,6 +84,49 @@ target/release/ggtts-render --model "$GGTTS_TALKER" --codec "$GGTTS_CODEC" --out
 Use `--speaker hk_voice_343` with the published Cantonese v0.0.5 talker, or select another speaker named in
 the model card explicitly. Without `--speaker`, the legacy `hk_cantonese_speaker` default is retained for v0.0.1.
 An unknown speaker fails, and the error lists the model's speaker names; the renderer does not choose an arbitrary speaker from a multi-speaker model.
+
+## Style instructions
+
+A CustomVoice checkpoint takes an instruction in natural language that changes how a line is read, the reference
+CLI's `--instruction`:
+
+```bash
+target/release/ggtts-render --model "$GGTTS_TALKER" --codec "$GGTTS_CODEC" --out sad.flac -j 4 \
+  --text "今日天氣好好，我哋去公園行下" --instruction "Speak slowly and sadly."
+```
+
+In the library it is `engine::Voice::instruction` (`Option<String>`, `None` by default), and `Talker::generate`
+takes it per request. The engine follows the reference (`src/pipeline/pipeline_synthesize.cpp:1321-1324`,
+`src/transformer/transformer_embeddings.cpp:301-313` and `:656-664`): the instruction is wrapped as a user turn,
+`<|im_start|>user\n{instruction}<|im_end|>\n` (`Tokenizer::encode_instruct`), embedded and passed through the text
+projection in a batch of its own, and its rows lead the prompt, before the role tokens and the codec prefill. The
+rest of the prompt and the generation loop are unchanged, so the trailing text rows still start at frame 0.
+
+* **No instruction is no change.** `None` and an empty string add nothing: nothing is tokenized or projected, and the
+  prompt is byte for byte the one without the feature. The CPU golden fixtures, recorded before instructions
+  existed, are the check; the planted `instruction-leak` (a fixed instruction added to every request) turns every
+  one of them red.
+* **Which checkpoints take one** is the reference's own capability rule (`Qwen3TTS::get_model_capabilities`,
+  `src/pipeline/pipeline_models.cpp:458-479`): the GGUF's `qwen3-tts.supports_instruction` when it declares it,
+  otherwise a `voice_design` checkpoint, or a `custom_voice` one of hidden size 2048 or more (1.7B, not 0.6B).
+  The reference itself applies an instruction to any checkpoint and only reports the capability; here an instruction
+  a checkpoint does not take, on `Base` for example, is an error that names its `tts_model_type`, at
+  `Qwen3Tts::load` and at every `Talker::generate`, rather than a render that silently ignores it.
+* **Parity.** The fixtures in `fixtures/instruct/` were recorded with the reference CLI on CPU and `--instruction`,
+  the same way as the CPU fixtures (`TEXTS=fixtures/instruct/texts.tsv OUT=fixtures/instruct
+  scripts/record_fixtures.sh`): three texts written for the purpose, one instruction each, in English or Chinese, on
+  the published v0.0.1 talker. `token_identity`'s `instructed_codec_tokens_are_identical_to_the_reference` checks
+  them, and the planted `instruction-dropped` (the instruction tokenized and then not used) turns them red. Measured
+  on the same machine as the table above, 4 threads: 3 of 3 identical; `instruction-dropped` 0 of 3 (first
+  difference at frame 0); `instruction-leak` 0 of 8 of the CPU fixtures. The same check against the official
+  `Qwen3-TTS-12Hz-1.7B-CustomVoice` converted to q8_0 (speaker `vivian`, two instructions in English and Chinese
+  and one plain request, recorded the same way and not committed) was 3 of 3 identical.
+  `tests/instruction.rs` checks the rest on real checkpoints: no instruction and an empty one give the golden codes;
+  an instruction changes the codes for the same text and seed while the same request twice does not; and a Base
+  talker refuses one.
+* **What the parity does not show.** That the instruction is *heard*: v0.0.1 is a fine-tune, and whether a
+  fine-tune still follows instructions is a property of its training, not of this engine. CUDA is not yet
+  measured, as for every other path here.
 
 The story path, on `fixtures/story/outing.txt` (five paragraphs written for the purpose): 8 chunks at the profile's
 ceiling of 45, a seed per chunk from the story, no first-draw defects, joined, trimmed and levelled into 66.44 s of

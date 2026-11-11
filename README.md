@@ -93,6 +93,10 @@ v0.0.5 model uses `--speaker hk_voice_343` (or `hk_voice_777` for its other voic
 uses the legacy `hk_cantonese_speaker` name, as for v0.0.1. An unknown or absent speaker is an error; ggtts does
 not choose an arbitrary voice. `--speaker` applies only to Qwen, while `--voice` supplies Kitten's reference JSON.
 
+A Qwen CustomVoice model also takes a style instruction in plain language, `--instruction "Speak slowly and
+sadly."`, which changes how the line is read. Without it nothing changes. A Base model has no use for one, so ggtts
+refuses it there rather than ignore it; see the [Qwen README](https://github.com/dandelion-love/ggtts/blob/main/crates/ggtts-qwen3-tts/README.md#style-instructions).
+
 ```bash
 # Run from the extracted archive; edit these paths and DEVICE for your machine.
 GGTTS=./ggtts-render                    # on Windows: ./ggtts-render.exe

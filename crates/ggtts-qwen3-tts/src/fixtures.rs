@@ -13,6 +13,8 @@ pub struct Golden {
     pub name: String,
     pub text: String,
     pub speaker: String,
+    /// The style instruction the reference CLI was given (`request.instruction`); empty when the fixture has none.
+    pub instruction: String,
     pub language: String,
     pub seed: u64,
     pub max_tokens: u32,
@@ -60,6 +62,7 @@ impl Golden {
             name: s("/name")?,
             text: s("/text")?,
             speaker: s("/request/speaker")?,
+            instruction: s("/request/instruction").unwrap_or_default(),
             language: s("/request/language")?,
             seed: n("/request/seed")?,
             max_tokens: n("/request/max_tokens")? as u32,
@@ -141,6 +144,27 @@ mod tests {
     fn reads_the_dump_format() {
         let t = "{\n  \"frames\": 2,\n  \"codebooks\": 2,\n  \"codes\": [\n    1,2,\n    3,4\n  ]\n}\n";
         assert_eq!(read_codes_json(t).unwrap(), (2, vec![1, 2, 3, 4]));
+    }
+
+    fn golden(request_extra: &str) -> String {
+        format!(
+            "{{\"format\": \"ggtts-qwen3-tts-golden/1\", \"name\": \"n\", \"text\": \"t\", \
+             \"request\": {{\"speaker\": \"s\", \"language\": \"zh\", \"seed\": 1, \"max_tokens\": 2{request_extra}}}, \
+             \"reference\": {{\"threads\": 4}}, \"talker_sha256\": \"a\", \"codec_sha256\": \"b\", \
+             \"frames\": 1, \"codebooks\": 2, \"codes\": [1, 2], \
+             \"samples\": {{\"count\": 0, \"sha256_f32le\": \"c\"}}}}"
+        )
+    }
+
+    #[test]
+    fn a_fixture_without_an_instruction_has_none() {
+        assert_eq!(Golden::parse(&golden("")).unwrap().instruction, "");
+    }
+
+    #[test]
+    fn a_fixture_carries_its_instruction() {
+        let g = Golden::parse(&golden(", \"instruction\": \"Speak slowly and sadly.\"")).unwrap();
+        assert_eq!(g.instruction, "Speak slowly and sadly.");
     }
 
     #[test]

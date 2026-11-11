@@ -41,6 +41,12 @@ new requirements. Internal refactors and test changes are not listed.
   `--speaker hk_voice_343` or `--speaker hk_voice_777` with `jmtl/hk-cantonese-cc0-qwen3-tts-GGUF` v0.0.5. Without
   it the default is still `hk_cantonese_speaker`. A name the model does not have is an error that lists the
   model's speaker names. The option is refused for other engines.
+- **`ggtts-render --instruction TEXT`** gives a Qwen3-TTS request a style instruction in natural language, for
+  example `--instruction "Speak slowly and sadly."`, as the reference runtime's `--instruction` does; in the
+  library it is `Voice::instruction`. It is placed before the prompt exactly as the reference places it, and the
+  codes match the reference's on CPU. Without it, or with an empty one, output is unchanged. Only a checkpoint that
+  takes an instruction accepts one (the 1.7B CustomVoice and VoiceDesign checkpoints); on a Base checkpoint it is an
+  error naming the checkpoint type, and other engines refuse it.
 - **`ggtts-measure --audio-state raw|trimmed|unknown`** records what you know about the audio you hand it; the
   default is `unknown`. Reports no longer claim `trimmed` for audio whose state was never stated.
 - **Timing in traces and a `render-timing` instrument**: the time to first audio, the render's real-time factor and

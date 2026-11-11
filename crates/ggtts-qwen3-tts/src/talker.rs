@@ -127,17 +127,29 @@ mod planted {
         /// Simulate hook-triggered corruption of sampler logits after copying them for an observer.
         /// The test-only feature removes this branch entirely from production builds.
         HookLogitMutation,
+        /// A request with no instruction still gets an instruction prefix ([`LEAKED_INSTRUCTION`]): the prefix path
+        /// leaking into the default render.
+        InstructionLeak,
+        /// A request's instruction is tokenized and then dropped: no prefix reaches the talker.
+        InstructionDropped,
     }
+
+    /// The instruction [`Plant::InstructionLeak`] prepends.
+    #[cfg_attr(not(feature = "plant"), allow(dead_code))]
+    pub const LEAKED_INSTRUCTION: &str = "Speak slowly.";
 
     #[cfg(feature = "plant")]
     impl Plant {
-        /// `none`, `rope-normal`, `sampler-off-by-one` or `frame-hook-draw`.
+        /// `none`, `rope-normal`, `sampler-off-by-one`, `frame-hook-draw`, `instruction-leak` or
+        /// `instruction-dropped`.
         pub fn parse(s: &str) -> Option<Self> {
             Some(match s {
                 "" | "none" => Self::None,
                 "rope-normal" => Self::RopeNormal,
                 "sampler-off-by-one" => Self::SamplerOffByOne,
                 "frame-hook-draw" => Self::FrameHookDraw,
+                "instruction-leak" => Self::InstructionLeak,
+                "instruction-dropped" => Self::InstructionDropped,
                 _ => return None,
             })
         }
@@ -193,6 +205,42 @@ pub struct Config {
     pub codec_think_eos_id: i32,
     /// `None` when the GGUF has no M-RoPE sections; then the talker uses NEOX rope.
     pub mrope_section: Option<[i32; 3]>,
+    /// `qwen3-tts.model_type` (or `tts_model_type`), lower-cased, `base` when absent: `base`, `custom_voice` or
+    /// `voice_design` (`transformer_loader_metadata.cpp:235-238`).
+    pub tts_model_type: String,
+    /// Whether the checkpoint takes a style instruction ([`instruction_supported`]).
+    pub supports_instruction: bool,
+}
+
+/// Whether a checkpoint takes a style instruction, by the reference's own rule
+/// (`Qwen3TTS::get_model_capabilities`, `src/pipeline/pipeline_models.cpp:458-479`): what the metadata declares
+/// (`qwen3-tts.supports_instruction` and its aliases) when it declares it; otherwise a `voice_design` checkpoint does,
+/// a `custom_voice` one does when its hidden size is at least 2048 (the 1.7B model, not the 0.6B one), and anything
+/// else, `base` included, does not.
+pub fn instruction_supported(tts_model_type: &str, declared: Option<bool>, hidden_size: i32) -> bool {
+    match declared {
+        Some(d) => d,
+        None => match tts_model_type {
+            "custom_voice" => hidden_size >= 2048,
+            "voice_design" => true,
+            _ => false,
+        },
+    }
+}
+
+/// Refuses a non-empty instruction for a checkpoint that does not take one. The reference applies an instruction to
+/// any checkpoint it is given and reports the capability only to its callers; here a request the checkpoint cannot
+/// honour is refused rather than rendered as if it had been.
+fn check_instruction(config: &Config, instruction: &str) -> Result<(), EngineError> {
+    if instruction.is_empty() || config.supports_instruction {
+        return Ok(());
+    }
+    Err(err(format!(
+        "this checkpoint does not take a style instruction: its tts_model_type is {:?} (hidden size {}). An \
+         instruction needs a CustomVoice checkpoint of hidden size 2048 or more (Qwen3-TTS 1.7B CustomVoice) or a \
+         VoiceDesign checkpoint; render without one on this checkpoint",
+        config.tts_model_type, config.hidden_size
+    )))
 }
 
 struct Layer {
@@ -374,7 +422,7 @@ impl Talker {
             .find_map(|k| gguf.ints(k))
             .filter(|s| s.len() >= 3)
             .map(|s| [s[0], s[1], s[2]]);
-        let config = Config {
+        let mut config = Config {
             hidden_size,
             n_layers,
             n_heads,
@@ -508,7 +556,21 @@ impl Talker {
                 2157,
             ),
             mrope_section,
+            tts_model_type: ["qwen3-tts.model_type", "qwen3-tts.tts_model_type"]
+                .iter()
+                .find_map(|k| gguf.string(k).filter(|s| !s.is_empty()))
+                .unwrap_or_else(|| "base".into())
+                .to_lowercase(),
+            supports_instruction: false,
         };
+        let declared = [
+            "qwen3-tts.supports_instruction",
+            "qwen3-tts.instruction_supported",
+            "qwen3-tts.instruct_supported",
+        ]
+        .iter()
+        .find_map(|k| gguf.flag(k));
+        config.supports_instruction = instruction_supported(&config.tts_model_type, declared, config.hidden_size);
 
         // Speakers: `qwen3-tts.codec.speaker_names` and `speaker_ids`, names lower-cased
         // (`transformer_loader_metadata.cpp:314-350`, `normalize_speaker_name`).
@@ -685,18 +747,37 @@ impl Talker {
         speaker_names(&self.speakers)
     }
 
+    /// Refuses a non-empty style instruction when this checkpoint does not take one ([`instruction_supported`]): the
+    /// error names the checkpoint's `tts_model_type`. An empty instruction is no instruction, and always passes.
+    pub fn check_instruction(&self, instruction: &str) -> Result<(), EngineError> {
+        check_instruction(&self.config, instruction)
+    }
+
     /// Text to codec tokens, as the reference CLI renders `-t <text> --speaker <speaker> -l <lang> --seed <seed>
-    /// --max-tokens <max_len>`: `Qwen3TTS::synthesize` then `TTSTransformer::generate`.
+    /// --max-tokens <max_len> [--instruction <instruction>]`: `Qwen3TTS::synthesize` then `TTSTransformer::generate`.
+    /// An empty `instruction` is none, as in the reference: the prompt is exactly the one without it.
+    #[allow(clippy::too_many_arguments)]
     pub fn generate(
         &mut self,
         text: &str,
         speaker: &str,
+        instruction: &str,
         language_id: i32,
         seed: u64,
         max_len: i32,
         sampling: Sampling,
     ) -> Result<Generation, EngineError> {
-        self.generate_streamed(text, speaker, language_id, seed, max_len, sampling, None, None)
+        self.generate_streamed(
+            text,
+            speaker,
+            instruction,
+            language_id,
+            seed,
+            max_len,
+            sampling,
+            None,
+            None,
+        )
     }
 
     /// [`generate`](Self::generate), with two read-only callbacks.
@@ -712,6 +793,7 @@ impl Talker {
         &mut self,
         text: &str,
         speaker: &str,
+        instruction: &str,
         language_id: i32,
         seed: u64,
         max_len: i32,
@@ -720,6 +802,7 @@ impl Talker {
         mut on_frame: Option<&mut FrameHook<'_>>,
     ) -> Result<Generation, EngineError> {
         sampling.check()?;
+        self.check_instruction(instruction)?;
         let c = self.config.clone();
         let h = c.hidden_size as usize;
         let spk = self
@@ -727,6 +810,15 @@ impl Talker {
             .ok_or_else(|| err(format!("unknown speaker: {speaker}")))?;
         let speaker_embd = self.embedding_rows(self.codec_embd, &[spk])?;
         let text_tokens = self.tokenizer.encode_for_tts(text.as_bytes())?;
+        // `<|im_start|>user\n{instruction}<|im_end|>\n`, nothing for an empty one (`pipeline_synthesize.cpp:1321-1324`).
+        let instruction = match self.plant {
+            Plant::InstructionLeak if instruction.is_empty() => planted::LEAKED_INSTRUCTION,
+            _ => instruction,
+        };
+        let mut instruct_tokens = self.tokenizer.encode_instruct(instruction.as_bytes())?;
+        if self.plant == Plant::InstructionDropped {
+            instruct_tokens.clear();
+        }
         if text_tokens.len() < 4 {
             return Err(err("need at least 4 text tokens"));
         }
@@ -742,6 +834,14 @@ impl Talker {
         let tts_bos = special[0..h].to_vec();
         let tts_eos = special[h..2 * h].to_vec();
         let tts_pad = special[2 * h..3 * h].to_vec();
+        // The instruction's rows, projected in one batch of their own as the reference projects them
+        // (`transformer_embeddings.cpp:301-313`), lead the prompt (`:656-664`). Without an instruction nothing is
+        // projected and the prompt is the one it always was.
+        let mut prefill = if instruct_tokens.is_empty() {
+            Vec::new()
+        } else {
+            self.project_text(&instruct_tokens)?
+        };
         let role = self.project_text(&text_tokens[..3])?;
         let codec_prefill: Vec<i32> = if language_id < 0 {
             vec![c.codec_nothink_id, c.codec_think_bos_id, c.codec_think_eos_id]
@@ -773,7 +873,7 @@ impl Talker {
         }
         let body = self.project_text(&text_tokens[3..3 + body_count as usize])?;
         let codec_bos = &codec_tail_embed[h..2 * h];
-        let mut prefill = role;
+        prefill.extend_from_slice(&role);
         prefill.extend_from_slice(&codec_plus_overlay);
         prefill.extend((0..h).map(|j| body[j] + codec_bos[j]));
         let prefill_len = (prefill.len() / h) as i64;
@@ -1919,5 +2019,72 @@ mod tests {
         assert_eq!(language_id("zh"), Some(2055));
         assert_eq!(language_id("auto"), Some(-1));
         assert_eq!(language_id("yue"), None);
+    }
+
+    #[test]
+    fn instruction_support_follows_the_reference_capability_rule() {
+        // Undeclared: by model type, and for CustomVoice by size.
+        assert!(instruction_supported("custom_voice", None, 2048));
+        assert!(!instruction_supported("custom_voice", None, 1024));
+        assert!(instruction_supported("voice_design", None, 1024));
+        assert!(!instruction_supported("base", None, 2048));
+        assert!(!instruction_supported("", None, 2048));
+        // Declared metadata wins either way.
+        assert!(instruction_supported("base", Some(true), 1024));
+        assert!(!instruction_supported("custom_voice", Some(false), 2048));
+    }
+
+    fn config(tts_model_type: &str, hidden_size: i32) -> Config {
+        Config {
+            hidden_size,
+            n_layers: 0,
+            n_heads: 0,
+            n_kv_heads: 0,
+            head_dim: 0,
+            rms_norm_eps: 0.0,
+            rope_theta: 0.0,
+            codec_vocab_size: 0,
+            n_codebooks: 0,
+            cp_layers: 0,
+            cp_vocab_size: 0,
+            cp_hidden_size: 0,
+            cp_n_heads: 0,
+            cp_n_kv_heads: 0,
+            cp_head_dim: 0,
+            cp_rms_norm_eps: 0.0,
+            cp_rope_theta: 0.0,
+            codec_pad_id: 0,
+            codec_bos_id: 0,
+            codec_eos_id: 0,
+            tts_bos_id: 0,
+            tts_eos_id: 0,
+            tts_pad_id: 0,
+            codec_think_id: 0,
+            codec_nothink_id: 0,
+            codec_think_bos_id: 0,
+            codec_think_eos_id: 0,
+            mrope_section: None,
+            tts_model_type: tts_model_type.into(),
+            supports_instruction: instruction_supported(tts_model_type, None, hidden_size),
+        }
+    }
+
+    #[test]
+    fn an_instruction_on_a_base_checkpoint_is_refused_by_name() {
+        let base = config("base", 2048);
+        let e = check_instruction(&base, "Speak slowly and sadly.").unwrap_err();
+        assert!(e.0.contains("does not take a style instruction"), "{}", e.0);
+        assert!(e.0.contains("\"base\""), "the error names the checkpoint type: {}", e.0);
+        assert!(e.0.contains("CustomVoice"), "{}", e.0);
+        // No instruction, or an empty one, is not an instruction: every checkpoint renders it.
+        assert!(check_instruction(&base, "").is_ok());
+        // The 0.6B CustomVoice is refused too, as the reference reports it.
+        assert!(check_instruction(&config("custom_voice", 1024), "请用缓慢而悲伤的语气说。").is_err());
+    }
+
+    #[test]
+    fn an_instruction_on_a_custom_voice_checkpoint_passes() {
+        assert!(check_instruction(&config("custom_voice", 2048), "Speak slowly and sadly.").is_ok());
+        assert!(check_instruction(&config("voice_design", 2048), "请用缓慢而悲伤的语气说。").is_ok());
     }
 }

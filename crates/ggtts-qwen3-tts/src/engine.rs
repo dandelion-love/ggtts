@@ -22,6 +22,12 @@ use crate::PROFILE;
 #[derive(Debug, Clone)]
 pub struct Voice {
     pub speaker: String,
+    /// A style instruction in natural language, for example `Speak slowly and sadly.`, given to every request as the
+    /// reference CLI's `--instruction` gives it. `None`, the default, and an empty string are both no instruction:
+    /// the prompt, and so the output, is the one without it. Only checkpoints that take an instruction accept one
+    /// (a 1.7B CustomVoice or a VoiceDesign checkpoint, [`instruction_supported`](crate::talker::instruction_supported));
+    /// on any other, `Base` included, [`Qwen3Tts::load`] fails rather than render without it.
+    pub instruction: Option<String>,
     /// A language the reference CLI's `-l` accepts, for example `zh` or `auto`.
     pub language: String,
     /// The frame cap (`--max-tokens`).
@@ -38,12 +44,20 @@ impl Default for Voice {
     fn default() -> Self {
         Self {
             speaker: "hk_cantonese_speaker".into(),
+            instruction: None,
             language: "zh".into(),
             max_frames: 1200,
             sampling: Sampling::default(),
             device: Device::Cpu,
             trace: None,
         }
+    }
+}
+
+impl Voice {
+    /// The instruction as the talker takes it: empty for none.
+    pub fn instruction(&self) -> &str {
+        self.instruction.as_deref().unwrap_or("")
     }
 }
 
@@ -64,6 +78,9 @@ impl Qwen3Tts {
         let language_id =
             language_id(&voice.language).ok_or_else(|| EngineError(format!("unknown language: {}", voice.language)))?;
         let talker = Talker::load_on(talker, threads, voice.device)?;
+        // An instruction the checkpoint does not take fails here, before the codec is read or any text rendered, and
+        // before the speaker check, so a Base checkpoint (which has no named speakers) is told about the instruction.
+        talker.check_instruction(voice.instruction())?;
         // An unknown speaker fails here, before any text is rendered, with the model's own speaker names.
         talker.speaker(&voice.speaker)?;
         let trace = match &voice.trace {
@@ -181,6 +198,7 @@ impl Qwen3Tts {
         let g = talker.generate_streamed(
             req.text,
             &voice.speaker,
+            voice.instruction(),
             *language_id,
             req.seed,
             voice.max_frames,
@@ -259,6 +277,7 @@ impl Engine for Qwen3Tts {
         let g = self.talker.generate_streamed(
             req.text,
             &self.voice.speaker,
+            self.voice.instruction(),
             self.language_id,
             req.seed,
             self.voice.max_frames,

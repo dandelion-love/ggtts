@@ -35,7 +35,10 @@ for t in decoder_identity:decoder_samples_are_bit_identical_to_the_reference \
          decoder_identity:planted::window_off_by_one_is_seen \
          token_identity:codec_tokens_are_identical_to_the_reference \
          token_identity:planted::rope_normal_is_seen \
-         token_identity:planted::sampler_off_by_one_is_seen; do
+         token_identity:planted::sampler_off_by_one_is_seen \
+         token_identity:planted::instruction_leak_is_seen \
+         token_identity:instructed_codec_tokens_are_identical_to_the_reference \
+         token_identity:planted::instruction_dropped_is_seen; do
   file=${t%%:*} name=${t#*:}
   echo
   echo "## $file $name"

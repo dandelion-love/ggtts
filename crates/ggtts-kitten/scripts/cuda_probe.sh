@@ -22,6 +22,15 @@
 # result line says so (`PASS, TQ1_0 NOT RUN`) instead of `ALL PASS`; scripts/rc_gate.py reads that line.
 # DEVICE=cpu with STEPS=render runs only the conversion and the render twice, on the CPU, without CUDA: the way to
 # check this script's own render step on a machine whose GPU is busy (GGML_LIB_DIR is then not needed).
+#
+# With TQ1_GGUF set, the probe also runs the CPU's packed TQ1 arm (`parity --device cpu --weights ternary`, ggml's
+# TQ1_0 x Q8_K kernel) against the same CPU f32 reference, and the same arm on the planted copy. That arm is REPORT
+# ONLY: its numbers are printed as INFO and no bar decides them, because it differs from the f32 reading by design
+# (the kernel rounds the activations to Q8_K; measured min cosine 0.99983 against the ternary bar of 0.9999). What
+# it reports is how far, so a change in that distance is seen. The arm can still fail the probe in two ways, both
+# about the instrument rather than the model: it printed no numbers, or its report does not show the planted
+# matrix (the planted run's worst hidden rel L2 must be larger than the clean run's). DEVICE=cpu STEPS=tq1 runs
+# only this arm and its reference, on the CPU, without KITTEN_REPO, S3_GGUF or VOICE.
 # Exit 0 only when every check passes and every plant is red. Nothing it writes is committed: it reads a Kitten
 # model and writes under WORK.
 set -uo pipefail
@@ -30,11 +39,13 @@ root=$(cd "$here/../.." && pwd)
 device=${DEVICE:-cuda}
 steps=${STEPS:-all}
 case "$device/$steps" in
-  cuda/all | cuda/render | cpu/render) ;;
-  *) echo "DEVICE=$device STEPS=$steps: use DEVICE=cuda (STEPS=all|render) or DEVICE=cpu STEPS=render" >&2; exit 2 ;;
+  cuda/all | cuda/render | cpu/render | cpu/tq1) ;;
+  *) echo "DEVICE=$device STEPS=$steps: use DEVICE=cuda (STEPS=all|render) or DEVICE=cpu (STEPS=render|tq1)" >&2; exit 2 ;;
 esac
-: "${KITTEN_REPO:?}" "${S3_GGUF:?}" "${VOICE:?}" "${WORK:?}"
+: "${WORK:?}"
+[ "$steps" = tq1 ] || : "${KITTEN_REPO:?}" "${S3_GGUF:?}" "${VOICE:?}"
 [ "$steps" = all ] && : "${REF_LM:?}" "${REF_S3:?}" "${REF_COND:?}"
+[ "$steps" = tq1 ] && : "${REF_LM:?}" "${TQ1_GGUF:?}"
 [ -n "${LM_GGUF:-}" ] && echo "note: LM_GGUF is no longer read; the LM is converted fresh into $WORK/lm.gguf"
 nice=${NICE:-nice -n 19}
 threads=${THREADS:-4}
@@ -63,20 +74,22 @@ K=$CARGO_TARGET_DIR/release/ggtts-kitten
 C=$CARGO_TARGET_DIR/release/ggtts-kitten-convert
 R=$CARGO_TARGET_DIR/release/ggtts-render
 
-echo "== LM converted fresh, then its readback (CPU; the GGUF is the same on every device)"
 LM_GGUF=$WORK/lm.gguf
-rm -f "$LM_GGUF"
-if $nice "$C" --repo "$KITTEN_REPO" --out "$LM_GGUF" > "$WORK/convert.log" 2>&1; then
-  pass "readback: $(grep -o 'READBACK PASS.*groups of 128' "$WORK/convert.log")"
-else
-  fail "conversion or readback: $(grep -hE 'READBACK|error' "$WORK/convert.log" | tail -1)"
-fi
-# The renderer reads the tokenizer from the GGUF's metadata, which sits before the tensor data.
-if [ -f "$LM_GGUF" ] && grep -aqm1 'kitten.tokenizer.json' <(head -c 67108864 "$LM_GGUF"); then
-  pass "the LM GGUF carries its tokenizer"
-else
-  echo "FAIL  $LM_GGUF has no embedded tokenizer: refusing to run the rest of the probe on it"
-  exit 1
+if [ "$steps" != tq1 ]; then
+  echo "== LM converted fresh, then its readback (CPU; the GGUF is the same on every device)"
+  rm -f "$LM_GGUF"
+  if $nice "$C" --repo "$KITTEN_REPO" --out "$LM_GGUF" > "$WORK/convert.log" 2>&1; then
+    pass "readback: $(grep -o 'READBACK PASS.*groups of 128' "$WORK/convert.log")"
+  else
+    fail "conversion or readback: $(grep -hE 'READBACK|error' "$WORK/convert.log" | tail -1)"
+  fi
+  # The renderer reads the tokenizer from the GGUF's metadata, which sits before the tensor data.
+  if [ -f "$LM_GGUF" ] && grep -aqm1 'kitten.tokenizer.json' <(head -c 67108864 "$LM_GGUF"); then
+    pass "the LM GGUF carries its tokenizer"
+  else
+    echo "FAIL  $LM_GGUF has no embedded tokenizer: refusing to run the rest of the probe on it"
+    exit 1
+  fi
 fi
 
 if [ "$steps" = all ]; then
@@ -85,8 +98,50 @@ if [ "$steps" = all ]; then
   grep -q 'READBACK FAIL' "$WORK/planted-convert.log" && pass "planted readback is red" || fail "planted readback was not red"
 fi
 
+# A parity log's numbers, on one line: the logits line and the worst hidden rel L2 from the verdict line.
+parity_numbers() {
+  local logits worst
+  logits=$(grep -h '^logits (last' "$1" | tail -1)
+  worst=$(grep -hoE 'worst hidden rel L2 [0-9.e+-]+' "$1" | tail -1)
+  [ -n "$logits" ] && [ -n "$worst" ] && echo "$logits; $worst"
+}
+# The CPU's packed TQ1 arm against the CPU f32 reference, clean and planted. Report only: see the header.
+tq1_cpu_packed() {
+  echo "== TQ1_0 model, the CPU packed arm against its CPU f32 arm (report only: no bar decides it)"
+  local tag log clean= planted= cw pw
+  for tag in clean planted; do
+    log=$WORK/tq1-cpu-packed-$tag.log
+    local gguf=$TQ1_GGUF
+    [ $tag = planted ] && gguf=$WORK/tq1-planted.gguf
+    # Exit 1 is the arm's own bar refusing it, which is expected and not this probe's verdict; anything else is an error.
+    $nice "$K" parity --device cpu --threads "$threads" --gguf "$gguf" --ref "$WORK/tq1-ref" --weights ternary > "$log" 2>&1
+    local rc=$? nums
+    nums=$(parity_numbers "$log")
+    if [ $rc -gt 1 ] || [ -z "$nums" ]; then
+      fail "TQ1 CPU packed arm ($tag) printed no numbers (exit $rc): $(grep -hE 'error|panicked' "$log" | tail -1)"
+      continue
+    fi
+    grep -h '^ternary matrices' "$log" | sed 's/^/  /'
+    if [ $tag = clean ]; then
+      clean=$nums
+      echo "INFO  TQ1 CPU packed arm: $nums"
+    else
+      planted=$nums
+      echo "INFO  TQ1 CPU packed arm, one matrix zeroed (plant): $nums"
+    fi
+  done
+  [ -n "$clean" ] && [ -n "$planted" ] || return 0
+  cw=${clean##*worst hidden rel L2 }
+  pw=${planted##*worst hidden rel L2 }
+  if awk -v c="$cw" -v p="$pw" 'BEGIN { exit !(p > c) }'; then
+    pass "TQ1 CPU packed arm sees the plant (worst hidden rel L2 $pw planted against $cw clean)"
+  else
+    fail "TQ1 CPU packed arm does not see the plant (worst hidden rel L2 $pw planted against $cw clean)"
+  fi
+}
+
 tq1=0
-if [ "$steps" = all ] && [ -n "${TQ1_GGUF:-}" ]; then
+if { [ "$steps" = all ] || [ "$steps" = tq1 ]; } && [ -n "${TQ1_GGUF:-}" ]; then
   echo "== TQ1_0 model: its CPU f32 reference and the planted copy, before any GPU work"
   [ -f "$TQ1_GGUF" ] || { echo "TQ1_GGUF is not a file: $TQ1_GGUF" >&2; exit 2; }
   rm -rf "$WORK/tq1-ref" "$WORK/tq1-planted.gguf"
@@ -103,6 +158,7 @@ if [ "$steps" = all ] && [ -n "${TQ1_GGUF:-}" ]; then
   else
     fail "TQ1 reference (CPU f32 arm): $(grep -hE 'error|panicked' "$WORK/tq1-ref.log" | tail -1)"
   fi
+  [ $tq1 = 1 ] && tq1_cpu_packed
 elif [ "$steps" = all ]; then
   echo "NOTE  TQ1_GGUF is not set: the TQ1_0 checks on CUDA did not run"
 fi
@@ -177,6 +233,13 @@ if [ "$steps" = all ]; then
     check "conditioning, plant $p" fail "cond-$p.log" $nice "$K" cond-parity --device cuda --threads "$threads" --s3gguf "$S3_GGUF" --ref "$REF_COND" --plant "$p"
   done
   grep -hE '^[A-Za-z].* (pass|FAIL)$' "$WORK/cond.log" | sed 's/^/  /'
+fi
+
+if [ "$steps" = tq1 ]; then
+  rm -f "$WORK/tq1-planted.gguf"
+  if [ $status -ne 0 ]; then result="SOME FAIL"; else result="ALL PASS"; fi
+  echo "== result: $result"
+  exit $status
 fi
 
 text="The little lighthouse kept its lamp burning all through the stormy night."

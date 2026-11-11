@@ -21,8 +21,17 @@ use ggtts_kitten::gguf::Gguf;
 use ggtts_kitten::safetensors::SafeTensors;
 use ggtts_kitten::ternary::{Rule, ScaleRule};
 
+const USAGE: &str = "usage: ggtts-kitten-convert --repo DIR [--weights FILE] (--out FILE.gguf [--layout q4_0|tq2_0] [--plant group256|absmean] | --verify FILE.gguf)
+       ggtts-kitten-convert --s3gen s3gen_meanflow.safetensors [--pyannote speaker/model.safetensors] --out FILE.gguf
+       ggtts-kitten-convert --version
+
+--repo: a KittenML/kitten-tts-2 download (config.json, lm/config.json, lm/model.safetensors, lm/tokenizer.json).
+  Writes the language model GGUF for `ggtts-render --model`, with the tokenizer embedded, then checks it by readback.
+--s3gen: ResembleAI/chatterbox-turbo's s3gen_meanflow.safetensors, with --pyannote the Kitten download's
+  speaker/model.safetensors. Writes the decoder GGUF for `ggtts-render --codec` and `ggtts-kitten prepare --s3gguf`.";
+
 fn usage() -> ExitCode {
-    eprintln!("usage: ggtts-kitten-convert --repo DIR [--weights FILE] (--out FILE.gguf [--plant group256|absmean] | --verify FILE.gguf)");
+    eprintln!("{USAGE}");
     ExitCode::from(2)
 }
 
@@ -52,8 +61,14 @@ fn run() -> Result<bool, String> {
                 let v = val()?;
                 layout = ggtts_kitten::ternary::Layout::parse(&v).ok_or(format!("unknown --layout {v}"))?;
             }
-            "--version" => {
-                println!("ggtts-kitten-convert {}", ggtts_core::VERSION);
+            "--version" | "-V" => {
+                for line in ggtts_core::version_lines("ggtts-kitten-convert") {
+                    println!("{line}");
+                }
+                return Ok(true);
+            }
+            "--help" | "-h" => {
+                println!("{USAGE}");
                 return Ok(true);
             }
             other => return Err(format!("unknown argument {other}")),

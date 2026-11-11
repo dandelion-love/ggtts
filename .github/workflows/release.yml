@@ -52,16 +52,13 @@ jobs:
           test "$(git -C crates/ggtts-ggml-sys/ggml rev-parse HEAD)" = "$pin"
       - name: Test before building the release
         run: cargo test --workspace --locked
-      - name: Build ggtts-render with both engines (Qwen3-TTS, Kitten-TTS 2) on ggml
+      - name: Build ggtts-render with both engines (Qwen3-TTS, Kitten-TTS 2) on ggml, and the Kitten tools
         env:
           LIBCLANG_PATH: ${{ runner.os == 'Windows' && 'C:\Program Files\LLVM\bin' || '' }}
           GGTTS_RELEASE_VERSION: ${{ github.ref_name }}
           # Do not bake the build host instruction set into shipped CPU binaries.
           GGML_PORTABLE: "1"
-        run: cargo build --release --locked -p ggtts-cli --features "${{ matrix.features }}"
-      - name: The Linux binaries need no newer glibc, libstdc++, libgcc_s or libgomp than Ubuntu 22.04 ships
-        if: runner.os == 'Linux'
-        run: python3 scripts/check_glibc_floor.py target/release/ggtts-render target/release/ggtts-measure
+        run: cargo build --release --locked -p ggtts-cli -p ggtts-kitten --features "${{ matrix.features }}"
       - name: Package, named with the ggml pin
         id: pkg
         env:
@@ -96,6 +93,9 @@ jobs:
             "built_by": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           }
           EOF
+          # The Linux binaries need no newer glibc, libstdc++, libgcc_s or libgomp than Ubuntu 22.04 ships. The check
+          # reads the binaries from BUILDINFO's "binaries" (pack's own list) and refuses a packed ELF missing from it.
+          if [ "$RUNNER_OS" = Linux ]; then python3 scripts/check_glibc_floor.py --packed "dist/$name"; fi
           "dist/$name/ggtts-render${EXE}" --version | tee "dist/$name/VERSION.txt"
           grep -q "$commit" "dist/$name/VERSION.txt"
           cd dist

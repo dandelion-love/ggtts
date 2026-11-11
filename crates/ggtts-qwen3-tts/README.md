@@ -83,7 +83,7 @@ target/release/ggtts-render --model "$GGTTS_TALKER" --codec "$GGTTS_CODEC" --out
 `ggtts-render` picks the engine from the model's `general.architecture`; `--engine` overrides it.
 Use `--speaker hk_voice_343` with the published Cantonese v0.0.5 talker, or select another speaker named in
 the model card explicitly. Without `--speaker`, the legacy `hk_cantonese_speaker` default is retained for v0.0.1.
-An unknown speaker fails; the renderer does not choose an arbitrary speaker from a multi-speaker model.
+An unknown speaker fails, and the error lists the model's speaker names; the renderer does not choose an arbitrary speaker from a multi-speaker model.
 
 The story path, on `fixtures/story/outing.txt` (five paragraphs written for the purpose): 8 chunks at the profile's
 ceiling of 45, a seed per chunk from the story, no first-draw defects, joined, trimmed and levelled into 66.44 s of

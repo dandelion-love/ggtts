@@ -64,9 +64,8 @@ impl Qwen3Tts {
         let language_id =
             language_id(&voice.language).ok_or_else(|| EngineError(format!("unknown language: {}", voice.language)))?;
         let talker = Talker::load_on(talker, threads, voice.device)?;
-        if talker.speaker_id(&voice.speaker).is_none() {
-            return Err(EngineError(format!("the talker has no speaker {}", voice.speaker)));
-        }
+        // An unknown speaker fails here, before any text is rendered, with the model's own speaker names.
+        talker.speaker(&voice.speaker)?;
         let trace = match &voice.trace {
             Some(p) => Some(StopTrace::new(BufWriter::new(
                 File::create(p).map_err(|e| EngineError(format!("{}: {e}", p.display())))?,

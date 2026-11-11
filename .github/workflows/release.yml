@@ -24,13 +24,14 @@ jobs:
             target: x86_64-linux
             exe: ""
             archive: tar.gz
-            features: ggtts-cli/ggml
+            # The C library (ggtts-ffi) with the same engines, packed into lib/ beside include/ggtts.h.
+            features: ggtts-cli/ggml,ggtts-ffi/ggml
           - os: windows-latest
             target: x86_64-windows
             exe: ".exe"
             archive: zip
             # the committed bindings are for x86_64 Linux only, so Windows generates its own
-            features: ggtts-cli/bindgen
+            features: ggtts-cli/bindgen,ggtts-ffi/ggml
     runs-on: ${{ matrix.os }}
     # CI's release-build job runs this matrix's build command on every PR; keep the two matrices the same.
     timeout-minutes: 30
@@ -52,13 +53,13 @@ jobs:
           test "$(git -C crates/ggtts-ggml-sys/ggml rev-parse HEAD)" = "$pin"
       - name: Test before building the release
         run: cargo test --workspace --locked
-      - name: Build ggtts-render with both engines (Qwen3-TTS, Kitten-TTS 2) on ggml, and the Kitten tools
+      - name: Build ggtts-render with both engines (Qwen3-TTS, Kitten-TTS 2) on ggml, the Kitten tools, and the C library
         env:
           LIBCLANG_PATH: ${{ runner.os == 'Windows' && 'C:\Program Files\LLVM\bin' || '' }}
           GGTTS_RELEASE_VERSION: ${{ github.ref_name }}
           # Do not bake the build host instruction set into shipped CPU binaries.
           GGML_PORTABLE: "1"
-        run: cargo build --release --locked -p ggtts-cli -p ggtts-kitten --features "${{ matrix.features }}"
+        run: cargo build --release --locked -p ggtts-cli -p ggtts-kitten -p ggtts-ffi --features "${{ matrix.features }}"
       - name: Package, named with the ggml pin
         id: pkg
         env:
@@ -74,9 +75,10 @@ jobs:
           test ${#commit} -eq 40
           name="ggtts-${TAG}-${TARGET}-cpu-ggml-${commit:0:7}"
           mkdir -p "dist/$name"
-          # The binary, LICENSE, README and the script instruments (instruments/ beside the binary), packed by the
-          # same script ci.yml smoke-tests on every pull request.
+          # The binary, LICENSE, README, the script instruments (instruments/ beside the binary) and the C library
+          # (lib/, include/ggtts.h), packed by the same script ci.yml smoke-tests on every pull request.
           binaries=$(scripts/package_and_smoke.sh pack "target/release/ggtts-render${EXE}" "dist/$name")
+          libraries=$(scripts/package_and_smoke.sh libraries "dist/$name")
           # The engines are read from what the binary says it carries; the script refuses an empty or short list.
           engines=$(bash scripts/buildinfo_engines.sh "dist/$name/ggtts-render${EXE}" qwen3-tts kitten-tts-2)
           cat > "dist/$name/BUILDINFO.json" <<EOF
@@ -88,13 +90,16 @@ jobs:
             "rustc": "$(rustc -V)",
             "target": "${TARGET}",
             "binaries": ${binaries},
+            "libraries": ${libraries},
+            "library_features": ["cpu", "ggml"],
             "features": ["cpu", "ggml"],
             "engines": ${engines},
             "built_by": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           }
           EOF
-          # The Linux binaries need no newer glibc, libstdc++, libgcc_s or libgomp than Ubuntu 22.04 ships. The check
-          # reads the binaries from BUILDINFO's "binaries" (pack's own list) and refuses a packed ELF missing from it.
+          # The Linux binaries and the C library need no newer glibc, libstdc++, libgcc_s or libgomp than Ubuntu 22.04
+          # ships. The check reads them from BUILDINFO's "binaries" and "libraries" (pack's own lists) and refuses a
+          # packed ELF missing from both.
           if [ "$RUNNER_OS" = Linux ]; then python3 scripts/check_glibc_floor.py --packed "dist/$name"; fi
           "dist/$name/ggtts-render${EXE}" --version | tee "dist/$name/VERSION.txt"
           grep -q "$commit" "dist/$name/VERSION.txt"
@@ -102,7 +107,7 @@ jobs:
           ../scripts/package_and_smoke.sh archive "$name" "$ARCHIVE"
           rm -rf "$name"
           ls -l
-      - name: Smoke the archive (a shipped Python instrument runs from it; a planted missing instruments/ is reported)
+      - name: Smoke the archive (a shipped Python instrument runs from it, and a C program builds and renders against its library and header)
         env:
           TAG: ${{ github.ref_name }}
         run: |

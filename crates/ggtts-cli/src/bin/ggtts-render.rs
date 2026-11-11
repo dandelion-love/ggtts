@@ -258,13 +258,10 @@ fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, St
         "qwen3-tts" => {
             let codec = a.codec.as_ref().ok_or("the qwen3-tts engine needs --codec")?;
             let voice = qwen_voice(a)?;
-            let engine =
-                ggtts_qwen3_tts::engine::Qwen3Tts::load(model, codec, threads, voice).map_err(|e| e.to_string())?;
-            // A checkpoint that takes no instruction refuses one here, before anything is rendered.
-            engine
-                .check_instruction(a.instruction.as_deref())
-                .map_err(|e| format!("--instruction: {e}"))?;
-            Ok(Box::new(engine) as Box<dyn Engine>)
+            // A checkpoint that takes no instruction refuses one while loading, before anything is rendered.
+            ggtts_qwen3_tts::engine::Qwen3Tts::load_for(model, codec, threads, voice, a.instruction.as_deref())
+                .map(|e| Box::new(e) as Box<dyn Engine>)
+                .map_err(|e| e.to_string())
         }
         // Kitten-TTS 2: --model is the LM GGUF, --codec the S3Gen GGUF, --voice the reference (`ggtts-kitten prepare`).
         #[cfg(feature = "ggml")]

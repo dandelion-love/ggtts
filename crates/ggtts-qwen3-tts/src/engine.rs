@@ -60,10 +60,24 @@ impl Qwen3Tts {
     /// Loads the talker GGUF and the codec GGUF on `voice.device` with `threads` CPU threads. Refuses
     /// `voice.sampling` before reading either file if it would decode greedily ([`Sampling::check`]).
     pub fn load(talker: &Path, codec: &Path, threads: i32, voice: Voice) -> Result<Self, EngineError> {
+        Self::load_for(talker, codec, threads, voice, None)
+    }
+
+    /// [`load`](Self::load) for requests that will carry `instruction`: a checkpoint that takes no style instruction
+    /// refuses a non-empty one here, before the speaker is looked up or the codec read, so the error a caller sees
+    /// is about the instruction ([`check_instruction`](Self::check_instruction)).
+    pub fn load_for(
+        talker: &Path,
+        codec: &Path,
+        threads: i32,
+        voice: Voice,
+        instruction: Option<&str>,
+    ) -> Result<Self, EngineError> {
         voice.sampling.check()?;
         let language_id =
             language_id(&voice.language).ok_or_else(|| EngineError(format!("unknown language: {}", voice.language)))?;
         let talker = Talker::load_on(talker, threads, voice.device)?;
+        talker.check_instruction(instruction)?;
         // An unknown speaker fails here, before any text is rendered, with the model's own speaker names.
         talker.speaker(&voice.speaker)?;
         let trace = match &voice.trace {

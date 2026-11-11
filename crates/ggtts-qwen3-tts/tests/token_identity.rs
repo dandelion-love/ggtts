@@ -269,6 +269,18 @@ fn a_base_checkpoint_refuses_an_instruction() {
     // No instruction and an empty one are not refused for being instructions.
     assert!(talker.check_instruction(None).is_ok());
     assert!(talker.check_instruction(Some("")).is_ok());
+    // The engine refuses it while loading, before the speaker (a Base checkpoint names none) or the codec is read,
+    // so the error is about the instruction.
+    let e = ggtts_qwen3_tts::engine::Qwen3Tts::load_for(
+        &path,
+        Path::new("codec-not-read.gguf"),
+        4,
+        ggtts_qwen3_tts::engine::Voice::default(),
+        Some("Speak slowly."),
+    )
+    .err()
+    .expect("a Base checkpoint must refuse an instruction at load");
+    assert!(e.0.contains("base model"), "{e}");
 }
 
 /// The expected failures: each test passes only if its planted defect turns every fixture red.

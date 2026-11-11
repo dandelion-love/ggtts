@@ -148,7 +148,8 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(matrix(ci), matrix(release))
         linux = [entry for entry in matrix(release) if entry["target"] == "x86_64-linux"]
         # The Linux CPU archive's glibc floor is its runner's; ubuntu-latest (24.04) needed glibc 2.39.
-        self.assertEqual(linux, [{"os": "ubuntu-22.04", "target": "x86_64-linux", "features": "ggtts-cli/ggml"}])
+        self.assertEqual(linux, [{"os": "ubuntu-22.04", "target": "x86_64-linux",
+                                  "features": "ggtts-cli/ggml,ggtts-ffi/ggml"}])
         # The check reads the packed directory's BUILDINFO "binaries" (pack's own list), never a list kept by hand,
         # so a binary that is packed is always checked; it runs after pack and after BUILDINFO is written.
         for name, block, check in (("ci.yml release-build", ci, "check_glibc_floor.py --packed dist/release-ci"),
@@ -158,7 +159,7 @@ class SelectionTest(unittest.TestCase):
                              block, name)
             self.assertLess(block.index("scripts/package_and_smoke.sh pack"), block.index(check), name)
             self.assertLess(block.index("BUILDINFO.json"), block.index(check), name)
-        self.assertIn("ggtts-unlisted is an ELF file that BUILDINFO.json's binaries leaves out", ci)
+        self.assertIn("ggtts-unlisted is an ELF file that BUILDINFO.json's binaries and libraries leave out", ci)
         self.assertIn("--floor GLIBC=2.17", ci)
         # The in-job drift step compares the runner too, not only the features.
         self.assertIn('test "$os" = "$OS"', ci)
@@ -199,7 +200,10 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(select(["scripts/test_check_glibc_floor.py"]), set())
         self.assertEqual(select(["crates/ggtts-qwen3-tts/src/lib.rs"]), {"ggml", "package"})
         self.assertEqual(select(["crates/ggtts-core/src/pipeline.rs", "crates/ggtts-cli/Cargo.toml"]), {"package"})
-        self.assertEqual(select(["crates/ggtts-ffi/src/lib.rs"]), {"binding", "android", "ggml"})
+        self.assertEqual(select(["crates/ggtts-ffi/src/lib.rs"]), {"binding", "android", "ggml", "package"})
+        self.assertEqual(select(["crates/ggtts-ffi/include/ggtts.h"]), {"binding", "android", "ggml", "package"})
+        for path in ("scripts/ffi_smoke.c", "scripts/check_pe_imports.py", "scripts/test_check_pe_imports.py"):
+            self.assertEqual(select([path]), {"package"}, path)
         self.assertEqual(select(["crates/ggtts-ggml-sys/build.rs"]), {"binding", "android", "ggml"})
         for path in (".github/workflows/ci.yml", "Cargo.lock"):
             self.assertEqual(select([path]), set(JOBS))

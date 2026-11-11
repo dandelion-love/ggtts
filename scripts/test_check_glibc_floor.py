@@ -141,7 +141,25 @@ class FloorTest(unittest.TestCase):
             info.write_text('{"binaries": ["ggtts-render"]}')
             result = run("--packed", d)
             self.assertEqual(result.returncode, 1, result.stderr)
-            self.assertIn("ggtts-kitten is an ELF file that BUILDINFO.json's binaries leaves out", result.stderr)
+            self.assertIn("ggtts-kitten is an ELF file that BUILDINFO.json's binaries and libraries leave out",
+                          result.stderr)
+            # A shared library under lib/ is checked when "libraries" lists it, and refused unlisted.
+            Path(d, "lib").mkdir()
+            shutil.copy(elf, Path(d, "lib", "libggtts_ffi.so"))
+            info.write_text('{"binaries": ["ggtts-render", "ggtts-kitten"], "libraries": ["lib/libggtts_ffi.so"]}')
+            result = run("--packed", d)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("3 checked", result.stderr)
+            info.write_text('{"binaries": ["ggtts-render", "ggtts-kitten"]}')
+            result = run("--packed", d)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn(os.path.join("lib", "libggtts_ffi.so") + " is an ELF file that BUILDINFO.json's binaries "
+                          "and libraries leave out", result.stderr)
+            info.write_text('{"binaries": ["ggtts-render", "ggtts-kitten"], "libraries": "lib/libggtts_ffi.so"}')
+            self.assertIn("\"libraries\" is not a list", run("--packed", d).stderr)
+            shutil.rmtree(Path(d, "lib"))
+            info.write_text('{"binaries": ["ggtts-render", "ggtts-kitten"], "libraries": ["lib/libggtts_ffi.so"]}')
+            self.assertIn("names lib/libggtts_ffi.so, which is not in the directory", run("--packed", d).stderr)
             # A listed binary that is absent, and a missing or empty list, are refused too.
             info.write_text('{"binaries": ["ggtts-render", "ggtts-kitten", "ggtts-measure"]}')
             result = run("--packed", d)

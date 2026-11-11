@@ -35,16 +35,20 @@ pub struct RenderOptions {
     pub edge_s: f64,
     /// Collect wall-clock stage durations even when tracing is off. Includes observer work inside generation.
     pub measure_timings: bool,
+    /// The style instruction every chunk is rendered with ([`ChunkRequest::instruction`]); `None` for none.
+    pub instruction: Option<String>,
 }
 
 impl RenderOptions {
-    /// The profile's defaults: its [`redraw`](Profile::redraw) and [`edge_s`](Profile::edge_s), and no salt.
+    /// The profile's defaults: its [`redraw`](Profile::redraw) and [`edge_s`](Profile::edge_s), no salt and no
+    /// instruction.
     pub fn for_profile(profile: &Profile) -> Self {
         Self {
             redraw: profile.redraw,
             seed_salt: String::new(),
             edge_s: profile.edge_s,
             measure_timings: false,
+            instruction: None,
         }
     }
 }
@@ -235,6 +239,7 @@ fn render(
                 seed: u64::from(seed),
                 chunk: i as u32,
                 draw: k,
+                instruction: opts.instruction.as_deref(),
             };
             let t0 = tracing.then(std::time::Instant::now);
             if tracing {
@@ -244,6 +249,7 @@ fn render(
                     text: &c.text,
                     seed: req.seed,
                     n_text_tokens: None,
+                    instruction: req.instruction(),
                 });
             }
             let stage_start = (tracing || timings.is_some()).then(std::time::Instant::now);

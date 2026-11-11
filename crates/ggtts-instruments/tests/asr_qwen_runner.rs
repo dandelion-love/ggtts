@@ -81,6 +81,7 @@ fn two_asr_instruments_stack_without_chaining_or_changing_audio() {
         bin_dir: None,
         instruments_dir: Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../instruments")),
         models: None,
+        instruction: None,
     };
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../instruments/examples/python");
     let qw = root.join("qwrapper.py");
@@ -217,6 +218,7 @@ fn completed_audio_is_unchanged_and_failures_respect_requirement() {
         bin_dir: None,
         instruments_dir: Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../instruments")),
         models: None,
+        instruction: None,
     };
     let real =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../instruments/examples/python/asr-qwen/instrument.py");

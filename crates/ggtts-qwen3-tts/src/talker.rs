@@ -27,6 +27,7 @@ use ggtts_ggml_sys as g;
 
 use crate::cpu::{Cpu, Device, Meta};
 use crate::gguf::{set_name, Gguf, Weights};
+use crate::instruct;
 use crate::tokenizer::Tokenizer;
 
 type T = *mut g::ggml_tensor;
@@ -127,6 +128,9 @@ mod planted {
         /// Simulate hook-triggered corruption of sampler logits after copying them for an observer.
         /// The test-only feature removes this branch entirely from production builds.
         HookLogitMutation,
+        /// The style instruction's rows placed after the role rows instead of before them. Changes nothing for a
+        /// request with no instruction.
+        InstructionAfterRole,
     }
 
     #[cfg(feature = "plant")]
@@ -138,6 +142,7 @@ mod planted {
                 "rope-normal" => Self::RopeNormal,
                 "sampler-off-by-one" => Self::SamplerOffByOne,
                 "frame-hook-draw" => Self::FrameHookDraw,
+                "instruction-after-role" => Self::InstructionAfterRole,
                 _ => return None,
             })
         }
@@ -193,6 +198,11 @@ pub struct Config {
     pub codec_think_eos_id: i32,
     /// `None` when the GGUF has no M-RoPE sections; then the talker uses NEOX rope.
     pub mrope_section: Option<[i32; 3]>,
+    /// The checkpoint type, `base`, `custom_voice` or `voice_design`, as the reference reads and infers it
+    /// ([`instruct::model_type`]).
+    pub model_type: String,
+    /// Whether the checkpoint takes a style instruction ([`instruct::supports_instruction`]).
+    pub supports_instruction: bool,
 }
 
 struct Layer {
@@ -508,6 +518,8 @@ impl Talker {
                 2157,
             ),
             mrope_section,
+            model_type: String::new(),
+            supports_instruction: false,
         };
 
         // Speakers: `qwen3-tts.codec.speaker_names` and `speaker_ids`, names lower-cased
@@ -523,6 +535,18 @@ impl Talker {
                 }
             }
         }
+        // The checkpoint type and whether it takes a style instruction ([`crate::instruct`]).
+        let mut config = config;
+        let declared = instruct::MODEL_TYPE_KEYS
+            .iter()
+            .find_map(|k| gguf.string(k).filter(|s| !s.is_empty()));
+        let file_name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+        config.model_type = instruct::model_type(declared.as_deref(), &file_name, !speakers.is_empty());
+        config.supports_instruction = instruct::supports_instruction(
+            &config.model_type,
+            config.hidden_size,
+            instruct::SUPPORTS_KEYS.iter().find_map(|k| gguf.flag(k)),
+        );
         let tokenizer = Tokenizer::load(&gguf)?;
 
         // Every talker.* and code_pred.* tensor, at its file type and shape.
@@ -687,16 +711,51 @@ impl Talker {
 
     /// Text to codec tokens, as the reference CLI renders `-t <text> --speaker <speaker> -l <lang> --seed <seed>
     /// --max-tokens <max_len>`: `Qwen3TTS::synthesize` then `TTSTransformer::generate`.
+    ///
+    /// `instruction` is the CLI's `--instruction`: `None` or an empty string is no instruction and takes exactly the
+    /// path without one; a non-empty one is refused on a checkpoint that takes none ([`instruct::check`]).
+    #[allow(clippy::too_many_arguments)]
     pub fn generate(
         &mut self,
         text: &str,
+        instruction: Option<&str>,
         speaker: &str,
         language_id: i32,
         seed: u64,
         max_len: i32,
         sampling: Sampling,
     ) -> Result<Generation, EngineError> {
-        self.generate_streamed(text, speaker, language_id, seed, max_len, sampling, None, None)
+        self.generate_streamed(
+            text,
+            instruction,
+            speaker,
+            language_id,
+            seed,
+            max_len,
+            sampling,
+            None,
+            None,
+        )
+    }
+
+    /// The checkpoint type ([`Config::model_type`]).
+    pub fn model_type(&self) -> &str {
+        &self.config.model_type
+    }
+
+    /// Whether the checkpoint takes a style instruction ([`Config::supports_instruction`]).
+    pub fn supports_instruction(&self) -> bool {
+        self.config.supports_instruction
+    }
+
+    /// `Ok` for no instruction or a checkpoint that takes one; the error a user sees otherwise.
+    pub fn check_instruction(&self, instruction: Option<&str>) -> Result<(), EngineError> {
+        instruct::check(
+            instruction,
+            &self.config.model_type,
+            self.config.hidden_size,
+            self.config.supports_instruction,
+        )
     }
 
     /// [`generate`](Self::generate), with two read-only callbacks.
@@ -711,6 +770,7 @@ impl Talker {
     pub fn generate_streamed(
         &mut self,
         text: &str,
+        instruction: Option<&str>,
         speaker: &str,
         language_id: i32,
         seed: u64,
@@ -720,6 +780,7 @@ impl Talker {
         mut on_frame: Option<&mut FrameHook<'_>>,
     ) -> Result<Generation, EngineError> {
         sampling.check()?;
+        self.check_instruction(instruction)?;
         let c = self.config.clone();
         let h = c.hidden_size as usize;
         let spk = self
@@ -742,6 +803,17 @@ impl Talker {
         let tts_bos = special[0..h].to_vec();
         let tts_eos = special[h..2 * h].to_vec();
         let tts_pad = special[2 * h..3 * h].to_vec();
+        // The instruction's rows: `encode_instruct` (`pipeline_synthesize.cpp:1321-1324`), then the text projection
+        // (`transformer_embeddings.cpp:301-314`). Nothing for no instruction or an empty one.
+        let instruct_tokens = match instruction {
+            Some(i) if !i.is_empty() => self.tokenizer.encode_instruct(i.as_bytes())?,
+            _ => Vec::new(),
+        };
+        let instruct = if instruct_tokens.is_empty() {
+            Vec::new()
+        } else {
+            self.project_text(&instruct_tokens)?
+        };
         let role = self.project_text(&text_tokens[..3])?;
         let codec_prefill: Vec<i32> = if language_id < 0 {
             vec![c.codec_nothink_id, c.codec_think_bos_id, c.codec_think_eos_id]
@@ -773,7 +845,14 @@ impl Talker {
         }
         let body = self.project_text(&text_tokens[3..3 + body_count as usize])?;
         let codec_bos = &codec_tail_embed[h..2 * h];
-        let mut prefill = role;
+        // The instruction rows first, then the role rows (`transformer_embeddings.cpp:656-668`).
+        let (first, second) = if self.plant == Plant::InstructionAfterRole {
+            (role, instruct)
+        } else {
+            (instruct, role)
+        };
+        let mut prefill = first;
+        prefill.extend_from_slice(&second);
         prefill.extend_from_slice(&codec_plus_overlay);
         prefill.extend((0..h).map(|j| body[j] + codec_bos[j]));
         let prefill_len = (prefill.len() / h) as i64;

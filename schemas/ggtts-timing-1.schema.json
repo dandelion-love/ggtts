@@ -34,6 +34,7 @@
         "format": {"enum": ["text", "json"]}, "records": {"$ref": "#/$defs/count"},
         "sink_ns": {"$ref": "#/$defs/count"}, "lock_wait_ns": {"$ref": "#/$defs/count"}}},
     "limits": {"type": "string", "minLength": 1},
+    "instruction": {"description": "The request's style instruction (ggtts-render --instruction), when it had a non-empty one; absent otherwise. Added within this format version: a document without it is still valid.", "type": "string", "minLength": 1},
     "models": {"description": "Every model file the render used: a default file from the cache by its verified pinned sha256, a path given on the command line by the sha256 of its content.",
       "type": "array", "items": {"type": "object", "additionalProperties": false,
       "required": ["role", "path", "sha256", "source", "url"],

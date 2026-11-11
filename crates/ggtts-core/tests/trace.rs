@@ -433,6 +433,7 @@ fn trace_identity_holds_and_sees_a_planted_draw() {
                 seed: *seed,
                 chunk: *chunk,
                 draw: 0,
+                instruction: None,
             })
             .collect();
         for level in [1u8, 2] {

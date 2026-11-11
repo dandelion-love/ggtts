@@ -54,6 +54,7 @@ fn event_trace_emits_steps_without_changing_tokens_or_audio() {
         seed: gold.seed,
         chunk: 0,
         draw: 0,
+        instruction: None,
     };
     let mut engine = Qwen3Tts::load(&talker, &codec, 4, voice).unwrap();
     let plain = engine.generate(&req).unwrap();
@@ -90,6 +91,7 @@ fn stop_trace_tensor_hook_preserves_real_tokens_and_samples() {
         seed: gold.seed,
         chunk: 0,
         draw: 0,
+        instruction: None,
     };
     let mut engine = Qwen3Tts::load(&talker, &codec, 4, voice).unwrap();
     let plain = engine.generate(&req).unwrap();
@@ -163,6 +165,7 @@ fn a_hook_boundary_logit_mutation_is_detected_on_real_qwen() {
         let result = talker
             .generate_streamed(
                 &gold.text,
+                None,
                 &gold.speaker,
                 language_id(&gold.language).unwrap(),
                 gold.seed,
@@ -206,6 +209,7 @@ fn run(talker: &mut Talker, gold: &Golden, hook: bool) -> (Vec<i32>, Vec<i32>) {
     let g = talker
         .generate_streamed(
             &gold.text,
+            None,
             &gold.speaker,
             lang,
             gold.seed,
@@ -272,6 +276,7 @@ fn frame_level_streaming_end_to_end_is_the_batch_decode() {
             seed: gold.seed,
             chunk: 0,
             draw: 0,
+            instruction: None,
         };
         let mut stream = Vec::new();
         let mut first_at = None;

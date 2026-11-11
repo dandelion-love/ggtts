@@ -5,6 +5,10 @@
 #   QWEN3_TTS_CPP=<checkout at 16bb5af> QWEN3_TTS_BUILD=<its CPU build> TALKER=<talker.gguf> CODEC=<codec.gguf> \
 #   THREADS=4 scripts/record_fixtures.sh
 #
+# TEXTS (default fixtures/cpu/texts.tsv) is the list of cases. A third column, when present and not empty, is a
+# style instruction, passed to the reference CLI as `--instruction` and recorded as `request.instruction`; the
+# instruction fixtures are `TEXTS=fixtures/instruct/texts.tsv OUT=fixtures/instruct`.
+#
 # OUT (default fixtures/cpu) is where the fixture files go. BACKEND (default cpu) is the label recorded; it must say
 # what the build runs on, since a CUDA build of the reference picks the GPU by itself. With REPEAT_DRIFT=report a
 # case whose two recordings differ is reported and skipped, rather than stopping the script.
@@ -18,6 +22,7 @@ talker=${TALKER:?}
 codec=${CODEC:?}
 threads=${THREADS:-4}
 out_dir=${OUT:-$here/fixtures/cpu}
+texts=${TEXTS:-$here/fixtures/cpu/texts.tsv}
 backend=${BACKEND:-cpu}
 mkdir -p "$out_dir"
 seed=20260905
@@ -34,11 +39,13 @@ if [ "$backend" = cuda ]; then
   cpu="$cpu; $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader | head -n 1)"
 fi
 
-while IFS=$'\t' read -r name text; do
+while IFS=$'\t' read -r name text instruction; do
   [ -n "$name" ] || continue
+  instruct=()
+  [ -z "$instruction" ] || instruct=(--instruction "$instruction")
   for take in 1 2; do
     "$build/qwen3-tts-cli" -m "$work/model" --codec-model "$codec" --speaker hk_cantonese_speaker \
-      --max-tokens 1200 -l zh --seed "$seed" -j "$threads" -t "$text" -o "$work/$name.wav" \
+      --max-tokens 1200 -l zh --seed "$seed" -j "$threads" -t "$text" "${instruct[@]}" -o "$work/$name.wav" \
       --dump-generated-codes "$work/$name.$take.codes" > "$work/$name.$take.log" 2>&1
   done
   if ! cmp -s "$work/$name.1.codes" "$work/$name.2.codes"; then
@@ -48,9 +55,9 @@ while IFS=$'\t' read -r name text; do
   fi
   "$work/bin/decode_ref" "$codec" "$work/$name.1.codes" "$work/$name.f32" "$threads" 2> /dev/null
   python3 - "$name" "$text" "$work/$name.1.codes" "$work/$name.f32" "$out_dir/$name.json" \
-    "$talker_sha" "$codec_sha" "$threads" "$cpu" "$seed" "$backend" <<'PY'
+    "$talker_sha" "$codec_sha" "$threads" "$cpu" "$seed" "$backend" "$instruction" <<'PY'
 import hashlib, json, sys
-name, text, codes_path, f32_path, out, talker_sha, codec_sha, threads, cpu, seed, backend = sys.argv[1:]
+name, text, codes_path, f32_path, out, talker_sha, codec_sha, threads, cpu, seed, backend, instruction = sys.argv[1:]
 dump = json.load(open(codes_path))
 samples = open(f32_path, "rb").read()
 fixture = {
@@ -70,6 +77,8 @@ fixture = {
     "codes": "@CODES@",
     "samples": {"count": len(samples) // 4, "sha256_f32le": hashlib.sha256(samples).hexdigest()},
 }
+if instruction:
+    fixture["request"]["instruction"] = instruction
 cb = dump["codebooks"]
 rows = [",".join(str(c) for c in dump["codes"][i:i + cb]) for i in range(0, len(dump["codes"]), cb)]
 body = json.dumps(fixture, ensure_ascii=False, indent=1)
@@ -78,4 +87,4 @@ with open(out, "w", encoding="utf-8", newline="\n") as f:
     f.write(body + "\n")
 print(f"{name}: {dump['frames']} frames, {len(samples) // 4} samples")
 PY
-done < "$here/fixtures/cpu/texts.tsv"
+done < "$texts"

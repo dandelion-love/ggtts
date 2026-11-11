@@ -3,6 +3,7 @@
 //! ```text
 //! ggtts-render [--model M.gguf] [--codec C.gguf] [--offline] --out x.flac [--engine auto|qwen3-tts|kitten-tts-2|fake]
 //!              [--threads N] [--device cpu|cuda] [--trace trace.jsonl [--trace-level 1|2]] [--timing-report FILE] [--voice REF.json] [--speaker NAME]
+//!              [--instruction TEXT]
 //!              [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text "..." [--seed S] | --story story.txt)
 //!              [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE.yaml] [--require NAME]...
 //!              [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID]
@@ -17,6 +18,10 @@
 //! `--speaker` selects a named Qwen3-TTS speaker (for example `hk_voice_343`); it is refused for other engines.
 //! Without it the default talker uses its default speaker (`hk_voice_343`), and a given talker retains the legacy
 //! `hk_cantonese_speaker` default; an absent or unknown speaker is an error.
+//! `--instruction` is a natural-language style instruction (for example "Speak slowly and softly"), placed before the
+//! prompt as the reference runtime places it. A Qwen3-TTS custom_voice checkpoint of 1.7B or a voice_design
+//! checkpoint takes one; any other checkpoint, and any other engine, refuses it before rendering. An empty
+//! instruction is no instruction: the output is the same as without the flag.
 //! `--engine auto` (the default) picks the engine from the model's `general.architecture`. `--text` renders one
 //! request at one seed (default 20260905). `--story` reads a story file (title line, then one paragraph per line)
 //! and renders it on the core's story path. For stories `--trace` writes a complete ggtts-trace/2 event stream;
@@ -116,7 +121,7 @@ impl StreamTiming {
     }
 }
 const USAGE: &str = "usage: ggtts-render [--model M.gguf] [--codec C.gguf] [--offline] --out x.flac \
-[--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--speaker NAME] \
+[--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--speaker NAME] [--instruction TEXT] \
 [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
 [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID] \
@@ -168,6 +173,8 @@ struct Args {
     voice: Option<PathBuf>,
     /// Named speaker in a Qwen talker; distinct from a cloned reference voice.
     speaker: Option<String>,
+    /// A style instruction, for a Qwen3-TTS checkpoint that takes one. Empty is no instruction.
+    instruction: Option<String>,
     stream: Option<String>,
     stream_format: Option<String>,
     stream_raw: bool,
@@ -220,6 +227,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 }
                 a.speaker = Some(speaker);
             }
+            "--instruction" => a.instruction = Some(value()?),
             "--stream" => a.stream = Some(value()?),
             "--stream-format" => a.stream_format = Some(value()?),
             "--stream-raw" => a.stream_raw = true,
@@ -268,7 +276,8 @@ fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, St
         "qwen3-tts" => {
             let codec = a.codec.as_ref().ok_or("the qwen3-tts engine needs --codec")?;
             let voice = qwen_voice(a)?;
-            ggtts_qwen3_tts::engine::Qwen3Tts::load(model, codec, threads, voice)
+            // A checkpoint that takes no instruction refuses one while loading, before anything is rendered.
+            ggtts_qwen3_tts::engine::Qwen3Tts::load_for(model, codec, threads, voice, a.instruction.as_deref())
                 .map(|e| Box::new(e) as Box<dyn Engine>)
                 .map_err(|e| e.to_string())
         }
@@ -453,11 +462,24 @@ fn render_with_story_reader(
 }
 
 fn render_with_stream_opener(
+    a: Args,
+    log: LogSettings,
+    loader: impl FnOnce(&str, &Args, &Path) -> Result<Box<dyn Engine>, String>,
+    read_story: impl FnOnce(&Path) -> Result<String, String>,
+    stream_opener: impl FnOnce(&Args) -> Result<Option<StreamWriter<Box<dyn std::io::Write>>>, String>,
+) -> Result<u8, String> {
+    render_with_models(a, log, loader, read_story, stream_opener, resolve_models)
+}
+
+/// [`render_with_stream_opener`] with the model resolution passed in, so a test can resolve the default files from a
+/// prepared cache without the network.
+fn render_with_models(
     mut a: Args,
     log: LogSettings,
     loader: impl FnOnce(&str, &Args, &Path) -> Result<Box<dyn Engine>, String>,
     read_story: impl FnOnce(&Path) -> Result<String, String>,
     stream_opener: impl FnOnce(&Args) -> Result<Option<StreamWriter<Box<dyn std::io::Write>>>, String>,
+    resolve: impl FnOnce(&mut Args, &str, LogSettings) -> Result<Vec<ggtts_models::ModelFile>, String>,
 ) -> Result<u8, String> {
     if a.trace_level.is_some() && (a.trace.is_none() || a.story.is_none()) {
         return Err("--trace-level requires a story and --trace".into());
@@ -536,6 +558,9 @@ fn render_with_stream_opener(
     if a.speaker.is_some() && name != "qwen3-tts" {
         return Err("--speaker is only supported by the qwen3-tts engine".into());
     }
+    if a.instruction.as_deref().is_some_and(|i| !i.is_empty()) && name != "qwen3-tts" {
+        return Err("--instruction is only supported by the qwen3-tts engine".into());
+    }
     // Validate and plan before opening output files or loading model weights.
     let preplanned = if let Some((title, paragraphs)) = story_input {
         let profile = match name.as_str() {
@@ -554,7 +579,7 @@ fn render_with_stream_opener(
         None
     };
     // Every check that needs no model has passed: only now is anything downloaded.
-    let mut models = resolve_models(&mut a, &name, log)?;
+    let mut models = resolve(&mut a, &name, log)?;
     let model = a.model.clone().unwrap_or_default();
     let mut stream = stream_opener(&a)?;
     let t0 = Instant::now();
@@ -582,6 +607,14 @@ fn render_with_stream_opener(
         .iter()
         .map(ggtts_models::ModelFile::report)
         .collect::<Result<Vec<_>, _>>()?;
+    // The instruction goes beside the model files in every report, when there is one: an empty one is none.
+    let instruction = a.instruction.clone().filter(|i| !i.is_empty());
+    let with_instruction = |mut doc: serde_json::Value| {
+        if let Some(i) = &instruction {
+            doc["instruction"] = i.as_str().into();
+        }
+        doc
+    };
     let sha_of = |roles: &[&str]| {
         models
             .iter()
@@ -602,6 +635,7 @@ fn render_with_stream_opener(
                 seed: a.seed.unwrap_or(20260905),
                 chunk: 0,
                 draw: 0,
+                instruction: a.instruction.as_deref(),
             };
             let g = engine.generate(&req).map_err(|e| e.to_string())?;
             frames_generated = g.codes.n_frames() as u64;
@@ -669,9 +703,11 @@ fn render_with_stream_opener(
             header.model_sha256 = sha_of(&["talker", "model"]);
             header.codec_sha256 = sha_of(&["codec"]);
             header.models = model_files.clone();
+            header.instruction.clone_from(&instruction);
             emit_header(&mut events, &header);
             let mut options = RenderOptions::for_profile(&profile);
             options.measure_timings = a.timing_report.is_some();
+            options.instruction.clone_from(&a.instruction);
             let read = render_story_streamed(engine.as_mut(), &title, &chunks, &options, &mut events, &mut |p| {
                 if let Some(w) = stream.as_mut() {
                     let started = Instant::now();
@@ -805,7 +841,7 @@ fn render_with_stream_opener(
             .as_ref()
             .map(|chunks| chunks.iter().filter_map(|c| c["trimmed_samples"].as_u64()).sum::<u64>());
         let joins = chunk_samples.and_then(|n| (samples.len() as u64).checked_sub(n));
-        Some(serde_json::json!({
+        Some(with_instruction(serde_json::json!({
             "format": "ggtts-duration/1", "path": if story { "story" } else { "text" },
             "models": model_files,
             "chunks": duration_chunks,
@@ -817,7 +853,7 @@ fn render_with_stream_opener(
             "text_decoded_samples": (!story).then_some(samples.len()),
             "text_decoded_seconds": (!story && rate > 0).then(|| samples.len() as f64 / f64::from(rate)),
             "rate_note": "Chunk seconds use each decoder rate. The pipeline concatenates without resampling and outputs at the first chunk rate; differing rates change playback duration. Output and join seconds use the output rate."
-        }))
+        })))
     } else {
         None
     };
@@ -885,7 +921,7 @@ fn render_with_stream_opener(
             },
         );
         let audio_seconds = (rate > 0).then(|| samples.len() as f64 / f64::from(rate));
-        let report = serde_json::json!({
+        let report = with_instruction(serde_json::json!({
             "models": model_files,
             "format": "ggtts-timing/1", "engine": engine_info.family, "backend": engine_info.backend,
             "parity": engine_info.parity, "load_ms": load_ms as u64, "render_ms": render_ms as u64,
@@ -896,7 +932,7 @@ fn render_with_stream_opener(
             "logging": {"level": log.level.name(), "format": log.format.name(), "records": log_records,
                         "sink_ns": log_sink_ns, "lock_wait_ns": log_lock_wait_ns},
             "limits": "generation is host wall time including observer callbacks; no exclusive GPU or asynchronous synchronization claim; timings overlap; logger counters omit caller preparation and external child logs"
-        });
+        }));
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -937,6 +973,7 @@ fn render_with_stream_opener(
         bin_dir: None,
         instruments_dir: None,
         models: Some(model_files.clone()),
+        instruction: instruction.clone(),
     };
     let summary = ggtts_instruments::runner::run_with_logging(&config, &inputs, log)?;
     if let Some(data) = &duration_data {
@@ -1246,6 +1283,107 @@ mod tests {
         };
         let err = render_with_loader(args, log, |_, _, _| panic!("must reject before loading")).unwrap_err();
         assert!(err.contains("only supported by the qwen3-tts engine"));
+    }
+
+    /// The fake engine, recording each request's instruction.
+    struct Instructed {
+        inner: ggtts_fake::FakeEngine,
+        seen: std::rc::Rc<std::cell::RefCell<Vec<Option<String>>>>,
+    }
+
+    impl Engine for Instructed {
+        fn info(&self) -> &EngineInfo {
+            self.inner.info()
+        }
+        fn profile(&self) -> &Profile {
+            self.inner.profile()
+        }
+        fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
+            self.seen.borrow_mut().push(req.instruction.map(str::to_string));
+            self.inner.generate(&ChunkRequest {
+                instruction: None,
+                ..*req
+            })
+        }
+        fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
+            self.inner.decode(codes)
+        }
+    }
+
+    #[test]
+    fn instruction_is_one_flag_that_reaches_every_request_and_only_qwen() {
+        let a = parse(&["--instruction".into(), "Speak slowly.".into()]).unwrap();
+        assert_eq!(a.instruction.as_deref(), Some("Speak slowly."));
+        assert_eq!(
+            parse(&["--instruction".into(), "".into()])
+                .unwrap()
+                .instruction
+                .as_deref(),
+            Some("")
+        );
+        assert!(parse(&["--instruction".into()]).is_err());
+        let log = LogSettings {
+            level: LogLevel::Error,
+            format: LogFormat::Text,
+        };
+        // The model files come from a prepared cache, so nothing is downloaded or hashed.
+        let (dir, cache) = prepared_cache("instruction-flag");
+        // The text path and the story path both hand the instruction to every request, as given.
+        for story in [false, true] {
+            let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let args = Args {
+                engine: Some("qwen3-tts".into()),
+                offline: true,
+                text: (!story).then(|| "今日天氣好好。".into()),
+                story: story.then(|| "story.txt".into()),
+                out: Some(dir.join(format!("{story}.flac"))),
+                instruction: Some("Speak slowly.".into()),
+                ..Args::default()
+            };
+            let s = seen.clone();
+            render_with_models(
+                args,
+                log,
+                move |name, a, _| {
+                    assert_eq!(name, "qwen3-tts");
+                    assert_eq!(a.instruction.as_deref(), Some("Speak slowly."));
+                    Ok(Box::new(Instructed {
+                        inner: ggtts_fake::FakeEngine::default(),
+                        seen: s,
+                    }) as Box<dyn Engine>)
+                },
+                |_| Ok("Title\n今日天氣好好，我哋去公園行下。佢話聽日會早啲返嚟食飯。\n".into()),
+                open_stream,
+                |a, name, log| {
+                    resolve_models_with(a, name, log, true, &|| Ok(cache.clone()), &NoNetwork, &mut Vec::new())
+                },
+            )
+            .unwrap();
+            let seen = seen.borrow();
+            assert!(!seen.is_empty(), "story {story}: no request");
+            assert!(
+                seen.iter().all(|i| i.as_deref() == Some("Speak slowly.")),
+                "story {story}: {seen:?}"
+            );
+        }
+        // Another engine refuses a non-empty instruction before loading; an empty one is no instruction.
+        let fake = |instruction: &str| Args {
+            engine: Some("fake".into()),
+            text: Some("今日天氣好好。".into()),
+            out: Some(dir.join("fake.flac")),
+            instruction: Some(instruction.into()),
+            ..Args::default()
+        };
+        let err = render_with_loader(fake("Speak slowly."), log, |_, _, _| {
+            panic!("must reject before loading")
+        })
+        .unwrap_err();
+        assert!(
+            err.contains("--instruction is only supported by the qwen3-tts engine"),
+            "{err}"
+        );
+        assert_eq!(render_with_loader(fake(""), log, load_engine).unwrap(), 0);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     struct EmptyThenAudio {
@@ -1662,11 +1800,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_default_talker_gets_the_default_speaker() {
-        // A cache already holding the default files: each a sparse file of the pinned size, with the record of an
-        // earlier check, so nothing is downloaded or hashed.
-        let root = std::env::temp_dir().join(format!("ggtts-default-speaker-{}", std::process::id()));
+    /// A cache already holding the default files: each a sparse file of the pinned size, with the record of an
+    /// earlier check, so nothing is downloaded or hashed.
+    fn prepared_cache(name: &str) -> (PathBuf, ggtts_models::Cache) {
+        let root = std::env::temp_dir().join(format!("ggtts-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let cache = ggtts_models::Cache::new(root.clone());
         for p in ggtts_models::QWEN3_TTS.files {
@@ -1687,6 +1824,62 @@ mod tests {
             )
             .unwrap();
         }
+        (root, cache)
+    }
+
+    /// `--instruction` with no `--model`: the default talker (the v0.0.5 custom_voice export at 1.7B, which takes an
+    /// instruction) is resolved from the cache, and the instruction reaches the loader and the request, and is
+    /// recorded beside the model files in the timing and duration reports. Nothing is downloaded.
+    #[test]
+    fn an_instruction_works_with_the_default_model() {
+        let (root, cache) = prepared_cache("default-instruction");
+        let log = LogSettings {
+            level: LogLevel::Error,
+            format: LogFormat::Text,
+        };
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let s = seen.clone();
+        let talker = cache.path_for(&ggtts_models::QWEN3_TTS.files[0]);
+        let args = Args {
+            text: Some("今日天氣好好。".into()),
+            out: Some(root.join("out.flac")),
+            timing_report: Some(root.join("timing.json")),
+            duration_report: Some(root.join("duration.json")),
+            offline: true,
+            instruction: Some("Speak slowly and softly.".into()),
+            ..Args::default()
+        };
+        let code = render_with_models(
+            args,
+            log,
+            move |name, a, model| {
+                assert_eq!(name, "qwen3-tts");
+                assert_eq!(model, talker.as_path());
+                assert_eq!(a.speaker.as_deref(), Some("hk_voice_343"));
+                assert_eq!(a.instruction.as_deref(), Some("Speak slowly and softly."));
+                Ok(Box::new(Instructed {
+                    inner: ggtts_fake::FakeEngine::default(),
+                    seen: s,
+                }) as Box<dyn Engine>)
+            },
+            |_| unreachable!("no story"),
+            open_stream,
+            |a, name, log| resolve_models_with(a, name, log, true, &|| Ok(cache.clone()), &NoNetwork, &mut Vec::new()),
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(*seen.borrow(), [Some("Speak slowly and softly.".to_string())]);
+        for report in ["timing.json", "duration.json"] {
+            let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join(report)).unwrap()).unwrap();
+            assert_eq!(doc["instruction"], "Speak slowly and softly.", "{report}");
+            assert_eq!(doc["models"][0]["source"], "cache", "{report}");
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_default_talker_gets_the_default_speaker() {
+        let (root, cache) = prepared_cache("default-speaker");
         let log = LogSettings {
             level: LogLevel::Error,
             format: LogFormat::Text,

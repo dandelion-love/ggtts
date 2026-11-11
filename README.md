@@ -174,6 +174,14 @@ default model uses `hk_voice_343`, and a talker given with `--model` uses the le
 as for v0.0.1. An unknown or absent speaker is an error; ggtts does
 not choose an arbitrary voice. `--speaker` applies only to Qwen, while `--voice` supplies Kitten's reference JSON.
 
+`--instruction TEXT` passes a natural-language style instruction, for example
+`--instruction "Speak slowly and softly."`, to a Qwen3-TTS checkpoint that takes one: a `custom_voice` checkpoint of
+1.7B (such as `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`) or a `voice_design` checkpoint. Any other checkpoint (a
+`base` or a 0.6B `custom_voice`) and any other engine refuse it with an error rather than ignoring it. An empty
+instruction is no instruction. Whether a fine-tuned checkpoint still follows instructions is a question about that
+model: the published Cantonese models are `custom_voice` exports, so they accept the option, and nothing here
+claims what an instruction does to their speech.
+
 ```bash
 # Run from the extracted archive; edit these paths and DEVICE for your machine.
 GGTTS=./ggtts-render                    # on Windows: ./ggtts-render.exe

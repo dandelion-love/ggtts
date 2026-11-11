@@ -254,6 +254,20 @@ fn every_report_a_render_writes_carries_its_model_files() {
             validator.is_valid(&older),
             "{what}: a document from before models must stay valid"
         );
+        // A render with a style instruction records it beside the model files; the fake engine takes none, so this
+        // render has none and the field is absent, as it is for every render without one.
+        assert!(doc.get("instruction").is_none(), "{what}: an instruction nobody gave");
+        let mut instructed = doc.clone();
+        instructed["instruction"] = "Speak slowly and softly.".into();
+        let errors: Vec<String> = validator.iter_errors(&instructed).map(|e| e.to_string()).collect();
+        assert!(errors.is_empty(), "{what} with an instruction: {errors:?}");
+        instructed["instruction"] = "".into();
+        assert!(!validator.is_valid(&instructed), "{what} accepted an empty instruction");
+        instructed["instruction"] = 3.into();
+        assert!(
+            !validator.is_valid(&instructed),
+            "{what} accepted an instruction that is not text"
+        );
     }
     let _ = std::fs::remove_dir_all(dir);
 }

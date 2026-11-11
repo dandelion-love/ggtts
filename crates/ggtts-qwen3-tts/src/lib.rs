@@ -20,6 +20,7 @@ pub mod engine;
 pub mod fixtures;
 #[cfg(feature = "ggml")]
 pub mod gguf;
+pub mod instruct;
 #[cfg(feature = "ggml")]
 pub mod native_logging;
 #[cfg(feature = "ggml")]

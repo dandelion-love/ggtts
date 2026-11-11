@@ -99,6 +99,7 @@ fn setup_with(tag: &str, paragraphs: &[String]) -> (PathBuf, Inputs) {
         bin_dir: Path::new(SELFTEST).parent().map(Path::to_path_buf),
         instruments_dir: Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments")),
         models: None,
+        instruction: None,
     };
     (dir, inputs)
 }
@@ -644,6 +645,7 @@ fn missing_reference_and_output_respect_requirement_and_on_error() {
         bin_dir: None,
         instruments_dir: Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../instruments")),
         models: None,
+        instruction: None,
     };
     let mut missing = Config::default();
     missing
@@ -708,4 +710,34 @@ fn missing_reference_and_output_respect_requirement_and_on_error() {
     assert_eq!(aborted.exit_code(), EXIT_INCOMPLETE);
     assert_eq!(std::fs::read(&audio).unwrap(), before);
     let _ = std::fs::remove_dir_all(root);
+}
+
+/// A render's style instruction is recorded in `report.json` beside the model files, and in `run.log`; a run without
+/// one (or with an empty one) writes neither.
+#[test]
+fn the_instruction_is_recorded_in_the_report_and_the_run_log() {
+    for (tag, instruction, want) in [
+        (
+            "instructed",
+            Some("Speak slowly and softly."),
+            Some("Speak slowly and softly."),
+        ),
+        ("empty-instruction", Some(""), None),
+        ("no-instruction", None, None),
+    ] {
+        let (dir, mut inputs) = setup(tag);
+        inputs.instruction = instruction.map(str::to_string);
+        let mut c = Config::default();
+        c.apply_instrument_flag("selftest").unwrap();
+        run(&c, &inputs).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&read(inputs.report_dir.join("report.json"))).unwrap();
+        assert_eq!(report.get("instruction").and_then(|v| v.as_str()), want, "{tag}");
+        let log = read(inputs.report_dir.join("run.log"));
+        assert_eq!(
+            log.contains("instruction \"Speak slowly and softly.\""),
+            want.is_some(),
+            "{tag}: {log}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

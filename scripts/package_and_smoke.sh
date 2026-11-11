@@ -158,9 +158,12 @@ ffi_smoke() {
         return 1
     fi
     if [ "$ext" != .exe ] && command -v ldd >/dev/null 2>&1; then
-        # The program must have run on the packed library, not another one on the loader's path.
-        ldd "$out" | grep -F "$dir/lib/libggtts_ffi.so" >/dev/null \
-            || { say "FAILED on $path: the C smoke did not load lib/libggtts_ffi.so from the archive"; ldd "$out" >&2; return 1; }
+        # The program must have run on the packed library, not another one on the loader's path. ldd resolves under
+        # the same loader environment the program ran with (LD_LIBRARY_PATH unset), so a libggtts_ffi.so elsewhere
+        # on the caller's LD_LIBRARY_PATH (a checkout's target/release, say) is not mistaken for the one it loaded.
+        env -u LD_LIBRARY_PATH ldd "$out" | grep -F "$dir/lib/libggtts_ffi.so" >/dev/null \
+            || { say "FAILED on $path: the C smoke did not load lib/libggtts_ffi.so from the archive"
+                 env -u LD_LIBRARY_PATH ldd "$out" >&2; return 1; }
     fi
     say "ok on $path: a C program built against include/ggtts.h and lib/ loaded and rendered on the fake engine"
     if [ "$ext" = .exe ]; then

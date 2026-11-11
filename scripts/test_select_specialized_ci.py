@@ -42,10 +42,19 @@ class SelectionTest(unittest.TestCase):
         for base in ("rc", "feature", ""):
             self.assertFalse(cuda_decision("pull_request", base, "refs/pull/1/merge",
                                            ["Cargo.lock", ".github/workflows/ci.yml", "crates/ggtts-ggml-sys/build.rs"]))
+            self.assertFalse(cuda_decision("pull_request", base, "refs/pull/1/merge", []))
+        # A pull request into rc that changes a script the CUDA archive is built or smoked with runs the compile, so the
+        # change is proven before it merges; into any other branch it does not.
+        for path in ("scripts/package_cuda_release.sh", "scripts/release_smoke.sh"):
+            self.assertTrue(cuda_decision("pull_request", "rc", "refs/pull/1/merge", ["README.md", path]), path)
+            self.assertFalse(cuda_decision("pull_request", "feature", "refs/pull/1/merge", [path]), path)
+        for path in ("scripts/package_and_smoke.sh", "scripts/package_cuda_release.sh.bak", "scripts/release_smoke.py"):
+            self.assertFalse(cuda_decision("pull_request", "rc", "refs/pull/1/merge", [path]), path)
         # A push to rc, only for a path that can break the CUDA build.
         for path in ("Cargo.lock", "crates/ggtts-ggml-sys/ggml", ".gitmodules", ".github/workflows/ci.yml",
                      ".github/workflows/release.yml", "crates/ggtts-ggml-sys/build.rs", "crates/ggtts-core/build.rs",
-                     "scripts/package_cuda_release.sh", "Cargo.toml", "crates/ggtts-cli/Cargo.toml",
+                     "scripts/package_cuda_release.sh", "scripts/release_smoke.sh", "Cargo.toml",
+                     "crates/ggtts-cli/Cargo.toml",
                      "instruments/templates/rust/event/Cargo.toml", "crates/ggtts-ggml-sys/src/lib.rs",
                      "crates/ggtts-ggml-sys/src/bindings/x86_64-unknown-linux-gnu.rs"):
             self.assertTrue(cuda_push_path(path), path)
@@ -195,6 +204,7 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(select(["scripts/check_release_version.py"]), {"package"})
         self.assertEqual(select([".github/workflows/release.yml"]), {"package", "release"})
         self.assertEqual(select(["scripts/package_cuda_release.sh"]), {"package", "release"})
+        self.assertEqual(select(["scripts/release_smoke.sh"]), {"package", "release"})
         self.assertEqual(select(["scripts/buildinfo_engines.sh"]), {"ggml", "release"})
         self.assertEqual(select(["scripts/check_glibc_floor.py"]), {"release"})
         self.assertEqual(select(["scripts/test_check_glibc_floor.py"]), set())

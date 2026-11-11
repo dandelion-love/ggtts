@@ -37,6 +37,16 @@ new requirements. Internal refactors and test changes are not listed.
 
 ### Added
 
+- **The CUDA archive runs on T4, A100 and H100 class GPUs.** It carried code for compute capabilities 8.6 and 8.9
+  only; it now carries machine code for 7.5, 8.0, 8.6, 8.9 and 9.0, and PTX for 9.0 so a newer GPU can compile it
+  on first use. `BUILDINFO.json` lists them as `cuda_architectures` and the new `cuda_ptx`. The archive is larger;
+  the README lists the supported GPUs.
+- **Every archive is smoked before it is published, and the published release is checked.** The release renders one
+  Qwen3-TTS line with `--speaker hk_voice_343` and the default model from the Linux CPU archive (on Ubuntu 22.04 and
+  in a bare `ubuntu:22.04` container with only `libgomp1`) and the Windows archive, checks that an unknown speaker
+  is refused and that `--version` names the tag's commit, and holds each archive to the sha256 its build recorded.
+  Only then are the archives attested and published; afterwards the release downloads them and checks their sha256
+  and attestations.
 - **The release archives ship the C library and `ggtts.h`.** Until now the C ABI (and with it
   `ggtts_load_with` and `ggtts_abi_version`) could only be had by building from source. Every archive now has
   `include/ggtts.h` and the library in `lib/`: `libggtts_ffi.so` in the Linux CPU and CUDA archives, and

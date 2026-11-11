@@ -2,7 +2,8 @@
 # Publish the workflow's built and attested archives; never overwrite an asset.
 # The release notes are the tag's section of CHANGELOG.md (a heading "## <tag>" or "## <tag> (date)", up to the next
 # "## " heading), followed by the build provenance. A tag with no section, or an empty one, is refused before anything
-# is published. CHANGELOG overrides the file read (the tests use it).
+# is published. Wrapped lines are joined, since a release page breaks at every newline. CHANGELOG overrides the file
+# read (the tests use it).
 set -euo pipefail
 : "${TAG:?}" "${GITHUB_REPOSITORY:?}" "${GITHUB_SHA:?}"
 [ "$#" -gt 0 ] || { echo "no release assets" >&2; exit 1; }
@@ -20,7 +21,20 @@ section=$(awk -v h="## $TAG" '
     END {
         first = 1; while (first <= n && lines[first] ~ /^[[:space:]]*$/) first++
         last = n; while (last >= first && lines[last] ~ /^[[:space:]]*$/) last--
-        for (i = first; i <= last; i++) print lines[i]
+        # A release page renders every newline as a line break, so a wrapped line is joined to the one it continues.
+        # A line starts a new block when it is blank, a heading, a list item, a table row, a quote or a code fence,
+        # or follows a blank line, a heading or a fence; lines inside a fence are kept as they are.
+        out = ""; fence = 0; prev = ""
+        for (i = first; i <= last; i++) {
+            l = lines[i]
+            if (l ~ /^[[:space:]]*```/) { fence = !fence; out = out (out == "" ? "" : "\n") l; prev = l; continue }
+            starts = fence || l ~ /^[[:space:]]*$/ || l ~ /^[[:space:]]*([-*+][[:space:]]|[0-9]+[.)][[:space:]]|[#|>])/ \
+                || prev ~ /^[[:space:]]*$/ || prev ~ /^#/ || prev ~ /^[[:space:]]*```/ || i == first
+            if (starts) out = out (i == first ? "" : "\n") l
+            else { sub(/^[[:space:]]+/, "", l); out = out " " l }
+            prev = lines[i]
+        }
+        print out
     }' "$changelog")
 [ -n "$(printf '%s' "$section" | tr -d '[:space:]')" ] || {
     echo "CHANGELOG.md has no section for $TAG: add a \"## $TAG (date)\" section before tagging" >&2

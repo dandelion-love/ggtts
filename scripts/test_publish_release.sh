@@ -47,6 +47,22 @@ cat > "$tmp/CHANGELOG.md" <<'EOF'
 ### Added
 
 - **A new option** for the tested release.
+- **A wrapped entry** whose text
+  continues on a second line
+  and a third.
+- **Built on Ubuntu**
+  24.04 before, and
+  -O2 flags.
+1. A numbered entry
+   that wraps.
+
+A paragraph that
+wraps once.
+
+```sh
+ggtts-render --one
+  --two
+```
 
 ## v0.1.0-rc.5
 
@@ -73,6 +89,15 @@ grep -Fq -- '--prerelease --latest=false' "$MOCK_LOG"
 # The notes are the tag's section, then the provenance; nothing from the neighbouring sections or the heading.
 [ "$(head -1 "$MOCK_NOTES")" = "### Added" ] || fail "notes do not start with the section body: $(head -1 "$MOCK_NOTES")"
 grep -Fq -- '- **A new option** for the tested release.' "$MOCK_NOTES" || fail "notes lack the section"
+# A release page breaks the line at every newline, so wrapped lines are joined; a code block is kept as written.
+grep -Fxq -- '- **A wrapped entry** whose text continues on a second line and a third.' "$MOCK_NOTES" \
+    || fail "a wrapped list entry was not joined: $(cat "$MOCK_NOTES")"
+grep -Fxq -- '- **Built on Ubuntu** 24.04 before, and -O2 flags.' "$MOCK_NOTES" \
+    || fail "a continuation starting with a number or a dash was not joined"
+grep -Fxq '1. A numbered entry that wraps.' "$MOCK_NOTES" || fail "a numbered entry was not kept and joined"
+grep -Fxq 'A paragraph that wraps once.' "$MOCK_NOTES" || fail "a wrapped paragraph was not joined"
+grep -Fxq '  --two' "$MOCK_NOTES" || fail "a code block line was joined or changed"
+grep -Fxq '```' "$MOCK_NOTES" || fail "the code fence was lost"
 grep -Fq 'Built from abc.' "$MOCK_NOTES" || fail "notes lack the provenance"
 grep -Fq 'gh attestation verify <file> -R example/repo' "$MOCK_NOTES" || fail "notes lack the verify command"
 for other in 'rc.60' 'A later release' 'Not released yet' 'Older.' '## v0.1.0-rc.6'; do
@@ -126,5 +151,6 @@ for tag in v0.1.0-rc.8 v0.1.0-rc.9 v0.1.0-rc.10; do
     run
     [ "$(grep -c '^## ' "$MOCK_NOTES")" = 0 ] || fail "$tag: notes run into another release's section"
     [ "$(grep -c '^- ' "$MOCK_NOTES")" -gt 0 ] || fail "$tag: notes have no entries"
+    if grep -n '^  ' "$MOCK_NOTES"; then fail "$tag: a wrapped line was left unjoined"; fi
 done
 echo "release publication selection tests passed"

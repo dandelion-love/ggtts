@@ -8,9 +8,12 @@ on:
 permissions:
   contents: read
 
+# A newer commit on a pull request cancels the run for the older one. Pushes are never cancelled and never share a
+# group: each push to rc selects the CUDA compile from its own pushed range, so a cancelled or superseded run would
+# lose that range's selection.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -42,6 +45,19 @@ jobs:
       - name: cargo clippy (runs even when fmt fails, so one run reports both)
         if: success() || failure()
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Every crate linked into the shipped binaries has its licence notice (a planted missing one is red)
+        run: |
+          set -u
+          python3 scripts/third_party_notices.py --check
+          grep -v '^serde_json ' licenses/rust-crates.txt > planted-notices.txt
+          if python3 scripts/third_party_notices.py --check planted-notices.txt 2> planted-notices.err; then
+            cat planted-notices.err
+            echo "::error::the notice check passed with serde_json's notice removed"
+            exit 1
+          fi
+          cat planted-notices.err
+          grep -F "no notice for linked crate serde_json" planted-notices.err
+          rm planted-notices.txt planted-notices.err
       - name: Fail if Cargo.lock was missing
         if: always()
         run: test -z "${LOCK_MISSING:-}"
@@ -82,6 +98,8 @@ jobs:
           pin=$(sed -n 's/^pub const GGML_COMMIT: &str = "\([0-9a-f]\{40\}\)";$/\1/p' crates/ggtts-ggml-sys/src/lib.rs)
           test "$(git -C crates/ggtts-ggml-sys/ggml rev-parse HEAD)" = "$pin"
           echo "ggml submodule at $pin"
+      - name: The shipped ggml licence is the submodule's, and every linked crate has its notice
+        run: python3 scripts/third_party_notices.py --check
       - name: cargo clippy with the engines (ggml built by cargo with CMake)
         run: cargo clippy --workspace --all-targets --features ggtts-cli/ggml --locked -- -D warnings
       - name: cargo clippy with the test-only plant feature (the planted defects and their expected-failure tests), and the binding with its engines and JNI layer
@@ -183,32 +201,39 @@ jobs:
 
   cuda-compile:
     needs: specialized-selection
+    # Never on an ordinary pull request. The selector sets `cuda` only for a pull request into main (the promotion)
+    # and for a push to rc that touches something the CUDA build depends on (cuda_push_path in the selector).
+    # Everything from runs-on to the build command is release.yml's cuda-build, line for line: the selection job
+    # refuses any difference (select_specialized_ci.py --check-cuda-drift).
     if: needs.specialized-selection.outputs.cuda == 'true'
-    name: cuda-compile (release archive, sm_86 and sm_89, no GPU)
+    name: cuda-compile (the release CUDA archive, sm_86 and sm_89, built and smoked without a GPU)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     container:
       image: nvidia/cuda:12.6.3-devel-ubuntu22.04@sha256:d49bb8a4ff97fb5fe477947a3f02aa8c0a53eae77e11f00ec28618a0bcaa2ad1
     steps:
-      - name: Install the build tools
+      - name: Install build tools
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl cmake g++ make git python3
+          # The Ubuntu archive fails now and then (apt-get exit 100): three attempts, with a pause between.
+          attempt=1
+          until apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git cmake g++ make python3; do
+            if [ "$attempt" -ge 3 ]; then echo "apt-get failed $attempt times"; exit 1; fi
+            attempt=$((attempt + 1))
+            sleep 20
+          done
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Fetch the pinned ggml as the release does
-        shell: bash
+      - name: Fetch the pinned ggml
         run: |
-          set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE/crates/ggtts-ggml-sys/ggml"
           git submodule update --init crates/ggtts-ggml-sys/ggml
           pin=$(sed -n 's/^pub const GGML_COMMIT: &str = "\([0-9a-f]\{40\}\)";$/\1/p' crates/ggtts-ggml-sys/src/lib.rs)
           test "$(git -C crates/ggtts-ggml-sys/ggml rev-parse HEAD)" = "$pin"
-      - name: Build and smoke the release archive (no GPU on hosted runners)
+      - name: Build and smoke CUDA archive
         env:
           TAG: ci
         run: bash scripts/package_cuda_release.sh
@@ -230,6 +255,8 @@ jobs:
           fetch-depth: 0
       - name: Test specialized selection
         run: python3 scripts/test_select_specialized_ci.py
+      - name: cuda-compile is release.yml's cuda-build, line for line
+        run: python3 scripts/select_specialized_ci.py --check-cuda-drift
       - name: Select checks
         id: select
         env:
@@ -240,6 +267,10 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REPOSITORY: ${{ github.repository }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          # For the CUDA compile on a push to rc: the ref and the pushed range.
+          REF: ${{ github.ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
         run: python3 scripts/select_specialized_ci.py >> "$GITHUB_OUTPUT"
 
   package-smoke:
@@ -356,6 +387,21 @@ jobs:
           fi
           cat planted-measure.err
           grep -F "no ggtts-measure in" planted-measure.err
+      - name: Planted, the same directory without a licence notice must fail, naming it
+        run: |
+          set -u
+          for notice in THIRD_PARTY.md licenses/Apache-2.0.txt licenses/ggml-LICENSE.txt licenses/rust-crates.txt instruments/vendor/fft.js-4.0.4/LICENSE instruments/vendor/pitchy-4.1.0/LICENSE; do
+            rm -rf dist/planted-notice
+            cp -r dist/ggtts-ci dist/planted-notice
+            rm "dist/planted-notice/$notice"
+            if scripts/package_and_smoke.sh smoke dist/planted-notice 2> planted-notice.err; then
+              cat planted-notice.err
+              echo "::error::the smoke passed without $notice"
+              exit 1
+            fi
+            cat planted-notice.err
+            grep -F "missing licence notice in dist/planted-notice: $notice" planted-notice.err
+          done
 
   binding:
     needs: specialized-selection
@@ -462,4 +508,16 @@ jobs:
       - name: Build ggtts-render exactly as release.yml does
         env:
           LIBCLANG_PATH: ${{ runner.os == 'Windows' && 'C:\Program Files\LLVM\bin' || '' }}
+          GGML_PORTABLE: "1"
         run: cargo build --release --locked -p ggtts-cli --features "${{ matrix.features }}"
+      - name: Verify the CPU build does not target the build host
+        run: |
+          set -euo pipefail
+          cache=$(find target/release/build -path '*/ggtts-ggml-sys-*/out/build/CMakeCache.txt' -print -quit)
+          test -n "$cache" && test -f "$cache"
+          grep -qx 'GGML_NATIVE:BOOL=OFF' "$cache"
+          grep -qx 'GGML_AVX512:BOOL=OFF' "$cache"
+          grep -qx 'GGML_AVX512_VBMI:BOOL=OFF' "$cache"
+          grep -qx 'GGML_AVX512_VNNI:BOOL=OFF' "$cache"
+          grep -qx 'GGML_AVX512_BF16:BOOL=OFF' "$cache"
+          grep -qx 'GGML_AVX_VNNI:BOOL=OFF' "$cache"

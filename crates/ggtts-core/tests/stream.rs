@@ -50,6 +50,40 @@ fn concat(pieces: &[(usize, usize, Vec<f32>, u32)]) -> Vec<f32> {
     pieces.iter().flat_map(|p| p.2.iter().copied()).collect()
 }
 
+#[test]
+fn duration_counts_describe_only_the_kept_draw() {
+    let mut saw_redraw = false;
+    let mut saw_cut = false;
+    for case in cases() {
+        let s = stream(&case);
+        for record in &s.read.chunks {
+            let pcm = &s.engine.kept[&record.text];
+            assert_eq!(record.decoded_samples, pcm.len(), "{}", case.id);
+            let kept = record.span.1 - record.span.0;
+            assert!(kept <= record.decoded_samples);
+            saw_redraw |= record.redraws > 0;
+            saw_cut |= kept < record.decoded_samples;
+        }
+    }
+    assert!(
+        saw_redraw && saw_cut,
+        "controls must include redraw and a planted edge cut"
+    );
+    let case = &cases()[0];
+    let mut engine = case.engine();
+    let chunks = case.chunks(&engine);
+    let mut opts = case.opts(&engine);
+    opts.edge_s = 1_000_000.0;
+    let read = render_story(&mut engine, &case.story_id, &chunks, &opts).unwrap();
+    for record in &read.chunks {
+        assert_eq!(
+            record.decoded_samples,
+            record.span.1 - record.span.0,
+            "no-op trim changes count"
+        );
+    }
+}
+
 /// The stream as the spec defines it, rebuilt from the engine's kept clips: each trimmed, then its gap.
 fn expected_stream(case: &Case, s: &Streamed) -> Vec<f32> {
     let profile = *s.engine.profile();
@@ -439,7 +473,7 @@ fn the_clamp_check_sees_a_quiet_first_chunk() {
         "七八九十一二三四。".to_string(),
     ];
     let probe = FakeEngine::default();
-    let chunks = plan_story(probe.profile(), &paragraphs);
+    let chunks = plan_story(probe.profile(), &paragraphs).unwrap();
     let quiet = Shape {
         amplitude_scale: Some(0.05),
         ..Default::default()
@@ -645,7 +679,7 @@ fn quiet_opening() -> (Vec<Vec<f32>>, Read, Profile) {
         })
         .collect();
     let probe = FakeEngine::default();
-    let chunks = plan_story(probe.profile(), &paragraphs);
+    let chunks = plan_story(probe.profile(), &paragraphs).unwrap();
     let shape: HashMap<String, Shape> = chunks
         .iter()
         .enumerate()

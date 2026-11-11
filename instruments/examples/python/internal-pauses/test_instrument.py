@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+import math
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "python"))
@@ -21,6 +22,49 @@ def first_sound(samples):
 
 
 class Selftest(unittest.TestCase):
+    def test_default_includes_one_second_but_not_shorter_internal_silence(self):
+        with Workdir() as d:
+            rate = 24000
+            tone = [0.3] * (rate // 2)
+            for gap_frames, expected in ((99, 0), (100, 1), (101, 1)):
+                path = os.path.join(d, f"gap-{gap_frames}.wav")
+                write_wav(path, tone + [0.0] * (gap_frames * rate // 100) + tone, rate)
+                result = run_instrument(SCRIPT, d, audio=path)
+                self.assertEqual(result["status"], "ok")
+                self.assertEqual(total(metrics(result), "internal_pauses"), expected, gap_frames)
+
+    def test_configured_threshold_is_inclusive_and_recorded(self):
+        with Workdir() as d:
+            rate = 24000
+            tone = [0.3] * (rate // 2)
+            for gap_frames, expected in ((149, 0), (150, 1)):
+                path = os.path.join(d, f"custom-{gap_frames}.wav")
+                write_wav(path, tone + [0.0] * (gap_frames * rate // 100) + tone, rate)
+                result = run_instrument(SCRIPT, d, audio=path, extra=["--min-pause-s", "1.5"])
+                self.assertEqual(total(metrics(result), "internal_pauses"), expected)
+                self.assertEqual(result["provenance"]["config"]["min_pause_s"], 1.5)
+
+    def test_duration_uses_actual_frame_length_for_fractional_frame_rates(self):
+        with Workdir() as d:
+            rate = 11025
+            frame = int(rate * 0.01)
+            tone = [0.3] * (frame * 50)
+            for gap_frames, expected in ((100, 0), (101, 1)):
+                path = os.path.join(d, f"fractional-{gap_frames}.wav")
+                write_wav(path, tone + [0.0] * (gap_frames * frame) + tone, rate)
+                result = run_instrument(SCRIPT, d, audio=path)
+                self.assertEqual(total(metrics(result), "internal_pauses"), expected)
+
+    def test_no_pause_has_a_valid_null_longest_pause(self):
+        with Workdir() as d:
+            rate = 24000
+            path = os.path.join(d, "continuous.wav")
+            write_wav(path, [0.3 * math.sin(2 * math.pi * 220 * i / rate) for i in range(rate)], rate)
+            result = run_instrument(SCRIPT, d, audio=path)
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(total(metrics(result), "internal_pauses"), 0)
+            self.assertIsNone(total(metrics(result), "longest_pause_s"))
+
     def test_noop_reads_as_no_change(self):
         with Workdir() as d:
             r = fixture(d)

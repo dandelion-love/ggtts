@@ -113,12 +113,19 @@ mod with_ggml {
         {
             // CUDA_HOME (default /usr/local/cuda) for the runtime and cuBLAS; /usr/lib/wsl/lib holds libcuda under
             // WSL.
-            let cuda = env::var("CUDA_HOME").unwrap_or_else(|_| "/usr/local/cuda".into());
+            let cuda = env::var("CUDA_HOME")
+                .or_else(|_| env::var("CUDA_PATH"))
+                .unwrap_or_else(|_| "/usr/local/cuda".into());
             println!("cargo:rerun-if-env-changed=CUDA_HOME");
+            println!("cargo:rerun-if-env-changed=CUDA_PATH");
             println!("cargo:rustc-link-lib=static=ggml-cuda");
-            println!("cargo:rustc-link-search=native={cuda}/lib64");
-            println!("cargo:rustc-link-search=native={cuda}/lib64/stubs");
-            println!("cargo:rustc-link-search=native=/usr/lib/wsl/lib");
+            if env::var("TARGET").unwrap().contains("windows") {
+                println!("cargo:rustc-link-search=native={cuda}/lib/x64");
+            } else {
+                println!("cargo:rustc-link-search=native={cuda}/lib64");
+                println!("cargo:rustc-link-search=native={cuda}/lib64/stubs");
+                println!("cargo:rustc-link-search=native=/usr/lib/wsl/lib");
+            }
             for lib in ["cudart", "cublas", "cublasLt", "cuda"] {
                 println!("cargo:rustc-link-lib=dylib={lib}");
             }

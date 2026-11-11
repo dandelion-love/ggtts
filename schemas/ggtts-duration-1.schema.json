@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ggtts:schema:ggtts-duration:1",
+  "type": "object", "additionalProperties": false,
+  "required": ["format", "path", "chunks", "discarded_draws_included", "output_sample_rate", "output_samples", "output_seconds", "join_samples", "join_seconds", "text_decoded_samples", "text_decoded_seconds", "rate_note"],
+  "properties": {
+    "format": {"const": "ggtts-duration/1"}, "path": {"enum": ["text", "story"]}, "rate_note": {"type": "string"},
+    "discarded_draws_included": {"const": false},
+    "output_sample_rate": {"$ref": "#/$defs/optional_count"}, "output_samples": {"$ref": "#/$defs/count"},
+    "output_seconds": {"$ref": "#/$defs/optional_number"}, "join_samples": {"$ref": "#/$defs/optional_count"},
+    "join_seconds": {"$ref": "#/$defs/optional_number"}, "text_decoded_samples": {"$ref": "#/$defs/optional_count"},
+    "text_decoded_seconds": {"$ref": "#/$defs/optional_number"},
+    "chunks": {"oneOf": [{"type": "null"}, {"type": "array", "items": {"type": "object", "additionalProperties": false,
+      "required": ["chunk", "kept_draw", "sample_rate", "decoded_samples", "decoded_seconds", "trimmed_samples", "trimmed_seconds"],
+      "properties": {"chunk": {"$ref": "#/$defs/count"}, "kept_draw": {"$ref": "#/$defs/count"},
+        "sample_rate": {"$ref": "#/$defs/optional_count"}, "decoded_samples": {"$ref": "#/$defs/count"},
+        "decoded_seconds": {"$ref": "#/$defs/optional_number"}, "trimmed_samples": {"$ref": "#/$defs/count"},
+        "trimmed_seconds": {"$ref": "#/$defs/optional_number"}}}}]}
+  },
+  "$defs": {"count": {"type": "integer", "minimum": 0}, "optional_count": {"type": ["integer", "null"], "minimum": 0},
+    "optional_number": {"type": ["number", "null"], "minimum": 0}}
+}

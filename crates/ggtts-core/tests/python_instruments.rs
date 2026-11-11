@@ -115,13 +115,32 @@ fn the_sdk_templates_and_example_pass_their_self_tests_on_a_fake_engine_render()
         "templates/python/chunk",
         "templates/python/trim",
         "templates/python/render",
+        "templates/python/timing",
         "templates/python/audio",
         "examples/python/internal-pauses",
+        "examples/python/pitch-range",
+        "examples/python/asr-sensevoice",
+        "examples/python/asr-qwen",
     ] {
         let (ran, skipped) = unittest(&py, &root.join(t), &["test_instrument"], &dir);
         assert!(ran >= 2, "{t}: only {ran} tests ran");
         assert_eq!(skipped, 0, "{t}: a test skipped");
         eprintln!("{t}: {ran} tests OK");
     }
+    // The pYIN plant also runs in a separate, dependency-equipped environment. The default
+    // suite still exercises the arithmetic plant, core boundaries and fail-closed runtime checks.
+    let (ran, skipped) = unittest(
+        &py,
+        &root.join("examples/python/loudness-ends"),
+        &[
+            "test_instrument.EndsTest.test_loudness_arithmetic_noop_and_compression",
+            "test_instrument.EndsTest.test_speech_core_discards_a_short_separated_edge",
+            "test_instrument.EndsTest.test_refuses_missing_audio",
+            "test_instrument.EndsTest.test_missing_dependencies_are_incomplete",
+            "test_instrument.EndsTest.test_unverified_librosa_version_is_incomplete",
+        ],
+        &dir,
+    );
+    assert_eq!((ran, skipped), (5, 0), "loudness dependency-free controls");
     std::fs::remove_dir_all(&dir).unwrap();
 }

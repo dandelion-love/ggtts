@@ -2,7 +2,8 @@
 # Pack a ggtts release directory, and smoke-test that its script instruments run from it. One script, called by
 # ci.yml on every pull request (Linux and Windows) and by release.yml on every real archive before upload.
 #
-#   scripts/package_and_smoke.sh pack BINARY DIR    # DIR gets the binaries, LICENSE, README.md and instruments/
+#   scripts/package_and_smoke.sh pack BINARY DIR    # DIR gets the binaries, LICENSE, THIRD_PARTY.md, licenses/,
+#                                                   # README.md and instruments/
 #   scripts/package_and_smoke.sh archive DIR zip|tar.gz   # DIR.zip or DIR.tar.gz beside DIR, as released
 #   scripts/package_and_smoke.sh smoke PATH [TAG]   # unpack; if TAG is set, check both binaries and BUILDINFO
 #
@@ -21,7 +22,11 @@
 # 1 and prints the runner's own reason: given a directory without instruments/, that is "instruments/ directory was
 # not found". It then measures that render again with the packed ggtts-measure, with the same instrument required,
 # and passes only on exit 0 and an `ok` envelope there too. When the directory has a BUILDINFO.json, its "binaries"
-# must name both binaries.
+# must name both binaries. After the measure it checks the licence notices: LICENSE, THIRD_PARTY.md,
+# licenses/ (Apache-2.0.txt, ggml-LICENSE.txt for the statically linked ggml, rust-crates.txt for every linked
+# crate), and the licence file beside each vendored or derived source under instruments/. A missing one fails the
+# smoke with "missing licence notice", naming it. `pack` first runs scripts/third_party_notices.py --check, which
+# refuses when a crate linked into the binaries has no notice in licenses/rust-crates.txt.
 set -euo pipefail
 
 say() { echo "package_and_smoke: $*" >&2; }
@@ -36,9 +41,12 @@ pack() {
         cp "$(dirname "$bin")/$b$ext" "$dir/"
         list="$list${list:+,}\"$b$ext\""
     done
-    cp "$root/LICENSE" "$root/README.md" "$dir/"
+    # Refuse to pack when a crate linked into the binaries, or ggml, has no licence notice.
+    python3 "$root/scripts/third_party_notices.py" --check >&2 || { say "the licence notices are incomplete"; return 1; }
+    cp "$root/LICENSE" "$root/README.md" "$root/THIRD_PARTY.md" "$dir/"
+    cp -r "$root/licenses" "$dir/"
     cp -r "$root/instruments/python/ggtts_instrument" "$dir/instruments/python/"
-    cp -r "$root/instruments/templates" "$root/instruments/examples" "$root/instruments/README.md" \
+    cp -r "$root/instruments/templates" "$root/instruments/examples" "$root/instruments/vendor" "$root/instruments/README.md" \
         "$root/instruments/instruments.yaml" "$dir/instruments/"
     find "$dir/instruments" -name __pycache__ -prune -exec rm -rf {} +
     say "packed $dir"
@@ -121,6 +129,32 @@ smoke() {
         return 1
     fi
     say "ok on $path: ggtts-measure measured the render from the packed instruments/ (exit 0, envelope ok)"
+    [ -f "$dir/instruments/vendor/pitchy-4.1.0/index.js" ] && \
+        [ -f "$dir/instruments/vendor/fft.js-4.0.4/fft.js" ] || \
+        { say "missing bundled pitch detector or FFT in $path"; return 1; }
+    local notice
+    for notice in LICENSE THIRD_PARTY.md licenses/Apache-2.0.txt licenses/ggml-LICENSE.txt licenses/rust-crates.txt \
+        instruments/vendor/fft.js-4.0.4/LICENSE \
+        instruments/vendor/pitchy-4.1.0/LICENSE instruments/examples/python/loudness-ends/LICENSE-APACHE-2.0; do
+        [ -s "$dir/$notice" ] || { say "missing licence notice in $path: $notice"; return 1; }
+    done
+    say "ok on $path: the licence notices are present"
+    if command -v "${GGTTS_NODE:-node}" >/dev/null 2>&1; then
+        set +e
+        (unset GGTTS_INSTRUMENTS_DIR; cd "$work" && "$measure" --audio out.flac --report pitch-report \
+            --instrument pitch-range --require pitch-range) 2> "$work/pitch-err.txt"
+        code=$?
+        set -e
+        status=$(sed -n 's/^ *"status": "\([^"]*\)".*/\1/p' "$work/pitch-report/instruments/pitch-range/envelope.json" 2>/dev/null | head -1)
+        if [ "$code" -ne 0 ] || [ "$status" != ok ]; then
+            say "FAILED on $path: pitch-range exit $code, status ${status:-without an envelope}"
+            cat "$work/pitch-err.txt" >&2
+            return 1
+        fi
+        say "ok on $path: pitch-range ran from the packed instruments/"
+    else
+        say "pitch-range not run: Node.js is unavailable"
+    fi
     if [ -f "$dir/BUILDINFO.json" ]; then
         local binaries
         binaries=$(sed -n 's/.*"binaries":[[:space:]]*\(\[[^]]*\]\).*/\1/p' "$dir/BUILDINFO.json")

@@ -144,6 +144,9 @@ pub fn convert(
     layout: Layout,
     tokenizer_json: Option<&str>,
 ) -> Result<Summary, String> {
+    if layout == Layout::Tq1 {
+        return Err("TQ1_0 export is not supported; this runtime only reads existing TQ1 files".into());
+    }
     let kv = metadata(model, lm, source, layout, tokenizer_json)?;
     let mut tensors = Vec::new();
     let mut sum = Summary::default();

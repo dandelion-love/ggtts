@@ -14,6 +14,7 @@
 //! | `--require NAME` | `require: [NAME]` |
 //! | `--on-instrument-error continue\|abort` | `on_error: continue\|abort` |
 //! | `--instrument-timeout S` | `timeout_s: S` |
+//! | `--instrument-device cpu|cuda|auto` | `device: cpu|cuda|auto` |
 //!
 //! An `--instrument` naming an instrument the file already lists overrides only the keys it gives; a new name is
 //! added after the file's. `--require` adds to the file's list. The file is validated against
@@ -35,7 +36,7 @@ pub const FORMAT: &str = "ggtts-instruments/1";
 pub const DEFAULT_TIMEOUT_S: f64 = 60.0;
 
 /// The keys a config file may have at the top. The published schema lists the same keys; a test holds them equal.
-pub const TOP_KEYS: [&str; 5] = ["format", "on_error", "timeout_s", "require", "instruments"];
+pub const TOP_KEYS: [&str; 6] = ["format", "on_error", "timeout_s", "require", "instruments", "device"];
 /// The keys one instrument entry may have.
 pub const ENTRY_KEYS: [&str; 7] = [
     "name",
@@ -91,6 +92,8 @@ pub struct Entry {
 pub struct Config {
     pub on_error: OnError,
     pub timeout_s: Option<f64>,
+    /// Requested default for all instruments; each device-aware instrument may override it.
+    pub device: Option<String>,
     /// The instruments the measurement depends on, in the order first named.
     pub require: Vec<String>,
     pub instruments: Vec<Entry>,
@@ -126,6 +129,10 @@ impl Config {
         for (k, v) in &top {
             let k = key(k, "")?;
             match k.as_str() {
+                "device" => {
+                    let d = string(v, "device")?;
+                    c.set_device(&d)?;
+                }
                 "format" => {
                     let f = string(v, "format")?;
                     if f != FORMAT {
@@ -208,6 +215,16 @@ impl Config {
         Ok(())
     }
 
+    pub fn set_device(&mut self, s: &str) -> Result<(), String> {
+        match s {
+            "cpu" | "cuda" | "auto" => {
+                self.device = Some(s.to_string());
+                Ok(())
+            }
+            _ => Err(format!("instrument device must be cpu, cuda or auto, not {s:?}")),
+        }
+    }
+
     pub fn apply_timeout_flag(&mut self, s: &str) -> Result<(), String> {
         self.timeout_s = Some(positive(s.parse::<f64>().ok(), "--instrument-timeout")?);
         Ok(())
@@ -231,19 +248,20 @@ pub struct Flags {
 
 impl Flags {
     /// The flags this module owns. A binary's parser hands each of them, with its value, to [`Flags::take`].
-    pub const NAMES: [&'static str; 5] = [
+    pub const NAMES: [&'static str; 6] = [
         "--instruments",
         "--instrument",
         "--require",
         "--on-instrument-error",
         "--instrument-timeout",
+        "--instrument-device",
     ];
 
     /// Record one flag. `false` if the flag is not an instrument flag.
     pub fn take(&mut self, flag: &str, value: String) -> bool {
         match flag {
             "--instruments" => self.file = Some(value.into()),
-            "--instrument" | "--require" | "--on-instrument-error" | "--instrument-timeout" => {
+            "--instrument" | "--require" | "--on-instrument-error" | "--instrument-timeout" | "--instrument-device" => {
                 self.flags.push((flag.to_string(), value))
             }
             _ => return false,
@@ -268,6 +286,7 @@ impl Flags {
                 "--require" => c.apply_require_flag(value)?,
                 "--on-instrument-error" => c.apply_on_error_flag(value)?,
                 "--instrument-timeout" => c.apply_timeout_flag(value)?,
+                "--instrument-device" => c.set_device(value)?,
                 _ => unreachable!("only instrument flags are recorded"),
             }
         }
@@ -439,6 +458,18 @@ mod tests {
             .apply_instrument_flag("other,command=/bin/x,version=2,timeout_s=1.5,needs_events=true,interpreter=python3,arg.mode=ok,arg.n=3")
             .unwrap();
         assert_eq!(yaml, flags);
+    }
+
+    #[test]
+    fn device_flag_overrides_yaml_and_rejects_invalid_values() {
+        let mut flags = Flags::default();
+        flags.take("--instrument-device", "cuda".into());
+        let config = flags.resolve().unwrap();
+        assert_eq!(config.device.as_deref(), Some("cuda"));
+        let mut yaml = Config::from_yaml("device: cpu").unwrap();
+        yaml.set_device("auto").unwrap();
+        assert_eq!(yaml.device.as_deref(), Some("auto"));
+        assert!(Config::from_yaml("device: gpu").is_err());
     }
 
     #[test]

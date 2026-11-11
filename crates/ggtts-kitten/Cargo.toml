@@ -29,3 +29,4 @@ cuda = ["ggml", "ggtts-ggml-sys/cuda"]
 ggtts-core.workspace = true
 ggtts-ggml-sys = { path = "../ggtts-ggml-sys", optional = true }
 serde_json.workspace = true
+claxon.workspace = true

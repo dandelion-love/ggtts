@@ -1,5 +1,5 @@
-//! The event stream's contract: every line `ggtts-trace/1` can carry validates against the published schema
-//! (`schemas/ggtts-trace-1.schema.json`), events arrive in the order `docs/instruments/hooks.md` states, and both
+//! The event stream's contract: every line `ggtts-trace/2` can carry validates against the published schema
+//! (`schemas/ggtts-trace-2.schema.json`), events arrive in the order `docs/instruments/hooks.md` states, and both
 //! checks go red on planted defects.
 //!
 //! The renders are the recorded pipeline cases (`fixtures/pipeline/render.json`) on the fake engine, written through
@@ -14,7 +14,7 @@ use ggtts_core::trace::{emit_header, parse, Event, Header, JsonlEvents, FORMAT};
 use ggtts_fake::{FakeEngine, Shape};
 use serde_json::{json, Map, Value};
 
-const EVENTS: [&str; 8] = [
+const EVENTS: [&str; 9] = [
     "trace",
     "chunk_begin",
     "step",
@@ -22,6 +22,7 @@ const EVENTS: [&str; 8] = [
     "trim",
     "emit",
     "join",
+    "timing",
     "end",
 ];
 
@@ -30,7 +31,7 @@ fn root() -> &'static Path {
 }
 
 fn validator() -> jsonschema::Validator {
-    let text = std::fs::read_to_string(root().join("schemas/ggtts-trace-1.schema.json")).expect("schema");
+    let text = std::fs::read_to_string(root().join("schemas/ggtts-trace-2.schema.json")).expect("schema");
     let schema: Value = serde_json::from_str(&text).expect("the schema is JSON");
     jsonschema::validator_for(&schema).expect("the schema compiles")
 }
@@ -83,7 +84,7 @@ fn traces(level: u8) -> Vec<(String, Vec<Map<String, Value>>)> {
                 .map(|p| p.as_str().unwrap().to_string())
                 .collect();
             let mut engine = FakeEngine::new(script, shape);
-            let chunks = plan_story(engine.profile(), &paragraphs);
+            let chunks = plan_story(engine.profile(), &paragraphs).unwrap();
             let opts = RenderOptions {
                 redraw: c["redraw"].as_u64().unwrap() as u32,
                 seed_salt: c["seed_salt"].as_str().unwrap().to_string(),
@@ -219,6 +220,24 @@ fn every_variant() -> Vec<Map<String, Value>> {
             start: 0,
             samples: 24000,
         },
+        Event::Timing {
+            stage: "generate",
+            chunk: Some(0),
+            draw: Some(0),
+            ms: 5,
+        },
+        Event::Timing {
+            stage: "first_audio",
+            chunk: None,
+            draw: None,
+            ms: 12,
+        },
+        Event::Timing {
+            stage: "render",
+            chunk: None,
+            draw: None,
+            ms: 30,
+        },
         Event::Join {
             chunks: 2,
             samples: 48000,
@@ -334,7 +353,7 @@ fn the_schema_refuses_planted_defects_and_ignores_the_clock() {
         }),
         ("the next format", {
             let mut m = head.clone();
-            m.insert("format".into(), "ggtts-trace/2".into());
+            m.insert("format".into(), "ggtts-trace/3".into());
             m
         }),
         ("trace level 0 in a header", {
@@ -393,6 +412,17 @@ fn order_violation(lines: &[Map<String, Value>]) -> Option<String> {
                     return Some(format!("step out of order at body line {i}"));
                 }
                 frame += 1;
+                i += 1;
+            }
+            for stage in ["generate", "decode", "judge"] {
+                if i >= body.len()
+                    || ev(&body[i]) != "timing"
+                    || body[i].get("stage").and_then(Value::as_str) != Some(stage)
+                    || u(&body[i], "chunk") != Some(chunk)
+                    || u(&body[i], "draw") != Some(draws)
+                {
+                    return Some(format!("missing {stage} timing for chunk {chunk} draw {draws}"));
+                }
                 i += 1;
             }
             if i >= body.len() || ev(&body[i]) != "chunk_end" || u(&body[i], "draw") != Some(draws) {
@@ -487,7 +517,7 @@ fn events_arrive_in_the_documented_order_and_a_reorder_is_seen() {
 
 #[test]
 fn the_stream_is_the_format_its_schema_names() {
-    let text = std::fs::read_to_string(root().join("schemas/ggtts-trace-1.schema.json")).unwrap();
+    let text = std::fs::read_to_string(root().join("schemas/ggtts-trace-2.schema.json")).unwrap();
     let schema: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(schema["$defs"]["trace"]["properties"]["format"]["const"], FORMAT);
 }

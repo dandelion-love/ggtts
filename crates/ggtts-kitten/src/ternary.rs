@@ -17,6 +17,8 @@ pub const GROUP: usize = 128;
 pub const BLOCK: usize = 256;
 /// `sizeof(block_tq2_0)`: 64 code bytes and an fp16 scale.
 pub const TQ2_0_BLOCK_BYTES: usize = 66;
+/// Stock ggml TQ1_0 packs 256 values and one fp16 scale in 54 bytes.
+pub const TQ1_0_BLOCK_BYTES: usize = 54;
 /// A half of zero codes: four fields of code 1 per byte.
 const ZERO_CODES: u8 = 0b0101_0101;
 
@@ -76,6 +78,8 @@ pub enum Inexact {
     NotTernary { col: usize, value: f32, scale: f32 },
     /// A scale has no exact fp16.
     ScaleNotF16 { group: usize, scale: f32 },
+    /// This experimental runtime reads TQ1 but does not export it.
+    UnsupportedTq1Export,
 }
 
 /// Pack one row into padded `TQ2_0` blocks (`row.len() / 128` blocks). In strict mode a row that the trits and
@@ -330,6 +334,8 @@ pub const Q4_0_BLOCK_BYTES: usize = 18;
 /// How the ternary matrices are stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
+    /// Experimental stock TQ1_0, one scale per 256 values.
+    Tq1,
     /// `TQ2_0`, one Kitten group per 256-weight block with zeros in the second half (`Q8_K` activations).
     Tq2Pad,
     /// Stock `Q4_0`: each 32-weight block carries its group's scale as `d` and codes 7, 8, 9 for -1, 0, +1, which is
@@ -340,47 +346,155 @@ pub enum Layout {
 impl Layout {
     pub fn name(self) -> &'static str {
         match self {
+            Layout::Tq1 => "tq1_0-256-experimental",
             Layout::Tq2Pad => "tq2_0-pad128",
             Layout::Q4 => "q4_0-g128",
         }
     }
     pub fn parse(s: &str) -> Option<Self> {
         match s {
+            "tq1_0-256-experimental" => Some(Layout::Tq1),
             "tq2_0-pad128" | "tq2_0" => Some(Layout::Tq2Pad),
             "q4_0-g128" | "q4_0" => Some(Layout::Q4),
             _ => None,
         }
     }
+    /// The ggml type the layout's matrices are stored as.
+    pub fn ggml_type(self) -> crate::gguf::GgmlType {
+        match self {
+            Layout::Tq1 => crate::gguf::GgmlType::TQ1_0,
+            Layout::Tq2Pad => crate::gguf::GgmlType::TQ2_0,
+            Layout::Q4 => crate::gguf::GgmlType::Q4_0,
+        }
+    }
     /// The stored row length (`ne[0]`) for `cols` weights.
     pub fn stored_cols(self, cols: usize) -> usize {
         match self {
+            Layout::Tq1 => cols,
             Layout::Tq2Pad => 2 * cols,
             Layout::Q4 => cols,
         }
     }
     pub fn row_bytes(self, cols: usize) -> usize {
         match self {
+            Layout::Tq1 => cols / 256 * TQ1_0_BLOCK_BYTES,
             Layout::Tq2Pad => cols / GROUP * TQ2_0_BLOCK_BYTES,
             Layout::Q4 => cols / 32 * Q4_0_BLOCK_BYTES,
         }
     }
     pub fn pack_row(self, row: &[f32], rule: Rule, strict: bool, out: &mut Vec<u8>) -> Result<(), Inexact> {
         match self {
+            Layout::Tq1 => Err(Inexact::UnsupportedTq1Export),
             Layout::Tq2Pad => pack_row(row, rule, strict, out),
             Layout::Q4 => pack_row_q4(row, rule, strict, out),
         }
     }
     pub fn check_row(self, src: &[f32], packed: &[u8]) -> Result<(), String> {
         match self {
+            Layout::Tq1 => Err("experimental TQ1 source readback is not supported".into()),
             Layout::Tq2Pad => check_row(src, packed),
             Layout::Q4 => check_row_q4(src, packed),
         }
     }
     pub fn dequantize_row(self, packed: &[u8], n: usize) -> Result<Vec<f32>, String> {
         match self {
+            Layout::Tq1 => dequantize_tq1(packed, n),
             Layout::Tq2Pad => dequantize_row(packed, n),
             Layout::Q4 => dequantize_row_q4(packed, n),
         }
+    }
+}
+
+/// Decode ggml TQ1_0 blocks using the pinned ggml layout.
+pub fn dequantize_tq1(data: &[u8], n: usize) -> Result<Vec<f32>, String> {
+    let expected = (n / 256)
+        .checked_mul(TQ1_0_BLOCK_BYTES)
+        .ok_or("TQ1 row size overflow")?;
+    if n == 0 || n % 256 != 0 || data.len() != expected {
+        return Err("bad TQ1 row size".into());
+    }
+    let mut out = Vec::with_capacity(n);
+    const POW: [u8; 5] = [1, 3, 9, 27, 81];
+    for block in data.chunks_exact(TQ1_0_BLOCK_BYTES) {
+        let d = f16_to_f32(u16::from_le_bytes([block[52], block[53]]));
+        if !d.is_finite() || d < 0.0 {
+            return Err("invalid TQ1 scale".into());
+        }
+        for &p in &POW {
+            for &byte in &block[..32] {
+                let q = byte.wrapping_mul(p);
+                let trit = ((u16::from(q) * 3) >> 8) as i16 - 1;
+                out.push(f32::from(trit) * d);
+            }
+        }
+        for &p in &POW {
+            for &byte in &block[32..48] {
+                let q = byte.wrapping_mul(p);
+                let trit = ((u16::from(q) * 3) >> 8) as i16 - 1;
+                out.push(f32::from(trit) * d);
+            }
+        }
+        for &p in &POW[..4] {
+            for &byte in &block[48..52] {
+                let q = byte.wrapping_mul(p);
+                let trit = ((u16::from(q) * 3) >> 8) as i16 - 1;
+                out.push(f32::from(trit) * d);
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tq1_reference_tests {
+    use super::*;
+
+    #[test]
+    fn synthetic_ggml_reference_and_corruption_control() {
+        // Fixture contains 64 synthetic blocks and their float32 reference dequantization.
+        let fixture = include_bytes!("../tests/fixtures/tq1-reference.bin");
+        assert_eq!(fixture.len(), 64 * (54 + 1024));
+        let mut detected = 0;
+        let mut code_detected = 0;
+        for sample in fixture.chunks_exact(54 + 1024) {
+            let (bytes, values) = sample.split_at(54);
+            let actual = dequantize_tq1(bytes, 256).unwrap();
+            let expected: Vec<f32> = values
+                .chunks_exact(4)
+                .map(|v| f32::from_le_bytes([v[0], v[1], v[2], v[3]]))
+                .collect();
+            assert!(actual.iter().zip(&expected).all(|(a, b)| a.to_bits() == b.to_bits()));
+            let mut bad = bytes.to_vec();
+            bad[53] ^= 1;
+            if let Ok(altered) = dequantize_tq1(&bad, 256) {
+                if altered.iter().zip(&expected).any(|(a, b)| a.to_bits() != b.to_bits()) {
+                    detected += 1;
+                }
+            } else {
+                detected += 1;
+            }
+            let mut bad_code = bytes.to_vec();
+            bad_code[0] ^= 0xff;
+            let altered = dequantize_tq1(&bad_code, 256).unwrap();
+            if altered.iter().zip(&expected).any(|(a, b)| a.to_bits() != b.to_bits()) {
+                code_detected += 1;
+            }
+        }
+        assert!(detected > 0, "planted scale corruption must be detected");
+        assert!(code_detected > 0, "planted code corruption must be detected");
+    }
+
+    #[test]
+    fn rejects_bad_length_dimension_and_scale() {
+        let block = [0u8; TQ1_0_BLOCK_BYTES];
+        assert!(dequantize_tq1(&block[..53], 256).is_err());
+        assert!(dequantize_tq1(&block, 128).is_err());
+        assert!(dequantize_tq1(&[], 0).is_err());
+        let mut bad = block;
+        bad[52..54].copy_from_slice(&0x7c00u16.to_le_bytes());
+        assert!(dequantize_tq1(&bad, 256).is_err());
+        bad[52..54].copy_from_slice(&0xbc00u16.to_le_bytes());
+        assert!(dequantize_tq1(&bad, 256).is_err());
     }
 }
 

@@ -17,6 +17,7 @@ pub mod audio;
 pub mod engine;
 pub mod flac;
 pub mod hooks;
+pub mod logging;
 pub mod numeric;
 pub mod pipeline;
 pub mod profile;

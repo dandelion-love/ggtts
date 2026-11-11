@@ -107,7 +107,7 @@ fn run_defaults(r: &mut Report, p: &Profile) {
 
 // ── chunks, read_text, seeds ─────────────────────────────────────────────────────────────────────────────────
 fn check_plan(x: &mut Diffs, p: &Profile, label: &str, story_id: &str, paras: &[String], ceiling: usize, want: &Value) {
-    let got = plan(p, paras, ceiling);
+    let got = plan(p, paras, ceiling).unwrap();
     let want = want["chunks"].as_array().unwrap();
     x.eq(&format!("{label}: chunk count"), got.len(), want.len());
     for (i, (g, w)) in got.iter().zip(want).enumerate() {
@@ -143,7 +143,7 @@ fn run_chunks(r: &mut Report, p: &Profile) {
         let paras = strings(&c["paragraphs"]);
 
         let mut x = Diffs::default();
-        let raw: Vec<Vec<(String, String)>> = paras.iter().map(|t| chunk(p, t, p.story_ceiling)).collect();
+        let raw: Vec<Vec<(String, String)>> = paras.iter().map(|t| chunk(p, t, p.story_ceiling).unwrap()).collect();
         let want_raw: Vec<Vec<(String, String)>> = c["raw_chunks_story"]
             .as_array()
             .unwrap()
@@ -357,7 +357,7 @@ fn run_render(r: &mut Report, p: &Profile) {
             })
             .collect();
         let mut engine = FakeEngine::with_profile(*p, script, shape);
-        let chunks = plan_story(engine.profile(), &strings(&c["paragraphs"]));
+        let chunks = plan_story(engine.profile(), &strings(&c["paragraphs"])).unwrap();
         let opts = RenderOptions {
             redraw: u(&c["redraw"]) as u32,
             seed_salt: s(&c["seed_salt"]).to_string(),
@@ -619,7 +619,7 @@ fn story_chunk_count(engine: &FakeEngine) -> usize {
         .unwrap()
         .iter()
         .chain(render["cases"].as_array().unwrap())
-        .map(|c| plan_story(engine.profile(), &strings(&c["paragraphs"])).len())
+        .map(|c| plan_story(engine.profile(), &strings(&c["paragraphs"])).unwrap().len())
         .sum()
 }
 
@@ -647,7 +647,7 @@ fn a_second_profile_chunks_differently() {
     let paras = vec!["今日天氣好好，我哋一齊去公園散步，之後再去食飯，飲杯茶傾下偈。".to_string()];
     let mut reads = Vec::new();
     for mut engine in [qwen, short] {
-        let planned = plan_story(engine.profile(), &paras);
+        let planned = plan_story(engine.profile(), &paras).unwrap();
         let opts = RenderOptions::for_profile(engine.profile());
         let read = render_story(&mut engine, "profile-check", &planned, &opts).unwrap();
         for ch in &planned {
@@ -667,5 +667,33 @@ fn a_second_profile_chunks_differently() {
 }
 
 /// The measured story chunk counts over the recorded paragraphs, under each profile.
-const QWEN3_CHUNKS: usize = 44;
-const SHORT_CHUNKS: usize = 75;
+const QWEN3_CHUNKS: usize = 50;
+const SHORT_CHUNKS: usize = 86;
+
+/// Input loss is refused or retained before the engine sees the plan.
+#[test]
+fn short_and_punctuation_inputs_are_not_lost_or_sent_alone() {
+    let engine = FakeEngine::default();
+    let p = engine.profile();
+    for text in ["？！", "」", "...", "？！ 」"] {
+        assert!(plan(p, &[text.to_string()], p.story_ceiling).is_err(), "{text}");
+    }
+    let leading = format!("{}好", "！".repeat(p.story_ceiling + 1));
+    assert!(plan(p, &[leading], p.story_ceiling).is_err());
+    let short = plan(p, &["好。".into(), "真係？！".into(), "好。」".into()], p.story_ceiling).unwrap();
+    assert_eq!(
+        short.iter().map(|x| x.text.as_str()).collect::<Vec<_>>(),
+        vec!["好。", "真係？！", "好。」"]
+    );
+    assert!(short.iter().all(|x| x.last_in_para));
+}
+
+#[test]
+fn retained_multi_mark_pause_uses_first_recognized_mark() {
+    let engine = FakeEngine::default();
+    let p = engine.profile();
+    assert_eq!(p.pause_s("？！」"), p.pause_s("？"));
+    assert_eq!(p.pause_s("。」"), p.pause_s("。"));
+    assert_eq!(p.pause_s("」？！"), p.pause_s("？"));
+    assert_eq!(p.pause_s("」"), p.default_pause_s);
+}

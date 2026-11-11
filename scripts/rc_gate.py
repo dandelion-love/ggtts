@@ -3,6 +3,7 @@
 import argparse
 import datetime
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -45,13 +46,50 @@ def digest(path):
     return h.hexdigest()
 
 
-def evaluate(cpu, gpu):
-    if set(cpu) != {"fmt", "clippy", "build", "test"} or set(gpu) != {"qwen", "kitten"}:
-        return "incomplete"
-    states = list(cpu.values()) + [v["status"] for v in gpu.values()]
+TQ1_NOT_RUN = "TQ1_0 NOT RUN"
+
+
+def tq1_entry(path, returncode=None, log_text=""):
+    """The Kitten probe's TQ1_0 CUDA checks: pass or fail only when they ran, otherwise incomplete with a reason.
+
+    `path` is TQ1_GGUF when it names an existing file, `returncode` the probe's exit status (None: it did not run),
+    `log_text` the probe's log, whose result line says when the TQ1 checks were skipped.
+    """
+    if path is None:
+        return {"status": "incomplete", "reason": "tq1: not run (TQ1_GGUF is not set or is not a file)"}
+    entry = {"input": {"path": str(path), "sha256_tree": digest(path)}}
+    if returncode is None:
+        entry.update(status="incomplete", reason="tq1: not run (the Kitten probe did not run)")
+    elif returncode != 0:
+        entry["status"] = "fail"
+    elif TQ1_NOT_RUN in log_text:
+        entry.update(status="incomplete", reason="tq1: not run (the probe's result line says so)")
+    else:
+        entry["status"] = "pass"
+    return entry
+
+
+def evaluate(cpu, gpu, instrument):
+    states = list(cpu.values()) + [v["status"] for v in gpu.values()] + [v["status"] for v in instrument.values()]
+    # The Kitten probe's TQ1_0 checks are reported beside it: unrun, they keep the gate from a pass.
+    states.append(gpu.get("kitten", {}).get("tq1", {}).get("status", "incomplete"))
     if "fail" in states:
         return "fail"
+    if (set(cpu) != {"fmt", "clippy", "build", "test"} or set(gpu) != {"qwen", "kitten"}
+            or set(instrument) != {"cpu", "cuda"}):
+        return "incomplete"
     return "pass" if states and all(s == "pass" for s in states) else "incomplete"
+
+
+def instrument_proof(work, scratch, device_ok, jobs):
+    # Load the proof from the checked ref, not from the checkout that launched --ref.
+    spec = importlib.util.spec_from_file_location("checked_instrument_gate", work / "scripts/instrument_promotion_gate.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    build = os.environ.get("QWEN3_TTS_BUILD")
+    cuda_lib = Path(build) / "ggml/src" if build else None
+    return module.run(work, scratch, os.environ.get("TALKER"), os.environ.get("CODEC"), cuda_lib,
+                      device_ok, jobs, command)
 
 
 def main():
@@ -66,9 +104,10 @@ def main():
         parser.error("--jobs must be positive")
     out, scratch = Path(args.out).resolve(), Path(args.work).resolve()
     scratch.mkdir(parents=True, exist_ok=True)
-    report = {"started": now(), "commit": None, "cpu": {}, "gpu": {}, "result": "incomplete",
+    report = {"started": now(), "commit": None, "cpu": {}, "gpu": {}, "instrument": {}, "result": "incomplete",
               "limits": ["GPU probes compare each engine with its own references; this is not a CPU/GPU identity claim.",
-                         "Instrument no-change proof in issue 34 is not covered.",
+                         "The Kitten TQ1_0 CUDA checks need TQ1_GGUF; without it gpu.kitten.tq1 is incomplete, and so is the result.",
+                         "Instrument checks compare within each backend; timing and external artifacts are not covered.",
                          "External CUDA library provenance is supplied by the operator; its build cannot be verified here."]}
     root = Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip())
     work = root
@@ -116,6 +155,17 @@ def main():
         for name, variables in inputs.items():
             entry = {"status": "incomplete", "backend": "cuda", "inputs": {}, "log": str(scratch / (name + ".log"))}
             report["gpu"][name] = entry
+            tq1 = None
+            if name == "kitten":
+                given = os.environ.get("TQ1_GGUF")
+                tq1 = Path(given).resolve() if given and Path(given).is_file() else None
+                try:
+                    if tq1 and (scratch in tq1.parents or tq1 == scratch):
+                        raise ValueError("TQ1_GGUF overlaps scratch; probes may overwrite inputs")
+                    entry["tq1"] = tq1_entry(tq1)
+                except (OSError, ValueError) as exc:
+                    tq1 = None
+                    entry["tq1"] = {"status": "incomplete", "reason": f"tq1: not run ({exc})"}
             missing = [v for v in variables if not os.environ.get(v) or not Path(os.environ[v]).exists()]
             if not device_ok:
                 missing.append("working nvidia-smi / NVIDIA GPU")
@@ -141,15 +191,27 @@ def main():
                 env.update({"WORK": str(scratch / name), "DEVICE": "cuda", "STEPS": "all",
                             "CARGO_TARGET_DIR": str(scratch / name / "target"), "THREADS": str(args.jobs)})
                 env.pop("GPU_WAIT_FILE", None)
+                env.pop("TQ1_GGUF", None)
+                if tq1:
+                    env["TQ1_GGUF"] = str(tq1)
                 cmd = ["bash", scripts[name]]
                 entry["command"] = cmd
-                entry["status"] = "pass" if command(cmd, work, Path(entry["log"]), env) == 0 else "fail"
+                code = command(cmd, work, Path(entry["log"]), env)
+                entry["status"] = "pass" if code == 0 else "fail"
+                if tq1:
+                    log = Path(entry["log"])
+                    text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
+                    entry["tq1"] = tq1_entry(tq1, code, text)
                 fixtures = scratch / name / "fixtures-cuda"
                 if name == "qwen" and fixtures.is_dir():
                     entry["recorded_fixtures_sha256_tree"] = digest(fixtures)
             except (OSError, ValueError, subprocess.CalledProcessError) as exc:
                 entry["reason"] = str(exc)
-        report["result"] = evaluate(report["cpu"], report["gpu"])
+        # Avoid another expensive model build/run if the preceding promotion checks already failed or are incomplete.
+        if (all(v == "pass" for v in report["cpu"].values()) and len(report["cpu"]) == 4
+                and len(report["gpu"]) == 2 and all(v["status"] == "pass" for v in report["gpu"].values())):
+            report["instrument"] = instrument_proof(work, scratch, device_ok, args.jobs)
+        report["result"] = evaluate(report["cpu"], report["gpu"], report["instrument"])
         exit_code = 0 if report["result"] == "pass" else 1
     except (OSError, ValueError, StopIteration, subprocess.CalledProcessError) as exc:
         report["error"] = str(exc)

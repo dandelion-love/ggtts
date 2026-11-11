@@ -1,5 +1,26 @@
 # Instruments
 
+## Device selection
+
+`ggtts-render --device cuda` requests CUDA from every instrument through the generic
+`GGTTS_INSTRUMENT_DEVICE` child environment. CPU-only instruments may ignore the
+hint and must not report GPU use. The two ASR instruments honor it, fail visibly
+when CUDA is unavailable or their model is not placed on CUDA, and report the
+requested and actual device. For example:
+
+```sh
+ggtts-render --device cuda --model talker.gguf --codec codec.gguf --text "Hello" --out out.flac \
+  --instrument asr-sensevoice,arg.model_dir=MODEL,arg.reference_file=REF \
+  --instrument asr-qwen,arg.model_dir=MODEL2,arg.reference_file=REF
+```
+
+Use `--instrument-device cpu|cuda|auto` (or top-level YAML `device:`) to override
+the renderer for the whole instrument chain. Standalone `ggtts-measure` uses the
+same flag and defaults to CPU. A device-aware instrument can override its own
+choice with e.g. `--instrument asr-qwen,arg.device=cpu`. `auto` chooses CUDA
+only if available, otherwise CPU; an explicit `cuda` never silently falls back.
+Device selection does not install GPU dependencies or prove GPU execution on a host.
+
 An instrument measures a render without changing it. This folder holds what you need to write one.
 
 | Path | What it is |
@@ -7,9 +28,17 @@ An instrument measures a render without changing it. This folder holds what you 
 | `python/ggtts_instrument/` | The Python SDK, standard library only: read the event stream, read the audio, write the envelope |
 | `templates/python/<hook>/` | A minimal instrument for each event hook point, with a README and a self-test |
 | `examples/python/internal-pauses/` | A worked example: silences inside the speech of a rendered read |
+| `examples/python/pitch-range/` | Voiced pitch range using the bundled, pinned Pitchy detector; requires Node.js |
+| `examples/python/loudness-ends/` | Relative loud and soft speech ends; requires the documented pYIN Python environment |
 
 The hook points and what each one carries are in [`docs/instruments/hooks.md`](../docs/instruments/hooks.md). The
-envelope every instrument writes is `ggtts-report/1` (`schemas/ggtts-report-1.schema.json`).
+envelope every instrument writes is `ggtts-report/2` (`schemas/ggtts-report-2.schema.json`); the runner also reads
+`ggtts-report/1` and normalizes it into the current merged report. Older v1-only readers cannot read v2 reports.
+
+For existing audio, `ggtts-measure --audio-state raw|trimmed|unknown` records the caller's knowledge; the default is
+`unknown`. The flag does not modify the audio or verify the claim. `ggtts-render --text` reports `raw` and its story
+pipeline reports `trimmed`. Event-only instruments use `n/a`. Standalone audio instruments without a runner report
+`unknown`. A v1 `n/a` remains `n/a`; old reports do not prove an audio file was trimmed.
 
 ## Write a Python instrument
 

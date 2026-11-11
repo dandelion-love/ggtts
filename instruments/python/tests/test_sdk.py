@@ -10,7 +10,9 @@ import os
 import struct
 import sys
 import threading
+import types
 import unittest
+from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
@@ -35,6 +37,15 @@ class EnvelopeCheck(unittest.TestCase):
     def test_a_built_envelope_is_valid(self):
         self.assertEqual(check(envelope()), [])
 
+    def test_previous_format_and_unknown_state(self):
+        doc = envelope()
+        doc["format"] = "ggtts-report/1"
+        self.assertEqual(check(doc), [])
+        doc["provenance"]["audio"] = "unknown"
+        self.assertNotEqual(check(doc), [])
+        doc["format"] = "ggtts-report/2"
+        self.assertEqual(check(doc), [])
+
     def test_planted_defects_are_each_refused(self):
         def mut(f):
             d = json.loads(json.dumps(envelope()))
@@ -44,7 +55,7 @@ class EnvelopeCheck(unittest.TestCase):
         plants = {
             "no status": lambda d: d.pop("status"),
             "a status not in the list": lambda d: d.update(status="done"),
-            "the next format": lambda d: d.update(format="ggtts-report/2"),
+            "the next format": lambda d: d.update(format="ggtts-report/3"),
             "an upper-case name": lambda d: d.update(name="X"),
             "a metric without a unit": lambda d: d["metrics"][0].pop("unit"),
             "a direction not in the list": lambda d: d["metrics"][0].update(direction="up"),
@@ -95,7 +106,7 @@ class Events(unittest.TestCase):
     def test_what_is_not_a_trace_is_refused(self):
         bad = {
             "no header": ['{"ev":"step","t_ms":0}'],
-            "the next format": ['{"ev":"trace","format":"ggtts-trace/2","t_ms":0}'],
+            "the next format": ['{"ev":"trace","format":"ggtts-trace/3","t_ms":0}'],
             "no t_ms": ['{"ev":"trace","format":"ggtts-trace/1"}'],
             "not JSON": ['{"ev":"trace","format":"ggtts-trace/1","t_ms":0}', "{not json"],
             "a second header": ['{"ev":"trace","format":"ggtts-trace/1","t_ms":0}',
@@ -186,6 +197,61 @@ class Audio(unittest.TestCase):
 
 
 class Cli(unittest.TestCase):
+    def test_decoder_provenance_key_is_reserved_and_cannot_silently_replace_config(self):
+        with self.assertRaises(SystemExit):
+            run(lambda c, e: None, "x", "1", [], argv=["--envelope", "unused", "--ggtts-audio-decoders", "value"])
+        with Workdir() as w:
+            out = os.path.join(w, "env.json")
+            def bad(ctx, env):
+                ctx.config["ggtts_audio_decoders"] = "injected"
+                env.metric("m", 1.0, "1", "neutral")
+            self.assertEqual(run(bad, "x", "1", [], argv=["--envelope", out]), 1)
+            with open(out, encoding="utf-8") as f:
+                env = json.load(f)
+            self.assertEqual(env["status"], "failed")
+            self.assertEqual(env["metrics"], [])
+            self.assertIn("reserved", env["error"])
+
+    def test_decoder_identity_is_recorded_by_the_decoding_child(self):
+        with Workdir() as w:
+            audio, out = os.path.join(w, "input.wav"), os.path.join(w, "env.json")
+            write_wav(audio, [0.0, 0.5, -0.5], 24000)
+            def measure(ctx, env):
+                read_audio(ctx.audio)
+                env.input(ctx.audio)
+            self.assertEqual(run(measure, "x", "1", [], argv=["--audio", audio, "--envelope", out]), 0)
+            with open(out, encoding="utf-8") as f:
+                env = json.load(f)
+            records = env["provenance"]["config"]["ggtts_audio_decoders"]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["kind"], "ggtts-python-wav")
+            self.assertEqual(len(records[0]["sha256"]), 64)
+            self.assertIn({"path": "decoder:ggtts-python-wav", "sha256": records[0]["sha256"]},
+                          env["provenance"]["inputs"])
+            self.assertNotIn(w, json.dumps(records))
+            self.assertEqual(check(env), [])
+
+    def test_unknown_and_ambiguous_native_identity_never_invents_a_hash(self):
+        from ggtts_instrument.audio import _decoder
+        for paths in ([], ["not-a-real-file"], ["one", "two"]):
+            with patch("ggtts_instrument.audio._loaded_sndfile_paths", return_value=paths):
+                self.assertEqual(_decoder("libsndfile", "input.flac"), {"kind": "libsndfile", "sha256": None})
+
+    def test_native_opener_selection_and_mixed_symbols_without_optional_dependencies(self):
+        from ggtts_instrument.audio import _loaded_sndfile_paths
+        fake = types.SimpleNamespace(_ffi=types.SimpleNamespace(cast=lambda _type, value: value),
+                                     _snd=types.SimpleNamespace(sf_open=11, sf_wchar_open=22,
+                                                                sf_readf_float=33, sf_close=44))
+        for platform, path, expected in (("win32", "input.flac", 22), ("win32", b"input.flac", 11),
+                                         ("linux", "input.flac", 11)):
+            with patch.dict(sys.modules, {"soundfile": fake}), patch("sys.platform", platform), \
+                    patch("ggtts_instrument.audio._bound_module_path", return_value="module") as resolve:
+                self.assertEqual(_loaded_sndfile_paths(path), ["module"])
+                self.assertEqual([x.args[0] for x in resolve.call_args_list], [expected, 33, 44])
+        with patch.dict(sys.modules, {"soundfile": fake}), \
+                patch("ggtts_instrument.audio._bound_module_path", side_effect=["one", "two", "one"]):
+            self.assertEqual(_loaded_sndfile_paths("input.flac"), [])
+
     def test_a_crash_is_written_as_a_failed_envelope(self):
         with Workdir() as w:
             out = os.path.join(w, "env.json")

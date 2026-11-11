@@ -192,6 +192,9 @@ impl FakeEngine {
 }
 
 impl Engine for FakeEngine {
+    fn p_stop_semantics(&self) -> Option<&'static str> {
+        Some("fake-synthetic/1")
+    }
     fn info(&self) -> &EngineInfo {
         &self.info
     }
@@ -280,6 +283,7 @@ impl Engine for FakeEngine {
                     frame: f as u32,
                     token: u32::from(frames[(f * cbs) as usize]),
                     p_stop,
+                    p_stop_semantics: p_stop.map(|_| "fake-synthetic/1"),
                     logits: logits.as_ref().map(|l| &l[..]),
                 });
             }

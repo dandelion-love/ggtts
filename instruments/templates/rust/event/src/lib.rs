@@ -24,7 +24,7 @@ pub struct Measured {
     pub seeds: Vec<(u64, u64)>,
 }
 
-/// Measure a trace. Refuses a stream that is not `ggtts-trace/1`.
+/// Measure a trace. Accepts the current trace format and its previous version.
 pub fn measure(trace: &str) -> Result<Measured, TraceError> {
     let lines = parse(trace)?;
     let mut longest: Option<u64> = None;

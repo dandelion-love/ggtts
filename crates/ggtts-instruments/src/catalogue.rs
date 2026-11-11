@@ -71,6 +71,12 @@ pub const CATALOGUE: &[Known] = &[
         true,
     ),
     python(
+        "render-timing",
+        "templates/python/timing/instrument.py",
+        "stream first-audio latency, render real-time factor and draw stage durations",
+        true,
+    ),
+    python(
         "audio-levels",
         "templates/python/audio/instrument.py",
         "the rendered audio: peak and RMS level (template)",
@@ -82,6 +88,36 @@ pub const CATALOGUE: &[Known] = &[
         "the rendered audio: silences inside the speech, between its first and last loud frame (example)",
         false,
     ),
+    python(
+        "pitch-range",
+        "examples/python/pitch-range/instrument.py",
+        "voiced pitch median and 5th-to-95th percentile range using the bundled Pitchy detector",
+        false,
+    ),
+    python(
+        "loudness-ends",
+        "examples/python/loudness-ends/instrument.py",
+        "relative loud and soft ends over pYIN-voiced speech-core frames",
+        false,
+    ),
+    Known {
+        version: "0.2.1",
+        ..python(
+            "asr-sensevoice",
+            "examples/python/asr-sensevoice/instrument.py",
+            "optional ASR character error against a local reference; not a quality verdict",
+            false,
+        )
+    },
+    Known {
+        version: "0.2.0",
+        ..python(
+            "asr-qwen",
+            "examples/python/asr-qwen/instrument.py",
+            "offline Qwen3-ASR character error rate against a local reference",
+            false,
+        )
+    },
 ];
 
 pub fn find(name: &str) -> Option<&'static Known> {
@@ -95,6 +131,7 @@ pub fn template_yaml() -> String {
          # Every key has a flag (--instrument NAME,KEY=VALUE, --on-instrument-error, --instrument-timeout), and a flag\n\
          # overrides the file. Schema: docs/instruments/instruments.schema.json.\n\
          format: ggtts-instruments/1\n\
+         # device: cuda       # default for device-aware instruments; per-instrument args.device overrides\n\
          on_error: continue   # or abort: the render's output is kept either way\n\
          timeout_s: 60        # per instrument, unless its entry sets timeout_s\n\
          require: []          # instruments the measurement depends on: any not ok makes it INCOMPLETE (exit 3)\n\

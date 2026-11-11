@@ -1,4 +1,4 @@
-//! The instrument interface: per-step events, the trace format `ggtts-trace/1`, replay and the trace-identity check.
+//! The instrument interface: per-step events, the trace format `ggtts-trace/2`, replay and the trace-identity check.
 //!
 //! Instruments are opt-in. With tracing off the sink is [`NullEvents`], whose [`level`](Events::level) is 0, and
 //! neither the pipeline nor an engine computes an instrument value. With it on the output must not change: an
@@ -12,7 +12,7 @@
 //! | Field | Meaning |
 //! |---|---|
 //! | `token` | The sampled codebook-0 token at this frame. |
-//! | `p_stop` | Probability of the end-of-speech token at temperature 1, before any filtering. |
+//! | `p_stop` | Engine-reported stop value; inspect `flags.p_stop_semantics`, or treat it as unknown if absent. |
 //! | `entropy` | Entropy in nats of the main sampler's distribution after temperature, before top-k and top-p. |
 //! | `top1_p`, `rank` | The most likely token's probability, and the rank of the token actually drawn. |
 //! | `cb`, `cb_p` | Level 2: the depth model's tokens (codebooks 1 onward) and each one's probability. |
@@ -25,7 +25,7 @@
 //! instrument is trusted only once it has been shown to detect a planted defect and to read a no-op as no change.
 //!
 //! The hook catalogue, the event order and the two instrument tiers are in `docs/instruments/hooks.md`; the JSON
-//! schema every line validates against is `schemas/ggtts-trace-1.schema.json`.
+//! schema every line validates against is `schemas/ggtts-trace-2.schema.json`.
 
 use std::io::{self, Write};
 use std::time::Instant;
@@ -36,12 +36,12 @@ use crate::audio::{judge_f32, trim_edges_f32};
 use crate::engine::{ChunkRequest, Codes, Engine, EngineError, Pcm, Stop};
 
 /// The trace format this module writes and reads.
-pub const FORMAT: &str = "ggtts-trace/1";
+pub const FORMAT: &str = "ggtts-trace/2";
 
 /// The formats [`parse`] accepts: the current one first, then at most the one before it. Readers accept the
 /// previous version for one version, so a trace written by the last release still reads. Writers write only
 /// [`FORMAT`].
-pub const READS: &[&str] = &[FORMAT];
+pub const READS: &[&str] = &[FORMAT, "ggtts-trace/1"];
 
 /// The fields replay ignores: wall-clock only.
 pub const CLOCK_FIELDS: [&str; 2] = ["t_ms", "ms"];
@@ -79,14 +79,13 @@ pub struct Header {
     /// The model's sha256, when the engine has a model.
     pub model_sha256: Option<String>,
     pub codec_sha256: Option<String>,
-    /// The non-default flags. A secret flag is written as `{"set": true, "source": ...}` by its caller, never as
-    /// its value.
+    /// Non-default flags and versioned producer semantics. Secret values must never be written here.
     pub flags: Map<String, Value>,
     pub trace_level: u8,
 }
 
 impl Header {
-    /// A header for `engine` at `trace_level`, with no flags.
+    /// A header for `engine` at `trace_level`, including declared measurement semantics.
     pub fn for_engine(engine: &dyn Engine, trace_level: u8) -> Self {
         let info = engine.info();
         Self {
@@ -98,7 +97,9 @@ impl Header {
             protocol: engine.profile().protocol.to_string(),
             model_sha256: None,
             codec_sha256: None,
-            flags: Map::new(),
+            flags: engine.p_stop_semantics().map_or_else(Map::new, |semantics| {
+                Map::from_iter([("p_stop_semantics".into(), semantics.into())])
+            }),
             trace_level,
         }
     }
@@ -149,6 +150,13 @@ pub enum Event<'a> {
         chunk: u32,
         start: usize,
         samples: usize,
+    },
+    /// A measured duration. Values are wall-clock and excluded from trace identity comparisons.
+    Timing {
+        stage: &'static str,
+        chunk: Option<u32>,
+        draw: Option<u32>,
+        ms: u64,
     },
     Join {
         chunks: u32,
@@ -261,6 +269,13 @@ impl Event<'_> {
                 m.insert("start".into(), (*start).into());
                 m.insert("samples".into(), (*samples).into());
             }
+            Event::Timing { stage, chunk, draw, ms } => {
+                m.insert("ev".into(), "timing".into());
+                m.insert("stage".into(), (*stage).into());
+                put(&mut m, "chunk", *chunk);
+                put(&mut m, "draw", *draw);
+                m.insert("ms".into(), (*ms).into());
+            }
             Event::Join {
                 chunks,
                 samples,
@@ -328,6 +343,16 @@ pub struct JsonlEvents<W: Write> {
     start: Instant,
     w: W,
     error: Option<io::Error>,
+    sink_ns: u128,
+    events_written: u64,
+}
+
+/// Time spent serializing and writing events inside the sink. It excludes event preparation by callers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TraceSinkStats {
+    pub events_written: u64,
+    pub sink_ns: u128,
+    pub flush_ns: u128,
 }
 
 impl<W: Write> JsonlEvents<W> {
@@ -337,16 +362,29 @@ impl<W: Write> JsonlEvents<W> {
             start: Instant::now(),
             w,
             error: None,
+            sink_ns: 0,
+            events_written: 0,
         }
     }
 
     /// Flush, and return the first write error if there was one.
-    pub fn finish(mut self) -> io::Result<W> {
+    pub fn finish(self) -> io::Result<W> {
+        self.finish_with_stats().map(|(writer, _)| writer)
+    }
+
+    /// Flush and return sink timings separately from inference and stream handoffs.
+    pub fn finish_with_stats(mut self) -> io::Result<(W, TraceSinkStats)> {
         if let Some(e) = self.error.take() {
             return Err(e);
         }
+        let start = Instant::now();
         self.w.flush()?;
-        Ok(self.w)
+        let stats = TraceSinkStats {
+            events_written: self.events_written,
+            sink_ns: self.sink_ns,
+            flush_ns: start.elapsed().as_nanos(),
+        };
+        Ok((self.w, stats))
     }
 }
 
@@ -358,11 +396,15 @@ impl<W: Write> Events for JsonlEvents<W> {
         if self.error.is_some() {
             return;
         }
+        let start = Instant::now();
         let mut m = e.to_json();
         m.insert("t_ms".into(), (self.start.elapsed().as_millis() as u64).into());
         if let Err(err) = writeln!(self.w, "{}", Value::Object(m)) {
             self.error = Some(err);
+        } else {
+            self.events_written += 1;
         }
+        self.sink_ns += start.elapsed().as_nanos();
     }
 }
 

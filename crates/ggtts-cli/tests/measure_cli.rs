@@ -135,6 +135,8 @@ MODE = os.path.splitext(os.path.basename(__file__))[0]
 
 def measure(ctx, env):
     env.input(ctx.audio)
+    if MODE == "legacy":
+        env.doc["format"] = "ggtts-report/1"
     if MODE == "broken":
         raise RuntimeError("planted failure")
     if MODE == "tamper":
@@ -154,7 +156,7 @@ struct Instruments {
 
 impl Instruments {
     fn new(dir: &Path, py: String) -> Self {
-        for mode in ["bytes", "broken", "tamper"] {
+        for mode in ["bytes", "broken", "tamper", "legacy"] {
             std::fs::write(dir.join(format!("{mode}.py")), PROGRAM).unwrap();
         }
         Instruments {
@@ -216,6 +218,92 @@ fn measurement_line(report: &Path) -> String {
         .find(|l| l.starts_with("measurement:"))
         .unwrap_or("")
         .to_string()
+}
+
+#[test]
+fn audio_state_is_explicit_and_consistent_in_both_reports() {
+    let Some(py) = python() else { return };
+    let d = scratch("audio-state");
+    let ins = Instruments::new(&d, py);
+    let audio = flac(&d);
+    let bytes_before = std::fs::read(&audio).unwrap();
+    for (flag, expected) in [
+        (None, "unknown"),
+        (Some("raw"), "raw"),
+        (Some("trimmed"), "trimmed"),
+        (Some("unknown"), "unknown"),
+    ] {
+        let report = d.join(format!("report-{}", flag.unwrap_or("default")));
+        let mut args = vec!["--audio", audio.to_str().unwrap(), "--report", report.to_str().unwrap()];
+        if let Some(s) = flag {
+            args.extend(["--audio-state", s]);
+        }
+        let result = measure(&args, &["--instrument".into(), ins.flag("bytes")]);
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        let e = envelope(&report, "bytes");
+        assert_eq!(e["provenance"]["audio"], expected);
+        let merged: Value =
+            serde_json::from_str(&std::fs::read_to_string(report.join("report.json")).unwrap()).unwrap();
+        assert_eq!(merged["instruments"][0]["provenance"]["audio"], expected);
+        assert_eq!(std::fs::read(&audio).unwrap(), bytes_before);
+    }
+    let bad = d.join("bad-state");
+    let result = measure(
+        &[
+            "--audio",
+            audio.to_str().unwrap(),
+            "--report",
+            bad.to_str().unwrap(),
+            "--audio-state",
+            "guessed",
+        ],
+        &["--instrument".into(), ins.flag("bytes")],
+    );
+    assert_eq!(result.status.code(), Some(2));
+    assert!(!bad.exists());
+}
+
+#[test]
+fn render_reports_raw_text_and_trimmed_story() {
+    let Some(py) = python() else { return };
+    let d = scratch("render-audio-state");
+    let ins = Instruments::new(&d, py);
+    let story = d.join("story.txt");
+    std::fs::write(&story, "Title\nA short story.").unwrap();
+    for (flag, input, expected) in [
+        ("--text", "A short story.", "raw"),
+        ("--story", story.to_str().unwrap(), "trimmed"),
+    ] {
+        let report = d.join(expected);
+        let audio = d.join(format!("{expected}.flac"));
+        let result = Command::new(RENDER)
+            .args(["--engine", "fake", flag, input, "--out"])
+            .arg(&audio)
+            .arg("--report")
+            .arg(&report)
+            .args(["--instrument", &ins.flag("bytes")])
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        assert_eq!(envelope(&report, "bytes")["provenance"]["audio"], expected);
+    }
+}
+
+#[test]
+fn legacy_instrument_envelope_is_upgraded_with_caller_state() {
+    let Some(py) = python() else { return };
+    let d = scratch("legacy-audio-state");
+    let ins = Instruments::new(&d, py);
+    let audio = flac(&d);
+    let report = d.join("report");
+    let result = measure(
+        &["--audio", audio.to_str().unwrap(), "--report", report.to_str().unwrap()],
+        &["--instrument".into(), ins.flag("legacy")],
+    );
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let e = envelope(&report, "legacy");
+    assert_eq!(e["format"], "ggtts-report/2");
+    assert_eq!(e["provenance"]["audio"], "unknown");
 }
 
 #[test]
@@ -350,6 +438,8 @@ fn the_same_instrument_reports_the_same_from_both_paths() {
         &[
             "--audio",
             out.to_str().unwrap(),
+            "--audio-state",
+            "raw",
             "--run",
             "seam",
             "--report",

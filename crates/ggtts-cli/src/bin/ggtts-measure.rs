@@ -3,7 +3,7 @@
 //! ```text
 //! ggtts-measure --audio IN.flac [--events E.jsonl] [--render ID] [--run ID] --report DIR
 //!               [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]...
-//!               [--on-instrument-error continue|abort] [--instrument-timeout S]
+//!               [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S]
 //! ```
 //!
 //! The instrument phase of `ggtts-render`, on a file you already have: a render kept from an earlier run, a release
@@ -22,17 +22,21 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use ggtts_core::logging::{Format as LogFormat, Level as LogLevel, Settings as LogSettings};
 use ggtts_instruments::runner::{input_file, EXIT_RENDER_FAILED};
 
 const BINARY: &str = "ggtts-measure";
 const USAGE: &str = "usage: ggtts-measure --audio IN.flac [--events E.jsonl] [--render ID] [--run ID] --report DIR \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
-[--on-instrument-error continue|abort] [--instrument-timeout S]\n\
+[--audio-state raw|trimmed|unknown] \
+[--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] \
+[--log-level error|warn|info|debug|trace] [--log-format text|json]\n\
   --report DIR must not already exist";
 
 #[derive(Default)]
 struct Args {
     audio: Option<PathBuf>,
+    audio_state: Option<ggtts_core::report::AudioState>,
     events: Option<PathBuf>,
     render: Option<String>,
     run: Option<String>,
@@ -51,6 +55,14 @@ fn parse(args: &[String]) -> Result<Args, String> {
         }
         match flag.as_str() {
             "--audio" => a.audio = Some(value()?.into()),
+            "--audio-state" => {
+                a.audio_state = Some(match value()?.as_str() {
+                    "raw" => ggtts_core::report::AudioState::Raw,
+                    "trimmed" => ggtts_core::report::AudioState::Trimmed,
+                    "unknown" => ggtts_core::report::AudioState::Unknown,
+                    _ => return Err("--audio-state must be raw, trimmed or unknown".into()),
+                });
+            }
             "--events" => a.events = Some(value()?.into()),
             "--render" => a.render = Some(value()?),
             "--run" => a.run = Some(value()?),
@@ -88,7 +100,7 @@ fn copy_into(src: &Path, dir: &Path) -> Result<PathBuf, String> {
     Ok(dst)
 }
 
-fn measure(a: Args) -> Result<u8, String> {
+fn measure(a: Args, log: LogSettings) -> Result<u8, String> {
     let audio = a.audio.clone().ok_or("--audio is required")?;
     let report = a.report.clone().ok_or("--report is required")?;
     if !a.instruments.any() {
@@ -142,19 +154,27 @@ fn measure(a: Args) -> Result<u8, String> {
         render,
         report_dir: report.clone(),
         audio: audio_copy,
+        audio_state: a.audio_state.unwrap_or(ggtts_core::report::AudioState::Unknown),
         audio_seconds: flac_seconds(&bytes),
         events: events_copy,
         bin_dir: None,
         instruments_dir: None,
     };
-    let summary = ggtts_instruments::run(&config, &inputs)?;
+    let summary = ggtts_instruments::runner::run_with_logging(&config, &inputs, log)?;
     for e in &summary.envelopes {
         let why = e.error.as_ref().map_or(String::new(), |w| format!(": {w}"));
-        eprintln!(
-            "{BINARY}: instrument {} {}: {}{why}",
-            e.name,
-            e.version,
-            e.status.as_str()
+        let level = match e.status {
+            ggtts_core::report::Status::Ok => LogLevel::Info,
+            ggtts_core::report::Status::Failed
+            | ggtts_core::report::Status::Timeout
+            | ggtts_core::report::Status::Invalid => LogLevel::Error,
+            ggtts_core::report::Status::Skipped | ggtts_core::report::Status::Truncated => LogLevel::Warn,
+        };
+        log.stderr(
+            level,
+            BINARY,
+            "instrument",
+            format_args!("instrument {} {}: {}{why}", e.name, e.version, e.status.as_str()),
         );
     }
     let after: Vec<_> = std::iter::once(&audio)
@@ -164,20 +184,42 @@ fn measure(a: Args) -> Result<u8, String> {
     if before != after {
         return Err("a given file changed during the run, though no instrument was handed it".into());
     }
-    eprintln!(
-        "{BINARY}: instrument report in {}; runner {} ms (budget {} ms)",
-        report.display(),
-        summary.overhead.own_ms,
-        summary.overhead.budget_ms
+    log.stderr(
+        LogLevel::Info,
+        BINARY,
+        "instrument_report",
+        format_args!(
+            "instrument report in {}; runner {} ms (budget {} ms)",
+            report.display(),
+            summary.overhead.own_ms,
+            summary.overhead.budget_ms
+        ),
     );
     if !summary.complete() {
-        eprintln!("{BINARY}: measurement INCOMPLETE: {}", summary.incomplete.join("; "));
+        log.stderr(
+            LogLevel::Error,
+            BINARY,
+            "measurement_incomplete",
+            format_args!("measurement INCOMPLETE: {}", summary.incomplete.join("; ")),
+        );
     }
     Ok(summary.exit_code())
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let (log, args) = match LogSettings::from_args(&raw) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            e.settings.stderr(
+                LogLevel::Error,
+                "error",
+                "logging_config",
+                format_args!("{}", e.message),
+            );
+            return ExitCode::from(EXIT_RENDER_FAILED);
+        }
+    };
     match args.first().map(String::as_str) {
         None | Some("-h") | Some("--help") => {
             println!("{USAGE}");
@@ -189,11 +231,13 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Some(_) => match parse(&args).and_then(measure) {
+        Some(_) => match parse(&args).and_then(|a| measure(a, log)) {
             Ok(code) => ExitCode::from(code),
             Err(e) => {
-                eprintln!("error: {e}");
-                eprintln!("{USAGE}");
+                log.stderr(LogLevel::Error, "error", "command_failed", format_args!("{e}"));
+                if log.format == LogFormat::Text {
+                    eprintln!("{USAGE}");
+                }
                 ExitCode::from(EXIT_RENDER_FAILED)
             }
         },

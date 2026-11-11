@@ -37,12 +37,12 @@
 //! to.
 
 use std::fs::{self, File};
-use std::io::Write;
 use std::panic::{catch_unwind, UnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+use ggtts_core::logging::{Format as LogFormat, Level as LogLevel, Settings as LogSettings};
 use ggtts_core::report::{
     self, AudioState, Envelope, Identity, Input, InputFile, Metric, Provenance, Report, Status, FORMAT,
 };
@@ -75,6 +75,8 @@ pub struct Inputs {
     pub report_dir: PathBuf,
     /// The render's audio.
     pub audio: PathBuf,
+    /// The known trim state of the audio, or Unknown when the caller cannot establish it.
+    pub audio_state: AudioState,
     /// Its length in seconds, for the overhead's real-time factor.
     pub audio_seconds: Option<f64>,
     /// The run's event stream, when it has one.
@@ -167,6 +169,10 @@ pub fn input_file(path: &Path) -> Option<InputFile> {
 /// The entry's effective configuration, defaults included, for the envelope's provenance.
 fn entry_config(config: &Config, entry: &Entry, needs_events: bool) -> Map<String, Value> {
     let mut m = Map::new();
+    m.insert(
+        "requested_device".into(),
+        json!(config.device.as_deref().unwrap_or("cpu")),
+    );
     m.insert("timeout_s".into(), json!(config.timeout_for(entry)));
     m.insert("needs_events".into(), json!(needs_events));
     if let Some(c) = &entry.command {
@@ -182,11 +188,28 @@ fn entry_config(config: &Config, entry: &Entry, needs_events: bool) -> Map<Strin
 
 /// Run every configured instrument in order, then merge. `Err` only when the report itself cannot be written.
 pub fn run(config: &Config, inputs: &Inputs) -> Result<RunSummary, String> {
+    run_with_logging(config, inputs, LogSettings::default())
+}
+
+/// Run with explicit log settings; child-process logs remain separate, unmodified files.
+pub fn run_with_logging(config: &Config, inputs: &Inputs, log: LogSettings) -> Result<RunSummary, String> {
     let t_run = Instant::now();
     let report_dir = &inputs.report_dir;
     fs::create_dir_all(report_dir).map_err(|e| format!("{}: {e}", report_dir.display()))?;
     let run_log_path = report_dir.join("run.log");
-    let mut run_log = File::create(&run_log_path).map_err(|e| format!("{}: {e}", run_log_path.display()))?;
+    let run_log_file = File::create(&run_log_path).map_err(|e| format!("{}: {e}", run_log_path.display()))?;
+    let run_log = ggtts_core::logging::LogSink::new(log, run_log_file);
+    macro_rules! record {
+        ($level:expr, $event:expr, $($args:tt)*) => {{
+            if log.enabled($level) {
+                let component = if log.format == LogFormat::Text { "" } else { "instrument-runner" };
+                run_log.emit($level, component, $event, format_args!($($args)*), serde_json::Value::Null);
+                if run_log.failures() != 0 {
+                    return Err(format!("{}: unable to write instrument run log", run_log_path.display()));
+                }
+            }
+        }};
+    }
     let bin_dir = match &inputs.bin_dir {
         Some(d) => d.clone(),
         None => std::env::current_exe()
@@ -198,8 +221,9 @@ pub fn run(config: &Config, inputs: &Inputs) -> Result<RunSummary, String> {
         OnError::Continue => "continue",
         OnError::Abort => "abort",
     };
-    let _ = writeln!(
-        run_log,
+    record!(
+        LogLevel::Info,
+        "start",
         "ggtts instruments {}: run {}, render {}, {} instrument(s), on_error {on_error}, require [{}], audio {}, \
          events {}",
         env!("CARGO_PKG_VERSION"),
@@ -281,7 +305,7 @@ pub fn run(config: &Config, inputs: &Inputs) -> Result<RunSummary, String> {
             log: Some(log_rel.clone()),
             error: Some(why),
         };
-        let (env, exit, ms) = if aborted {
+        let (mut env, exit, ms) = if aborted {
             let why = "skipped: an earlier instrument failed and on_error is abort".to_string();
             (made(Status::Skipped, why), "not started".to_string(), 0)
         } else if let (true, Some((status, problem))) = (needs_events, &events_problem) {
@@ -290,6 +314,12 @@ pub fn run(config: &Config, inputs: &Inputs) -> Result<RunSummary, String> {
         } else {
             one(config, entry, inputs, &bin_dir, &dir, &log_rel, &made)
         };
+        // The caller owns the input and its provenance; do not let an instrument invent its trim state.
+        // Event-only instruments retain n/a. The merged report contains v2 envelopes, including accepted v1 inputs.
+        env.format = FORMAT.into();
+        if env.provenance.audio != AudioState::NotApplicable || env.hooks.iter().any(|h| h == "artifact.audio") {
+            env.provenance.audio = inputs.audio_state;
+        }
         instruments_ms += ms;
         let _ = fs::create_dir_all(&dir);
         let env_path = dir.join("envelope.json");
@@ -299,8 +329,14 @@ pub fn run(config: &Config, inputs: &Inputs) -> Result<RunSummary, String> {
             source: format!("instruments/{}/envelope.json", entry.name),
             text,
         });
-        let _ = writeln!(
-            run_log,
+        let level = match env.status {
+            Status::Ok => LogLevel::Info,
+            Status::Failed | Status::Timeout | Status::Invalid => LogLevel::Error,
+            Status::Skipped | Status::Truncated => LogLevel::Warn,
+        };
+        record!(
+            level,
+            "instrument",
             "instrument {} {}: {} ({exit}, {ms} ms){}",
             env.name,
             env.version,
@@ -350,8 +386,9 @@ pub fn run(config: &Config, inputs: &Inputs) -> Result<RunSummary, String> {
         overhead,
     };
     let count = |s: Status| summary.envelopes.iter().filter(|e| e.status == s).count();
-    let _ = writeln!(
-        run_log,
+    record!(
+        LogLevel::Info,
+        "done",
         "done: {} ok, {} failed, timed out or invalid, {} skipped, {} truncated{}",
         count(Status::Ok),
         summary.failures(),
@@ -360,8 +397,9 @@ pub fn run(config: &Config, inputs: &Inputs) -> Result<RunSummary, String> {
         if summary.aborted { "; aborted" } else { "" }
     );
     let within = |ok: bool| if ok { "within" } else { "OVER" };
-    let _ = writeln!(
-        run_log,
+    record!(
+        LogLevel::Info,
+        "overhead",
         "overhead: time to first audio +0 ms (instruments start after the audio is written); instrument phase {} ms \
          = instruments {} ms + runner {} ms (budget {} ms: {})",
         overhead.total_ms,
@@ -373,8 +411,9 @@ pub fn run(config: &Config, inputs: &Inputs) -> Result<RunSummary, String> {
     if let Some(s) = inputs.audio_seconds.filter(|s| *s > 0.0) {
         let rtf = overhead.total_ms as f64 / 1000.0 / s;
         let own = overhead.own_ms as f64 / 1000.0 / s;
-        let _ = writeln!(
-            run_log,
+        record!(
+            LogLevel::Info,
+            "overhead_rtf",
             "overhead: RTF added {rtf:.4} over {s:.2} s of audio, runner's own share {own:.4} (budget {BUDGET_RTF} on \
              30 s or more: {})",
             if s >= 30.0 {
@@ -385,9 +424,14 @@ pub fn run(config: &Config, inputs: &Inputs) -> Result<RunSummary, String> {
         );
     }
     if summary.complete() {
-        let _ = writeln!(run_log, "measurement: complete");
+        record!(LogLevel::Info, "measurement_complete", "measurement: complete");
     } else {
-        let _ = writeln!(run_log, "measurement: INCOMPLETE: {}", summary.incomplete.join("; "));
+        record!(
+            LogLevel::Error,
+            "measurement_incomplete",
+            "measurement: INCOMPLETE: {}",
+            summary.incomplete.join("; ")
+        );
     }
     Ok(summary)
 }
@@ -450,6 +494,9 @@ fn one(
         }
         None => Command::new(&program),
     };
+    // A generic hint for every instrument; it is not a claim that an instrument used a GPU.
+    // Device-aware instruments report their actual device and may support an explicit override.
+    cmd.env("GGTTS_INSTRUMENT_DEVICE", config.device.as_deref().unwrap_or("cpu"));
     cmd.arg("--run").arg(&inputs.run).arg("--render").arg(&inputs.render);
     if let Some(ev) = &inputs.events {
         cmd.arg("--events").arg(ev);

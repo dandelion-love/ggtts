@@ -1,4 +1,4 @@
-"""Read a `ggtts-trace/1` event stream: one JSON object per line, the header first, `end` last.
+"""Read a `ggtts-trace/2` or previous v1 stream: one JSON object per line, the header first, `end` last.
 
 `read_trace` reads a whole recorded trace. `iter_events` yields events as they arrive, from a pipe or a file being
 written. Both refuse what is not a trace: a line that is not an object, an event without `ev` or `t_ms`, a first line
@@ -9,9 +9,9 @@ that is not the header, or a format this reader does not know. A stream that sto
 import json
 import sys
 
-FORMAT = "ggtts-trace/1"
+FORMAT = "ggtts-trace/2"
 # The formats this reader accepts: the current one first, then at most the one before it.
-READS = (FORMAT,)
+READS = (FORMAT, "ggtts-trace/1")
 
 
 class TraceError(ValueError):

@@ -1,7 +1,7 @@
 """ggtts_instrument: write a ggtts event instrument in Python.
 
 An event instrument is a separate program that the runner starts after a render. It reads the render's event
-stream (`ggtts-trace/1`) and its audio, and writes one envelope (`ggtts-report/1`). This package needs only the
+stream (`ggtts-trace/2` or `/1`) and its audio, and writes one envelope (`ggtts-report/2`). This package needs only the
 standard library:
 
 - `events`: read a trace from a file, or live from a pipe;
@@ -15,6 +15,7 @@ carries.
 
 from .audio import Audio, AudioError, read_audio
 from .cli import Context, parse_args, run
+from .device import select_device, verify_model_device
 from .envelope import Envelope, EnvelopeError, check
 from .events import Trace, TraceError, iter_events, read_trace
 
@@ -34,4 +35,6 @@ __all__ = [
     "read_audio",
     "read_trace",
     "run",
+    "select_device",
+    "verify_model_device",
 ]

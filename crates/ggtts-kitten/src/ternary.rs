@@ -359,6 +359,14 @@ impl Layout {
             _ => None,
         }
     }
+    /// The ggml type the layout's matrices are stored as.
+    pub fn ggml_type(self) -> crate::gguf::GgmlType {
+        match self {
+            Layout::Tq1 => crate::gguf::GgmlType::TQ1_0,
+            Layout::Tq2Pad => crate::gguf::GgmlType::TQ2_0,
+            Layout::Q4 => crate::gguf::GgmlType::Q4_0,
+        }
+    }
     /// The stored row length (`ne[0]`) for `cols` weights.
     pub fn stored_cols(self, cols: usize) -> usize {
         match self {

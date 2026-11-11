@@ -7,7 +7,7 @@
 //!
 //! For padded `TQ2_0` (see [`crate::ternary`]), every activation entering a ternary matrix is padded the same way:
 //! `[n, T]` viewed as `[128, n / 128, T]`, padded to `[256, n / 128, T]` with zeros. `TQ1_0` uses unpadded groups
-//! of 256 weights and is experimental and CPU-only. With
+//! of 256 weights and is experimental: packed on the CPU, expanded to checked f16 on CUDA (see [`held`]). With
 //! [`Weights::F32`] the matrices are dequantized to f32 at load instead, which isolates the graph from the
 //! arithmetic for the parity check.
 //!
@@ -260,15 +260,90 @@ mod tq1_shape_tests {
     }
 }
 
+/// How `Model::load` holds one stored tensor at run time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Held {
+    /// The stored bytes, through ggml's kernels for that type.
+    Stored,
+    /// Dequantized to f16, every row checked for a bit-exact round trip: the ternary matrices on CUDA.
+    ExactF16,
+    /// Dequantized (or widened) to f32.
+    F32,
+}
+
+fn is_ternary(ty: GgmlType) -> bool {
+    matches!(ty, GgmlType::TQ1_0 | GgmlType::TQ2_0 | GgmlType::Q4_0)
+}
+
+/// The representation a tensor stored as `ty` is given for a weights mode and a device. The ternary matrices
+/// (`TQ1_0`, `TQ2_0`, `Q4_0`) keep their packed form on the CPU and become exact f16 on CUDA, in both ternary
+/// modes; [`Weights::F32`] dequantizes them on either device.
+pub fn held(ty: GgmlType, weights: Weights, device: Device) -> Result<Held, String> {
+    Ok(match (ty, weights) {
+        (GgmlType::TQ1_0 | GgmlType::TQ2_0 | GgmlType::Q4_0, Weights::F32) => Held::F32,
+        (GgmlType::TQ1_0 | GgmlType::TQ2_0 | GgmlType::Q4_0, _) if device == Device::Cuda => Held::ExactF16,
+        (GgmlType::TQ1_0 | GgmlType::TQ2_0 | GgmlType::Q4_0, _) => Held::Stored,
+        (GgmlType::BF16, Weights::Ternary) => Held::Stored,
+        (GgmlType::BF16, Weights::F32 | Weights::TernaryF32Head) => Held::F32,
+        (GgmlType::F32, _) => Held::Stored,
+        (ty, _) => return Err(format!("unexpected type {ty:?}")),
+    })
+}
+
+/// `[cols, rows]` of the run-time tensor for a stored matrix of `dims`: the stored dimensions when it is kept as
+/// stored, and the weights' own otherwise (padded `TQ2_0` stores each row at twice its length).
+pub fn held_dims(ty: GgmlType, held: Held, dims: [u64; 2]) -> [usize; 2] {
+    let stored = [dims[0] as usize, dims[1] as usize];
+    match (ty, held) {
+        (GgmlType::TQ2_0, Held::ExactF16 | Held::F32) => [stored[0] / 2, stored[1]],
+        _ => stored,
+    }
+}
+
+/// One dequantized row as f16 in `half`, or the first column whose value does not read back bit-identical (with
+/// the value and what was read back). `back` is scratch of the same length.
+fn exact_f16_row(row: &[f32], half: &mut [g::ggml_fp16_t], back: &mut [f32]) -> Result<(), (usize, f32, f32)> {
+    unsafe {
+        g::ggml_fp32_to_fp16_row(row.as_ptr(), half.as_mut_ptr(), row.len() as i64);
+        g::ggml_fp16_to_fp32_row(half.as_ptr(), back.as_mut_ptr(), row.len() as i64);
+    }
+    match (0..row.len()).find(|&c| back[c].to_bits() != row[c].to_bits()) {
+        Some(c) => Err((c, row[c], back[c])),
+        None => Ok(()),
+    }
+}
+
+/// A stored ternary matrix of `rows` rows of `cols` weights as little-endian f16, row by row. Every weight is a
+/// trit times an fp16 block scale, so f16 holds it exactly; the round trip proves it per row, and a value that
+/// does not survive is refused rather than rounded.
+pub fn ternary_as_f16(layout: Layout, name: &str, data: &[u8], cols: usize, rows: usize) -> Result<Vec<u8>, String> {
+    let rb = layout.row_bytes(cols);
+    if rb == 0 || rows.checked_mul(rb) != Some(data.len()) {
+        return Err(format!(
+            "{name}: {} bytes are not {rows} rows of {cols} weights",
+            data.len()
+        ));
+    }
+    let mut half = vec![0 as g::ggml_fp16_t; cols];
+    let mut back = vec![0f32; cols];
+    let mut bytes = Vec::with_capacity(cols * rows * 2);
+    for (r, packed) in data.chunks_exact(rb).enumerate() {
+        let row = layout
+            .dequantize_row(packed, cols)
+            .map_err(|e| format!("{name} row {r}: {e}"))?;
+        exact_f16_row(&row, &mut half, &mut back)
+            .map_err(|(c, v, b)| format!("{name} row {r} column {c}: {v} has no exact f16 (read back {b})"))?;
+        bytes.extend(half.iter().flat_map(|h| h.to_le_bytes()));
+    }
+    Ok(bytes)
+}
+
 impl Model {
     pub fn load(gguf: &Gguf, weights: Weights, be: Rc<Backend>) -> Result<Model, String> {
         if gguf.str("general.architecture")? != ARCH {
             return Err("not a ggtts Kitten-TTS 2 GGUF".into());
         }
         let layout = Layout::parse(gguf.str("kitten.ternary.layout")?).ok_or("unknown ternary layout")?;
-        if layout == Layout::Tq1 && be.device != Device::Cpu {
-            return Err("experimental TQ1_0 is currently supported only on CPU".into());
-        }
         let u = |k: &str| gguf.u32(&format!("kitten.{k}")).map(|v| v as usize);
         let hp = Hparams {
             n_layer: u("block_count")?,
@@ -312,53 +387,31 @@ impl Model {
             spk_ln_w: Vec::new(),
             spk_ln_b: Vec::new(),
             meta: gguf.kv.clone(),
-            ternary_f16: be.device == Device::Cuda && weights != Weights::F32,
+            ternary_f16: held(layout.ggml_type(), weights, be.device)? == Held::ExactF16,
         };
-        let ternary_f16 = model.ternary_f16;
         // Tensors first, in a no-alloc context; then one device buffer; then the bytes.
         let pending: RefCell<Vec<(*mut g::ggml_tensor, Vec<u8>)>> = RefCell::new(Vec::new());
         let load = |name: &str| -> Result<*mut g::ggml_tensor, String> {
             let (t, data) = gguf.tensor(name)?;
-            if matches!(t.ty, GgmlType::TQ1_0 | GgmlType::TQ2_0 | GgmlType::Q4_0) {
+            if is_ternary(t.ty) {
                 if t.dims.len() != 2 {
                     return Err(format!("{name}: quantized tensor must be a matrix"));
                 }
-                let expected = match layout {
-                    Layout::Tq1 => GgmlType::TQ1_0,
-                    Layout::Tq2Pad => GgmlType::TQ2_0,
-                    Layout::Q4 => GgmlType::Q4_0,
-                };
-                if t.ty != expected {
+                if t.ty != layout.ggml_type() {
                     return Err(format!("{name}: tensor type does not match declared layout"));
                 }
             }
             let cname = CString::new(name).unwrap();
             unsafe {
+                let how = held(t.ty, weights, be.device).map_err(|e| format!("{name}: {e}"))?;
                 let out = match (t.ty, weights) {
-                    // On CUDA the ternary matrices are held as f16 (see `ternary_f16`). Every weight is a trit times
-                    // an fp16 block scale, so f16 holds it exactly; the round trip below proves it per row and
-                    // refuses otherwise rather than rounding.
-                    (GgmlType::TQ2_0 | GgmlType::Q4_0, Weights::Ternary | Weights::TernaryF32Head) if ternary_f16 => {
-                        let cols = t.dims[0] as usize / if t.ty == GgmlType::TQ2_0 { 2 } else { 1 };
-                        let rows = t.dims[1] as usize;
+                    // On CUDA the ternary matrices are held as f16 (see `ternary_f16` and `ternary_as_f16`).
+                    (GgmlType::TQ1_0 | GgmlType::TQ2_0 | GgmlType::Q4_0, _) if how == Held::ExactF16 => {
+                        let [cols, rows] = held_dims(t.ty, how, [t.dims[0], t.dims[1]]);
                         let x = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_F16, cols as i64, rows as i64);
-                        let rb = layout.row_bytes(cols);
-                        let mut half = vec![0 as g::ggml_fp16_t; cols];
-                        let mut back = vec![0f32; cols];
-                        let mut bytes = Vec::with_capacity(cols * rows * 2);
-                        for r in 0..rows {
-                            let row = layout.dequantize_row(&data[r * rb..(r + 1) * rb], cols)?;
-                            g::ggml_fp32_to_fp16_row(row.as_ptr(), half.as_mut_ptr(), cols as i64);
-                            g::ggml_fp16_to_fp32_row(half.as_ptr(), back.as_mut_ptr(), cols as i64);
-                            if let Some(c) = (0..cols).find(|&c| back[c].to_bits() != row[c].to_bits()) {
-                                return Err(format!(
-                                    "{name} row {r} column {c}: {} has no exact f16 (read back {})",
-                                    row[c], back[c]
-                                ));
-                            }
-                            bytes.extend(half.iter().flat_map(|h| h.to_le_bytes()));
-                        }
-                        pending.borrow_mut().push((x, bytes));
+                        pending
+                            .borrow_mut()
+                            .push((x, ternary_as_f16(layout, name, data, cols, rows)?));
                         x
                     }
                     (GgmlType::TQ1_0, Weights::Ternary | Weights::TernaryF32Head) => {
@@ -377,8 +430,7 @@ impl Model {
                         x
                     }
                     (GgmlType::TQ1_0 | GgmlType::TQ2_0 | GgmlType::Q4_0, Weights::F32) => {
-                        let cols = t.dims[0] as usize / if t.ty == GgmlType::TQ2_0 { 2 } else { 1 };
-                        let rows = t.dims[1] as usize;
+                        let [cols, rows] = held_dims(t.ty, how, [t.dims[0], t.dims[1]]);
                         let x = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_F32, cols as i64, rows as i64);
                         let mut dst = vec![0f32; cols * rows];
                         let rb = layout.row_bytes(cols);
@@ -867,5 +919,112 @@ impl<'m> Session<'m> {
                 format!("{at}; run again with every layer read back, it came out finite, so no layer is named")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod held_tests {
+    use super::*;
+    use crate::safetensors::f16_to_f32;
+    use crate::ternary::TQ1_0_BLOCK_BYTES;
+
+    /// The synthetic TQ1 reference as one matrix: 32 rows of 512 weights (two blocks a row), with ggml's own
+    /// dequantization of every weight.
+    fn tq1_matrix() -> (Vec<u8>, Vec<f32>) {
+        let fixture = include_bytes!("../tests/fixtures/tq1-reference.bin");
+        let (mut packed, mut reference) = (Vec::new(), Vec::new());
+        for sample in fixture.chunks_exact(TQ1_0_BLOCK_BYTES + 1024) {
+            let (bytes, values) = sample.split_at(TQ1_0_BLOCK_BYTES);
+            packed.extend_from_slice(bytes);
+            reference.extend(
+                values
+                    .chunks_exact(4)
+                    .map(|v| f32::from_le_bytes([v[0], v[1], v[2], v[3]])),
+            );
+        }
+        (packed, reference)
+    }
+
+    #[test]
+    fn representation_is_selected_per_device_and_weights_mode() {
+        use Device::{Cpu, Cuda};
+        use Weights::{Ternary, TernaryF32Head, F32};
+        for ty in [GgmlType::TQ1_0, GgmlType::TQ2_0, GgmlType::Q4_0] {
+            for w in [Ternary, TernaryF32Head] {
+                assert_eq!(
+                    held(ty, w, Cpu),
+                    Ok(Held::Stored),
+                    "{ty:?} {w:?} on the CPU stays packed"
+                );
+                assert_eq!(
+                    held(ty, w, Cuda),
+                    Ok(Held::ExactF16),
+                    "{ty:?} {w:?} on CUDA is exact f16"
+                );
+            }
+            for d in [Cpu, Cuda] {
+                assert_eq!(held(ty, F32, d), Ok(Held::F32), "{ty:?} with f32 weights on {d:?}");
+            }
+        }
+        for d in [Cpu, Cuda] {
+            assert_eq!(held(GgmlType::BF16, Ternary, d), Ok(Held::Stored));
+            assert_eq!(held(GgmlType::BF16, F32, d), Ok(Held::F32));
+            assert_eq!(held(GgmlType::BF16, TernaryF32Head, d), Ok(Held::F32));
+            for w in [Ternary, TernaryF32Head, F32] {
+                assert_eq!(held(GgmlType::F32, w, d), Ok(Held::Stored));
+                assert!(held(GgmlType::F16, w, d).is_err(), "no stored f16 tensor is expected");
+            }
+        }
+    }
+
+    #[test]
+    fn held_dimensions_follow_the_representation() {
+        // TQ1 and Q4 store a row at its own length; padded TQ2 stores it at twice that.
+        for h in [Held::Stored, Held::ExactF16, Held::F32] {
+            assert_eq!(held_dims(GgmlType::TQ1_0, h, [512, 32]), [512, 32]);
+            assert_eq!(held_dims(GgmlType::Q4_0, h, [512, 32]), [512, 32]);
+        }
+        assert_eq!(held_dims(GgmlType::TQ2_0, Held::Stored, [512, 32]), [512, 32]);
+        assert_eq!(held_dims(GgmlType::TQ2_0, Held::ExactF16, [512, 32]), [256, 32]);
+        assert_eq!(held_dims(GgmlType::TQ2_0, Held::F32, [512, 32]), [256, 32]);
+    }
+
+    #[test]
+    fn a_tq1_matrix_becomes_exact_f16_of_its_own_dimensions() {
+        let (packed, reference) = tq1_matrix();
+        let [cols, rows] = held_dims(GgmlType::TQ1_0, Held::ExactF16, [512, 32]);
+        let bytes = ternary_as_f16(Layout::Tq1, "m", &packed, cols, rows).unwrap();
+        assert_eq!(bytes.len(), cols * rows * 2);
+        assert_eq!(reference.len(), cols * rows);
+        let mut nonzero = 0;
+        for (i, (h, want)) in bytes.chunks_exact(2).zip(&reference).enumerate() {
+            let got = f16_to_f32(u16::from_le_bytes([h[0], h[1]]));
+            assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "weight {i}: f16 {got} against ggml's {want}"
+            );
+            nonzero += usize::from(*want != 0.0);
+        }
+        assert!(nonzero > cols * rows / 4, "the fixture must not be mostly zeros");
+        // The same bytes read as another shape are refused, not reinterpreted.
+        assert!(ternary_as_f16(Layout::Tq1, "m", &packed, 512, 31).is_err());
+        assert!(ternary_as_f16(Layout::Tq1, "m", &packed, 384, 32).is_err());
+        assert!(ternary_as_f16(Layout::Tq1, "m", &packed[..packed.len() - 1], 512, 32).is_err());
+    }
+
+    #[test]
+    fn malformed_tq1_blocks_and_inexact_values_are_refused() {
+        let (mut packed, _) = tq1_matrix();
+        // An infinite scale in the second block of row 3.
+        let at = (3 * 2 + 1) * TQ1_0_BLOCK_BYTES + 52;
+        packed[at..at + 2].copy_from_slice(&0x7c00u16.to_le_bytes());
+        let e = ternary_as_f16(Layout::Tq1, "m", &packed, 512, 32).unwrap_err();
+        assert!(e.contains("m row 3") && e.contains("invalid TQ1 scale"), "{e}");
+        // The round trip itself: a value f16 cannot hold is refused with its column, an f16 value is not.
+        let (mut half, mut back) = (vec![0; 4], vec![0f32; 4]);
+        assert_eq!(exact_f16_row(&[0.5, -0.75, 0.0, 1.5], &mut half, &mut back), Ok(()));
+        let r = exact_f16_row(&[0.5, -0.75, 0.1, 1.5], &mut half, &mut back);
+        assert!(matches!(r, Err((2, v, b)) if v == 0.1 && b != 0.1), "{r:?}");
     }
 }

@@ -215,8 +215,8 @@ cargo run -p ggtts-cli --bin ggtts-render -- --version
 ```
 
 `rust-toolchain.toml` pins the Rust toolchain. CI runs `cargo fmt`, `clippy -D warnings`, the tests on Linux and
-Windows, and a planted change (the story chunk ceiling set to 44 must turn the pipeline cases red). PR CI does not
-build the CUDA archive; the mandatory promotion gate exercises CUDA on a real GPU. A tag `v*` builds release archives named with the ggml pin, each
+Windows, and a planted change (the story chunk ceiling set to 44 must turn the pipeline cases red). Ordinary PRs do not
+build the CUDA archive; the promotion PR into `main` builds and smokes it without a GPU, and the mandatory promotion gate exercises CUDA on a real GPU. A tag `v*` builds release archives named with the ggml pin, each
 with a `BUILDINFO.json` and a build provenance attestation (`gh attestation verify <file> -R dandelion-love/ggtts`).
 
 The `x86_64` CPU release archives require AVX2, FMA, F16C and BMI2 CPU support, plus operating-system support for AVX state. They do not require AVX-512. Other x86-64 CPUs are not covered by this release baseline.

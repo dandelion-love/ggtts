@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 from io import StringIO
 
+from select_specialized_ci import cuda_decision, cuda_drift, cuda_push_path, pushed_paths
 from select_specialized_ci import JOBS, LOGGING_PACKAGES, decide, logging_lockfile_change, main, tomllib, workflow_changes, workflow_sections
 
 
@@ -34,14 +35,59 @@ def logging_fixtures():
 
 
 class SelectionTest(unittest.TestCase):
-    def test_no_hosted_cuda_job_and_release_still_builds_cuda(self):
+    def test_cuda_compile_runs_on_promotion_and_build_affecting_rc_pushes_only(self):
+        # Every pull request into main, whatever it changes; no pull request into any other branch.
+        self.assertTrue(cuda_decision("pull_request", "main", "refs/pull/1/merge", []))
+        for base in ("rc", "feature", ""):
+            self.assertFalse(cuda_decision("pull_request", base, "refs/pull/1/merge",
+                                           ["Cargo.lock", ".github/workflows/ci.yml", "crates/ggtts-ggml-sys/build.rs"]))
+        # A push to rc, only for a path that can break the CUDA build.
+        for path in ("Cargo.lock", "crates/ggtts-ggml-sys/ggml", ".gitmodules", ".github/workflows/ci.yml",
+                     ".github/workflows/release.yml", "crates/ggtts-ggml-sys/build.rs", "crates/ggtts-core/build.rs"):
+            self.assertTrue(cuda_push_path(path), path)
+            self.assertTrue(cuda_decision("push", "", "refs/heads/rc", ["README.md", path]), path)
+            self.assertFalse(cuda_decision("push", "", "refs/heads/main", [path]), path)
+            self.assertFalse(cuda_decision("push", "", "refs/heads/feature", [path]), path)
+        for path in ("README.md", "crates/ggtts-core/src/lib.rs", "scripts/build.rs", "crates/ggtts-cli/Cargo.toml",
+                     "crates/ggtts-ggml-sys/ggml-notes.md", "docs/build.rs.md"):
+            self.assertFalse(cuda_push_path(path), path)
+            self.assertFalse(cuda_decision("push", "", "refs/heads/rc", [path]), path)
+        self.assertFalse(cuda_decision("push", "", "refs/heads/rc", []))
+        # An unreadable pushed range runs the compile; it is never read as "nothing changed".
+        self.assertTrue(cuda_decision("push", "", "refs/heads/rc", None))
+        self.assertIsNone(pushed_paths("0" * 40, "a" * 40))
+        self.assertIsNone(pushed_paths("", "a" * 40))
+        self.assertIsNone(pushed_paths("not-a-commit", "HEAD"))
+        self.assertFalse(cuda_decision("workflow_dispatch", "main", "refs/heads/rc", ["Cargo.lock"]))
+
+    def test_cuda_compile_cannot_drift_from_the_release_cuda_build(self):
+        root = Path(__file__).resolve().parent.parent
+        ci = (root / '.github/workflows/ci.yml').read_text()
+        release = (root / '.github/workflows/release.yml').read_text()
+        self.assertEqual(cuda_drift(ci, release), [])
+        block = workflow_sections(ci)[1]['cuda-compile']
+        self.assertIn("needs.specialized-selection.outputs.cuda == 'true'", block)
+        self.assertIn("--check-cuda-drift", block)
+        # Planted drift in each compared part must be reported.
+        self.assertIn("nvidia/cuda:12.6.3-devel-ubuntu22.04@sha256:", release)
+        planted = release.replace("nvidia/cuda:12.6.3-devel-ubuntu22.04@sha256:", "nvidia/cuda:12.9.9-devel-ubuntu22.04@sha256:")
+        self.assertTrue(any(d.startswith("image:") for d in cuda_drift(ci, planted)))
+        planted = release.replace("run: bash scripts/package_cuda_release.sh", "run: bash scripts/package_cuda_release.sh --fast")
+        self.assertTrue(any(d.startswith("command:") for d in cuda_drift(ci, planted)))
+        planted = release.replace("cmake g++ make python3", "cmake g++ make ninja-build python3")
+        self.assertNotEqual(planted, release)
+        self.assertTrue(any(d.startswith("tools:") for d in cuda_drift(ci, planted)))
+        self.assertEqual(cuda_drift(ci.replace("  cuda-compile:\n", "  cuda-other:\n"), release),
+                         ["ci.yml has no cuda-compile job"])
+
+    def test_cuda_is_not_a_selected_job_and_release_still_builds_cuda(self):
         promotion = decide("pull_request", "main", "rc", True, ["Cargo.lock"])
         self.assertEqual(promotion, set(JOBS))
         self.assertNotIn("cuda", promotion)
         root = Path(__file__).resolve().parent.parent
         ci_jobs = workflow_sections((root / '.github/workflows/ci.yml').read_text())[1]
         release_jobs = workflow_sections((root / '.github/workflows/release.yml').read_text())[1]
-        self.assertNotIn('cuda-compile', ci_jobs)
+        self.assertIn('cuda-compile', ci_jobs)
         self.assertIn('cuda-build', release_jobs)
         self.assertIn('scripts/package_cuda_release.sh', release_jobs['cuda-build'])
         gate = (root / 'scripts/rc_gate.py').read_text()
@@ -59,7 +105,7 @@ class SelectionTest(unittest.TestCase):
 
     def test_release_cuda_checkout_has_git_and_initializes_submodule(self):
         root = Path(__file__).resolve().parent.parent
-        for file, job in (("release.yml", "cuda-build"),):
+        for file, job in (("ci.yml", "cuda-compile"), ("release.yml", "cuda-build")):
             text = (root / ".github" / "workflows" / file).read_text()
             block = workflow_sections(text)[1][job]
             install = block.index("apt-get install")
@@ -269,7 +315,8 @@ class SelectionTest(unittest.TestCase):
                        BASE_SHA=base, HEAD_SHA=head, REPOSITORY="x/y", HEAD_REPO="x/y")
             result = subprocess.run([sys.executable, str(script)], cwd=d, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.count("=false"), len(JOBS))
+            self.assertEqual(result.stdout.count("=false"), len(JOBS) + 1)
+            self.assertIn("cuda=false", result.stdout)
             (Path(d) / "scripts").mkdir()
             (Path(d) / "scripts" / "android_build.sh").write_text("build")
             git("add", ".")
@@ -300,8 +347,24 @@ class SelectionTest(unittest.TestCase):
             env.update(BASE_REF="main", HEAD_REF="rc")
             result = subprocess.run([sys.executable, str(script)], cwd=d, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.count("=true"), len(JOBS))
-            self.assertNotIn("cuda=", result.stdout)
+            self.assertEqual(result.stdout.count("=true"), len(JOBS) + 1)
+            self.assertIn("cuda=true", result.stdout)
+            # A push to rc: the compile is selected by the pushed range, and nothing else is.
+            push = dict(os.environ, EVENT="push", REF="refs/heads/rc", PUSH_BEFORE=base, PUSH_AFTER=head)
+            result = subprocess.run([sys.executable, str(script)], cwd=d, env=push, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.count("=true"), 0)
+            self.assertIn("cuda=false", result.stdout)
+            push["PUSH_AFTER"] = git("rev-parse", "HEAD")
+            result = subprocess.run([sys.executable, str(script)], cwd=d, env=push, capture_output=True, text=True)
+            self.assertEqual(result.stdout.strip().splitlines()[-1], "cuda=true")
+            self.assertEqual(result.stdout.count("=true"), 1)
+            push["REF"] = "refs/heads/main"
+            result = subprocess.run([sys.executable, str(script)], cwd=d, env=push, capture_output=True, text=True)
+            self.assertIn("cuda=false", result.stdout)
+            push.update(REF="refs/heads/rc", PUSH_BEFORE="0" * 40)
+            result = subprocess.run([sys.executable, str(script)], cwd=d, env=push, capture_output=True, text=True)
+            self.assertIn("cuda=true", result.stdout)
 
 
 # CI invokes this suite explicitly; include the logging probe launch test.

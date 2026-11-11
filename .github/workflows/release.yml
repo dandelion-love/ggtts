@@ -113,6 +113,8 @@ jobs:
 
   cuda-build:
     name: build (x86_64-linux-cuda)
+    # CI's cuda-compile job builds with this image, these tools and this command on the promotion pull request;
+    # its first step refuses a difference (scripts/select_specialized_ci.py --check-cuda-drift).
     runs-on: ubuntu-latest
     timeout-minutes: 90
     container:

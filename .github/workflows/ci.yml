@@ -707,7 +707,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Ubuntu 22.04: the runner that has a Python 3.9 build, and the release archives' build host.
+          - os: ubuntu-22.04
             python: "3.9"
             engines: ",ggml"
           - os: windows-latest

@@ -244,6 +244,9 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
             selected.add("package")
         if path == "scripts/buildinfo_engines.sh":
             selected.update(("ggml", "release"))
+        if path == "scripts/check_glibc_floor.py":
+            # The release build runs it on the real binaries; its tests run in the selection job on every run.
+            selected.add("release")
         if path in (".github/workflows/release.yml", "scripts/package_cuda_release.sh"):
             selected.update(("package", "release"))
     return selected

@@ -98,6 +98,7 @@ fn setup_with(tag: &str, paragraphs: &[String]) -> (PathBuf, Inputs) {
         events: Some(events),
         bin_dir: Path::new(SELFTEST).parent().map(Path::to_path_buf),
         instruments_dir: Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments")),
+        models: None,
     };
     (dir, inputs)
 }
@@ -642,6 +643,7 @@ fn missing_reference_and_output_respect_requirement_and_on_error() {
         events: None,
         bin_dir: None,
         instruments_dir: Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../instruments")),
+        models: None,
     };
     let mut missing = Config::default();
     missing

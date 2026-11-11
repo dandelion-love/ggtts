@@ -5,8 +5,8 @@
 //!   its sha256 and its licence. "Latest" means the newest release this build knows about; a newer release needs a
 //!   new table, never a moving branch.
 //! * **A given path wins.** [`resolve`] uses a file named on the command line as it is: it is never downloaded over
-//!   and never compared with the table, so an unreleased model can be rendered. Its sha256 is computed only when a
-//!   report records it ([`ModelFile::report`]).
+//!   and never compared with the table, so an unreleased model can be rendered. Its sha256 is computed once per run
+//!   for the record ([`ModelFile::ensure_sha256`]), never compared with anything.
 //! * **The cache** ([`Cache`]) holds each file at `models/<sha256>/<file name>` under one root, the platform's
 //!   per-user cache directory or `GGTTS_CACHE_DIR`. A download goes to a temporary name in the same directory, is
 //!   hashed as it arrives, and is renamed into place only when its size and sha256 match the table. On a mismatch
@@ -17,8 +17,14 @@
 //!   it does not match. The trade-off: an edit that keeps both the size and the modification time is not noticed
 //!   until the sidecar is deleted. The cache is ggtts's own directory, so that edit would have to be deliberate.
 //! * **Two processes at once** each download to their own temporary name, and the rename is atomic, so a lost race
-//!   costs a second download, never a corrupt file. A temporary file left by a killed process is removed by the next
-//!   download of the same file once it has not been written for [`STALE_PARTIAL`].
+//!   costs a second download, never a corrupt file.
+//! * **A temporary file is locked by its writer** for the whole download, with no timestamp involved: on Unix an
+//!   exclusive `flock` (through `libc`, already linked), on Windows a share mode without `FILE_SHARE_DELETE`, so no
+//!   other process can delete it while it is open. A later run removes a temporary file only when it can take that
+//!   lock (Unix) or delete it (Windows), which is when its writer has exited: a process killed mid-download (Ctrl-C
+//!   included) leaves its partial file until the next resolve of that file, which removes it at once.
+//! * **A download that stops sending** fails after [`READ_IDLE`] without a byte, naming the file and how much arrived.
+//!   Progress is reported every [`PROGRESS_EVERY`].
 
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -30,8 +36,11 @@ use sha2::{Digest, Sha256};
 /// Overrides the cache root.
 pub const CACHE_ENV: &str = "GGTTS_CACHE_DIR";
 
-/// A temporary download not written for this long belongs to a process that is gone.
-pub const STALE_PARTIAL: Duration = Duration::from_secs(10 * 60);
+/// A download that receives nothing for this long has stalled, and fails.
+pub const READ_IDLE: Duration = Duration::from_secs(60);
+
+/// How often a download reports its progress.
+pub const PROGRESS_EVERY: Duration = Duration::from_secs(5);
 
 /// One default file of an engine, pinned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,7 +147,19 @@ impl ModelFile {
         }
     }
 
-    /// The file's report entry: `role`, `path`, `sha256`, `source` and `url`. A given file is hashed now.
+    /// Hashes a given file, once: returns how long that took, or `None` when the hash was already known (a cached
+    /// file's is the pinned hash it was verified against).
+    pub fn ensure_sha256(&mut self) -> Result<Option<Duration>, String> {
+        if self.sha256.is_some() {
+            return Ok(None);
+        }
+        let started = std::time::Instant::now();
+        self.sha256 = Some(sha256_file(&self.path)?);
+        Ok(Some(started.elapsed()))
+    }
+
+    /// The file's report entry: `role`, `path`, `sha256`, `source` and `url`. A given file not yet hashed is hashed
+    /// now.
     pub fn report(&self) -> Result<serde_json::Value, String> {
         let sha256 = match &self.sha256 {
             Some(h) => h.clone(),
@@ -156,16 +177,26 @@ pub trait Fetch {
     fn open(&self, url: &str) -> Result<Box<dyn Read>, String>;
 }
 
-/// HTTPS (and plain HTTP) over ureq with rustls. Redirects are followed; a status other than 2xx is an error.
+/// HTTPS over ureq with rustls. Redirects are followed (the hub redirects to its CDN), but never out of HTTPS: every
+/// hop is checked. A status other than 2xx is an error, and so is [`READ_IDLE`] without a byte.
 pub struct Http {
     agent: ureq::Agent,
 }
 
 impl Default for Http {
     fn default() -> Self {
+        Http::new(true, READ_IDLE)
+    }
+}
+
+impl Http {
+    /// `https_only` false is for tests against a local plain-HTTP server; `read_idle` is how long a read may wait.
+    pub fn new(https_only: bool, read_idle: Duration) -> Self {
         let agent = ureq::Agent::config_builder()
+            .https_only(https_only)
             .timeout_connect(Some(Duration::from_secs(30)))
             .timeout_recv_response(Some(Duration::from_secs(60)))
+            .timeout_per_read(Some(read_idle))
             .user_agent(concat!("ggtts/", env!("CARGO_PKG_VERSION")))
             .build()
             .into();
@@ -232,6 +263,64 @@ fn unique_suffix() -> String {
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     )
+}
+
+/// Creates a temporary download, locked against removal by any other process for as long as it is open.
+#[cfg(unix)]
+fn create_locked(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::io::AsRawFd;
+    // Created and locked under a name no cleanup looks at, then renamed to its own: a cleanup can never find it
+    // unlocked. The descriptor, and its lock, survive the rename.
+    let mut staging = path.file_name().unwrap_or_default().to_os_string();
+    staging.push(".locking");
+    let staging = path.with_file_name(staging);
+    let file = fs::OpenOptions::new().write(true).create_new(true).open(&staging)?;
+    // SAFETY: flock on a file descriptor this function owns; the lock is released when the file is closed.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let e = std::io::Error::last_os_error();
+        let _ = fs::remove_file(&staging);
+        return Err(e);
+    }
+    if let Err(e) = fs::rename(&staging, path) {
+        let _ = fs::remove_file(&staging);
+        return Err(e);
+    }
+    Ok(file)
+}
+
+/// Creates a temporary download, locked against removal by any other process for as long as it is open.
+#[cfg(not(unix))]
+fn create_locked(path: &Path) -> std::io::Result<File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_SHARE_READ only: without FILE_SHARE_DELETE no other process can delete or rename it while it is open.
+        options.share_mode(0x0000_0001);
+    }
+    options.open(path)
+}
+
+/// Removes `path` if no live process is writing it: on Unix when its writer's lock can be taken, on Windows when it
+/// can be deleted (its writer holds it open without delete sharing).
+fn remove_if_abandoned(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let Ok(file) = File::open(path) else {
+            return false;
+        };
+        // SAFETY: as above, on a descriptor owned here.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return false;
+        }
+        fs::remove_file(path).is_ok()
+    }
+    #[cfg(not(unix))]
+    {
+        fs::remove_file(path).is_ok()
+    }
 }
 
 /// Removes a temporary download when it goes out of scope, whatever the reason.
@@ -360,15 +449,33 @@ impl Cache {
         Ok(false)
     }
 
+    /// Removes the temporary downloads of `pinned` whose writer has exited (see `create_locked`); returns how many.
+    /// A live download is never touched, however old.
+    pub fn remove_abandoned_partials(&self, pinned: &Pinned) -> usize {
+        let path = self.path_for(pinned);
+        let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+            return 0;
+        };
+        let prefix = format!("{}.partial-", name.to_string_lossy());
+        let Ok(entries) = fs::read_dir(dir) else {
+            return 0;
+        };
+        entries
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+            .filter(|e| remove_if_abandoned(&e.path()))
+            .count()
+    }
+
     /// Downloads `pinned` into the cache, verifies it and moves it into place.
     pub fn download(&self, pinned: &Pinned, fetch: &dyn Fetch, say: &mut dyn FnMut(&str)) -> Result<PathBuf, String> {
         let path = self.path_for(pinned);
         let dir = path.parent().expect("a cache path has a directory");
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        remove_stale_partials(dir, pinned.file_name);
+        self.remove_abandoned_partials(pinned);
         let tmp = dir.join(format!("{}.partial-{}", pinned.file_name, unique_suffix()));
         let partial = Partial(tmp.clone());
-        let mut out = File::create_new(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        let mut out = Some(create_locked(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?);
         let name = pinned.file_name;
         let mut body = fetch
             .open(pinned.url)
@@ -376,7 +483,8 @@ impl Cache {
         let mut hasher = Sha256::new();
         let mut buf = vec![0u8; 1 << 20];
         let mut n = 0u64;
-        let mut reported = 0u64;
+        let started = std::time::Instant::now();
+        let mut last_report = started;
         loop {
             let read = body.read(&mut buf).map_err(|e| {
                 format!(
@@ -395,12 +503,20 @@ impl Cache {
                 ));
             }
             hasher.update(&buf[..read]);
-            out.write_all(&buf[..read])
+            out.as_mut()
+                .expect("open until the rename")
+                .write_all(&buf[..read])
                 .map_err(|e| format!("{}: {e}", tmp.display()))?;
-            let decile = n * 10 / pinned.size.max(1);
-            if decile > reported && decile < 10 {
-                say(&format!("{name}: {}% of {}", decile * 10, human(pinned.size)));
-                reported = decile;
+            if last_report.elapsed() >= PROGRESS_EVERY {
+                last_report = std::time::Instant::now();
+                let seconds = started.elapsed().as_secs_f64().max(1e-3);
+                say(&format!(
+                    "{name}: {:.0} of {:.0} MB ({}%), {:.1} MB/s",
+                    n as f64 / 1e6,
+                    pinned.size as f64 / 1e6,
+                    n * 100 / pinned.size.max(1),
+                    n as f64 / 1e6 / seconds
+                ));
             }
         }
         if n != pinned.size {
@@ -409,8 +525,10 @@ impl Cache {
                 pinned.size, pinned.url
             ));
         }
-        out.sync_all().map_err(|e| format!("{}: {e}", tmp.display()))?;
-        drop(out);
+        out.as_ref()
+            .expect("open until the rename")
+            .sync_all()
+            .map_err(|e| format!("{}: {e}", tmp.display()))?;
         let got = format!("{:x}", hasher.finalize());
         if got != pinned.sha256 {
             return Err(format!(
@@ -418,7 +536,14 @@ impl Cache {
                 pinned.sha256, pinned.url
             ));
         }
-        if let Err(e) = fs::rename(&tmp, &path) {
+        // On Windows a file open without delete sharing cannot be renamed, even by its own process, so it is closed
+        // first; on Unix it stays open, and locked, through the rename.
+        if cfg!(windows) {
+            out = None;
+        }
+        let renamed = fs::rename(&tmp, &path);
+        drop(out);
+        if let Err(e) = renamed {
             // Another process may have put a verified copy there first (on Windows a file in use cannot be replaced).
             if !self.check(pinned, say)? {
                 return Err(format!("{}: {e}", path.display()));
@@ -432,25 +557,6 @@ impl Cache {
             path.display()
         ));
         Ok(path)
-    }
-}
-
-/// Removes temporary downloads of `file_name` that nobody has written to for [`STALE_PARTIAL`].
-fn remove_stale_partials(dir: &Path, file_name: &str) {
-    let prefix = format!("{file_name}.partial-");
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let stale = entry
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.elapsed().ok())
-            .is_some_and(|age| age >= STALE_PARTIAL);
-        if stale && entry.file_name().to_string_lossy().starts_with(&prefix) {
-            let _ = fs::remove_file(entry.path());
-        }
     }
 }
 
@@ -475,7 +581,11 @@ pub fn resolve(
     }
     let mut missing = Vec::new();
     for (pinned, path) in defaults.files.iter().zip(given) {
-        if path.is_none() && !cache.check(pinned, say)? {
+        if path.is_some() {
+            continue;
+        }
+        cache.remove_abandoned_partials(pinned);
+        if !cache.check(pinned, say)? {
             missing.push(pinned);
         }
     }

@@ -5,6 +5,7 @@
   "required": ["format", "path", "chunks", "discarded_draws_included", "output_sample_rate", "output_samples", "output_seconds", "join_samples", "join_seconds", "text_decoded_samples", "text_decoded_seconds", "rate_note"],
   "properties": {
     "format": {"const": "ggtts-duration/1"}, "path": {"enum": ["text", "story"]}, "rate_note": {"type": "string"},
+    "models": {"description": "Every model file the render used: a default file from the cache by its verified pinned sha256, a path given on the command line by the sha256 of its content. Added within this format version: a document without it is still valid.", "type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["role", "path", "sha256", "source", "url"], "properties": {"role": {"type": "string", "minLength": 1}, "path": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "source": {"enum": ["cache", "path"]}, "url": {"description": "Where a cached file was fetched from; null for a given path.", "type": ["string", "null"], "minLength": 1}}, "if": {"properties": {"source": {"const": "cache"}}}, "then": {"properties": {"url": {"type": "string"}}}, "else": {"properties": {"url": {"type": "null"}}}}},
     "discarded_draws_included": {"const": false},
     "output_sample_rate": {"$ref": "#/$defs/optional_count"}, "output_samples": {"$ref": "#/$defs/count"},
     "output_seconds": {"$ref": "#/$defs/optional_number"}, "join_samples": {"$ref": "#/$defs/optional_count"},

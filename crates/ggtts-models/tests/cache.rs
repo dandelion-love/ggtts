@@ -14,8 +14,9 @@ const MODEL: &[u8] = b"a small fake model, standing in for a GGUF talker of two 
 const CODEC: &[u8] = b"a smaller fake codec";
 
 /// A local HTTP/1.1 server. `/model` and `/codec` serve the fake files, `/wrong` serves bytes of the model's length
-/// that are not the model, and `/cut` promises the model's length and closes after half of it. Every request is
-/// counted by path.
+/// that are not the model, `/cut` promises the model's length and closes after half of it, `/stall` sends half and
+/// then nothing for 5 s, `/slow` sends the model a few bytes at a time over about 3 s, and `/redirect` redirects to
+/// `/model`. Every request is counted by path.
 struct Server {
     base: String,
     hits: Arc<Mutex<HashMap<String, usize>>>,
@@ -47,18 +48,35 @@ impl Server {
                     *counter.lock().unwrap().entry(path.clone()).or_default() += 1;
                     let wrong = vec![b'x'; MODEL.len()];
                     let (status, declared, body): (&str, usize, &[u8]) = match path.as_str() {
-                        "/model" => ("200 OK", MODEL.len(), MODEL),
+                        "/model" | "/slow" => ("200 OK", MODEL.len(), MODEL),
                         "/codec" => ("200 OK", CODEC.len(), CODEC),
                         "/wrong" => ("200 OK", wrong.len(), &wrong),
-                        "/cut" => ("200 OK", MODEL.len(), &MODEL[..MODEL.len() / 2]),
+                        "/cut" | "/stall" => ("200 OK", MODEL.len(), &MODEL[..MODEL.len() / 2]),
+                        "/redirect" => ("302 Found", 0, b""),
                         _ => ("404 Not Found", 0, b""),
+                    };
+                    let location = if path == "/redirect" {
+                        "Location: /model\r\n"
+                    } else {
+                        ""
                     };
                     let _ = write!(
                         stream,
-                        "HTTP/1.1 {status}\r\nContent-Length: {declared}\r\nConnection: close\r\n\r\n"
+                        "HTTP/1.1 {status}\r\n{location}Content-Length: {declared}\r\nConnection: close\r\n\r\n"
                     );
-                    let _ = stream.write_all(body);
-                    let _ = stream.flush();
+                    if path == "/slow" {
+                        for piece in body.chunks(3) {
+                            let _ = stream.write_all(piece);
+                            let _ = stream.flush();
+                            std::thread::sleep(std::time::Duration::from_millis(130));
+                        }
+                    } else {
+                        let _ = stream.write_all(body);
+                        let _ = stream.flush();
+                    }
+                    if path == "/stall" {
+                        std::thread::sleep(std::time::Duration::from_secs(5));
+                    }
                 });
             }
         });
@@ -124,6 +142,11 @@ fn files_under(dir: &Path) -> Vec<String> {
     out
 }
 
+/// A client for the local plain-HTTP server; the real one refuses anything but HTTPS.
+fn local() -> Http {
+    Http::new(false, std::time::Duration::from_secs(5))
+}
+
 fn run(
     d: &Defaults,
     given: &[Option<PathBuf>],
@@ -131,9 +154,7 @@ fn run(
     offline: bool,
 ) -> (Result<Vec<ggtts_models::ModelFile>, String>, Vec<String>) {
     let mut said = Vec::new();
-    let r = resolve(d, given, cache, offline, &Http::default(), &mut |m| {
-        said.push(m.to_string())
-    });
+    let r = resolve(d, given, cache, offline, &local(), &mut |m| said.push(m.to_string()));
     (r, said)
 }
 
@@ -214,22 +235,6 @@ fn an_interrupted_download_leaves_the_cache_clean() {
         "an interrupted download left files"
     );
 
-    // A partial left by a killed process is removed by the next download, once stale.
-    let good = defaults(vec![pinned("talker", "model.gguf", server.url("/model"), MODEL)]);
-    let entry = cache.path_for(&good.files[0]);
-    std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
-    let orphan = entry.with_file_name("model.gguf.partial-1-1");
-    std::fs::write(&orphan, b"half").unwrap();
-    let old = std::time::SystemTime::now() - ggtts_models::STALE_PARTIAL - std::time::Duration::from_secs(1);
-    std::fs::File::options()
-        .write(true)
-        .open(&orphan)
-        .unwrap()
-        .set_modified(old)
-        .unwrap();
-    let (r, _) = run(good, &[None], &cache, false);
-    r.unwrap();
-    assert!(!orphan.exists(), "a stale partial survived a download");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -325,7 +330,7 @@ fn two_processes_starting_at_once_leave_one_good_file() {
     let threads: Vec<_> = (0..4)
         .map(|_| {
             let cache = Cache::new(dir.join("cache"));
-            std::thread::spawn(move || resolve(d, &[None], &cache, false, &Http::default(), &mut |_| {}))
+            std::thread::spawn(move || resolve(d, &[None], &cache, false, &local(), &mut |_| {}))
         })
         .collect();
     for t in threads {
@@ -348,4 +353,132 @@ fn the_cache_root_follows_the_override() {
     assert!(root.is_absolute(), "{}", root.display());
     assert!(root.to_string_lossy().contains("ggtts"), "{}", root.display());
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_stalled_download_fails_after_the_idle_timeout_and_leaves_nothing() {
+    let server = Server::start();
+    let dir = scratch("stall");
+    let cache = Cache::new(dir.join("cache"));
+    let d = defaults(vec![pinned("talker", "model.gguf", server.url("/stall"), MODEL)]);
+    let started = std::time::Instant::now();
+    let fetch = Http::new(false, std::time::Duration::from_secs(1));
+    let err = resolve(d, &[None], &cache, false, &fetch, &mut |_| {}).unwrap_err();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(4),
+        "the idle timeout did not fire"
+    );
+    let half = MODEL.len() / 2;
+    assert!(
+        err.contains("model.gguf") && err.contains(&format!("after {half} of {}", MODEL.len())),
+        "{err}"
+    );
+    assert_eq!(files_under(&dir), Vec::<String>::new(), "a stalled download left files");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_real_client_refuses_plain_http_at_every_hop_and_follows_redirects() {
+    let server = Server::start();
+    let dir = scratch("https");
+    let cache = Cache::new(dir.join("cache"));
+    let d = defaults(vec![pinned("talker", "model.gguf", server.url("/redirect"), MODEL)]);
+    // The default client is HTTPS-only: ureq checks the scheme on every hop, the first included, before connecting.
+    let err = resolve(d, &[None], &cache, false, &Http::default(), &mut |_| {}).unwrap_err();
+    assert!(err.to_lowercase().contains("https"), "{err}");
+    assert_eq!(
+        server.hits("/redirect") + server.hits("/model"),
+        0,
+        "a plain-HTTP request was sent"
+    );
+    // The same client without the restriction follows the redirect, so the refusal above is the restriction's.
+    let files = resolve(d, &[None], &cache, false, &local(), &mut |_| {}).unwrap();
+    assert_eq!((server.hits("/redirect"), server.hits("/model")), (1, 1));
+    assert_eq!(std::fs::read(&files[0].path).unwrap(), MODEL);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+const CHILD_URL: &str = "GGTTS_MODELS_TEST_CHILD_URL";
+const CHILD_CACHE: &str = "GGTTS_MODELS_TEST_CHILD_CACHE";
+
+/// Not a test on its own: the downloader the multi-process tests start as a separate process. Without its
+/// environment it does nothing.
+#[test]
+fn child_downloader() {
+    let (Ok(url), Ok(cache)) = (std::env::var(CHILD_URL), std::env::var(CHILD_CACHE)) else {
+        return;
+    };
+    let url: &'static str = Box::leak(url.into_boxed_str());
+    let d = defaults(vec![pinned("talker", "model.gguf", url, MODEL)]);
+    let files = resolve(d, &[None], &Cache::new(cache.into()), false, &local(), &mut |_| {}).unwrap();
+    assert_eq!(std::fs::read(&files[0].path).unwrap(), MODEL);
+}
+
+fn spawn_child(url: &str, cache: &Path) -> std::process::Child {
+    std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "child_downloader", "--test-threads=1", "--quiet"])
+        .env(CHILD_URL, url)
+        .env(CHILD_CACHE, cache)
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap()
+}
+
+/// Waits for a partial download to appear under `dir`.
+fn wait_for_partial(dir: &Path) -> String {
+    for _ in 0..200 {
+        if let Some(p) = files_under(dir).into_iter().find(|f| f.contains(".partial-")) {
+            return p;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("no partial download appeared");
+}
+
+#[test]
+fn two_processes_at_once_each_finish_and_leave_one_good_file() {
+    let server = Server::start();
+    let dir = scratch("two-processes");
+    let cache = dir.join("cache");
+    let children: Vec<_> = (0..2).map(|_| spawn_child(server.url("/slow"), &cache)).collect();
+    for mut child in children {
+        assert!(child.wait().unwrap().success(), "a downloader process failed");
+    }
+    let left = files_under(&dir);
+    assert_eq!(left.len(), 2, "only the file and its sidecar: {left:?}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_live_download_in_another_process_is_never_removed_and_a_killed_one_is() {
+    let server = Server::start();
+    let dir = scratch("live-partial");
+    let cache_dir = dir.join("cache");
+    let cache = Cache::new(cache_dir.clone());
+    let d = defaults(vec![pinned("talker", "model.gguf", server.url("/slow"), MODEL)]);
+
+    // Another process is mid-download: its partial file is locked, so a cleanup leaves it, whatever its age.
+    let mut child = spawn_child(server.url("/slow"), &cache_dir);
+    let partial = wait_for_partial(&dir);
+    assert_eq!(cache.remove_abandoned_partials(&d.files[0]), 0);
+    assert!(dir.join(&partial).exists(), "a live download was removed");
+    assert!(child.wait().unwrap().success(), "the live download failed");
+    assert_eq!(files_under(&dir).len(), 2);
+
+    // A process killed mid-download (as Ctrl-C would) leaves its partial file; its lock died with it, so the next
+    // cleanup removes it at once.
+    let other = scratch("killed-partial");
+    let cache = Cache::new(other.join("cache"));
+    let mut child = spawn_child(server.url("/slow"), &other.join("cache"));
+    let partial = wait_for_partial(&other);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(
+        other.join(&partial).exists(),
+        "the killed process's partial file is expected to remain until cleanup"
+    );
+    assert_eq!(cache.remove_abandoned_partials(&d.files[0]), 1);
+    assert_eq!(files_under(&other), Vec::<String>::new());
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = std::fs::remove_dir_all(other);
 }

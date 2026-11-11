@@ -149,3 +149,111 @@ fn help_names_the_offline_switch_and_the_cache_override() {
     let out = String::from_utf8_lossy(&r.stdout);
     assert!(out.contains("--offline") && out.contains("GGTTS_CACHE_DIR"), "{out}");
 }
+
+fn schema(name: &str, def: Option<&str>) -> jsonschema::Validator {
+    let mut s = json(&Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../schemas/{name}")));
+    if let Some(d) = def {
+        s["$ref"] = serde_json::json!(format!("#/$defs/{d}"));
+    }
+    jsonschema::validator_for(&s).expect("the schema compiles")
+}
+
+/// Every report one render writes names the model file it used, by sha256: the timing report, the duration report,
+/// the trace header, the instrument report and its run log, and a stderr line at the default log level. Each schema
+/// holds the list and refuses a planted defect in it.
+#[test]
+fn every_report_a_render_writes_carries_its_model_files() {
+    let dir = scratch("every-report");
+    let model = dir.join("an-unreleased-model.bin");
+    std::fs::write(&model, b"an unreleased model, for the record").unwrap();
+    let story = dir.join("story.txt");
+    std::fs::write(&story, "Title\nA short sentence.\n").unwrap();
+    let report = dir.join("report");
+    let instruments = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments");
+    let r = Command::new(BIN)
+        .env("GGTTS_INSTRUMENTS_DIR", &instruments)
+        .args(["--engine", "fake", "--story"])
+        .arg(&story)
+        .arg("--model")
+        .arg(&model)
+        .arg("--out")
+        .arg(dir.join("out.flac"))
+        .arg("--trace")
+        .arg(dir.join("trace.jsonl"))
+        .arg("--timing-report")
+        .arg(dir.join("timing.json"))
+        .arg("--report")
+        .arg(&report)
+        .args(["--instrument", "audio-levels"])
+        .output()
+        .unwrap();
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let sha = ggtts_models::sha256_file(&model).unwrap();
+    let want = serde_json::json!([{"role": "model", "path": model.to_str().unwrap(), "sha256": sha,
+        "source": "path", "url": null}]);
+
+    let stderr = String::from_utf8_lossy(&r.stderr);
+    assert!(
+        stderr.contains(&format!("model {} sha256 {sha} (path", model.display())),
+        "no stderr line for the model at the default level: {stderr}"
+    );
+    let timing = json(&dir.join("timing.json"));
+    let duration = json(&report.join("duration.json"));
+    let merged = json(&report.join("report.json"));
+    let header: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(dir.join("trace.jsonl"))
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    for (what, doc) in [
+        ("timing", &timing),
+        ("duration", &duration),
+        ("report.json", &merged),
+        ("trace header", &header),
+    ] {
+        assert_eq!(doc["models"], want, "{what}");
+    }
+    assert_eq!(header["model_sha256"], sha.as_str());
+    let run_log = std::fs::read_to_string(report.join("run.log")).unwrap();
+    assert!(run_log.contains(&format!("sha256 {sha} (path)")), "{run_log}");
+
+    let checks = [
+        ("timing", schema("ggtts-timing-1.schema.json", None), timing),
+        ("duration", schema("ggtts-duration-1.schema.json", None), duration),
+        (
+            "report.json",
+            schema("ggtts-report-2.schema.json", Some("report")),
+            merged,
+        ),
+        ("trace header", schema("ggtts-trace-2.schema.json", None), header),
+    ];
+    for (what, validator, doc) in &checks {
+        let errors: Vec<String> = validator.iter_errors(doc).map(|e| e.to_string()).collect();
+        assert!(errors.is_empty(), "{what}: {errors:?}");
+        let planted = |edit: &dyn Fn(&mut serde_json::Value)| {
+            let mut bad = doc.clone();
+            edit(&mut bad["models"][0]);
+            bad
+        };
+        for (defect, bad) in [
+            ("a short hash", planted(&|m| m["sha256"] = "abc".into())),
+            ("an unknown source", planted(&|m| m["source"] = "web".into())),
+            (
+                "a given path with a url",
+                planted(&|m| m["url"] = "https://example.invalid/m".into()),
+            ),
+        ] {
+            assert!(!validator.is_valid(&bad), "{what} accepted {defect}");
+        }
+        let mut older = doc.clone();
+        older.as_object_mut().unwrap().remove("models");
+        assert!(
+            validator.is_valid(&older),
+            "{what}: a document from before models must stay valid"
+        );
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}

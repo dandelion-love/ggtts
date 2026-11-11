@@ -77,7 +77,8 @@ ggtts-render --text "我哋聽日一齊去海邊睇日落。" --out x.flac
 
 The first such run downloads the two files below (2.33 GB in all) into a per-user cache, checks each against its
 pinned sha256, and renders; later runs download nothing. Before it starts, the run says what it will download, from
-where, how large, and where it will be stored. The default speaker is `hk_voice_343`; the model's other speaker is
+where, how large, and where it will be stored, and it reports progress every 5 seconds. These lines print at every
+`--log-level`, so a download is never silent. The default speaker is `hk_voice_343`; the model's other speaker is
 `hk_voice_777`.
 
 | Role | File | Size | sha256 | Licence |
@@ -116,16 +117,27 @@ records its hash, size and modification time, and later runs trust the file whil
 else (a missing or edited sidecar, a changed size or time) makes the run hash the file again, and a file that no
 longer matches is removed and downloaded again. The trade-off: an edit that keeps both the size and the
 modification time goes unnoticed until the sidecar is deleted. Two renders starting at once each download to their
-own temporary name and the rename is atomic, so a race costs a second download, never a corrupt file. A temporary
-file left by a killed process is removed by the next download of that file once it is ten minutes old.
+own temporary name and the rename is atomic, so a race costs a second download, never a corrupt file. Each temporary
+file is locked by the process writing it (an exclusive `flock` on Linux and macOS; on Windows it is opened without
+delete sharing), and a run removes a temporary file only when that lock shows its writer has exited, never by its
+age. A render stopped mid-download (Ctrl-C, or killed) leaves its temporary file; the next render that needs that
+file removes it at once.
+
+**Network.** Downloads use HTTPS only: the hub's redirect to its download host is followed, but a redirect to plain
+HTTP is refused. A download that receives nothing for 60 seconds fails, naming the file and how many bytes arrived,
+and its temporary file is deleted.
 
 **Offline.** `--offline` never downloads. A default file that is not already in the cache is then an error that
 names the file and its URL, so it can be fetched by other means and placed in the cache, or given with
 `--model`/`--codec`.
 
-**What the report records.** `--timing-report FILE` lists every model file the render used under `models`: its
-role, path, sha256, `source` (`cache` or `path`) and, for a cached file, the URL it came from. A cached file's hash
-is the pinned one it was verified against; a given file is hashed when the report is written.
+**What the reports record.** Every render prints one line per model file at the default log level, with its role,
+path, sha256 and `cache` or `path`. Every report the render writes carries the same `models` list (role, path,
+sha256, `source`, and a cached file's URL): the `--timing-report`, the `--duration-report` and the instrument
+report directory's `duration.json`, the instrument report's `report.json` and `run.log`, and the `--trace` header
+(which also fills its `model_sha256` and `codec_sha256`). A cached file's hash is the pinned one it was verified
+against. A given file is hashed once per run, after the model loads: about 1.3 s for the 2 GB talker on one desktop
+CPU. It is not cached by size and modification time, so the recorded hash is always of the bytes that were used.
 
 ### Render and listen: Qwen and Kitten
 

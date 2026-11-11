@@ -13,3 +13,8 @@ serde_json.workspace = true
 sha2 = "0.10"
 # HTTPS with rustls and its bundled roots: no OpenSSL or other system TLS library, so a release binary stays portable.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+# The lock that keeps a live download from being removed by another process (`flock`). Already linked into the
+# shipped binary through other crates, so it adds nothing.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

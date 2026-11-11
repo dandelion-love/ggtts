@@ -142,12 +142,18 @@ fn every_variant() -> Vec<Map<String, Value>> {
             .unwrap()
             .clone(),
         trace_level: 2,
+        models: vec![
+            json!({"role": "talker", "path": "/cache/models/x/talker.gguf", "sha256": "0".repeat(64),
+            "source": "cache", "url": "https://example.invalid/talker.gguf"}),
+            json!({"role": "codec", "path": "codec.gguf", "sha256": "1".repeat(64), "source": "path", "url": null}),
+        ],
     };
     let bare = Header {
         model_sha256: None,
         codec_sha256: None,
         flags: Map::new(),
         trace_level: 1,
+        models: Vec::new(),
         ..full.clone()
     };
     let (cb, cb_p) = ([3u16, 4, 5], [0.5, 0.25, 1.0]);

@@ -437,6 +437,7 @@ dependencies = [
 name = "ggtts-models"
 version = "0.0.1"
 dependencies = [
+ "libc",
  "serde_json",
  "sha2",
  "ureq",

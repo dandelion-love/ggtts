@@ -17,7 +17,9 @@
 //! * **The surface is versioned and only grows.** [`GGTTS_ABI_VERSION`] (and [`ggtts_abi_version`]) goes up by one
 //!   whenever a function, a struct or a code is added; an exported function never changes its signature or its
 //!   behaviour. Version 2 added [`ggtts_load_with`] and [`GgttsSettings`] (a Qwen3-TTS speaker and style
-//!   instruction).
+//!   instruction). Version 3 added three trailing fields to [`GgttsSettings`]: the device, and the default model
+//!   files' cache directory and download permission. A version-2 struct (its `size` is
+//!   [`GGTTS_SETTINGS_V2_SIZE`]) still loads exactly as it did.
 //!
 //! With the `jni` feature, `jni.rs` adds the `Java_ggtts_Native_*` entry points over the same functions.
 
@@ -25,7 +27,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
@@ -50,8 +52,9 @@ pub const GGTTS_ERR_STOPPED: i32 = -5;
 /// The engine is rendering: a call on it from its own stream callback, or from another thread meanwhile.
 pub const GGTTS_ERR_BUSY: i32 = -6;
 
-/// The C-ABI's version: 1 was the surface before [`ggtts_load_with`]; 2 added it and [`GgttsSettings`].
-pub const GGTTS_ABI_VERSION: u32 = 2;
+/// The C-ABI's version: 1 was the surface before [`ggtts_load_with`]; 2 added it and [`GgttsSettings`]; 3 added the
+/// struct's `device`, `cache_dir` and `allow_download` fields.
+pub const GGTTS_ABI_VERSION: u32 = 3;
 
 /// The settings [`ggtts_load_with`] takes, by pointer. `size` is `sizeof(ggtts_settings)` as the caller's header
 /// declares it, so a later version can add fields and still tell an older caller's struct apart. A NULL or empty
@@ -61,11 +64,22 @@ pub const GGTTS_ABI_VERSION: u32 = 2;
 pub struct GgttsSettings {
     /// `sizeof(ggtts_settings)`.
     pub size: usize,
-    /// A Qwen3-TTS speaker name (case is ignored); NULL or empty for the default speaker `ggtts_load` uses.
+    /// A Qwen3-TTS speaker name (case is ignored); NULL or empty for the engine's default speaker.
     pub speaker: *const c_char,
     /// A Qwen3-TTS style instruction ("Speak slowly and softly."); NULL or empty for none.
     pub instruction: *const c_char,
+    /// Version 3: `cpu` or `cuda`; NULL or empty for `cpu`.
+    pub device: *const c_char,
+    /// Version 3: the root of the default model files' cache; NULL or empty for ggtts-render's (`GGTTS_CACHE_DIR`,
+    /// else the platform's per-user cache directory).
+    pub cache_dir: *const c_char,
+    /// Version 3: 1 downloads a default model file missing from the cache; 0 (the default) never downloads.
+    pub allow_download: i32,
 }
+
+/// `sizeof(ggtts_settings)` in a version-2 header: `size`, `speaker` and `instruction`. A struct of this size loads
+/// as it did in version 2: on the CPU, from the paths given only.
+pub const GGTTS_SETTINGS_V2_SIZE: usize = std::mem::offset_of!(GgttsSettings, device);
 
 /// The C-ABI's version, [`GGTTS_ABI_VERSION`] of the library actually loaded: a caller built against a newer header
 /// checks it before calling a function the library may not have.
@@ -231,9 +245,10 @@ unsafe fn opt_arg<'a>(p: *const c_char, name: &str) -> Result<Option<&'a str>, F
 }
 
 /// A model file must exist and be a GGUF before any engine is asked to load it.
-fn check_gguf(what: &str, path: &str) -> Result<(), Fail> {
+fn check_gguf(what: &str, path: &Path) -> Result<(), Fail> {
     let mut magic = [0u8; 4];
     let read = std::fs::File::open(path).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic));
+    let path = path.display();
     match read {
         Err(e) => Err((GGTTS_ERR_ENGINE, format!("{what} {path}: {e}"))),
         Ok(()) if &magic != b"GGUF" => Err((GGTTS_ERR_ENGINE, format!("{what} {path}: not a GGUF file"))),
@@ -241,12 +256,45 @@ fn check_gguf(what: &str, path: &str) -> Result<(), Fail> {
     }
 }
 
-/// The voice settings of one load: a Qwen3-TTS speaker and style instruction, `None` for each one not given. An empty
-/// string is no setting.
+/// The device an engine runs on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Device {
+    #[default]
+    Cpu,
+    Cuda,
+}
+
+impl Device {
+    /// `cpu` or `cuda`; `None` (no setting) is `cpu`.
+    fn parse(s: Option<&str>) -> Result<Self, Fail> {
+        match s {
+            None | Some("cpu") => Ok(Device::Cpu),
+            Some("cuda") => Ok(Device::Cuda),
+            Some(other) => Err((
+                GGTTS_ERR_ARG,
+                format!("settings.device must be cpu or cuda, not {other:?}"),
+            )),
+        }
+    }
+}
+
+/// How a version-3 load finds the default model files: the cache root (`None`: ggtts-render's) and whether a missing
+/// file may be downloaded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Models<'a> {
+    cache_dir: Option<&'a str>,
+    allow_download: bool,
+}
+
+/// The settings of one load: a Qwen3-TTS speaker and style instruction, the device, and (version 3 only) how the
+/// default model files are found, `None` for each one not given. An empty string is no setting. `models` is `None`
+/// for [`ggtts_load`], NULL settings and a version-2 struct, which load only the paths given, as they always have.
 #[derive(Debug, Clone, Copy, Default)]
 struct Settings<'a> {
     speaker: Option<&'a str>,
     instruction: Option<&'a str>,
+    device: Option<&'a str>,
+    models: Option<Models<'a>>,
 }
 
 impl<'a> Settings<'a> {
@@ -254,33 +302,58 @@ impl<'a> Settings<'a> {
         Settings {
             speaker: speaker.filter(|s| !s.is_empty()),
             instruction: instruction.filter(|s| !s.is_empty()),
+            ..Settings::default()
         }
     }
 
-    /// The settings struct a C caller passed: NULL is no settings.
+    /// The settings struct a C caller passed: NULL is no settings. A version-2 struct (`size` is
+    /// [`GGTTS_SETTINGS_V2_SIZE`]) is read up to `instruction` and nothing after it.
     ///
     /// # Safety
-    /// `p` is NULL or points to a readable [`GgttsSettings`] whose strings are NULL or NUL-terminated.
+    /// `p` is NULL or points to a readable [`GgttsSettings`] of at least `size` bytes whose strings are NULL or
+    /// NUL-terminated.
     unsafe fn from_c(p: *const GgttsSettings) -> Result<Self, Fail> {
         if p.is_null() {
             return Ok(Settings::default());
         }
         let size = unsafe { std::ptr::addr_of!((*p).size).read_unaligned() };
         let known = std::mem::size_of::<GgttsSettings>();
-        if size != known {
+        if size != known && size != GGTTS_SETTINGS_V2_SIZE {
             return Err((
                 GGTTS_ERR_ARG,
                 format!(
                     "settings.size is {size}; this library (C-ABI version {GGTTS_ABI_VERSION}) reads a ggtts_settings \
-                     of {known} bytes: set size to sizeof(ggtts_settings)"
+                     of {known} bytes, or {GGTTS_SETTINGS_V2_SIZE} from a version-2 header: set size to \
+                     sizeof(ggtts_settings)"
                 ),
             ));
         }
-        let s = unsafe { &*p };
-        Ok(Settings::new(
-            unsafe { opt_arg(s.speaker, "settings.speaker") }?,
-            unsafe { opt_arg(s.instruction, "settings.instruction") }?,
-        ))
+        // Only the fields the caller's struct has are read: a version-2 caller's memory ends at `instruction`.
+        let speaker = unsafe { std::ptr::addr_of!((*p).speaker).read_unaligned() };
+        let instruction = unsafe { std::ptr::addr_of!((*p).instruction).read_unaligned() };
+        let mut settings = Settings::new(unsafe { opt_arg(speaker, "settings.speaker") }?, unsafe {
+            opt_arg(instruction, "settings.instruction")
+        }?);
+        if size == known {
+            let s = unsafe { &*p };
+            let empty_is_none = |o: Option<&'a str>| o.filter(|s| !s.is_empty());
+            settings.device = empty_is_none(unsafe { opt_arg(s.device, "settings.device") }?);
+            let allow_download = match s.allow_download {
+                0 => false,
+                1 => true,
+                other => {
+                    return Err((
+                        GGTTS_ERR_ARG,
+                        format!("settings.allow_download must be 0 or 1, not {other}"),
+                    ))
+                }
+            };
+            settings.models = Some(Models {
+                cache_dir: empty_is_none(unsafe { opt_arg(s.cache_dir, "settings.cache_dir") }?),
+                allow_download,
+            });
+        }
+        Ok(settings)
     }
 
     /// The engines other than Qwen3-TTS take neither setting, and refuse one before any file is read rather than
@@ -317,7 +390,11 @@ fn open_engine(
     if engine != "qwen3-tts" {
         settings.refuse_for(engine)?;
     }
+    let device = Device::parse(settings.device)?;
     if engine == "fake" {
+        if device != Device::Cpu {
+            return Err((GGTTS_ERR_ARG, "the fake engine runs on the CPU only".into()));
+        }
         return Ok(Held::checked(Box::new(ggtts_fake::FakeEngine::default())));
     }
     #[cfg(feature = "plant")]
@@ -333,18 +410,118 @@ fn open_engine(
     if !matches!(engine, "qwen3-tts" | "kitten-tts-2") {
         return Err((GGTTS_ERR_ENGINE, format!("no engine named {engine:?}")));
     }
+    // Refused before any file is read or downloaded.
+    if device == Device::Cuda && !cfg!(feature = "cuda") {
+        return Err((
+            GGTTS_ERR_ENGINE,
+            "this build has no CUDA backend (built without the cuda feature): settings.device cuda is not \
+             available; use cpu"
+                .into(),
+        ));
+    }
+    let mut settings = settings;
+    let (model, codec) = match (settings.models, ggtts_models::defaults_for(engine)) {
+        (Some(models), Some(defaults)) if model.is_none() || codec.is_none() => {
+            let files = default_files(
+                defaults,
+                model,
+                codec,
+                models,
+                cfg!(feature = "ggml"),
+                &ggtts_models::Http::default(),
+            )?;
+            if settings.speaker.is_none() {
+                settings.speaker = files.speaker;
+            }
+            (Some(files.model), Some(files.codec))
+        }
+        _ => (model.map(PathBuf::from), codec.map(PathBuf::from)),
+    };
     let model = model.ok_or((GGTTS_ERR_ARG, format!("the {engine} engine needs a model")))?;
-    check_gguf("model", model)?;
+    check_gguf("model", &model)?;
     let codec = codec.ok_or((GGTTS_ERR_ARG, format!("the {engine} engine needs a codec")))?;
-    check_gguf("codec", codec)?;
-    load_real(engine, Path::new(model), Path::new(codec), voice, threads, settings)
+    check_gguf("codec", &codec)?;
+    load_real(engine, &model, &codec, voice, threads, settings, device)
 }
 
-/// The Qwen3-TTS voice for the settings: the library's default voice, with the speaker given in place of its
-/// default speaker.
+/// The files a version-3 load uses when the model or the codec is not given, resolved as `ggtts-render` resolves them
+/// with no `--model` or `--codec` (`ggtts_models`): a path given is used as it is; a path not given is the engine's
+/// pinned file in the cache, verified against its sha256, and downloaded first only when `models.allow_download` is
+/// set. Nothing is looked up for a build that cannot render it.
+fn default_files(
+    defaults: &ggtts_models::Defaults,
+    model: Option<&str>,
+    codec: Option<&str>,
+    models: Models<'_>,
+    engines_built: bool,
+    fetch: &dyn ggtts_models::Fetch,
+) -> Result<DefaultFiles, Fail> {
+    if !engines_built {
+        return Err((
+            GGTTS_ERR_ENGINE,
+            format!(
+                "this build has no {} engine (built without the ggml feature)",
+                defaults.engine
+            ),
+        ));
+    }
+    let root = match models.cache_dir {
+        Some(dir) => PathBuf::from(dir),
+        None => ggtts_models::Cache::default_root()
+            .map_err(|e| (GGTTS_ERR_ENGINE, format!("{e}, or the cache_dir setting")))?,
+    };
+    let mut given = vec![model.map(PathBuf::from), codec.map(PathBuf::from)];
+    given.resize(defaults.files.len(), None);
+    let cache = ggtts_models::Cache::new(root);
+    let files =
+        ggtts_models::resolve(defaults, &given, &cache, !models.allow_download, fetch, &mut |_| {}).map_err(|e| {
+            if e.contains("offline mode does not download") {
+                (
+                    GGTTS_ERR_ENGINE,
+                    format!("{e} (downloading is off: allow it with the allow_download setting)"),
+                )
+            } else {
+                (GGTTS_ERR_ENGINE, e)
+            }
+        })?;
+    let mut paths = files.into_iter().map(|f| f.path);
+    match (paths.next(), paths.next()) {
+        (Some(model_path), Some(codec_path)) => Ok(DefaultFiles {
+            model: model_path,
+            codec: codec_path,
+            // The default model gets its default speaker, as in ggtts-render; a given model keeps its own.
+            speaker: if model.is_none() {
+                defaults.default_speaker
+            } else {
+                None
+            },
+        }),
+        _ => Err((
+            GGTTS_ERR_ENGINE,
+            format!("{}: the default files are not a model and a codec", defaults.engine),
+        )),
+    }
+}
+
+/// What [`default_files`] resolved: the model and codec paths, and the speaker to use when none is given.
+#[derive(Debug, PartialEq, Eq)]
+struct DefaultFiles {
+    model: PathBuf,
+    codec: PathBuf,
+    speaker: Option<&'static str>,
+}
+
+/// The Qwen3-TTS voice for the settings: the library's default voice on `device`, with the speaker given in place of
+/// its default speaker.
 #[cfg(feature = "ggml")]
-fn qwen_voice(settings: Settings<'_>) -> ggtts_qwen3_tts::engine::Voice {
-    let mut voice = ggtts_qwen3_tts::engine::Voice::default();
+fn qwen_voice(settings: Settings<'_>, device: Device) -> ggtts_qwen3_tts::engine::Voice {
+    let mut voice = ggtts_qwen3_tts::engine::Voice {
+        device: match device {
+            Device::Cpu => ggtts_qwen3_tts::cpu::Device::Cpu,
+            Device::Cuda => ggtts_qwen3_tts::cpu::Device::Cuda,
+        },
+        ..Default::default()
+    };
     if let Some(speaker) = settings.speaker {
         voice.speaker = speaker.to_string();
     }
@@ -368,6 +545,7 @@ fn load_real(
     voice: Option<&str>,
     threads: i32,
     settings: Settings<'_>,
+    device: Device,
 ) -> Result<Held, Fail> {
     let refused = |e: String| (GGTTS_ERR_ENGINE, e);
     match engine {
@@ -377,13 +555,15 @@ fn load_real(
             model,
             codec,
             threads,
-            qwen_voice(settings),
+            qwen_voice(settings, device),
             settings.instruction,
         )
         // SAFETY: Qwen3-TTS is not `Send` to the compiler only for its raw ggml pointers (contexts, tensors,
         // graphs, backend buffers), every one allocated by this engine and reachable only through it. It holds no
-        // `Rc` and no thread-local, and ggml's CPU backend keeps no per-thread state between graph runs, so the
-        // engine is sound to move whole and use from one thread at a time.
+        // `Rc` and no thread-local, and neither of ggml's backends it may run on keeps per-thread state between
+        // graph runs: the CPU backend keeps none, and the CUDA backend has no `thread_local` and selects its device
+        // on every call (`ggml_cuda_set_device`), so its streams and cuBLAS handles, used by one thread at a time,
+        // may be used from any thread. The engine is sound to move whole and use from one thread at a time.
         .map(|e| unsafe { Held::assume_send(Box::new(e)) }.with_instruction(settings.instruction))
         .map_err(qwen_load_error),
         _ => {
@@ -393,12 +573,15 @@ fn load_real(
                 codec,
                 Path::new(voice),
                 threads as usize,
-                ggtts_kitten::backend::Device::Cpu,
+                match device {
+                    Device::Cpu => ggtts_kitten::backend::Device::Cpu,
+                    Device::Cuda => ggtts_kitten::backend::Device::Cuda,
+                },
             )
             // SAFETY: Kitten-TTS 2 is not `Send` to the compiler for its raw ggml pointers and for the `Rc<Backend>`
             // its parts share. Every clone of that `Rc` lives inside this engine, and the registry hands out no
             // reference to its parts, so the clones always move together and their count is only ever touched by the
-            // one thread using the engine. It runs on the CPU backend here, which keeps no per-thread state.
+            // one thread using the engine. Neither backend keeps per-thread state (as for Qwen3-TTS above).
             .map(|e| unsafe { Held::assume_send(Box::new(e)) })
             .map_err(refused)
         }
@@ -406,7 +589,15 @@ fn load_real(
 }
 
 #[cfg(not(feature = "ggml"))]
-fn load_real(engine: &str, _: &Path, _: &Path, _: Option<&str>, _: i32, _: Settings<'_>) -> Result<Held, Fail> {
+fn load_real(
+    engine: &str,
+    _: &Path,
+    _: &Path,
+    _: Option<&str>,
+    _: i32,
+    _: Settings<'_>,
+    _: Device,
+) -> Result<Held, Fail> {
     Err((
         GGTTS_ERR_ENGINE,
         format!("this build has no {engine} engine (built without the ggml feature)"),
@@ -469,8 +660,15 @@ pub unsafe extern "C" fn ggtts_load(
 /// library's message; either setting on an engine other than `qwen3-tts` is [`GGTTS_ERR_ARG`]. Each refusal comes before
 /// any text is rendered, and no handle is written.
 ///
+/// Version 3 (a struct of the full size): `device` chooses `cpu` (the default) or `cuda`, and a build without the CUDA
+/// backend refuses `cuda` with [`GGTTS_ERR_ENGINE`] before reading any file. With engine `qwen3-tts` and the model or
+/// codec NULL, the missing file is the pinned default `ggtts-render` uses, from the same cache and verified against the
+/// same sha256, downloaded only when `allow_download` is 1; and with no model and no speaker, the speaker is the
+/// default model's default. A version-2 struct, or NULL settings, loads only the paths given, on the CPU, as before.
+///
 /// # Safety
-/// As [`ggtts_load`]; `settings` is NULL or points to a readable [`GgttsSettings`] whose `size` is set.
+/// As [`ggtts_load`]; `settings` is NULL or points to a readable [`GgttsSettings`] of at least `size` bytes, whose
+/// `size` is set.
 #[no_mangle]
 pub unsafe extern "C" fn ggtts_load_with(
     engine: *const c_char,
@@ -614,6 +812,12 @@ pub extern "C" fn ggtts_free(handle: u64) -> i32 {
 #[no_mangle]
 pub extern "C" fn ggtts_last_error() -> *const c_char {
     LAST_ERROR.with(|e| e.borrow().as_ptr())
+}
+
+/// The backend a loaded engine runs on, as its engine reports it (`ggml-cpu`, `ggml-cuda`, or the fake engine's), for
+/// a Rust host and the tests. Not part of the C-ABI.
+pub fn backend_of(handle: u64) -> Result<String, String> {
+    with_engine(handle, |e, _| Ok(e.info().backend.clone())).map_err(|(_, m)| m)
 }
 
 /// The last error as a Rust string, for the JNI layer and the tests.
@@ -821,5 +1025,191 @@ mod chunk_input_tests {
             (s.speaker, s.instruction),
             (Some("hk_voice_777"), Some("Speak slowly."))
         );
+    }
+}
+
+#[cfg(test)]
+mod default_model_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// A fetcher that records each URL it is asked for and fails, so a test sees whether a download was tried.
+    #[derive(Default)]
+    struct Recording(RefCell<Vec<String>>);
+
+    impl ggtts_models::Fetch for Recording {
+        fn open(&self, url: &str) -> Result<Box<dyn std::io::Read>, String> {
+            self.0.borrow_mut().push(url.to_string());
+            Err("no network in this test".into())
+        }
+    }
+
+    fn empty_cache(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("ggtts-ffi-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    /// A cache already holding the default files, as ggtts-render's tests make one: each a sparse file of the pinned
+    /// size with the record of an earlier check, so nothing is downloaded or hashed.
+    fn prepared_cache(name: &str) -> PathBuf {
+        let root = empty_cache(name);
+        let cache = ggtts_models::Cache::new(root.clone());
+        for p in ggtts_models::QWEN3_TTS.files {
+            let path = cache.path_for(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::File::create(&path).unwrap().set_len(p.size).unwrap();
+            let mtime = std::fs::metadata(&path)
+                .unwrap()
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let record = serde_json::json!({"sha256": p.sha256, "size": p.size, "mtime_ns": mtime.to_string()});
+            std::fs::write(
+                path.with_file_name(format!("{}.verified", p.file_name)),
+                record.to_string(),
+            )
+            .unwrap();
+        }
+        root
+    }
+
+    fn resolve(
+        root: &Path,
+        model: Option<&str>,
+        codec: Option<&str>,
+        allow_download: bool,
+        fetch: &Recording,
+    ) -> Result<DefaultFiles, Fail> {
+        let models = Models {
+            cache_dir: Some(root.to_str().unwrap()),
+            allow_download,
+        };
+        default_files(&ggtts_models::QWEN3_TTS, model, codec, models, true, fetch)
+    }
+
+    /// With no paths, the pinned default files from the cache and the default model's default speaker; a given path
+    /// is used as it is, and a given model keeps its own speaker. Nothing is fetched.
+    #[test]
+    fn the_default_files_and_speaker_come_from_the_cache() {
+        let root = prepared_cache("defaults");
+        let cache = ggtts_models::Cache::new(root.clone());
+        let [talker, codec] = ggtts_models::QWEN3_TTS.files else {
+            panic!("two default files")
+        };
+        let fetch = Recording::default();
+        let files = resolve(&root, None, None, false, &fetch).unwrap();
+        assert_eq!(
+            files,
+            DefaultFiles {
+                model: cache.path_for(talker),
+                codec: cache.path_for(codec),
+                speaker: Some("hk_voice_343"),
+            }
+        );
+        let files = resolve(&root, Some("my-talker.gguf"), None, false, &fetch).unwrap();
+        assert_eq!(files.model, PathBuf::from("my-talker.gguf"));
+        assert_eq!(files.codec, cache.path_for(codec));
+        assert_eq!(files.speaker, None, "a given model keeps its own default speaker");
+        let files = resolve(&root, None, Some("my-codec.gguf"), false, &fetch).unwrap();
+        assert_eq!(files.model, cache.path_for(talker));
+        assert_eq!(files.codec, PathBuf::from("my-codec.gguf"));
+        assert_eq!(files.speaker, Some("hk_voice_343"));
+        assert!(fetch.0.borrow().is_empty(), "fetched {:?}", fetch.0.borrow());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Downloading off (the default): a file missing from the cache is an error naming the file and its URL, and
+    /// nothing is fetched. Downloading on: the pinned URL is fetched, and its failure is the error.
+    #[test]
+    fn a_missing_file_is_downloaded_only_when_allowed() {
+        let root = empty_cache("offline");
+        let fetch = Recording::default();
+        let (code, msg) = resolve(&root, None, None, false, &fetch).unwrap_err();
+        assert_eq!(code, GGTTS_ERR_ENGINE);
+        for p in ggtts_models::QWEN3_TTS.files {
+            assert!(msg.contains(p.file_name) && msg.contains(p.url), "{msg}");
+        }
+        assert!(msg.contains("allow_download"), "{msg}");
+        assert!(fetch.0.borrow().is_empty(), "fetched {:?}", fetch.0.borrow());
+
+        let (code, msg) = resolve(&root, None, None, true, &fetch).unwrap_err();
+        assert_eq!(code, GGTTS_ERR_ENGINE);
+        let talker = &ggtts_models::QWEN3_TTS.files[0];
+        assert_eq!(*fetch.0.borrow(), [talker.url.to_string()]);
+        assert!(
+            msg.contains("no network in this test") && msg.contains(talker.url),
+            "{msg}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A build without engines looks nothing up and fetches nothing, as ggtts-render.
+    #[test]
+    fn a_build_without_engines_fetches_nothing() {
+        let root = empty_cache("no-engines");
+        let fetch = Recording::default();
+        let models = Models {
+            cache_dir: Some(root.to_str().unwrap()),
+            allow_download: true,
+        };
+        let (code, msg) = default_files(&ggtts_models::QWEN3_TTS, None, None, models, false, &fetch).unwrap_err();
+        assert_eq!(code, GGTTS_ERR_ENGINE);
+        assert_eq!(
+            msg,
+            "this build has no qwen3-tts engine (built without the ggml feature)"
+        );
+        assert!(fetch.0.borrow().is_empty());
+        assert!(!root.exists(), "the cache was touched");
+    }
+
+    /// A version-2 struct is read up to `instruction` only: whatever follows it in the caller's memory is not a
+    /// setting, so it loads only the paths given, on the CPU. A version-3 struct reads every field.
+    #[test]
+    fn a_version_2_struct_reads_no_version_3_field() {
+        #[repr(C)]
+        struct V2ThenJunk {
+            size: usize,
+            speaker: *const c_char,
+            instruction: *const c_char,
+            junk: [u8; 64],
+        }
+        let v2 = V2ThenJunk {
+            size: GGTTS_SETTINGS_V2_SIZE,
+            speaker: c"hk_voice_777".as_ptr(),
+            instruction: std::ptr::null(),
+            junk: [0xff; 64],
+        };
+        assert_eq!(GGTTS_SETTINGS_V2_SIZE, 3 * std::mem::size_of::<usize>());
+        let s = unsafe { Settings::from_c(&v2 as *const V2ThenJunk as *const GgttsSettings) }.unwrap();
+        assert_eq!(s.speaker, Some("hk_voice_777"));
+        assert_eq!((s.device, s.models), (None, None));
+
+        let v3 = GgttsSettings {
+            size: std::mem::size_of::<GgttsSettings>(),
+            speaker: std::ptr::null(),
+            instruction: std::ptr::null(),
+            device: c"cuda".as_ptr(),
+            cache_dir: c"".as_ptr(),
+            allow_download: 1,
+        };
+        let s = unsafe { Settings::from_c(&v3) }.unwrap();
+        assert_eq!(s.device, Some("cuda"));
+        assert_eq!(
+            s.models,
+            Some(Models {
+                cache_dir: None,
+                allow_download: true
+            })
+        );
+        let bad = GgttsSettings {
+            allow_download: 2,
+            ..v3
+        };
+        let (code, msg) = unsafe { Settings::from_c(&bad) }.unwrap_err();
+        assert_eq!(code, GGTTS_ERR_ARG);
+        assert_eq!(msg, "settings.allow_download must be 0 or 1, not 2");
     }
 }

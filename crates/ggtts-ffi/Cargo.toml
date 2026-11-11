@@ -17,12 +17,19 @@ ggtts-core.workspace = true
 ggtts-fake.workspace = true
 ggtts-qwen3-tts.workspace = true
 ggtts-kitten = { path = "../ggtts-kitten" }
+# The pinned default model files, their cache and their verified download: the same as ggtts-render's.
+ggtts-models.workspace = true
 jni = { version = "0.21", optional = true, default-features = false }
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [features]
 default = []
 # The engines over ggml; without it only the fake engine loads, and the others report that the build has none.
 ggml = ["ggtts-qwen3-tts/ggml", "ggtts-kitten/ggml"]
+# The CUDA backend as well, for the `cuda` device setting. Without it, asking for that device is refused.
+cuda = ["ggml", "ggtts-qwen3-tts/cuda", "ggtts-kitten/cuda"]
 # The JNI entry points the Kotlin class calls (`Java_ggtts_Native_*`).
 jni = ["dep:jni"]
 # Test-only: an engine named `panic` whose generate panics, for the planted boundary test.

@@ -17,7 +17,7 @@ use jni::JNIEnv;
 
 use crate::{
     ggtts_free, ggtts_load, ggtts_load_with, ggtts_pcm_free, ggtts_render, ggtts_render_stream, last_error,
-    GgttsSettings, GGTTS_ERR_ARG, GGTTS_ERR_PANIC,
+    GgttsSettings, GGTTS_ERR_ARG, GGTTS_ERR_PANIC, GGTTS_SETTINGS_V2_SIZE,
 };
 
 /// Whether an exception is pending. A failed check is read as pending, so nothing is thrown over an unknown state.
@@ -137,8 +137,73 @@ pub extern "system" fn Java_ggtts_Native_load<'l>(
     )
 }
 
+/// The Java strings of one `ggtts_load_with` call; `cache_dir` and `allow_download` are `None` for a version-2 call.
+struct LoadArgs<'a, 'l> {
+    engine: &'a JString<'l>,
+    model: &'a JString<'l>,
+    codec: &'a JString<'l>,
+    voice: &'a JString<'l>,
+    threads: jint,
+    speaker: &'a JString<'l>,
+    instruction: &'a JString<'l>,
+    models: Option<(&'a JString<'l>, bool)>,
+}
+
+/// Convert `a` and call [`ggtts_load_with`]: with a version-2 struct when `a.models` is `None`, so that call loads
+/// exactly as it did in version 2, else with the whole struct (the device stays unset: the CPU). Returns the handle,
+/// or 0 with an exception thrown.
+fn load_with(env: &mut JNIEnv, a: LoadArgs) -> jlong {
+    let strings = [
+        (a.engine, "engine"),
+        (a.model, "model"),
+        (a.codec, "codec"),
+        (a.voice, "voice"),
+        (a.speaker, "speaker"),
+        (a.instruction, "instruction"),
+    ];
+    let mut c = Vec::with_capacity(strings.len() + 1);
+    for (s, name) in strings {
+        let Ok(s) = cstr(env, s, name) else {
+            return 0;
+        };
+        c.push(s);
+    }
+    let Ok(cache_dir) = a.models.map_or(Ok(None), |(dir, _)| cstr(env, dir, "cacheDir")) else {
+        return 0;
+    };
+    let settings = GgttsSettings {
+        size: if a.models.is_some() {
+            std::mem::size_of::<GgttsSettings>()
+        } else {
+            GGTTS_SETTINGS_V2_SIZE
+        },
+        speaker: or_null(&c[4]),
+        instruction: or_null(&c[5]),
+        device: ptr::null(),
+        cache_dir: or_null(&cache_dir),
+        allow_download: a.models.is_some_and(|(_, allow)| allow) as i32,
+    };
+    let mut handle = 0u64;
+    let code = unsafe {
+        ggtts_load_with(
+            or_null(&c[0]),
+            or_null(&c[1]),
+            or_null(&c[2]),
+            or_null(&c[3]),
+            a.threads,
+            &settings,
+            &mut handle,
+        )
+    };
+    if code != 0 {
+        throw(env, code, &last_error());
+        return 0;
+    }
+    handle as jlong
+}
+
 /// `Native.loadWith`: `load` with a Qwen3-TTS speaker and style instruction, each nullable, through
-/// [`ggtts_load_with`].
+/// [`ggtts_load_with`] with a version-2 struct, so it loads as it did when it was added: the paths given only.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "system" fn Java_ggtts_Native_loadWith<'l>(
@@ -156,46 +221,58 @@ pub extern "system" fn Java_ggtts_Native_loadWith<'l>(
         &mut env,
         || 0,
         |env| {
-            let Ok(engine) = cstr(env, &engine, "engine") else {
-                return 0;
-            };
-            let Ok(model) = cstr(env, &model, "model") else {
-                return 0;
-            };
-            let Ok(codec) = cstr(env, &codec, "codec") else {
-                return 0;
-            };
-            let Ok(voice) = cstr(env, &voice, "voice") else {
-                return 0;
-            };
-            let Ok(speaker) = cstr(env, &speaker, "speaker") else {
-                return 0;
-            };
-            let Ok(instruction) = cstr(env, &instruction, "instruction") else {
-                return 0;
-            };
-            let settings = GgttsSettings {
-                size: std::mem::size_of::<GgttsSettings>(),
-                speaker: or_null(&speaker),
-                instruction: or_null(&instruction),
-            };
-            let mut handle = 0u64;
-            let code = unsafe {
-                ggtts_load_with(
-                    or_null(&engine),
-                    or_null(&model),
-                    or_null(&codec),
-                    or_null(&voice),
+            load_with(
+                env,
+                LoadArgs {
+                    engine: &engine,
+                    model: &model,
+                    codec: &codec,
+                    voice: &voice,
                     threads,
-                    &settings,
-                    &mut handle,
-                )
-            };
-            if code != 0 {
-                throw(env, code, &last_error());
-                return 0;
-            }
-            handle as jlong
+                    speaker: &speaker,
+                    instruction: &instruction,
+                    models: None,
+                },
+            )
+        },
+    )
+}
+
+/// `Native.loadWithModels`: `loadWith` that also resolves the default model files (C-ABI version 3): a null model or
+/// codec of `qwen3-tts` is the pinned default from the cache at `cacheDir` (null: ggtts-render's), downloaded only
+/// when `allowDownload` is true; with no model and no speaker, the default model's default speaker.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_ggtts_Native_loadWithModels<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    engine: JString<'l>,
+    model: JString<'l>,
+    codec: JString<'l>,
+    voice: JString<'l>,
+    threads: jint,
+    speaker: JString<'l>,
+    instruction: JString<'l>,
+    cache_dir: JString<'l>,
+    allow_download: jboolean,
+) -> jlong {
+    jni_guard(
+        &mut env,
+        || 0,
+        |env| {
+            load_with(
+                env,
+                LoadArgs {
+                    engine: &engine,
+                    model: &model,
+                    codec: &codec,
+                    voice: &voice,
+                    threads,
+                    speaker: &speaker,
+                    instruction: &instruction,
+                    models: Some((&cache_dir, allow_download != 0)),
+                },
+            )
         },
     )
 }

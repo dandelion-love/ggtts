@@ -57,6 +57,19 @@ new requirements. Internal refactors and test changes are not listed.
   built against it runs without recompiling. Without a speaker the binding still uses `hk_cantonese_speaker`, so the
   v0.0.5 talker (`hk_voice_343`, `hk_voice_777`) needs one; resolving the default model and its default speaker in
   the binding is [#164](https://github.com/dandelion-love/ggtts/issues/164).
+- **The binding finds the default model, and the C-ABI can render on the GPU.** The C-ABI is now version 3:
+  `ggtts_settings` gains three trailing fields, `device`, `cache_dir` and `allow_download` (`GGTTS_SETTINGS_INIT`
+  sets them to NULL, NULL and 0). With engine `qwen3-tts` and no model or codec path, `ggtts_load_with` loads the
+  default model `ggtts-render` uses, from the same cache, verified against the same sha256, with its default speaker
+  `hk_voice_343` when no speaker is given ([#164](https://github.com/dandelion-love/ggtts/issues/164)). It downloads
+  a missing file only when `allow_download` is 1; otherwise the error names the file and its URL. `device = "cuda"`
+  renders Qwen3-TTS (and Kitten-TTS 2) on the GPU in a library built with `ggtts-ffi`'s new `cuda` feature; a
+  library without it refuses with `GGTTS_ERR_ENGINE` before reading any file
+  ([#167](https://github.com/dandelion-love/ggtts/issues/167)). In Kotlin, `Ggtts.load` takes `cacheDir` and
+  `allowDownload`; it has no device, because Android has no GPU backend. Existing callers are unchanged: `ggtts_load`,
+  NULL settings and a struct from the version-2 header load the paths they give, on the CPU, as before, and the
+  seven-parameter Kotlin `Ggtts.load` stays in the compiled class and loads as it did. The library now links the
+  same HTTPS client as `ggtts-render` (ureq with rustls), used only when a download is allowed.
 - **A render with no model downloads the default one.** `ggtts-render --text "..." --out x.flac` with no `--model`
   renders with Qwen3-TTS on the talker and codec of `jmtl/hk-cantonese-cc0-qwen3-tts-GGUF` v0.0.5 (2.33 GB, pinned
   by commit and sha256) and the speaker `hk_voice_343`. The first run says what it will download, from where, how

@@ -1,7 +1,8 @@
-"""Speech-core boundary used by the lab's edges/2 rule, from a 10 ms level track.
+"""Speech-core boundary of the reference edges/2 rule, from a 10 ms level track.
 
-Derived from cantonese-speech-analysis scripts/analysis/canto/steps.py, Apache-2.0.
-Only core selection is implemented here, not the edge-event detector.
+Derived from the `steps.py` of an unpublished analysis tool for speech by the ggtts authors, which is licensed under
+the Apache License, Version 2.0; a copy of that licence is in LICENSE-APACHE-2.0 beside this file. This file is a
+modified work: only the core selection is implemented here, not the edge-event detector.
 """
 
 def segments(levels, merge_s):

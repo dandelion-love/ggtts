@@ -8,6 +8,8 @@ import unittest
 from unittest.mock import patch
 from io import StringIO
 
+from select_specialized_ci import GGML_GATED_CRATES, GGML_GATED_FILES
+from select_specialized_ci import cuda_decision, cuda_drift, cuda_push_path, pushed_paths
 from select_specialized_ci import JOBS, LOGGING_PACKAGES, decide, logging_lockfile_change, main, tomllib, workflow_changes, workflow_sections
 
 
@@ -34,14 +36,89 @@ def logging_fixtures():
 
 
 class SelectionTest(unittest.TestCase):
-    def test_no_hosted_cuda_job_and_release_still_builds_cuda(self):
+    def test_cuda_compile_runs_on_promotion_and_build_affecting_rc_pushes_only(self):
+        # Every pull request into main, whatever it changes; no pull request into any other branch.
+        self.assertTrue(cuda_decision("pull_request", "main", "refs/pull/1/merge", []))
+        for base in ("rc", "feature", ""):
+            self.assertFalse(cuda_decision("pull_request", base, "refs/pull/1/merge",
+                                           ["Cargo.lock", ".github/workflows/ci.yml", "crates/ggtts-ggml-sys/build.rs"]))
+        # A push to rc, only for a path that can break the CUDA build.
+        for path in ("Cargo.lock", "crates/ggtts-ggml-sys/ggml", ".gitmodules", ".github/workflows/ci.yml",
+                     ".github/workflows/release.yml", "crates/ggtts-ggml-sys/build.rs", "crates/ggtts-core/build.rs",
+                     "scripts/package_cuda_release.sh", "Cargo.toml", "crates/ggtts-cli/Cargo.toml",
+                     "instruments/templates/rust/event/Cargo.toml", "crates/ggtts-ggml-sys/src/lib.rs",
+                     "crates/ggtts-ggml-sys/src/bindings/x86_64-unknown-linux-gnu.rs"):
+            self.assertTrue(cuda_push_path(path), path)
+            self.assertTrue(cuda_decision("push", "", "refs/heads/rc", ["README.md", path]), path)
+            self.assertFalse(cuda_decision("push", "", "refs/heads/main", [path]), path)
+            self.assertFalse(cuda_decision("push", "", "refs/heads/feature", [path]), path)
+        for path in ("README.md", "crates/ggtts-core/src/lib.rs", "scripts/build.rs", "docs/Cargo.toml.md",
+                     "crates/ggtts-ggml-sys-notes.md", "docs/build.rs.md", "scripts/package_and_smoke.sh",
+                     "scripts/package_cuda_release.sh.bak"):
+            self.assertFalse(cuda_push_path(path), path)
+            self.assertFalse(cuda_decision("push", "", "refs/heads/rc", [path]), path)
+        self.assertFalse(cuda_decision("push", "", "refs/heads/rc", []))
+        # An unreadable pushed range runs the compile; it is never read as "nothing changed".
+        self.assertTrue(cuda_decision("push", "", "refs/heads/rc", None))
+        self.assertIsNone(pushed_paths("0" * 40, "a" * 40))
+        self.assertIsNone(pushed_paths("", "a" * 40))
+        self.assertIsNone(pushed_paths("not-a-commit", "HEAD"))
+        self.assertFalse(cuda_decision("workflow_dispatch", "main", "refs/heads/rc", ["Cargo.lock"]))
+
+    def test_cuda_compile_cannot_drift_from_the_release_cuda_build(self):
+        root = Path(__file__).resolve().parent.parent
+        ci = (root / '.github/workflows/ci.yml').read_text()
+        release = (root / '.github/workflows/release.yml').read_text()
+        self.assertEqual(cuda_drift(ci, release), [])
+        jobs = workflow_sections(ci)[1]
+        self.assertIn("needs.specialized-selection.outputs.cuda == 'true'", jobs['cuda-compile'])
+        # The check runs in the job every CI run has, not only where the compile is selected.
+        self.assertIn("--check-cuda-drift", jobs['specialized-selection'])
+        # Planted in either workflow, each of these must be reported.
+        plants = {
+            "image": ("nvidia/cuda:12.6.3-devel-ubuntu22.04@sha256:", "nvidia/cuda:12.9.9-devel-ubuntu22.04@sha256:"),
+            "command": ("run: bash scripts/package_cuda_release.sh", "run: bash scripts/package_cuda_release.sh --fast"),
+            "tools": ("cmake g++ make python3", "cmake g++ make ninja-build python3"),
+            "no submodule init": ("          git submodule update --init crates/ggtts-ggml-sys/ggml\n", ""),
+            "toolchain": ("--default-toolchain none", "--default-toolchain stable"),
+            "added env": ("        env:\n          TAG:", "        env:\n          GGML_NATIVE: \"1\"\n          TAG:"),
+            "no apt retry": ("            sleep 20\n", ""),
+            "timeout": ("    timeout-minutes: 90\n", "    timeout-minutes: 30\n"),
+            "no pin check": ('          test "$(git -C crates/ggtts-ggml-sys/ggml rev-parse HEAD)" = "$pin"\n', ""),
+            "step shell": ("      - name: Fetch the pinned ggml\n", "      - name: Fetch the pinned ggml\n        shell: bash\n"),
+        }
+        for name, (old, new) in plants.items():
+            for which in ("release", "ci"):
+                text = release if which == "release" else ci
+                blocks = workflow_sections(text)[1]
+                job = "cuda-build" if which == "release" else "cuda-compile"
+                self.assertIn(old, blocks[job], (name, which))
+                planted = text.replace(blocks[job], blocks[job].replace(old, new))
+                self.assertNotEqual(planted, text, (name, which))
+                drift = cuda_drift(ci, planted) if which == "release" else cuda_drift(planted, release)
+                self.assertTrue(drift, (name, which))
+        # What may differ does not count: the tag, comments, and steps after the build.
+        self.assertEqual(cuda_drift(ci.replace("          TAG: ci\n", "          TAG: other\n"), release), [])
+        self.assertEqual(cuda_drift(ci.replace("  cuda-compile:\n", "  cuda-other:\n"), release),
+                         ["ci.yml has no cuda-compile job"])
+
+    def test_a_push_run_is_never_cancelled_or_superseded(self):
+        root = Path(__file__).resolve().parent.parent
+        header = workflow_sections((root / '.github/workflows/ci.yml').read_text())[0]
+        # Per-run group for pushes: a shared group would let a later push cancel a pending earlier one, and with it
+        # the CUDA selection for that push's range.
+        self.assertIn("group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}", header)
+        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", header)
+        self.assertNotIn("cancel-in-progress: true", header)
+
+    def test_cuda_is_not_a_selected_job_and_release_still_builds_cuda(self):
         promotion = decide("pull_request", "main", "rc", True, ["Cargo.lock"])
         self.assertEqual(promotion, set(JOBS))
         self.assertNotIn("cuda", promotion)
         root = Path(__file__).resolve().parent.parent
         ci_jobs = workflow_sections((root / '.github/workflows/ci.yml').read_text())[1]
         release_jobs = workflow_sections((root / '.github/workflows/release.yml').read_text())[1]
-        self.assertNotIn('cuda-compile', ci_jobs)
+        self.assertIn('cuda-compile', ci_jobs)
         self.assertIn('cuda-build', release_jobs)
         self.assertIn('scripts/package_cuda_release.sh', release_jobs['cuda-build'])
         gate = (root / 'scripts/rc_gate.py').read_text()
@@ -59,7 +136,7 @@ class SelectionTest(unittest.TestCase):
 
     def test_release_cuda_checkout_has_git_and_initializes_submodule(self):
         root = Path(__file__).resolve().parent.parent
-        for file, job in (("release.yml", "cuda-build"),):
+        for file, job in (("ci.yml", "cuda-compile"), ("release.yml", "cuda-build")):
             text = (root / ".github" / "workflows" / file).read_text()
             block = workflow_sections(text)[1][job]
             install = block.index("apt-get install")
@@ -81,7 +158,7 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(select([".github/workflows/release.yml"]), {"package", "release"})
         self.assertEqual(select(["scripts/package_cuda_release.sh"]), {"package", "release"})
         self.assertEqual(select(["scripts/buildinfo_engines.sh"]), {"ggml", "release"})
-        self.assertEqual(select(["crates/ggtts-qwen3-tts/src/lib.rs"]), {"package"})
+        self.assertEqual(select(["crates/ggtts-qwen3-tts/src/lib.rs"]), {"ggml", "package"})
         self.assertEqual(select(["crates/ggtts-core/src/pipeline.rs", "crates/ggtts-cli/Cargo.toml"]), {"package"})
         self.assertEqual(select(["crates/ggtts-ffi/src/lib.rs"]), {"binding", "android", "ggml"})
         self.assertEqual(select(["crates/ggtts-ggml-sys/build.rs"]), {"binding", "android", "ggml"})
@@ -107,9 +184,31 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(decide("pull_request", "rc", "feature", True,
                                 ["crates/ggtts-instruments/tests/no_change.rs"]), {"package"})
         self.assertEqual(decide("pull_request", "rc", "feature", True,
-                                ["crates/ggtts-qwen3-tts/tests/frame_hook.rs"]), set())
+                                ["crates/ggtts-qwen3-tts/tests/frame_hook.rs"]), {"ggml"})
         self.assertEqual(decide("pull_request", "rc", "feature", True,
-                                ["crates/ggtts-cli/tests/no_change_real.rs"]), {"package"})
+                                ["crates/ggtts-cli/tests/no_change_real.rs"]), {"ggml", "package"})
+
+    def test_ggml_gated_code_selects_the_ggml_job(self):
+        select = lambda paths: decide("pull_request", "rc", "feature", True, paths)
+        for path in ("crates/ggtts-kitten/src/model.rs", "crates/ggtts-kitten/src/refdsp.rs",
+                     "crates/ggtts-kitten/tests/parity.rs", "crates/ggtts-qwen3-tts/src/talker.rs",
+                     "crates/ggtts-qwen3-tts/src/engine.rs", "crates/ggtts-cli/tests/version_engines.rs",
+                     "crates/ggtts-cli/src/bin/ggtts-render.rs", "crates/ggtts-ffi/src/lib.rs",
+                     "crates/ggtts-ggml-sys/src/lib.rs"):
+            self.assertIn("ggml", select([path]), path)
+        # Ungated code does not pay for the ggml build.
+        for path in ("crates/ggtts-core/src/pipeline.rs", "crates/ggtts-fake/src/lib.rs",
+                     "crates/ggtts-cli/src/bin/ggtts-measure.rs", "crates/ggtts-instruments/src/runner.rs", "README.md"):
+            self.assertNotIn("ggml", select([path]), path)
+        # Every file in the tree that gates on the feature is covered, so a new gated file cannot go untested.
+        root = Path(__file__).resolve().parent.parent
+        gated = [p.relative_to(root).as_posix() for p in (root / "crates").rglob("*.rs")
+                 if "ggml-sys/ggml/" not in p.as_posix() and "/target/" not in p.as_posix()
+                 and 'feature = "ggml"' in p.read_text(encoding="utf-8", errors="replace")]
+        self.assertTrue(any(p.startswith(GGML_GATED_CRATES) for p in gated))
+        self.assertTrue(GGML_GATED_FILES <= set(gated), sorted(GGML_GATED_FILES - set(gated)))
+        for path in gated:
+            self.assertIn("ggml", select([path]), path + " gates on the ggml feature but does not select the ggml job")
 
     def test_logging_change_gets_lightweight_pr_and_cpu_promotion(self):
         paths = ["crates/ggtts-cli/Cargo.toml", "crates/ggtts-cli/src/bin/ggtts-render.rs",
@@ -269,7 +368,8 @@ class SelectionTest(unittest.TestCase):
                        BASE_SHA=base, HEAD_SHA=head, REPOSITORY="x/y", HEAD_REPO="x/y")
             result = subprocess.run([sys.executable, str(script)], cwd=d, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.count("=false"), len(JOBS))
+            self.assertEqual(result.stdout.count("=false"), len(JOBS) + 1)
+            self.assertIn("cuda=false", result.stdout)
             (Path(d) / "scripts").mkdir()
             (Path(d) / "scripts" / "android_build.sh").write_text("build")
             git("add", ".")
@@ -300,8 +400,24 @@ class SelectionTest(unittest.TestCase):
             env.update(BASE_REF="main", HEAD_REF="rc")
             result = subprocess.run([sys.executable, str(script)], cwd=d, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.count("=true"), len(JOBS))
-            self.assertNotIn("cuda=", result.stdout)
+            self.assertEqual(result.stdout.count("=true"), len(JOBS) + 1)
+            self.assertIn("cuda=true", result.stdout)
+            # A push to rc: the compile is selected by the pushed range, and nothing else is.
+            push = dict(os.environ, EVENT="push", REF="refs/heads/rc", PUSH_BEFORE=base, PUSH_AFTER=head)
+            result = subprocess.run([sys.executable, str(script)], cwd=d, env=push, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.count("=true"), 0)
+            self.assertIn("cuda=false", result.stdout)
+            push["PUSH_AFTER"] = git("rev-parse", "HEAD")
+            result = subprocess.run([sys.executable, str(script)], cwd=d, env=push, capture_output=True, text=True)
+            self.assertEqual(result.stdout.strip().splitlines()[-1], "cuda=true")
+            self.assertEqual(result.stdout.count("=true"), 1)
+            push["REF"] = "refs/heads/main"
+            result = subprocess.run([sys.executable, str(script)], cwd=d, env=push, capture_output=True, text=True)
+            self.assertIn("cuda=false", result.stdout)
+            push.update(REF="refs/heads/rc", PUSH_BEFORE="0" * 40)
+            result = subprocess.run([sys.executable, str(script)], cwd=d, env=push, capture_output=True, text=True)
+            self.assertIn("cuda=true", result.stdout)
 
 
 # CI invokes this suite explicitly; include the logging probe launch test.

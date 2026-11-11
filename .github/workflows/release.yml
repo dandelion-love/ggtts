@@ -113,6 +113,8 @@ jobs:
 
   cuda-build:
     name: build (x86_64-linux-cuda)
+    # CI's cuda-compile job is this job from runs-on to the build command, line for line, and runs on the promotion
+    # pull request; CI refuses any difference (scripts/select_specialized_ci.py --check-cuda-drift).
     runs-on: ubuntu-latest
     timeout-minutes: 90
     container:
@@ -120,8 +122,13 @@ jobs:
     steps:
       - name: Install build tools
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git cmake g++ make python3
+          # The Ubuntu archive fails now and then (apt-get exit 100): three attempts, with a pause between.
+          attempt=1
+          until apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git cmake g++ make python3; do
+            if [ "$attempt" -ge 3 ]; then echo "apt-get failed $attempt times"; exit 1; fi
+            attempt=$((attempt + 1))
+            sleep 20
+          done
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

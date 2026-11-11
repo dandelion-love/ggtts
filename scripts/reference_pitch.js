@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// Run the lab's pinned recording-booth pitch calculation on samples supplied over stdin. No audio is written.
-// Usage: node lab_pitch_reference.js /path/to/lab EXPECTED_PAGE_SHA256 < input.json
+// Run a reference recording-booth pitch calculation on samples supplied over stdin. No audio is written.
+// Usage: node reference_pitch.js /path/to/page.js EXPECTED_PAGE_SHA256 < input.json
+// page.js is the reference analysis script you supply; it is checked against the hash you give. The detector is the
+// Pitchy and fft.js bundled under instruments/vendor, checked against their pinned hashes.
 // input.json: {"sample_rate": 24000, "samples": [..]}; stdout contains only aggregate pitch measurements.
 const fs = require("fs");
 const path = require("path");
@@ -8,17 +10,17 @@ const crypto = require("crypto");
 const Module = require("module");
 const vm = require("vm");
 
-const lab = process.argv[2];
+const pageFile = process.argv[2];
 const pageSha = process.argv[3];
-if (!lab || !/^[a-f0-9]{64}$/.test(pageSha || "")) throw Error("lab path and expected page SHA-256 required");
+if (!pageFile || !/^[a-f0-9]{64}$/.test(pageSha || "")) throw Error("reference page.js path and its expected SHA-256 required");
 function pinned(file, expected) {
   const bytes = fs.readFileSync(file);
   if (crypto.createHash("sha256").update(bytes).digest("hex") !== expected) throw Error("reference hash mismatch: " + file);
   return bytes.toString("utf8");
 }
-const pitchFile = path.join(lab, "external/js/pitchy-4.1.0/index.js");
-const fftFile = path.join(lab, "external/js/fft.js-4.0.4/fft.js");
-const pageFile = path.join(lab, "scripts/recording/page.js");
+const vendor = path.join(__dirname, "..", "instruments", "vendor");
+const pitchFile = path.join(vendor, "pitchy-4.1.0", "index.js");
+const fftFile = path.join(vendor, "fft.js-4.0.4", "fft.js");
 const pitchSource = pinned(pitchFile, "79b92333cde9ec16798757f73b624abd13522da31e8fab2993c19d319b3bb36e");
 pinned(fftFile, "4092b92cec888377666265b724d676628d377d4d5f56b03b76d9c2c27fd061ea");
 const page = pinned(pageFile, pageSha);

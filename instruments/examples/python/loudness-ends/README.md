@@ -1,11 +1,11 @@
 # Loud and soft ends
 
-This instrument computes the checkpoint-card loud and soft ends: 10 ms RMS levels of voiced
+This instrument computes the loud and soft ends: 10 ms RMS levels of voiced
 frames inside the speech core, relative to their median, then the 90th and 10th percentiles. It requires at least
 20 voiced frames. It can now derive pYIN voicing and an edges/2 speech core from the audio in memory, with NumPy,
 librosa and their dependencies. Missing dependencies or insufficient voiced frames result in an incomplete required
-measurement. The core selector is derived from `cantonese-speech-analysis/scripts/analysis/canto/steps.py`
-(Apache-2.0); it does not implement the complete edge-event detector.
+measurement. The core selector (`core_selection.py`) is derived from an external reference
+implementation under Apache-2.0 (`LICENSE-APACHE-2.0` beside it); it does not implement the complete edge-event detector.
 
 No external voicing track is accepted. The recording-booth Pitchy track uses a different detector and eligibility
 rule and is not a substitute for pYIN.

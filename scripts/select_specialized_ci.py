@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Select specialized CI jobs. A skipped job is not a pass."""
+import difflib
 import os
+from pathlib import Path
 import re
 import hashlib
 import json
@@ -36,8 +38,20 @@ LOGGING_PACKAGES = {
 JOB_MAP = {
     "package-smoke": {"package"}, "binding": {"binding"}, "android-arm64": {"android"},
     "release-build": {"release"}, "ggml": {"ggml"}, "ggml-windows": {"ggml"},
-    "specialized-selection": set(JOBS),
+    # cuda-compile never runs on an ordinary PR (cuda_decision below), so an edit to it selects nothing here; the
+    # push to rc that lands a workflow edit runs it.
+    "cuda-compile": set(), "specialized-selection": set(JOBS),
     "check": set(), "build-test": set(), "planted-ceiling": set(),
+}
+
+# Where `feature = "ggml"` gates code: the default build compiles none of it, so only the ggml job runs its tests.
+# The engine crates are gated throughout; elsewhere it is these files. A test greps the tree and fails when a gated
+# file is in neither list. (crates/ggtts-ggml-sys/ and crates/ggtts-ffi/ select ggml by their own rule below.)
+GGML_GATED_CRATES = ("crates/ggtts-kitten/", "crates/ggtts-qwen3-tts/")
+GGML_GATED_FILES = {
+    "crates/ggtts-cli/src/bin/ggtts-render.rs",
+    "crates/ggtts-cli/tests/no_change_real.rs",
+    "crates/ggtts-cli/tests/version_engines.rs",
 }
 
 # Generic measurement/reporting paths are compiled and tested on both CPU hosts for every PR.
@@ -196,6 +210,9 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
             continue
         if path in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".gitmodules"):
             return set(JOBS)
+        if path.startswith(GGML_GATED_CRATES) or path in GGML_GATED_FILES:
+            # Code behind `feature = "ggml"` is compiled and tested only by the ggml job.
+            selected.add("ggml")
         if path.startswith("crates/"):
             if path == "crates/ggtts-cli/src/bin/ggtts-render.rs":
                 # The renderer contains ggml-gated engine loading and routing. Default CPU
@@ -231,7 +248,95 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
     return selected
 
 
+RELEASE_WORKFLOW = ".github/workflows/release.yml"
+GGML_SUBMODULE = "crates/ggtts-ggml-sys/ggml"
+
+
+def cuda_push_path(path):
+    """A path whose change can break the CUDA archive build.
+
+    A crate's build script, anything in the ggml bindings crate (its submodule pointer included), any manifest, the
+    lockfile, the script the archive is built with, and the workflows.
+    """
+    return (path in ("Cargo.lock", ".gitmodules", "Cargo.toml", "scripts/package_cuda_release.sh")
+            or path.endswith("/Cargo.toml")
+            or path == GGML_SUBMODULE or path.startswith("crates/ggtts-ggml-sys/")
+            or path.startswith(".github/workflows/")
+            or (path.startswith("crates/") and path.endswith("/build.rs")))
+
+
+def cuda_decision(event, base_ref, ref, paths):
+    """Whether the hosted CUDA archive compile runs. It is a separate output, never part of JOBS.
+
+    It runs on every pull request into main (the promotion), and on a push to rc that touches a cuda_push_path. It
+    never runs on a pull request into any other branch, whatever that pull request changes. `paths` is None when the
+    pushed range could not be read, which runs the compile. Each push is judged by its own range, so ci.yml must
+    never cancel or supersede a push run (its concurrency group is per run for pushes; a test holds it to that).
+    """
+    if event == "pull_request":
+        return base_ref == "main"
+    if event == "push" and ref == "refs/heads/rc":
+        return paths is None or any(cuda_push_path(path) for path in paths)
+    return False
+
+
+def pushed_paths(before, after):
+    """The paths a push changed, or None when the range cannot be read (a new branch, a rewritten history)."""
+    if not before or not after or set(before) == {"0"}:
+        return None
+    try:
+        return os.fsdecode(subprocess.check_output(
+            ["git", "diff", "--no-renames", "--name-only", "-z", before, after, "--"], stderr=subprocess.DEVNULL
+        )).split("\0")
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def cuda_recipe(block):
+    """A CUDA archive job from its runner to its build command, as lines, without what may differ.
+
+    What may differ between ci.yml and release.yml: the job's key, name, needs and if; comments; the value of TAG;
+    and anything after the build command (the release uploads the archive). Everything else is the recipe: the
+    runner, the timeout, the container image, every step with its name, shell, environment and script.
+    """
+    lines = []
+    for line in block.splitlines()[1:]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or re.match(r"^    (name|needs|if):", line):
+            continue
+        lines.append(re.sub(r"^(\s*TAG:).*$", r"\1 <tag>", line.rstrip()))
+        if stripped.startswith("run:") and "scripts/package_cuda_release.sh" in stripped:
+            return lines
+    raise ValueError("a CUDA archive job must end its recipe with a run of scripts/package_cuda_release.sh")
+
+
+def cuda_drift(ci_text, release_text):
+    """Differences between ci.yml's cuda-compile and release.yml's cuda-build; empty when they build alike."""
+    ci_jobs, release_jobs = workflow_sections(ci_text)[1], workflow_sections(release_text)[1]
+    if "cuda-compile" not in ci_jobs:
+        return ["ci.yml has no cuda-compile job"]
+    if "cuda-build" not in release_jobs:
+        return ["release.yml has no cuda-build job"]
+    ci, release = cuda_recipe(ci_jobs["cuda-compile"]), cuda_recipe(release_jobs["cuda-build"])
+    return [line for line in difflib.unified_diff(release, ci, "release.yml cuda-build", "ci.yml cuda-compile",
+                                                  lineterm="", n=0)
+            if line[:1] in "+-" and not line.startswith(("+++", "---"))]
+
+
+def check_cuda_drift():
+    root = Path(__file__).resolve().parent.parent
+    drift = cuda_drift((root / WORKFLOW).read_text(), (root / RELEASE_WORKFLOW).read_text())
+    for line in drift:
+        print("CUDA build drift: " + line, file=sys.stderr)
+    if not drift:
+        print("cuda-compile is release.yml's cuda-build, line for line, from the runner to the build command",
+              file=sys.stderr)
+    return 1 if drift else 0
+
+
 def main():
+    if sys.argv[1:] == ["--check-cuda-drift"]:
+        sys.exit(check_cuda_drift())
     event = os.environ["EVENT"]
     base_ref = os.environ.get("BASE_REF", "")
     head_ref = os.environ.get("HEAD_REF", "")
@@ -267,6 +372,13 @@ def main():
     selected = decide(event, base_ref, head_ref, same_repo, paths, workflow_selected, logging_lock_safe)
     for job in JOBS:
         print(f"{job}={'true' if job in selected else 'false'}")
+    ref = os.environ.get("REF", "")
+    pushed = pushed_paths(os.environ.get("PUSH_BEFORE", ""), os.environ.get("PUSH_AFTER", "")) \
+        if event == "push" and ref == "refs/heads/rc" else []
+    cuda = cuda_decision(event, base_ref, ref, pushed)
+    print(f"cuda={'true' if cuda else 'false'}")
+    if cuda:
+        print("CUDA archive compile selected", file=sys.stderr)
     print("Selected: " + (", ".join(sorted(selected)) or "none") + "; skipped is not passed", file=sys.stderr)
 
 

@@ -37,6 +37,31 @@ const CODE_PRED_MAX_NODES: usize = 4096;
 /// The code predictor's KV cache length (`init_code_pred_kv_cache(16)`).
 const CODE_PRED_CTX: i64 = 16;
 
+fn speaker_names(speakers: &HashMap<String, i32>) -> Vec<String> {
+    let mut names: Vec<String> = speakers.keys().cloned().collect();
+    names.sort();
+    names
+}
+
+/// Looks a speaker up by name, ignoring case. An unknown name is an error that lists every speaker the model has,
+/// in alphabetical order, and names the flag that chooses one; a model with no named speakers gets neither.
+fn find_speaker(speakers: &HashMap<String, i32>, name: &str) -> Result<i32, EngineError> {
+    if let Some(id) = speakers.get(&name.to_lowercase()) {
+        return Ok(*id);
+    }
+    let names = speaker_names(speakers);
+    if names.is_empty() {
+        // Nothing to choose from, so --speaker is not offered.
+        return Err(err(format!(
+            "the talker has no speaker {name}: this model has no named speakers"
+        )));
+    }
+    Err(err(format!(
+        "the talker has no speaker {name}; this model's speakers are: {}. Choose one with --speaker",
+        names.join(", ")
+    )))
+}
+
 fn err(msg: impl Into<String>) -> EngineError {
     EngineError(msg.into())
 }
@@ -648,6 +673,16 @@ impl Talker {
 
     pub fn speaker_id(&self, name: &str) -> Option<i32> {
         self.speakers.get(&name.to_lowercase()).copied()
+    }
+
+    /// The speaker's id, or the error a user sees for a name the model does not have ([`find_speaker`]).
+    pub fn speaker(&self, name: &str) -> Result<i32, EngineError> {
+        find_speaker(&self.speakers, name)
+    }
+
+    /// The model's speaker names, lower-cased as they are matched, in alphabetical order.
+    pub fn speaker_names(&self) -> Vec<String> {
+        speaker_names(&self.speakers)
     }
 
     /// Text to codec tokens, as the reference CLI renders `-t <text> --speaker <speaker> -l <lang> --seed <seed>
@@ -1654,6 +1689,40 @@ fn sampler_weights(logits: &mut [f32], s: Sampling) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn speakers(names: &[&str]) -> HashMap<String, i32> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.to_string(), 3000 + i as i32))
+            .collect()
+    }
+
+    #[test]
+    fn a_known_speaker_is_found_whatever_its_case() {
+        let s = speakers(&["hk_voice_777", "hk_voice_343"]);
+        assert_eq!(find_speaker(&s, "hk_voice_343").unwrap(), 3001);
+        assert_eq!(find_speaker(&s, "HK_Voice_777").unwrap(), 3000);
+    }
+
+    #[test]
+    fn an_unknown_speaker_error_lists_the_models_speakers_and_the_flag() {
+        let s = speakers(&["hk_voice_777", "hk_voice_343"]);
+        let e = find_speaker(&s, "hk_cantonese_speaker").unwrap_err().0;
+        assert_eq!(
+            e,
+            "the talker has no speaker hk_cantonese_speaker; this model's speakers are: hk_voice_343, hk_voice_777. \
+             Choose one with --speaker"
+        );
+        assert_eq!(speaker_names(&s), ["hk_voice_343", "hk_voice_777"]);
+    }
+
+    #[test]
+    fn an_unknown_speaker_error_says_so_when_the_model_names_none() {
+        let e = find_speaker(&HashMap::new(), "anyone").unwrap_err().0;
+        assert_eq!(e, "the talker has no speaker anyone: this model has no named speakers");
+        assert!(!e.contains("--speaker"), "{e}");
+    }
 
     // Frozen pre-refactor sampler control. It must stay independent of sampler_weights.
     fn previous_sample(logits: &mut [f32], s: Sampling, rng: &mut Philox) -> i32 {

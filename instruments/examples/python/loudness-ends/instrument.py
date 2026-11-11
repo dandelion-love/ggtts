@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checkpoint-card loud and soft ends, from pYIN and a speech-core boundary."""
+"""Loud and soft ends, from pYIN and a speech-core boundary."""
 import math
 import os
 import statistics
@@ -30,7 +30,7 @@ def percentile(values, q):
 
 
 def derive(audio):
-    """Calculate, in memory, the pYIN track and the lab's edges/2 core selection."""
+    """Calculate, in memory, the pYIN track and the reference edges/2 core selection."""
     import librosa
     import numpy as np
 

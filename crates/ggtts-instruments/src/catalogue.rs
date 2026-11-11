@@ -91,7 +91,7 @@ pub const CATALOGUE: &[Known] = &[
     python(
         "pitch-range",
         "examples/python/pitch-range/instrument.py",
-        "voiced pitch median and 5th-to-95th percentile range using the lab's Pitchy detector",
+        "voiced pitch median and 5th-to-95th percentile range using the bundled Pitchy detector",
         false,
     ),
     python(

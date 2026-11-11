@@ -79,15 +79,20 @@ The Linux and Windows ggml jobs use the same selector on ordinary PRs. Unknown j
 configuration conservatively select all remaining specialized checks. Selector changes run their dedicated
 tests; other changed paths select their own jobs. Pushes skip specialized jobs; general checks still run.
 
-PR CI does not compile the CUDA archive. The mandatory exact-head on-device gate still runs both CUDA
-engines and instrument identity checks, but it uses external ggml libraries and does not build the shipped CUDA
-archive. CUDA archive packaging or integration defects can therefore first be detected by the tag-triggered
-release build. A skipped hosted compile is not a pass or evidence of GPU runtime behavior.
+Ordinary PRs do not compile the CUDA archive. The `cuda-compile` job builds and smokes it on a hosted runner
+without a GPU, as `release.yml`'s `cuda-build` does, line for line (the selection job refuses a
+difference), in two cases only: every pull request into `main` (the promotion), and a push to `rc` that changes a
+crate's `build.rs`, anything in `crates/ggtts-ggml-sys/` (the ggml submodule pointer included), a `Cargo.toml`,
+`Cargo.lock`, `scripts/package_cuda_release.sh` or a workflow. Push runs are never cancelled, so each push is judged
+by its own range. The mandatory exact-head on-device gate
+still runs both CUDA engines and instrument identity checks, but it uses external ggml libraries and does not build
+the shipped CUDA archive. A skipped hosted compile is not a pass, and a passed one is not evidence of GPU runtime
+behavior.
 
 For the explicitly listed generic measurement and report paths in the selector, ordinary PRs run the standard
 Linux and Windows CPU checks and, for CLI or runner edits, package smoke. They do not automatically build the CUDA,
-Android or full release binaries. CPU release and Android builds remain mandatory on the promotion PR; the CUDA
-archive is built by the tag-triggered release. Selector tests exercise the
+Android or full release binaries. CPU release, Android and CUDA archive builds remain mandatory on the promotion PR; the
+tag-triggered release builds the archives again. Selector tests exercise the
 promotion and path decisions without building the specialized jobs on that PR.
 
 **Promotion.** `main` moves only by one reviewed pull request from `rc`. Hosted runners have no GPU, so before that

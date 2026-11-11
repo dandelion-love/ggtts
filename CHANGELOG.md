@@ -26,6 +26,15 @@ new requirements. Internal refactors and test changes are not listed.
 - **The x86-64 CPU archives need AVX2, FMA, F16C and BMI2**, and an operating system that enables AVX state. They
   do not need AVX-512, and they no longer depend on the instruction set of the machine that built them.
 
+### Fixed
+
+- **The Linux CPU archive starts on Ubuntu 22.04 again.** The archives of v0.1.0-rc.7 and rc.8 were built on Ubuntu
+  24.04 and needed glibc 2.39 (`GLIBC_2.38`/`GLIBC_2.39` not found on older systems,
+  [#85](https://github.com/dandelion-love/ggtts/issues/85)). The archive is now built on Ubuntu 22.04, and the
+  release refuses a Linux CPU binary that needs more than Ubuntu 22.04 ships: glibc 2.35, libstdc++ `GLIBCXX_3.4.30`
+  and `CXXABI_1.3.13`, libgcc_s `GCC_12.0.0`, libgomp `GOMP_5.1`/`OMP_5.1` (`scripts/check_glibc_floor.py`). The
+  CUDA archive was already built on Ubuntu 22.04 and is unchanged.
+
 ### Added
 
 - **`ggtts-render --speaker NAME`** selects a named speaker of a Qwen3-TTS model, for example

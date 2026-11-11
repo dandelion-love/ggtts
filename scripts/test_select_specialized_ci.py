@@ -126,6 +126,39 @@ class SelectionTest(unittest.TestCase):
         self.assertIn('crates/ggtts-kitten/scripts/cuda_probe.sh', gate)
         self.assertIn('instrument_proof(work, scratch', gate)
 
+    def test_release_build_is_the_release_matrix_and_holds_the_glibc_floor(self):
+        root = Path(__file__).resolve().parent.parent
+        ci = workflow_sections((root / '.github/workflows/ci.yml').read_text())[1]['release-build']
+        release = workflow_sections((root / '.github/workflows/release.yml').read_text())[1]['build']
+
+        def matrix(block):
+            entries, entry = [], None
+            for line in block.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("- os:"):
+                    entry = {"os": stripped.split(":", 1)[1].strip()}
+                    entries.append(entry)
+                elif entry is not None and stripped.startswith(("target:", "features:")):
+                    key, value = stripped.split(":", 1)
+                    entry[key] = value.strip()
+                elif stripped.startswith("runs-on:"):
+                    entry = None
+            return entries
+
+        self.assertEqual(matrix(ci), matrix(release))
+        linux = [entry for entry in matrix(release) if entry["target"] == "x86_64-linux"]
+        # The Linux CPU archive's glibc floor is its runner's; ubuntu-latest (24.04) needed glibc 2.39.
+        self.assertEqual(linux, [{"os": "ubuntu-22.04", "target": "x86_64-linux", "features": "ggtts-cli/ggml"}])
+        check = "python3 scripts/check_glibc_floor.py target/release/ggtts-render target/release/ggtts-measure"
+        for name, block in (("ci.yml release-build", ci), ("release.yml build", release)):
+            self.assertIn(check, block, name)
+            # The check runs on the built binaries, before anything is packed.
+            self.assertLess(block.index("cargo build --release"), block.index(check), name)
+        self.assertLess(release.index(check), release.index("scripts/package_and_smoke.sh pack"))
+        self.assertIn("--floor GLIBC=2.17", ci)
+        # The in-job drift step compares the runner too, not only the features.
+        self.assertIn('test "$os" = "$OS"', ci)
+
     def test_renderer_routes_get_ggml_without_cuda(self):
         renderer = ["crates/ggtts-cli/src/bin/ggtts-render.rs"]
         self.assertEqual(decide("pull_request", "rc", "feature", True, renderer), {"ggml", "package"})
@@ -158,6 +191,8 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(select([".github/workflows/release.yml"]), {"package", "release"})
         self.assertEqual(select(["scripts/package_cuda_release.sh"]), {"package", "release"})
         self.assertEqual(select(["scripts/buildinfo_engines.sh"]), {"ggml", "release"})
+        self.assertEqual(select(["scripts/check_glibc_floor.py"]), {"release"})
+        self.assertEqual(select(["scripts/test_check_glibc_floor.py"]), set())
         self.assertEqual(select(["crates/ggtts-qwen3-tts/src/lib.rs"]), {"ggml", "package"})
         self.assertEqual(select(["crates/ggtts-core/src/pipeline.rs", "crates/ggtts-cli/Cargo.toml"]), {"package"})
         self.assertEqual(select(["crates/ggtts-ffi/src/lib.rs"]), {"binding", "android", "ggml"})

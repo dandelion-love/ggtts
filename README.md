@@ -274,6 +274,43 @@ stream receives that line only after the engine has generated and decoded it. `-
 the story hold at the cost of potentially uneven loudness. The stream formats are WAV and s16le; FLAC is the
 completed-file format. There is no native MP3, AAC or Opus encoder selection in `ggtts-render`.
 
+## Python
+
+`crates/ggtts-py` is the Python binding: `import ggtts`, with the engines and settings of the C-ABI's
+`ggtts_load_with` (Qwen3-TTS with a speaker and a style instruction, Kitten-TTS 2). It is not on PyPI; build the
+wheel from a checkout (Rust, Python 3.9 or later, and for the engines CMake and a C++ compiler):
+
+```sh
+pip install maturin
+cd crates/ggtts-py
+maturin build --release --features python,pyo3/extension-module,ggml   # Windows: bindgen in place of ggml (needs libclang)
+pip install target/wheels/ggtts-*.whl
+```
+
+```python
+import ggtts
+
+with ggtts.load() as tts:                      # Qwen3-TTS and its default model, downloaded once into the cache
+    audio = tts.render("今日天氣好好，我哋去海邊行下。")
+    audio.write_flac("out.flac")               # 16-bit mono FLAC; the suffix is forced to .flac
+    samples, rate = audio.samples, audio.sample_rate   # float32: a numpy array when numpy is installed
+
+    for chunk in tts.stream("第一段。\n第二段。"):    # the chunks in order, as each is ready; break stops it
+        ...
+
+tts = ggtts.load(model="talker.gguf", codec="codec.gguf", speaker="hk_voice_777",
+                 instruction="Speak slowly and softly.", offline=True)
+```
+
+`ggtts.load(engine="qwen3-tts", model=None, codec=None, voice=None, speaker=None, instruction=None, device="cpu",
+threads=None, offline=False, progress=None)`. With no model given, Qwen3-TTS loads its default model files (above)
+from the cache, downloading them first unless `offline=True`; `progress` receives the download messages, which
+otherwise go to stderr. A setting the engine does not take is refused, never ignored. Every error is a
+`ggtts.GgttsError` with `code` (`ggtts.ERR_ARG`, `ERR_ENGINE`, `ERR_HANDLE`, `ERR_BUSY`, `ERR_PANIC`: the C-ABI's
+codes) and `message`; a panic inside ggtts is a `GgttsError` with `ERR_PANIC`, never an unwind into Python. The GIL is
+released while an engine loads and renders, so other threads run. A render at a seed (`seed=`, default 20260905) is
+the C-ABI's render at that seed. Without the `ggml` feature only the `fake` test engine loads.
+
 ## How parity is tested
 
 The tests compare outputs, not impressions. They form a ladder:

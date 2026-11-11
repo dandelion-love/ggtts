@@ -197,10 +197,11 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(select(["scripts/buildinfo_engines.sh"]), {"ggml", "release"})
         self.assertEqual(select(["scripts/check_glibc_floor.py"]), {"release"})
         self.assertEqual(select(["scripts/test_check_glibc_floor.py"]), set())
-        self.assertEqual(select(["crates/ggtts-qwen3-tts/src/lib.rs"]), {"ggml", "package"})
-        self.assertEqual(select(["crates/ggtts-core/src/pipeline.rs", "crates/ggtts-cli/Cargo.toml"]), {"package"})
-        self.assertEqual(select(["crates/ggtts-ffi/src/lib.rs"]), {"binding", "android", "ggml"})
-        self.assertEqual(select(["crates/ggtts-ggml-sys/build.rs"]), {"binding", "android", "ggml"})
+        self.assertEqual(select(["crates/ggtts-qwen3-tts/src/lib.rs"]), {"ggml", "package", "python"})
+        self.assertEqual(select(["crates/ggtts-core/src/pipeline.rs", "crates/ggtts-cli/Cargo.toml"]), {"package", "python"})
+        self.assertEqual(select(["crates/ggtts-cli/Cargo.toml"]), {"package"})
+        self.assertEqual(select(["crates/ggtts-ffi/src/lib.rs"]), {"binding", "android", "ggml", "python"})
+        self.assertEqual(select(["crates/ggtts-ggml-sys/build.rs"]), {"binding", "android", "ggml", "python"})
         for path in (".github/workflows/ci.yml", "Cargo.lock"):
             self.assertEqual(select([path]), set(JOBS))
         self.assertEqual(select(["scripts/select_specialized_ci.py", "scripts/test_select_specialized_ci.py"]), set())
@@ -216,7 +217,7 @@ class SelectionTest(unittest.TestCase):
                  "crates/ggtts-core/tests/report.rs", "crates/ggtts-instruments/src/runner.rs",
                  "crates/ggtts-instruments/tests/runner.rs", "instruments/python/ggtts_instrument/envelope.py",
                  "schemas/ggtts-report-2.schema.json"]
-        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"ggml", "package"})
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"ggml", "package", "python"})
         self.assertEqual(decide("pull_request", "main", "rc", True, paths), set(JOBS))
         self.assertEqual(decide("pull_request", "rc", "feature", True,
                                 ["crates/unknown/src/lib.rs"]), set(JOBS))
@@ -247,7 +248,25 @@ class SelectionTest(unittest.TestCase):
         self.assertTrue(any(p.startswith(GGML_GATED_CRATES) for p in gated))
         self.assertTrue(GGML_GATED_FILES <= set(gated), sorted(GGML_GATED_FILES - set(gated)))
         for path in gated:
-            self.assertIn("ggml", select([path]), path + " gates on the ggml feature but does not select the ggml job")
+            # The Python binding is its own workspace; the python job compiles its gated code with ggml on Linux.
+            job = "python" if path.startswith("crates/ggtts-py/") else "ggml"
+            self.assertIn(job, select([path]), path + f" gates on the ggml feature but does not select the {job} job")
+
+    def test_the_python_binding_and_what_it_links_select_the_python_job(self):
+        select = lambda paths: decide("pull_request", "rc", "feature", True, paths)
+        for path in ("crates/ggtts-py/src/core.rs", "crates/ggtts-py/python/ggtts/__init__.py",
+                     "crates/ggtts-py/tests/test_ggtts.py", "crates/ggtts-py/Cargo.toml", "crates/ggtts-py/Cargo.lock",
+                     "crates/ggtts-py/pyproject.toml"):
+            self.assertEqual(select([path]), {"python"}, path)
+        for path in ("crates/ggtts-core/src/pipeline.rs", "crates/ggtts-fake/src/lib.rs", "crates/ggtts-kitten/src/flow.rs",
+                     "crates/ggtts-qwen3-tts/Cargo.toml", "crates/ggtts-ggml-sys/build.rs", "crates/ggtts-ffi/src/lib.rs",
+                     "crates/ggtts-models/src/lib.rs"):
+            self.assertIn("python", select([path]), path)
+        # The engines' own tests, the CLI and the docs do not reach the binding.
+        for path in ("crates/ggtts-qwen3-tts/tests/frame_hook.rs", "crates/ggtts-core/tests/report.rs",
+                     "crates/ggtts-cli/src/bin/ggtts-measure.rs", "README.md", "android/demo.kt"):
+            self.assertNotIn("python", select([path]), path)
+        self.assertIn("python", decide("pull_request", "main", "rc", True, []))
 
     def test_logging_change_gets_lightweight_pr_and_cpu_promotion(self):
         paths = ["crates/ggtts-cli/Cargo.toml", "crates/ggtts-cli/src/bin/ggtts-render.rs",
@@ -256,7 +275,7 @@ class SelectionTest(unittest.TestCase):
                  "crates/ggtts-core/src/trace.rs", "crates/ggtts-core/tests/trace.rs",
                  "crates/ggtts-qwen3-tts/src/lib.rs", "crates/ggtts-qwen3-tts/src/native_logging.rs",
                  "crates/ggtts-instruments/src/runner.rs", "scripts/select_specialized_ci.py"]
-        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"ggml", "package"})
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"ggml", "package", "python"})
         self.assertEqual(decide("pull_request", "main", "rc", True, paths), set(JOBS))
         self.assertEqual(decide("push", "", "", True, paths), set())
 

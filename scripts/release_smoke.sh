@@ -120,7 +120,9 @@ model_key() {
 }
 
 render() {
-    local dir=$1 exe work code ms offline=() talker codec
+    local dir exe work code ms offline=() talker codec
+    # Absolute: the renders run inside a work directory of their own.
+    dir=$(cd "$1" && pwd) || die "no directory $1"
     exe=$(render_exe "$dir")
     # The pins are passed in by `container`, where the source tree is not mounted.
     talker=${PINNED_TALKER:-$(pinned_sha talker)}; codec=${PINNED_CODEC:-$(pinned_sha codec)}

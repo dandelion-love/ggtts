@@ -256,6 +256,7 @@ jobs:
       android: ${{ steps.select.outputs.android }}
       release: ${{ steps.select.outputs.release }}
       ggml: ${{ steps.select.outputs.ggml }}
+      python: ${{ steps.select.outputs.python }}
       cuda: ${{ steps.select.outputs.cuda }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -270,6 +271,23 @@ jobs:
         run: python3 scripts/test_check_glibc_floor.py
       - name: Test the release version check (a wrong tag or commit, an unknown commit and a missing binary are refused)
         run: python3 scripts/test_check_release_version.py
+      - name: Test the promotion gate and its probes (a planted reuse fault in rc_gate.py is red)
+        run: |
+          set -u
+          for t in test_rc_gate test_instrument_promotion_gate test_logging_overhead_probe test_qwen_event_instrument_probe; do
+            python3 "scripts/$t.py"
+          done
+          cp scripts/rc_gate.py "$RUNNER_TEMP/rc_gate.py"
+          sed -i 's/^    if changed:$/    if False:/' scripts/rc_gate.py
+          grep -qx '    if False:' scripts/rc_gate.py
+          if python3 scripts/test_rc_gate.py > planted-gate.txt 2>&1; then
+            cat planted-gate.txt
+            echo "::error::the gate's tests passed with probe reuse ignoring changed inputs"
+            exit 1
+          fi
+          grep -F 'test_a_touched_input_reruns' planted-gate.txt
+          cp "$RUNNER_TEMP/rc_gate.py" scripts/rc_gate.py
+          rm planted-gate.txt
       - name: Select checks
         id: select
         env:
@@ -778,3 +796,64 @@ jobs:
           cat planted-floor.err
           grep -E 'ggtts-render: GLIBC_2\.[0-9.]+ from libc\.so\.6 exceeds the floor GLIBC_2\.17' planted-floor.err
           grep -E 'GLIBCXX_3\.4\.[0-9]+ from libstdc\+\+\.so\.6 exceeds the floor GLIBCXX_3\.4\.19' planted-floor.err
+
+  python:
+    needs: specialized-selection
+    if: needs.specialized-selection.outputs.python == 'true'
+    # The Python binding (crates/ggtts-py, its own workspace): its Rust layer checked and tested without Python, then
+    # the wheel built with maturin, installed, and tested with pytest. Linux builds the engines too (the committed ggml
+    # bindings), so the binding's ggml-gated code compiles here, on Python 3.9, the floor the abi3 wheel claims.
+    name: python (${{ matrix.os }}, Python ${{ matrix.python }}; wheel built with maturin, then pytest)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04: the runner that has a Python 3.9 build, and the release archives' build host.
+          - os: ubuntu-22.04
+            python: "3.9"
+            engines: ",ggml"
+          - os: windows-latest
+            python: "3.13"
+            engines: ""
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Fetch the ggml submodule at its pin
+        if: matrix.engines != ''
+        run: git submodule update --init crates/ggtts-ggml-sys/ggml
+      - name: The binding's Rust layer (fmt, clippy with the Python module, and its tests, which need no Python)
+        working-directory: crates/ggtts-py
+        run: |
+          set -eu
+          cargo fmt --check
+          cargo clippy --locked --all-targets --features "python,plant${{ matrix.engines }}" -- -D warnings
+          cargo test --locked --features "plant${{ matrix.engines }}" -- --nocapture
+      - name: Build the wheel with maturin (pinned) and install it
+        run: |
+          set -eu
+          # patchelf: maturin's manylinux repair bundles the engines' shared libraries (OpenMP) into the Linux wheel.
+          python -m pip install "maturin==1.9.4" pytest numpy
+          if [ "$RUNNER_OS" = Linux ]; then python -m pip install "patchelf==0.19.1.0"; fi
+          cd crates/ggtts-py
+          maturin build --release --locked --out dist --features "python,pyo3/extension-module,plant${{ matrix.engines }}"
+          ls dist
+          # One abi3 wheel serves every Python from 3.9.
+          ls dist | grep -E '^ggtts-[^-]+-cp39-abi3-'
+          python -m pip install --no-index --find-links dist ggtts
+      - name: pytest (the fake engine, the planted panic and the GIL; the real-model tests report skipped)
+        run: |
+          set -eu
+          # Away from the source, so the installed wheel is what is imported.
+          cd "$RUNNER_TEMP"
+          python -c "import ggtts; print(ggtts.VERSION, ggtts.COMMIT, ggtts.ENGINES)"
+          python -m pytest -v -rs "$GITHUB_WORKSPACE/crates/ggtts-py/tests"

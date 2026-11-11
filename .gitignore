@@ -4,3 +4,8 @@
 spike/layer0/target
 spike/layer0/target-cuda
 spike/layer0/work
+# The Python binding (its own workspace) and its build and test outputs.
+crates/ggtts-py/target
+crates/ggtts-py/dist
+__pycache__/
+.pytest_cache/

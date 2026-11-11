@@ -352,6 +352,16 @@ def reuse_probe(root, previous, previous_path, name, commit, paths, inputs, tq1=
         return None, f"the earlier report's {name} probe did not pass"
     origin = old.get("reused") or {"commit": previous["commit"], "report": str(previous_path)}
     base = origin.get("commit")
+    # A machine field that could not be read proves nothing by matching: two runs without nvcc, or without a readable
+    # nvidia-smi answer, compare equal while the card, or the libraries behind CUDA_HOME, may have changed.
+    unread = []
+    for key in MACHINE_KEYS:
+        sides = [label for label, side in (("earlier", old.get("inputs", {})), ("now", inputs))
+                 if str(side.get(key, "")).startswith("unavailable")]
+        if sides:
+            unread.append(f"{key} ({' and '.join(sides)})")
+    if unread:
+        return None, "the machine cannot be compared, a field could not be read: " + ", ".join(unread)
     before, after = fingerprint(old.get("inputs", {})), fingerprint(inputs)
     differ = sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k))
     if differ:

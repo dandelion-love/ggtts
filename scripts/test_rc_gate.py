@@ -256,6 +256,19 @@ class ReuseTest(unittest.TestCase):
         self.assertIn("driver", why)
         self.assertIsNotNone(self.reuse(self.base)[0])
 
+    def test_an_unreadable_machine_field_never_reuses(self):
+        # Equal is not enough: "unavailable" on both sides compares equal and proves nothing about the machine.
+        for key, value in (("cuda_toolkit", "unavailable (FileNotFoundError)"), ("gpu", "unavailable"),
+                           ("driver", "unavailable")):
+            unread = dict(INPUTS, **{key: value})
+            prev = passing(self.base, qwen={"status": "pass", "inputs": unread})
+            entry, why = self.reuse(self.base, inputs=unread, previous=prev)
+            self.assertIsNone(entry, key)
+            self.assertIn(f"{key} (earlier and now)", why)
+            entry, why = self.reuse(self.base, inputs=unread)
+            self.assertIsNone(entry, key)
+            self.assertIn(f"{key} (now)", why)
+
     def test_a_failed_earlier_report_never_reuses(self):
         later = commit(self.repo, "docs", **{"docs/notes.md": "x\n"})
         report = Path(self.tmp.name) / "rc-gate.json"
@@ -545,6 +558,23 @@ class MainTest(unittest.TestCase):
         self.assertEqual(report["result"], "pass")
         code, report, probes, _ = self.run_gate()
         self.assertEqual(probes, [])
+
+    def test_nvcc_or_nvidia_smi_missing_in_both_runs_reruns(self):
+        names = ("qwen3-tts", "kitten")
+        # No nvcc under CUDA_HOME in either run (a prebuilt GGML_LIB_DIR lets the probes pass without one).
+        self.toolkit = "unavailable (FileNotFoundError)"
+        code, report, probes, _ = self.run_gate()
+        self.assertEqual((code, report["result"], len(probes)), (0, "pass", 2))
+        code, report, probes, _ = self.run_gate()
+        self.assertEqual(report["result"], "pass")
+        self.assert_reruns(probes, report, names, "cuda_toolkit (earlier and now)")
+        # nvidia-smi answers with nothing readable, in both runs.
+        self.toolkit = "Cuda compilation tools, release 12.6, V12.6.85"
+        self.gpu = "NVIDIA-SMI has failed because it could not communicate with the NVIDIA driver"
+        self.run_gate()
+        code, report, probes, _ = self.run_gate()
+        self.assert_reruns(probes, report, names, "gpu (earlier and now)")
+        self.assertIn("driver (earlier and now)", report["gpu"]["qwen"]["reuse_refused"])
 
     def test_cargo_config_and_instrument_files_are_inputs(self):
         self.run_gate()

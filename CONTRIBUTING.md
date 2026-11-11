@@ -132,7 +132,9 @@ with `python3 -m pip install -r instruments/examples/python/loudness-ends/requir
   * the machine: the GPU name and driver version (`nvidia-smi`), the resolved `CUDA_HOME` (default
     `/usr/local/cuda`) and its toolkit version (`nvcc --version`), and `RUSTFLAGS` / `CARGO_ENCODED_RUSTFLAGS`.
     A driver or toolkit upgrade, another card, or different flags reruns every probe, and `reuse_refused` names the
-    field with its old and new values.
+    field with its old and new values. A field that could not be read (no `nvcc` under `CUDA_HOME`, or no readable
+    `nvidia-smi` answer) never reuses, even when it was unreadable in the earlier run too: matching "unavailable"
+    says nothing about the machine.
 
   The stage then reads `reused from <sha> (<report>)`, keeps the earlier log path, and counts as a pass. Reuse is
   refused, and the probe runs, when the earlier report is missing, unreadable, of another `schema`, or did not pass,

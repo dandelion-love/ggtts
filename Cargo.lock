@@ -327,6 +327,7 @@ dependencies = [
  "ggtts-instruments",
  "ggtts-kitten",
  "ggtts-qwen3-tts",
+ "jsonschema",
  "serde_json",
 ]
 
@@ -408,6 +409,7 @@ dependencies = [
 name = "ggtts-kitten"
 version = "0.0.1"
 dependencies = [
+ "claxon",
  "ggtts-core",
  "ggtts-ggml-sys",
  "serde_json",

@@ -327,6 +327,7 @@ dependencies = [
  "ggtts-instruments",
  "ggtts-kitten",
  "ggtts-qwen3-tts",
+ "jsonschema",
  "serde_json",
 ]
 

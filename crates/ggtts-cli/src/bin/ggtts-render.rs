@@ -392,21 +392,21 @@ fn render_with_stream_opener(
     } else {
         None
     };
-    if instruments.is_some() {
-        let output = a
-            .out
-            .as_ref()
-            .expect("instruments require --out")
-            .with_extension("flac");
-        let dir = a.report.clone().unwrap_or_else(|| output.with_extension("report"));
-        for name in ["duration.json", "duration.md"] {
-            let path = dir.join(name);
-            if std::fs::symlink_metadata(&path).is_ok() {
-                return Err(format!(
-                    "{} already exists; duration reports never overwrite",
-                    path.display()
-                ));
-            }
+    // Refuse a duration report that cannot be written before spending the render on it. The instrument report
+    // directory is the one parent that may not exist yet: the runner creates it.
+    if let Some(parent) = a
+        .duration_report
+        .as_ref()
+        .and_then(|p| p.parent())
+        .filter(|d| !d.as_os_str().is_empty() && !d.is_dir())
+    {
+        let report_dir = instruments.as_ref().and(a.out.as_ref()).map(|out| {
+            a.report
+                .clone()
+                .unwrap_or_else(|| out.with_extension("flac").with_extension("report"))
+        });
+        if report_dir.as_deref() != Some(parent) {
+            return Err(format!("--duration-report: {} is not a directory", parent.display()));
         }
     }
     let fake = a.engine.as_deref() == Some("fake");
@@ -788,9 +788,10 @@ fn render_with_stream_opener(
     };
     let summary = ggtts_instruments::runner::run_with_logging(&config, &inputs, log)?;
     if let Some(data) = &duration_data {
+        // The report directory's own files are replaced on a rerun, as the runner replaces its run log and
+        // instrument reports there. Only an explicit --duration-report must be a new file.
         let file = inputs.report_dir.join("duration.json");
-        use std::io::Write;
-        write_duration(&file, data)?;
+        std::fs::write(&file, format!("{data}\n")).map_err(|e| format!("duration report {}: {e}", file.display()))?;
         // Resolve after the runner creates its directory, including path aliases.
         if let Some(explicit) = &a.duration_report {
             let same_file = std::fs::canonicalize(explicit)
@@ -802,12 +803,7 @@ fn render_with_stream_opener(
             }
         }
         let md = inputs.report_dir.join("duration.md");
-        let mut out = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&md)
-            .map_err(|e| format!("{}: {e}", md.display()))?;
-        writeln!(out, "# Audio durations\n\nKept decoded and trimmed chunk durations, join contribution, and emitted duration are recorded below and in [duration.json](duration.json). Rejected redraws are excluded.\n\n```json\n{data}\n```")
+        std::fs::write(&md, format!("# Audio durations\n\nKept decoded and trimmed chunk durations, join contribution, and emitted duration are recorded below and in [duration.json](duration.json). Rejected redraws are excluded.\n\n```json\n{data}\n```\n"))
             .map_err(|e| format!("{}: {e}", md.display()))?;
         log.stderr(
             LogLevel::Info,

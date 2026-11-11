@@ -33,6 +33,13 @@ pub const VERSION: &str = match option_env!("GGTTS_RELEASE_VERSION") {
     _ => env!("CARGO_PKG_VERSION"),
 };
 
+/// The ggtts commit this build is made from: `GITHUB_SHA` in a GitHub Actions build (the value BUILDINFO.json's
+/// `ggtts_commit` records), else the checkout's `HEAD`, else `unknown` (see `build.rs`).
+pub const SOURCE_COMMIT: &str = env!("GGTTS_COMMIT");
+
+/// The ggtts repository, as `--version` prints it.
+pub const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
+
 /// The ggml source this build is pinned to.
 ///
 /// Exact token parity with the reference runtime needs the same ggml kernels, so the pin is a commit, not a
@@ -52,10 +59,11 @@ pub mod ggml {
     }
 }
 
-/// One line per fact, as `--version` prints them.
-pub fn version_lines(binary: &str) -> [String; 2] {
+/// One line per fact, as `--version` prints them: the binary and its release tag, the ggtts commit, the ggml pin.
+pub fn version_lines(binary: &str) -> [String; 3] {
     [
         format!("{binary} {VERSION}"),
+        format!("ggtts {SOURCE_COMMIT} ({REPOSITORY})"),
         format!("ggml {} ({}, {})", ggml::COMMIT, ggml::DESCRIBE, ggml::REPOSITORY),
     ]
 }
@@ -74,10 +82,26 @@ mod tests {
     }
 
     #[test]
-    fn version_names_binary_and_pin() {
-        let [first, second] = version_lines("ggtts-render");
+    fn version_names_binary_commit_and_pin() {
+        let [first, second, third] = version_lines("ggtts-render");
         assert_eq!(first, format!("ggtts-render {VERSION}"));
-        assert!(second.contains(ggml::COMMIT));
-        assert!(second.contains(ggml::DESCRIBE));
+        assert_eq!(second, format!("ggtts {SOURCE_COMMIT} ({REPOSITORY})"));
+        assert!(third.contains(ggml::COMMIT));
+        assert!(third.contains(ggml::DESCRIBE));
+    }
+
+    #[test]
+    fn ggtts_commit_is_a_full_sha_or_unknown() {
+        // build.rs writes `unknown` for a build with neither GITHUB_SHA nor git (a source tarball); a release build
+        // refuses that, and the release smoke compares the printed commit with BUILDINFO's.
+        assert!(
+            SOURCE_COMMIT == "unknown"
+                || (SOURCE_COMMIT.len() == 40
+                    && SOURCE_COMMIT
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())),
+            "GGTTS_COMMIT is {SOURCE_COMMIT:?}"
+        );
+        assert!(REPOSITORY.starts_with("https://"), "{REPOSITORY}");
     }
 }

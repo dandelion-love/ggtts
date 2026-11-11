@@ -149,12 +149,16 @@ class SelectionTest(unittest.TestCase):
         linux = [entry for entry in matrix(release) if entry["target"] == "x86_64-linux"]
         # The Linux CPU archive's glibc floor is its runner's; ubuntu-latest (24.04) needed glibc 2.39.
         self.assertEqual(linux, [{"os": "ubuntu-22.04", "target": "x86_64-linux", "features": "ggtts-cli/ggml"}])
-        check = "python3 scripts/check_glibc_floor.py target/release/ggtts-render target/release/ggtts-measure"
-        for name, block in (("ci.yml release-build", ci), ("release.yml build", release)):
+        # The check reads the packed directory's BUILDINFO "binaries" (pack's own list), never a list kept by hand,
+        # so a binary that is packed is always checked; it runs after pack and after BUILDINFO is written.
+        for name, block, check in (("ci.yml release-build", ci, "check_glibc_floor.py --packed dist/release-ci"),
+                                   ("release.yml build", release, 'check_glibc_floor.py --packed "dist/$name"')):
             self.assertIn(check, block, name)
-            # The check runs on the built binaries, before anything is packed.
-            self.assertLess(block.index("cargo build --release"), block.index(check), name)
-        self.assertLess(release.index(check), release.index("scripts/package_and_smoke.sh pack"))
+            self.assertNotIn("check_glibc_floor.py target/release/ggtts-render target/release/ggtts-measure",
+                             block, name)
+            self.assertLess(block.index("scripts/package_and_smoke.sh pack"), block.index(check), name)
+            self.assertLess(block.index("BUILDINFO.json"), block.index(check), name)
+        self.assertIn("ggtts-unlisted is an ELF file that BUILDINFO.json's binaries leaves out", ci)
         self.assertIn("--floor GLIBC=2.17", ci)
         # The in-job drift step compares the runner too, not only the features.
         self.assertIn('test "$os" = "$OS"', ci)

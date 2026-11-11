@@ -54,6 +54,16 @@ new requirements. Internal refactors and test changes are not listed.
   `ggtts-trace/2`); a document without `models` is still valid.
 - **ggtts-render links an HTTPS client** (ureq with rustls and its bundled Mozilla roots; no OpenSSL or other
   system TLS library). `licenses/rust-crates.txt` lists the crates it adds.
+- **The Kitten tools ship in every archive.** `ggtts-kitten-convert` (the language model and decoder GGUFs from the
+  published model) and `ggtts-kitten` (`prepare`, a reference voice from a clip) sit beside `ggtts-render`, so a
+  Kitten render needs only an archive and the upstream model files, and no Python. A Kitten GGUF converted before
+  the tokenizer was embedded is refused with the command that converts it again; every refusal on that path names
+  the file it expected and the shipped command that makes it. The archive carries the Kitten guide as
+  `README-kitten.md`, with the model's pass-through terms, and the licences of the sources the engine ports.
+  In the CUDA archive the Kitten tools are CPU builds: they need no GPU, and a CUDA-linked `ggtts-kitten` would
+  have carried a second copy of the CUDA kernels.
+- **Every binary's `--version` prints the ggtts commit** it was built from, between the tag and the ggml pin; the
+  release refuses an archive whose binaries disagree with `BUILDINFO.json`'s `ggtts_commit`.
 - **`ggtts-render --speaker NAME`** selects a named speaker of a Qwen3-TTS model, for example
   `--speaker hk_voice_343` or `--speaker hk_voice_777` with `jmtl/hk-cantonese-cc0-qwen3-tts-GGUF` v0.0.5. Without
   it the default is still `hk_cantonese_speaker`. A name the model does not have is an error that lists the
@@ -71,8 +81,10 @@ new requirements. Internal refactors and test changes are not listed.
 - **Two optional speech-recognition instruments, `asr-sensevoice` and `asr-qwen`**: character error rate of a
   render against a reference text, with a model you supply. They run on the CPU by default under `ggtts-measure`,
   and on CUDA when asked (`--instrument-device`).
-- **Kitten-TTS 2 models in the experimental `TQ1_0` layout load on the CPU** (`docs/tq1-cpu.md`). They are refused
-  on CUDA.
+- **Kitten-TTS 2 models in the experimental `TQ1_0` layout load on the CPU and on CUDA** (`docs/tq1-cpu.md`). On
+  CUDA each matrix is expanded at load to f16, checked value for value. The CPU's packed path and CUDA are different
+  numeric paths, so the same model and seed do not give the same tokens on the two
+  ([#152](https://github.com/dandelion-love/ggtts/issues/152)).
 - **Licence notices in every archive**: `THIRD_PARTY.md`; `licenses/ggml-LICENSE.txt` for the statically linked
   ggml; `licenses/rust-crates.txt`, generated from the dependency tree, with the licence texts of every Rust crate
   linked into the two binaries; and the licence file beside each bundled third-party source (Pitchy, fft.js, the

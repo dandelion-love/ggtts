@@ -119,6 +119,44 @@ class FloorTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             main(["--floor", "NOPE=1", elf])
 
+    def test_packed_checks_exactly_what_pack_listed(self):
+        if not shutil.which("readelf"):
+            self.skipTest("readelf is not installed")
+        elf = os.path.realpath(shutil.which("sh") or "/bin/sh")
+
+        def run(*args):
+            return subprocess.run([sys.executable, str(SCRIPT), "--floor", "GLIBC=99", *args],
+                                  capture_output=True, text=True)
+
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("ggtts-render", "ggtts-kitten"):
+                shutil.copy(elf, Path(d, name))
+            Path(d, "README.md").write_text("not a binary\n")
+            info = Path(d, "BUILDINFO.json")
+            info.write_text('{"binaries": ["ggtts-render", "ggtts-kitten"]}')
+            result = run("--packed", d)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("2 checked", result.stderr)
+            # Planted: a packed ELF the list leaves out is refused, naming it; it can never go unchecked.
+            info.write_text('{"binaries": ["ggtts-render"]}')
+            result = run("--packed", d)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("ggtts-kitten is an ELF file that BUILDINFO.json's binaries leaves out", result.stderr)
+            # A listed binary that is absent, and a missing or empty list, are refused too.
+            info.write_text('{"binaries": ["ggtts-render", "ggtts-kitten", "ggtts-measure"]}')
+            result = run("--packed", d)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("names ggtts-measure, which is not in the directory", result.stderr)
+            for text in ('{"binaries": []}', "{}"):
+                info.write_text(text)
+                self.assertEqual(run("--packed", d).returncode, 1)
+            info.unlink()
+            self.assertIn("cannot read the packed binaries list", run("--packed", d).stderr)
+        with self.assertRaises(SystemExit):
+            main(["--packed", "x", elf])
+        with self.assertRaises(SystemExit):
+            main([])
+
 
 if __name__ == "__main__":
     unittest.main()

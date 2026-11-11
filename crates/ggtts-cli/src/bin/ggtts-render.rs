@@ -275,14 +275,12 @@ fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, St
         // Kitten-TTS 2: --model is the LM GGUF, --codec the S3Gen GGUF, --voice the reference (`ggtts-kitten prepare`).
         #[cfg(feature = "ggml")]
         "kitten-tts-2" => {
-            let codec = a
-                .codec
-                .as_ref()
-                .ok_or("the kitten-tts-2 engine needs --codec (the S3Gen GGUF)")?;
-            let voice = a
-                .voice
-                .as_ref()
-                .ok_or("the kitten-tts-2 engine needs --voice, a ggtts-kitten prepare JSON")?;
+            let codec = a.codec.as_ref().ok_or(
+                "the kitten-tts-2 engine needs --codec, the S3Gen GGUF that ggtts-kitten-convert --s3gen writes",
+            )?;
+            let voice = a.voice.as_ref().ok_or(
+                "the kitten-tts-2 engine needs --voice, a reference voice JSON that ggtts-kitten prepare writes",
+            )?;
             let device = match a.device.as_deref().unwrap_or("cpu") {
                 "cuda" => ggtts_kitten::backend::Device::Cuda,
                 _ => ggtts_kitten::backend::Device::Cpu,
@@ -1069,16 +1067,24 @@ fn main() -> ExitCode {
             println!("{INSTRUMENTS_HELP}");
             ExitCode::SUCCESS
         }
-        Some(_) => match parse(&args).and_then(|a| render(a, log)) {
-            Ok(code) => ExitCode::from(code),
-            Err(e) => {
-                log.stderr(LogLevel::Error, "error", "command_failed", format_args!("{e}"));
-                if log.format == LogFormat::Text {
-                    eprintln!("{USAGE}");
+        Some(_) => {
+            // The usage helps after a command line that did not parse; after a refused model, voice or render it
+            // only buries the reason.
+            let (result, bad_arguments) = match parse(&args) {
+                Ok(a) => (render(a, log), false),
+                Err(e) => (Err(e), true),
+            };
+            match result {
+                Ok(code) => ExitCode::from(code),
+                Err(e) => {
+                    log.stderr(LogLevel::Error, "error", "command_failed", format_args!("{e}"));
+                    if bad_arguments && log.format == LogFormat::Text {
+                        eprintln!("{USAGE}");
+                    }
+                    ExitCode::from(ggtts_instruments::runner::EXIT_RENDER_FAILED)
                 }
-                ExitCode::from(ggtts_instruments::runner::EXIT_RENDER_FAILED)
             }
-        },
+        }
     }
 }
 

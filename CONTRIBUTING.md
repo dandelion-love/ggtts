@@ -35,6 +35,9 @@ Thank you for looking. ggtts is young and its design is still under review, so o
   source recorded beside it. Do not add text from speech corpora whose terms forbid redistribution.
 * No audio in the repository. Fixtures hold text, seeds, token ids, numbers and hashes.
 * No personal data. Do not name real people as voices.
+* These identifiers are public and fine to use: the Hugging Face repositories `jmtl/hk-cantonese-cc0-qwen3-tts`
+  and `jmtl/hk-cantonese-cc0-qwen3-tts-GGUF`, their release tags, and the speaker names `hk_voice_343`,
+  `hk_voice_777` and `hk_cantonese_speaker`.
 
 ## Instrument contributions
 

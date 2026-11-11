@@ -86,6 +86,11 @@ pub struct Inputs {
     /// The shipped `instruments/` directory, which holds the script instruments. Default: `GGTTS_INSTRUMENTS_DIR`,
     /// else the nearest `instruments/` above the running binary (a source checkout's `target/` sits beside it).
     pub instruments_dir: Option<PathBuf>,
+    /// Every model file the render used, for `report.json` and `run.log`; `None` when the audio was not rendered by
+    /// this run (a measurement of existing audio).
+    pub models: Option<Vec<serde_json::Value>>,
+    /// The render's style instruction, for `report.json` and `run.log`, when it had a non-empty one.
+    pub instruction: Option<String>,
 }
 
 /// What the instrument phase cost, after the render.
@@ -351,7 +356,29 @@ pub fn run_with_logging(config: &Config, inputs: &Inputs, log: LogSettings) -> R
     }
 
     let required: Vec<&str> = config.require.iter().map(String::as_str).collect();
-    let merged = report::merge(&inputs.run, &merge_inputs, &required);
+    let mut merged = report::merge(&inputs.run, &merge_inputs, &required);
+    merged.models = inputs.models.clone();
+    merged.instruction = inputs.instruction.clone().filter(|i| !i.is_empty());
+    if let Some(i) = &merged.instruction {
+        record!(LogLevel::Info, "instruction", "instruction {i:?}");
+    }
+    for m in inputs.models.iter().flatten() {
+        let text = |k: &str| {
+            m.get(k)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_string()
+        };
+        record!(
+            LogLevel::Info,
+            "model_file",
+            "model {} {} sha256 {} ({})",
+            text("role"),
+            text("path"),
+            text("sha256"),
+            text("source")
+        );
+    }
     merged
         .write(report_dir)
         .map_err(|e| format!("{}: {e}", report_dir.display()))?;

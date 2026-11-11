@@ -25,7 +25,7 @@ stream carries is an event instrument. A tensor hook is justified only by a valu
 | Per step | Sampler state | Event | `step.entropy`, `step.top1_p`, `step.rank` | Entropy in nats after temperature, before top-k and top-p; the most likely token's probability; the rank of the token drawn | Available (the fake engine) |
 | Per step | Token | Event | `step.token`, and at level 2 `step.cb`, `step.cb_p` | Codebook 0's token; at level 2 the depth model's tokens (codebooks 1 onward) and their probabilities | Available (the fake engine) |
 | Per step | Talker logits | Tensor | A tensor hook's `&[f32]` | The full logit vector for codebook 0 before temperature | Planned |
-| Per chunk | Draw begins | Event | `chunk_begin` | Chunk index, draw index, the chunk's text, its seed | Available |
+| Per chunk | Draw begins | Event | `chunk_begin` | Chunk index, draw index, the chunk's text, its seed, and the request's style instruction (`instruction`, absent when there is none) | Available |
 | Per chunk | Draw ends | Event | `chunk_end` | Frames, stop reason (`eos`, `cap`, `abort`), the judge's seconds per character and verdict, wall-clock ms | Available |
 | Per chunk | Tokens | Event | The draw's `step` events, in frame order | Every frame's codebook-0 token (all codebooks at level 2) | Available (the fake engine) |
 | Per chunk | Trim | Event | `trim` | Lead and tail seconds cut from the kept draw, and the kept sample range | Available |

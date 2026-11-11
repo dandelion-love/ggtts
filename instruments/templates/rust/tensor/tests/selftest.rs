@@ -86,6 +86,7 @@ fn the_same_seed_renders_identically_with_and_without_the_hook() {
             seed: 1000 + i as u64,
             chunk: i as u32,
             draw: 0,
+            instruction: None,
         };
         let (mut a, mut b) = (FakeEngine::default(), FakeEngine::default());
         let (hook, _) = EarlyStop::new(0.5);

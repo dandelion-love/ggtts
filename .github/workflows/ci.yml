@@ -257,6 +257,10 @@ jobs:
         run: python3 scripts/test_select_specialized_ci.py
       - name: cuda-compile is release.yml's cuda-build, line for line
         run: python3 scripts/select_specialized_ci.py --check-cuda-drift
+      - name: Test the glibc floor check (a planted Ubuntu 24.04 binary is refused, and nothing read is never a pass)
+        run: python3 scripts/test_check_glibc_floor.py
+      - name: Test the release version check (a wrong tag or commit, an unknown commit and a missing binary are refused)
+        run: python3 scripts/test_check_release_version.py
       - name: Select checks
         id: select
         env:
@@ -307,8 +311,10 @@ jobs:
           list=$(scripts/package_and_smoke.sh pack "target/release/ggtts-render${{ matrix.exe }}" dist/ggtts-ci)
           echo "binaries: $list"
           test "$list" = '["ggtts-render${{ matrix.exe }}","ggtts-measure${{ matrix.exe }}"]'
-          # Match the release's metadata, so the archive smoke reaches the same check.
-          printf '{"ggtts": "v0.1.0-rc.999", "binaries": %s}\n' "$list" > dist/ggtts-ci/BUILDINFO.json
+          # Match the release's metadata, so the archive smoke reaches the same check. GITHUB_SHA is also what the
+          # build embedded for --version (crates/ggtts-core/build.rs).
+          printf '{"ggtts": "v0.1.0-rc.999", "ggtts_commit": "%s", "binaries": %s}\n' "$GITHUB_SHA" "$list" \
+            > dist/ggtts-ci/BUILDINFO.json
       - name: Smoke the packed directory (a shipped Python instrument runs from it)
         run: scripts/package_and_smoke.sh smoke dist/ggtts-ci
       - name: Archive it as release.yml does (a .zip on windows) and smoke the archive by its relative path
@@ -325,6 +331,14 @@ jobs:
             echo '::error::wrong BUILDINFO version passed'; exit 1
           fi
           grep -F 'BUILDINFO ggtts' version.err
+          # A BUILDINFO whose ggtts_commit is not the commit the binaries were built from.
+          cp -r dist/ggtts-ci dist/version-bad-commit
+          printf '{"ggtts": "v0.1.0-rc.999", "ggtts_commit": "%s"}\n' 0000000000000000000000000000000000000000 \
+            > dist/version-bad-commit/BUILDINFO.json
+          if python3 scripts/check_release_version.py dist/version-bad-commit v0.1.0-rc.999 2> version.err; then
+            echo '::error::a wrong BUILDINFO ggtts_commit passed'; exit 1
+          fi
+          grep -F 'reports ggtts commit' version.err
           # Build the same cheap fake-engine binaries with a different embedded tag.
           GGTTS_RELEASE_VERSION=v0.1.0-rc.998 cargo build --release --locked -p ggtts-cli
           for binary in ggtts-render ggtts-measure; do
@@ -390,7 +404,9 @@ jobs:
       - name: Planted, the same directory without a licence notice must fail, naming it
         run: |
           set -u
-          for notice in THIRD_PARTY.md licenses/Apache-2.0.txt licenses/ggml-LICENSE.txt licenses/rust-crates.txt instruments/vendor/fft.js-4.0.4/LICENSE instruments/vendor/pitchy-4.1.0/LICENSE; do
+          for notice in THIRD_PARTY.md README-kitten.md licenses/Apache-2.0.txt licenses/ggml-LICENSE.txt licenses/rust-crates.txt \
+              licenses/chatterbox-LICENSE.txt licenses/pyannote-audio-LICENSE.txt licenses/asteroid-filterbanks-LICENSE.txt \
+              instruments/vendor/fft.js-4.0.4/LICENSE instruments/vendor/pitchy-4.1.0/LICENSE; do
             rm -rf dist/planted-notice
             cp -r dist/ggtts-ci dist/planted-notice
             rm "dist/planted-notice/$notice"
@@ -477,7 +493,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # The release's glibc floor is its build host's: Ubuntu 22.04, as in release.yml.
+          - os: ubuntu-22.04
             target: x86_64-linux
             features: ggtts-cli/ggml
           - os: windows-latest
@@ -492,8 +509,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: The release matrix carries the same target and features
+      - name: The release matrix carries the same runner, target and features
         env:
+          OS: ${{ matrix.os }}
           TARGET: ${{ matrix.target }}
           FEATURES: ${{ matrix.features }}
         run: |
@@ -503,13 +521,33 @@ jobs:
             .github/workflows/release.yml)
           echo "release.yml features for ${TARGET}: ${got:-<none>}"
           test "$got" = "$FEATURES"
+          # The "- os:" line that opens this target's matrix entry: the runner decides the glibc the binary needs.
+          os=$(awk -v t="${TARGET}" '$1 == "-" && $2 == "os:" {o=$3} $1 == "target:" && $2 == t {print o; exit}' \
+            .github/workflows/release.yml)
+          echo "release.yml runner for ${TARGET}: ${os:-<none>}"
+          test "$os" = "$OS"
+          # The build command, whole: release.yml's `run: cargo build --release` line and this job's own, so a package
+          # dropped from either (a shipped binary not built) goes red.
+          release_cmd() { grep -m1 -E '^ +run: cargo build --release' "$1" | sed 's/^ *run: //'; }
+          ours=$(awk '/name: Build ggtts-render and the Kitten tools exactly as release.yml does/ {f=1}
+            f && /^ *run: / {sub(/^ *run: */, ""); print; exit}' .github/workflows/ci.yml)
+          echo "release.yml build: $(release_cmd .github/workflows/release.yml)"
+          echo "this job's build:  ${ours:-<none>}"
+          test -n "$ours"
+          test "$(release_cmd .github/workflows/release.yml)" = "$ours"
+          # Planted: release.yml without -p ggtts-kitten must not match.
+          sed 's/ -p ggtts-kitten / /' .github/workflows/release.yml > "$RUNNER_TEMP/release-drift.yml"
+          if [ "$(release_cmd "$RUNNER_TEMP/release-drift.yml")" = "$ours" ]; then
+            echo "::error::the drift check passed a release.yml that no longer builds ggtts-kitten"
+            exit 1
+          fi
       - run: rustup show active-toolchain || rustup toolchain install
       - run: git submodule update --init crates/ggtts-ggml-sys/ggml
-      - name: Build ggtts-render exactly as release.yml does
+      - name: Build ggtts-render and the Kitten tools exactly as release.yml does
         env:
           LIBCLANG_PATH: ${{ runner.os == 'Windows' && 'C:\Program Files\LLVM\bin' || '' }}
           GGML_PORTABLE: "1"
-        run: cargo build --release --locked -p ggtts-cli --features "${{ matrix.features }}"
+        run: cargo build --release --locked -p ggtts-cli -p ggtts-kitten --features "${{ matrix.features }}"
       - name: Verify the CPU build does not target the build host
         run: |
           set -euo pipefail
@@ -521,3 +559,57 @@ jobs:
           grep -qx 'GGML_AVX512_VNNI:BOOL=OFF' "$cache"
           grep -qx 'GGML_AVX512_BF16:BOOL=OFF' "$cache"
           grep -qx 'GGML_AVX_VNNI:BOOL=OFF' "$cache"
+      - name: Pack and smoke as release.yml does (the Kitten tools run --help from it; a planted missing one is red)
+        env:
+          EXE: ${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: |
+          set -euo pipefail
+          list=$(scripts/package_and_smoke.sh pack "target/release/ggtts-render$EXE" dist/release-ci)
+          echo "binaries: $list"
+          test "$list" = "[\"ggtts-render$EXE\",\"ggtts-measure$EXE\",\"ggtts-kitten-convert$EXE\",\"ggtts-kitten$EXE\"]"
+          tag=$("dist/release-ci/ggtts-render$EXE" --version | sed -n '1s/^ggtts-render //p')
+          printf '{"ggtts": "%s", "ggtts_commit": "%s", "binaries": %s}\n' "$tag" "$GITHUB_SHA" "$list" \
+            > dist/release-ci/BUILDINFO.json
+          scripts/package_and_smoke.sh smoke dist/release-ci "$tag"
+          for b in ggtts-kitten-convert ggtts-kitten; do
+            rm -rf dist/planted-kitten
+            cp -r dist/release-ci dist/planted-kitten
+            rm "dist/planted-kitten/$b$EXE"
+            if scripts/package_and_smoke.sh smoke dist/planted-kitten 2> planted-kitten.err; then
+              cat planted-kitten.err
+              echo "::error::the smoke passed without $b"
+              exit 1
+            fi
+            cat planted-kitten.err
+            grep -F "no $b$EXE in dist/planted-kitten" planted-kitten.err
+          done
+      - name: The Linux binaries need no newer glibc, libstdc++, libgcc_s or libgomp than Ubuntu 22.04 ships
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          # Every binary pack put in the directory, from its BUILDINFO "binaries", never a list kept here.
+          python3 scripts/check_glibc_floor.py --packed dist/release-ci
+          # Planted: a packed ELF that the list leaves out is refused, naming it.
+          rm -rf dist/planted-glibc
+          cp -r dist/release-ci dist/planted-glibc
+          cp target/release/ggtts-render dist/planted-glibc/ggtts-unlisted
+          if python3 scripts/check_glibc_floor.py --packed dist/planted-glibc 2> planted-glibc.err; then
+            cat planted-glibc.err
+            echo "::error::the glibc floor check passed a packed binary BUILDINFO does not list"
+            exit 1
+          fi
+          cat planted-glibc.err
+          grep -F "ggtts-unlisted is an ELF file that BUILDINFO.json's binaries leaves out" planted-glibc.err
+      - name: Planted, the same binary against a floor below what it needs must fail, naming the version
+        if: runner.os == 'Linux'
+        run: |
+          set -u
+          if python3 scripts/check_glibc_floor.py --floor GLIBC=2.17 --floor GLIBCXX=3.4.19 \
+              target/release/ggtts-render 2> planted-floor.err; then
+            cat planted-floor.err
+            echo "::error::the glibc floor check passed a binary above a planted floor of glibc 2.17"
+            exit 1
+          fi
+          cat planted-floor.err
+          grep -E 'ggtts-render: GLIBC_2\.[0-9.]+ from libc\.so\.6 exceeds the floor GLIBC_2\.17' planted-floor.err
+          grep -E 'GLIBCXX_3\.4\.[0-9]+ from libstdc\+\+\.so\.6 exceeds the floor GLIBCXX_3\.4\.19' planted-floor.err

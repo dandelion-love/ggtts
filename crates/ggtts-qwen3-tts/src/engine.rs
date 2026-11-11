@@ -60,10 +60,24 @@ impl Qwen3Tts {
     /// Loads the talker GGUF and the codec GGUF on `voice.device` with `threads` CPU threads. Refuses
     /// `voice.sampling` before reading either file if it would decode greedily ([`Sampling::check`]).
     pub fn load(talker: &Path, codec: &Path, threads: i32, voice: Voice) -> Result<Self, EngineError> {
+        Self::load_for(talker, codec, threads, voice, None)
+    }
+
+    /// [`load`](Self::load) for requests that will carry `instruction`: a checkpoint that takes no style instruction
+    /// refuses a non-empty one here, before the speaker is looked up or the codec read, so the error a caller sees
+    /// is about the instruction ([`check_instruction`](Self::check_instruction)).
+    pub fn load_for(
+        talker: &Path,
+        codec: &Path,
+        threads: i32,
+        voice: Voice,
+        instruction: Option<&str>,
+    ) -> Result<Self, EngineError> {
         voice.sampling.check()?;
         let language_id =
             language_id(&voice.language).ok_or_else(|| EngineError(format!("unknown language: {}", voice.language)))?;
         let talker = Talker::load_on(talker, threads, voice.device)?;
+        talker.check_instruction(instruction)?;
         // An unknown speaker fails here, before any text is rendered, with the model's own speaker names.
         talker.speaker(&voice.speaker)?;
         let trace = match &voice.trace {
@@ -139,6 +153,23 @@ fn own_trace_error(own: &Option<StopTrace<BufWriter<File>>>) -> Result<(), Engin
 }
 
 impl Qwen3Tts {
+    /// The checkpoint type: `base`, `custom_voice` or `voice_design`.
+    pub fn model_type(&self) -> &str {
+        self.talker.model_type()
+    }
+
+    /// Whether the checkpoint takes a style instruction ([`ChunkRequest::instruction`]): custom_voice at 1.7B and
+    /// voice_design. A request with an instruction on any other checkpoint is refused.
+    pub fn supports_instruction(&self) -> bool {
+        self.talker.supports_instruction()
+    }
+
+    /// `Ok` for no instruction or a checkpoint that takes one; the error [`generate`](Engine::generate) would
+    /// return otherwise, without rendering anything.
+    pub fn check_instruction(&self, instruction: Option<&str>) -> Result<(), EngineError> {
+        self.talker.check_instruction(instruction)
+    }
+
     /// Render one request with frame-level streaming: the talker hands each frame to an [`IncrementalDecoder`]
     /// as it is generated, and `sink` gets each batch of ready samples with the number of frames generated so far.
     /// `every` and `hold` are the decoder's (see [`crate::stream`]): at `hold = 32` the concatenated samples were
@@ -180,6 +211,7 @@ impl Qwen3Tts {
         };
         let g = talker.generate_streamed(
             req.text,
+            req.instruction(),
             &voice.speaker,
             *language_id,
             req.seed,
@@ -258,6 +290,7 @@ impl Engine for Qwen3Tts {
         };
         let g = self.talker.generate_streamed(
             req.text,
+            req.instruction(),
             &self.voice.speaker,
             self.language_id,
             req.seed,

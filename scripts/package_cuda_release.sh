@@ -9,6 +9,12 @@ export CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL:-4}
 export PATH="$CUDA_HOME/bin:$PATH"
 cargo build --release --locked -p ggtts-cli --features ggtts-cli/cuda
 bin=${CARGO_TARGET_DIR:-target}/release/ggtts-render
+# The Kitten tools (conversion, and `prepare` of a reference voice) need no GPU. Built against CPU ggml in a target
+# directory of their own, they add a few MB; linked against ggml-cuda, which is static, each would carry a second
+# copy of the CUDA kernels. pack copies them from beside ggtts-render.
+kitten_target=${KITTEN_CPU_TARGET_DIR:-target-kitten-cpu}
+CARGO_TARGET_DIR="$kitten_target" cargo build --release --locked -p ggtts-kitten --features ggtts-kitten/ggml
+cp "$kitten_target/release/ggtts-kitten" "$kitten_target/release/ggtts-kitten-convert" "$(dirname "$bin")/"
 # These are machine-code images, not just a CMake configuration claim.
 cuobjdump --list-elf "$bin" > cuda-images.txt
 grep -q sm_86 cuda-images.txt

@@ -6,7 +6,8 @@ Chatterbox-Turbo's S3Gen decoder. It clones a voice from a short reference clip 
 model, the decoder and the preparation of the reference clip all run on ggml, on the CPU or CUDA. No Python is
 needed at run time.
 
-How it was ported, from where, and the parity levels with their measurements: [`DESIGN.md`](DESIGN.md).
+How it was ported, from where, and the parity levels with their measurements: [`DESIGN.md`](https://github.com/dandelion-love/ggtts/blob/main/crates/ggtts-kitten/DESIGN.md).
+A release archive carries this file as `README-kitten.md`.
 
 ## What it needs
 
@@ -14,16 +15,21 @@ How it was ported, from where, and the parity levels with their measurements: [`
   `speaker/model.safetensors`. A QAT export in Kitten's key layout works in place of `lm/model.safetensors`.
 - **The decoder.** `ResembleAI/chatterbox-turbo` at `749d1c1a46eb10492095d68fbcf55691ccf137cd`:
   `s3gen_meanflow.safetensors`.
-- **A build with the `ggml` feature**: `git submodule update --init crates/ggtts-ggml-sys/ggml`, cmake and a C/C++
-  compiler. For `--device cuda`, use the `cuda` feature with ggml built or linked with CUDA (`GGML_LIB_DIR`, see
-  `ggtts-ggml-sys`).
+- **The tools**: a [release archive](https://github.com/dandelion-love/ggtts/releases) ships `ggtts-kitten-convert`
+  and `ggtts-kitten` beside `ggtts-render`, so nothing below needs a build, Python or PyTorch. From source, build
+  with the `ggml` feature: `git submodule update --init crates/ggtts-ggml-sys/ggml`, cmake and a C/C++ compiler. For
+  `--device cuda`, use the `cuda` feature with ggml built or linked with CUDA (`GGML_LIB_DIR`, see `ggtts-ggml-sys`).
 - **A reference clip**, as a lossless FLAC or WAV file of about 5 to 30 seconds of one speaker, and its transcript.
+  The model's `voices/` holds clips, with their transcripts in `voices/voices.json`.
+
+No ggtts-ready GGUFs are published; the steps below make them once. A GGUF converted before the tokenizer was
+embedded is refused by `ggtts-render` ("this GGUF has no embedded tokenizer"): convert it again with the first step.
 
 ## Convert, prepare, render
 
 ```bash
-cargo build --release -p ggtts-kitten -p ggtts-cli --features ggtts-kitten/ggml,ggtts-cli/ggml
-K=target/release
+K=path/to/the/unpacked/archive    # or, from source: cargo build --release -p ggtts-kitten -p ggtts-cli \
+                                  #   --features ggtts-cli/ggml && K=target/release
 
 # The language model to a GGUF: Q4_0 by default (exact for ternary weights), and the readback check runs after it.
 $K/ggtts-kitten-convert --repo $KITTEN --out kitten-lm.gguf
@@ -60,9 +66,20 @@ text, seed and thread count give a byte-identical FLAC.
 
 ## Licence
 
-This crate is MIT. **The model is not.** Kitten-TTS 2's weights are under the
-[Stellon Labs Community License](https://huggingface.co/KittenML/kitten-tts-2/blob/main/LICENSE.md): research,
-non-commercial and limited commercial use, with attribution, and **its outputs must not be used to train any other
-model**. That includes audio rendered with this engine. A GGUF converted from those weights carries the same terms.
-The S3Gen decoder (Chatterbox-Turbo) and the pyannote speaker model are MIT. This repository holds no weights, no
-GGUFs, no recordings and no rendered audio.
+This crate is MIT, and the sources it ports are listed in
+[`THIRD_PARTY.md`](https://github.com/dandelion-love/ggtts/blob/main/THIRD_PARTY.md). **The model is not MIT.** Kitten-TTS
+2's weights are under the
+[Stellon Labs Community License](https://huggingface.co/KittenML/kitten-tts-2/blob/main/LICENSE.md), and a GGUF
+converted from them carries the same terms; ggtts passes them through and neither grants nor changes them. In
+summary, and the licence itself governs:
+
+- it allows research, non-commercial and limited commercial use. Commercial users register with Stellon Labs, and
+  the licence ends for a licensee above USD 1,000,000 in annual revenue or in total funding;
+- whoever distributes the model or something built from it gives the recipient a copy of the licence, keeps its
+  attribution notice in a notice file, and displays "Powered by KittenML";
+- neither the model nor its outputs, including audio rendered with this engine, may be used to create or improve a
+  foundational generative AI model, or to train or distill another model (fine-tunes and low-rank adaptations of
+  the model itself excepted).
+
+The S3Gen decoder weights (ResembleAI/chatterbox-turbo) and the pyannote speaker model are MIT. This repository and
+its release archives hold no weights, no GGUFs, no recordings and no rendered audio.

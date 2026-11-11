@@ -25,7 +25,9 @@
 //! With `--write-ref OUT`, `parity` instead records its own forward pass into `OUT` in the same format (the ids
 //! and speaker of `--ref DIR`, this run's hidden states and logits) and compares nothing: the reference for a GGUF
 //! with no PyTorch recording, such as a `TQ1_0` one, whose CPU f32 arm then stands in for PyTorch. It also
-//! prints the byte range of one ternary matrix, so a probe can zero it in a copy as its planted fault.
+//! prints the byte range of one ternary matrix, so a probe can zero it in a copy as its planted fault. `OUT` must
+//! not exist (so it can never replace a recording, `--ref DIR` included), its `meta.json` is marked
+//! `"source": "self"`, and `parity` says so whenever it compares against such a reference.
 //! `step-parity` runs the same positions batched and one token at a time, as generation does, and compares the
 //! logits (the prompt recorded in `--ref DIR`, or fixed pseudo-random ids; the last `--steps`, default 16, one by one).
 
@@ -78,6 +80,49 @@ impl Args {
 /// The matrix whose byte range `parity --write-ref` reports.
 const PLANT_MATRIX: &str = "model.layers.0.mlp.down_proj.weight";
 
+/// Refuse a `--write-ref` target that exists, or that is `--ref` itself: a self-written reference must never
+/// replace a recording, after which the comparison would pass against the engine's own output.
+fn check_write_ref(reference: &Path, out: &Path) -> Result<(), String> {
+    let norm = |p: &Path| std::fs::canonicalize(p).or_else(|_| std::path::absolute(p));
+    let (r, o) = (norm(reference), norm(out));
+    if matches!((&r, &o), (Ok(r), Ok(o)) if r == o) {
+        return Err(format!(
+            "--write-ref {} is the --ref directory: it would replace the recording with this engine's own output",
+            out.display()
+        ));
+    }
+    if out.symlink_metadata().is_ok() {
+        return Err(format!(
+            "--write-ref {} already exists: refusing to overwrite it",
+            out.display()
+        ));
+    }
+    Ok(())
+}
+
+/// The recorded `meta.json` marked as written by this engine, with what wrote it.
+fn self_meta(meta: &serde_json::Value, device: &str, weights: &str) -> serde_json::Value {
+    let mut m = meta.clone();
+    m["source"] = "self".into();
+    m["self_reference"] = serde_json::json!({
+        "device": device, "weights": weights, "ggtts": ggtts_core::VERSION, "ggml": ggtts_core::ggml::COMMIT,
+    });
+    m
+}
+
+/// What to say when the reference was written by `parity --write-ref`, and nothing for a recording.
+fn self_reference_note(meta: &serde_json::Value) -> Option<String> {
+    (meta["source"] == "self").then(|| {
+        let s = &meta["self_reference"];
+        format!(
+            "reference: SELF-WRITTEN by this engine ({} weights on {}, ggtts {}), not a PyTorch recording",
+            s["weights"].as_str().unwrap_or("unknown"),
+            s["device"].as_str().unwrap_or("unknown"),
+            s["ggtts"].as_str().unwrap_or("unknown")
+        )
+    })
+}
+
 fn parity_cmd(a: &Args) -> Result<bool, String> {
     let weights = match a.or("weights", "ternary") {
         "f32" => Weights::F32,
@@ -98,6 +143,11 @@ fn parity_cmd(a: &Args) -> Result<bool, String> {
         .map(|v| v.as_u64().unwrap() as u32)
         .collect();
     let n_last = meta["logits_last"].as_u64().ok_or("meta.logits_last")? as usize;
+    if let Some(out) = a.map.get("write-ref") {
+        check_write_ref(&dir, Path::new(out))?;
+    } else if let Some(note) = self_reference_note(&meta) {
+        println!("{note}");
+    }
 
     let t0 = Instant::now();
     let gguf = Gguf::open(Path::new(a.get("gguf")?))?;
@@ -142,7 +192,12 @@ fn parity_cmd(a: &Args) -> Result<bool, String> {
         // hidden.f32 as `tools/kitten_ref.py logits` lays it out: the embeddings (not compared, zeros here), the
         // residual after layers 1..n_layer-1, then a block whose last `n_last` rows are the final norm's output.
         let out_dir = PathBuf::from(out_dir);
-        std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+        if let Some(parent) = out_dir.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        // create_dir, not create_dir_all: a directory that appeared since the check is refused too.
+        std::fs::create_dir(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
+        let marked = self_meta(&meta, &format!("{:?}", be.device), &format!("{weights:?}"));
         let mut hidden = vec![0f32; tn];
         for h in &out.hidden[..hp.n_layer - 1] {
             hidden.extend_from_slice(h);
@@ -155,7 +210,7 @@ fn parity_cmd(a: &Args) -> Result<bool, String> {
             ("logits.f32", le(&out.logits)),
             ("speaker_raw.f32", le(&spk_raw)),
             ("speaker_proj.f32", le(&spk)),
-            ("meta.json", serde_json::to_vec(&meta).map_err(|e| e.to_string())?),
+            ("meta.json", serde_json::to_vec(&marked).map_err(|e| e.to_string())?),
         ] {
             std::fs::write(out_dir.join(name), data).map_err(|e| format!("{name}: {e}"))?;
         }
@@ -1031,6 +1086,44 @@ mod render_option_tests {
         Args {
             map: pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
         }
+    }
+
+    #[test]
+    fn write_ref_refuses_the_reference_and_any_existing_target() {
+        let tmp = std::env::temp_dir().join(format!("ggtts-kitten-write-ref-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let reference = tmp.join("ref");
+        std::fs::create_dir_all(&reference).unwrap();
+        std::fs::write(tmp.join("file"), b"x").unwrap();
+        let e = check_write_ref(&reference, &reference).unwrap_err();
+        assert!(e.contains("is the --ref directory"), "{e}");
+        // The same directory spelled another way.
+        let e = check_write_ref(&reference, &reference.join("..").join("ref")).unwrap_err();
+        assert!(e.contains("is the --ref directory"), "{e}");
+        let e = check_write_ref(&reference, &tmp).unwrap_err();
+        assert!(e.contains("already exists"), "{e}");
+        assert!(check_write_ref(&reference, &tmp.join("file")).is_err());
+        assert!(check_write_ref(&reference, &tmp.join("new")).is_ok());
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn a_self_written_reference_is_marked_and_announced() {
+        let recorded = serde_json::json!({"ids": [1, 2, 3], "logits_last": 2});
+        assert_eq!(
+            self_reference_note(&recorded),
+            None,
+            "a recording is not announced as self-written"
+        );
+        let marked = self_meta(&recorded, "Cpu", "F32");
+        assert_eq!(marked["ids"], recorded["ids"]);
+        assert_eq!(marked["source"], "self");
+        assert_eq!(marked["self_reference"]["ggtts"], ggtts_core::VERSION);
+        let note = self_reference_note(&marked).expect("a marked reference is announced");
+        assert!(
+            note.contains("SELF-WRITTEN") && note.contains("F32 weights on Cpu"),
+            "{note}"
+        );
     }
 
     #[test]

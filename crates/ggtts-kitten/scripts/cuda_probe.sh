@@ -18,7 +18,8 @@
 # converter here does not write TQ1, so that model is passed in, and no PyTorch recording exists for it: its
 # reference is this engine's CPU f32 arm of the same GGUF on the recorded prompt (written into WORK/tq1-ref by
 # `parity --write-ref`), held to the same bars. The plant is a copy with one TQ1 matrix zeroed, which must be red.
-# Needs room in WORK for that copy. Without TQ1_GGUF the probe says the TQ1 checks did not run.
+# Needs room in WORK for that copy. Without TQ1_GGUF, or with STEPS=render, the TQ1 checks do not run and the
+# result line says so (`PASS, TQ1_0 NOT RUN`) instead of `ALL PASS`; scripts/rc_gate.py reads that line.
 # DEVICE=cpu with STEPS=render runs only the conversion and the render twice, on the CPU, without CUDA: the way to
 # check this script's own render step on a machine whose GPU is busy (GGML_LIB_DIR is then not needed).
 # Exit 0 only when every check passes and every plant is red. Nothing it writes is committed: it reads a Kitten
@@ -105,6 +106,7 @@ if [ "$steps" = all ] && [ -n "${TQ1_GGUF:-}" ]; then
 elif [ "$steps" = all ]; then
   echo "NOTE  TQ1_GGUF is not set: the TQ1_0 checks on CUDA did not run"
 fi
+tq1_checked=0
 
 if [ "$device" = cuda ]; then
   if [ -n "${GPU_WAIT_FILE:-}" ]; then
@@ -151,6 +153,7 @@ if [ "$steps" = all ]; then
     rm -f "$WORK/tq1-planted.gguf"
     grep -h '^ternary matrices' "$WORK/tq1-ternary.log" | sed 's/^/  /'
     check "TQ1 single-token, ternary" pass tq1-step-ternary.log $nice "$K" step-parity --device cuda --threads "$threads" --gguf "$TQ1_GGUF" --ref "$REF_LM" --weights ternary
+    tq1_checked=1
     check "TQ1 single-token, f32" pass tq1-step-f32.log $nice "$K" step-parity --device cuda --threads "$threads" --gguf "$TQ1_GGUF" --ref "$REF_LM" --weights f32
   fi
 
@@ -199,5 +202,8 @@ if [ $tq1 = 1 ]; then
 fi
 
 [ "${KEEP_GGUF:-0}" = 1 ] || rm -f "$LM_GGUF"
-echo "== result: $([ $status -eq 0 ] && echo ALL PASS || echo SOME FAIL)"
+if [ $status -ne 0 ]; then result="SOME FAIL"
+elif [ "$device" = cuda ] && [ $tq1_checked != 1 ]; then result="PASS, TQ1_0 NOT RUN"
+else result="ALL PASS"; fi
+echo "== result: $result"
 exit $status

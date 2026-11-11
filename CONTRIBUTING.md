@@ -93,7 +93,8 @@ promotion and path decisions without building the specialized jobs on that PR.
 **Promotion.** `main` moves only by one reviewed pull request from `rc`. Hosted runners have no GPU, so before that
 pull request is merged, someone with a supported GPU runs `scripts/rc_gate.sh --ref origin/rc --work /path/to/scratch`
 and attaches the resulting `rc-gate.json` and the logs it names. The gate runs CPU checks and both engines' CUDA
-probes; missing prerequisites make the result incomplete, never a pass. It requires Python 3, Rust at the pinned
+probes; missing prerequisites make the result incomplete, never a pass. That includes `TQ1_GGUF`, the Kitten probe's
+experimental TQ1 model: without it the report's `gpu.kitten.tq1` reads "tq1: not run" and the result is incomplete. It requires Python 3, Rust at the pinned
 version, CUDA and the model/reference inputs documented at the top of each engine's `scripts/cuda_probe.sh`.
 Set their environment variables before running; the gate assigns separate `WORK` and `CARGO_TARGET_DIR` directories
 under the persistent scratch directory. Use `--wait-file` for a busy GPU. The report identifies the commit, model

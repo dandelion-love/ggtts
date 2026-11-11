@@ -23,8 +23,10 @@
 # not found". It then measures that render again with the packed ggtts-measure, with the same instrument required,
 # and passes only on exit 0 and an `ok` envelope there too. When the directory has a BUILDINFO.json, its "binaries"
 # must name both binaries. After the measure it checks the licence notices: LICENSE, THIRD_PARTY.md,
-# licenses/Apache-2.0.txt, and the licence file beside each vendored or derived source under instruments/. A missing
-# one fails the smoke with "missing licence notice", naming it.
+# licenses/ (Apache-2.0.txt, ggml-LICENSE.txt for the statically linked ggml, rust-crates.txt for every linked
+# crate), and the licence file beside each vendored or derived source under instruments/. A missing one fails the
+# smoke with "missing licence notice", naming it. `pack` first runs scripts/third_party_notices.py --check, which
+# refuses when a crate linked into the binaries has no notice in licenses/rust-crates.txt.
 set -euo pipefail
 
 say() { echo "package_and_smoke: $*" >&2; }
@@ -39,6 +41,8 @@ pack() {
         cp "$(dirname "$bin")/$b$ext" "$dir/"
         list="$list${list:+,}\"$b$ext\""
     done
+    # Refuse to pack when a crate linked into the binaries, or ggml, has no licence notice.
+    python3 "$root/scripts/third_party_notices.py" --check >&2 || { say "the licence notices are incomplete"; return 1; }
     cp "$root/LICENSE" "$root/README.md" "$root/THIRD_PARTY.md" "$dir/"
     cp -r "$root/licenses" "$dir/"
     cp -r "$root/instruments/python/ggtts_instrument" "$dir/instruments/python/"
@@ -129,7 +133,8 @@ smoke() {
         [ -f "$dir/instruments/vendor/fft.js-4.0.4/fft.js" ] || \
         { say "missing bundled pitch detector or FFT in $path"; return 1; }
     local notice
-    for notice in LICENSE THIRD_PARTY.md licenses/Apache-2.0.txt instruments/vendor/fft.js-4.0.4/LICENSE \
+    for notice in LICENSE THIRD_PARTY.md licenses/Apache-2.0.txt licenses/ggml-LICENSE.txt licenses/rust-crates.txt \
+        instruments/vendor/fft.js-4.0.4/LICENSE \
         instruments/vendor/pitchy-4.1.0/LICENSE instruments/examples/python/loudness-ends/LICENSE-APACHE-2.0; do
         [ -s "$dir/$notice" ] || { say "missing licence notice in $path: $notice"; return 1; }
     done

@@ -47,8 +47,10 @@ new requirements. Internal refactors and test changes are not listed.
   and on CUDA when asked (`--instrument-device`).
 - **Kitten-TTS 2 models in the experimental `TQ1_0` layout load on the CPU** (`docs/tq1-cpu.md`). They are refused
   on CUDA.
-- **Licence notices in every archive**: `THIRD_PARTY.md`, `licenses/`, and the licence file beside each bundled
-  third-party source.
+- **Licence notices in every archive**: `THIRD_PARTY.md`; `licenses/ggml-LICENSE.txt` for the statically linked
+  ggml; `licenses/rust-crates.txt`, generated from the dependency tree, with the licence texts of every Rust crate
+  linked into the two binaries; and the licence file beside each bundled third-party source (Pitchy, fft.js, the
+  speech-core selection). The CUDA and cuBLAS libraries are not bundled and are not covered.
 
 ## v0.1.0-rc.7
 

@@ -4,7 +4,7 @@
 mod common;
 
 use common::*;
-use ggtts_book::{Book, BookError};
+use ggtts_book::{Book, BookError, Limits};
 
 fn refused(epub: &Epub) -> BookError {
     match Book::read(epub.bytes()) {
@@ -21,6 +21,111 @@ fn the_unplanted_fixtures_read() {
     for epub in [nested(), ncx_only(), spine_only()] {
         Book::read(epub.bytes()).unwrap();
     }
+}
+
+/// Fan-out: fifty manifest items naming one file, all in the spine. The file is read and spoken once, with a
+/// warning per repeat, so a small zip cannot be multiplied into a huge book.
+#[test]
+fn a_file_the_spine_lists_many_times_is_read_once() {
+    let epub = nested();
+    let mut opf = epub.text("OEBPS/content.opf");
+    let items: String = (0..50)
+        .map(|i| format!(r#"<item id="again{i}" href="Text/ch1.xhtml" media-type="application/xhtml+xml"/>"#))
+        .collect();
+    let refs: String = (0..50).map(|i| format!(r#"<itemref idref="again{i}"/>"#)).collect();
+    opf = opf.replace("</manifest>", &format!("{items}</manifest>"));
+    opf = opf.replace("</spine>", &format!("{refs}</spine>"));
+    let book = Book::read(epub.with("OEBPS/content.opf", &opf).bytes()).unwrap();
+    let spoken = book
+        .chapters
+        .iter()
+        .flat_map(|c| &c.blocks)
+        .filter(|b| b.text() == "The keeper counted the gulls before breakfast.")
+        .count();
+    assert_eq!(spoken, 1);
+    assert_eq!(book.warnings.iter().filter(|w| w.contains("already lists")).count(), 50);
+}
+
+/// The book-wide budget: every read counts, and a book that inflates past the budget is refused with its own code,
+/// even when each entry is under the per-entry cap.
+#[test]
+fn a_book_past_its_total_budget_is_refused() {
+    let bytes = nested().bytes();
+    let tight = Limits {
+        book_bytes: 4_000,
+        ..Limits::default()
+    };
+    let err = Book::read_with_limits(bytes.clone(), tight).unwrap_err();
+    assert_eq!(err, BookError::BookTooLarge { limit: 4_000 });
+    assert_eq!(err.code(), "book-too-large");
+    // The same book under the defaults reads.
+    Book::read_with_limits(bytes, Limits::default()).unwrap();
+}
+
+/// The per-entry cap has its own code.
+#[test]
+fn an_entry_past_its_cap_is_refused() {
+    let tight = Limits {
+        entry_bytes: 600,
+        ..Limits::default()
+    };
+    let err = Book::read_with_limits(nested().bytes(), tight).unwrap_err();
+    assert_eq!(err.code(), "too-large");
+}
+
+fn deep_chapter(depth: usize) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>x</title></head><body><p>{}deep{}</p></body></html>"#,
+        "<span>".repeat(depth),
+        "</span>".repeat(depth)
+    )
+}
+
+/// Deep nesting is refused with a named error, not a stack overflow: 50,000 nested spans, read on a thread with a
+/// 1 MiB stack, the size of a Windows main thread.
+#[test]
+fn deep_nesting_is_refused_not_a_crash() {
+    let epub = nested().with("OEBPS/Text/ch1.xhtml", &deep_chapter(50_000));
+    let err = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(move || Book::read(epub.bytes()))
+        .unwrap()
+        .join()
+        .expect("the reader must not crash")
+        .unwrap_err();
+    assert_eq!(err.code(), "content");
+    assert!(err.to_string().contains("nested deeper than 256 levels"), "{err}");
+}
+
+/// Up to the limit, deep nesting reads, on the same 1 MiB stack.
+#[test]
+fn nesting_up_to_the_limit_reads_on_a_small_stack() {
+    // html > body > p > 250 spans: 253 levels.
+    let epub = nested().with("OEBPS/Text/ch1.xhtml", &deep_chapter(250));
+    let book = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(move || Book::read(epub.bytes()))
+        .unwrap()
+        .join()
+        .expect("the reader must not crash")
+        .unwrap();
+    let ch1 = book.chapters.iter().find(|c| c.id == "ch1").unwrap();
+    assert_eq!(ch1.blocks[0].text(), "deep");
+}
+
+/// Font obfuscation is accepted only on a font. On a content document it is refused as DRM.
+#[test]
+fn font_obfuscation_on_a_content_file_is_refused() {
+    let epub = nested().with(
+        "META-INF/encryption.xml",
+        &encryption_xml("OEBPS/Text/ch1.xhtml", IDPF_FONT_OBFUSCATION),
+    );
+    assert_eq!(
+        refused(&epub),
+        BookError::Drm {
+            files: vec!["OEBPS/Text/ch1.xhtml".into()]
+        }
+    );
 }
 
 /// (a) DRM: encryption.xml naming a content document is refused, naming the file, and nothing is decrypted.

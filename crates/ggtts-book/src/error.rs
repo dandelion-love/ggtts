@@ -12,8 +12,10 @@ pub enum BookError {
     NotZip(String),
     /// A zip entry could not be read (a damaged archive).
     Zip { file: String, reason: String },
-    /// A zip entry is larger than [`MAX_ENTRY_BYTES`](crate::MAX_ENTRY_BYTES).
+    /// A zip entry inflates past the per-entry limit ([`Limits::entry_bytes`](crate::Limits::entry_bytes)).
     TooLarge { file: String },
+    /// The book's reads together inflate past the book-wide limit ([`Limits::book_bytes`](crate::Limits::book_bytes)).
+    BookTooLarge { limit: u64 },
     /// The book is DRM-protected: its content files are encrypted. ggtts-book never decrypts or strips DRM.
     Drm { files: Vec<String> },
     /// `META-INF/container.xml` is missing or malformed, or names a package document that is not in the book.
@@ -34,6 +36,7 @@ impl BookError {
             BookError::NotZip(_) => "not-zip",
             BookError::Zip { .. } => "zip",
             BookError::TooLarge { .. } => "too-large",
+            BookError::BookTooLarge { .. } => "book-too-large",
             BookError::Drm { .. } => "drm-protected",
             BookError::Container(_) => "container",
             BookError::Package { .. } => "package",
@@ -50,9 +53,11 @@ impl fmt::Display for BookError {
             BookError::Io(reason) => write!(f, "cannot read the book: {reason}"),
             BookError::NotZip(reason) => write!(f, "not an EPUB (not a zip archive): {reason}"),
             BookError::Zip { file, reason } => write!(f, "cannot read {file} from the archive: {reason}"),
-            BookError::TooLarge { file } => {
-                write!(f, "{file} is larger than {} bytes", crate::MAX_ENTRY_BYTES)
-            }
+            BookError::TooLarge { file } => write!(f, "{file} inflates past the per-entry limit"),
+            BookError::BookTooLarge { limit } => write!(
+                f,
+                "the book inflates past {limit} bytes in total (a zip bomb, or one file read many times)"
+            ),
             BookError::Drm { files } => write!(
                 f,
                 "the book is DRM-protected ({} encrypted: {}); ggtts-book does not decrypt or remove DRM",

@@ -35,6 +35,7 @@ DRM-protected books rather than removing the protection.
 
 * A table-of-contents entry starts a chapter where it points: at the start of a file, or at an element id inside one.
   Two chapters can share a file, as `part2.xhtml#c3` and `part2.xhtml#c4` do.
+* A file the spine lists more than once (through two manifest ids) is read once; each repeat is a warning.
 * A spine file the table of contents does not name **continues the chapter before it**, so a chapter split across two
   files is one chapter. The exceptions: the first file in the spine always starts a chapter, and an unnamed file that
   is itself front or back matter (below) starts its own.
@@ -64,10 +65,29 @@ copyright page, table of contents, index, colophon, imprint, errata and the like
 * Not read: `head`, `script`, `style`, `noscript`, `template`, `svg`, `math`, ruby annotations (`rt`, `rp`), note
   references and the notes themselves (`epub:type` noteref, footnote, endnote, rearnote, or the `doc-*` roles),
   page-break markers, and a `<sup>` holding only a marker such as `12` or `*`.
-* Character references and the HTML5 named entities (`&nbsp;`, `&mdash;`) are decoded.
+* Character references, the HTML5 named entities (`&nbsp;`, `&mdash;`) and the internal entities a document's DTD
+  declares (`<!ENTITY c "Company">`) are decoded. A DTD entity's value is taken as written, never expanded again,
+  so nested entities cannot multiply; external (`SYSTEM`, `PUBLIC`) and parameter entities are never fetched or
+  used. A paragraph holding an entity nothing declares keeps its text as written.
+* A `<sup>` holding only digits or note symbols is treated as a note marker and not read. The trade-off: an
+  exponent such as `mc<sup>2</sup>` loses its `2` (issue 214).
 * Whitespace runs become one space. A space between two CJK characters or full-width punctuation is dropped, so a line
   break in the middle of Chinese text does not become a pause. Soft hyphens and zero-width spaces are removed.
-* Content files must be UTF-8 and well-formed XML.
+* Content files must be UTF-8 and well-formed XML, nested no deeper than 256 elements.
+
+## Limits
+
+A book is read under resource limits (`Limits`, with `Book::read_with_limits` for other values):
+
+| Limit | Default | Refusal |
+|---|---|---|
+| one entry, inflated | 64 MiB | `too-large` |
+| every read of the book together, inflated | 256 MiB | `book-too-large` |
+| element nesting in any XML document | 256 levels | the document's own code (`content`, `package`, `container`), naming the depth |
+
+Inflation stops at whatever the budget has left, whatever an entry's header claims. The depth limit keeps every
+walk over a document's tree far from the end of the stack, on a 1 MiB Windows main thread too: a deeper document
+is refused with a named error instead of crashing the process.
 
 ## Refusals
 
@@ -82,10 +102,12 @@ Each has its own error and a stable code, printed first:
 | `content` | A spine file is not well-formed UTF-8 XHTML. |
 | `not-zip` | The file is not a zip archive. |
 | `too-large` | An entry is over 64 MiB uncompressed. |
+| `book-too-large` | The book's reads together inflate past 256 MiB: a zip bomb, or one file read many times. |
 | `zip`, `io` | The archive or the file cannot be read. |
 
 Font obfuscation (`http://www.idpf.org/2008/embedding` and Adobe's) scrambles embedded fonts, not the text, so it
-is not DRM and the book reads.
+is not DRM and the book reads. It is accepted only on a font (`.otf`, `.ttf`, `.woff`, `.woff2`, `.ttc`, `.otc`):
+the same algorithm on any other file is refused as `drm-protected`, because that file cannot be read as written.
 
 ## The JSON
 

@@ -7,15 +7,24 @@ use crate::xhtml::normalize;
 
 /// The font obfuscation algorithms. They scramble embedded fonts, not the text, and are not DRM.
 const FONT_OBFUSCATION: &[&str] = &["http://www.idpf.org/2008/embedding", "http://ns.adobe.com/pdf/enc#RC"];
+/// The file extensions of the fonts font obfuscation may apply to.
+const FONT_EXTENSIONS: &[&str] = &["otf", "ttf", "woff", "woff2", "ttc", "otc"];
 
-/// Refuse a book whose `encryption.xml` encrypts anything with an algorithm other than font obfuscation. An
-/// `encryption.xml` that cannot be read is refused too: a book that may be encrypted is not guessed at.
+fn is_font(path: &str) -> bool {
+    path.rsplit_once('.')
+        .is_some_and(|(_, ext)| FONT_EXTENSIONS.iter().any(|f| f.eq_ignore_ascii_case(ext)))
+}
+
+/// Refuse a book whose `encryption.xml` encrypts anything other than a font obfuscated by a font-obfuscation
+/// algorithm. A font-obfuscation algorithm on a file that is not a font is refused as DRM too, since that file cannot
+/// be read as written. An `encryption.xml` that cannot be read is refused: a book that may be encrypted is not guessed
+/// at.
 pub(crate) fn check_drm(zip: &mut Archive) -> Result<(), BookError> {
     const FILE: &str = "META-INF/encryption.xml";
     let Some(bytes) = zip.read(FILE)? else {
         return Ok(());
     };
-    let root = parse(&bytes).map_err(|_| BookError::Drm {
+    let root = zip.parse(&bytes).map_err(|_| BookError::Drm {
         files: vec![format!("{FILE} (unreadable)")],
     })?;
     let mut encrypted = Vec::new();
@@ -24,16 +33,15 @@ pub(crate) fn check_drm(zip: &mut Archive) -> Result<(), BookError> {
             .child("EncryptionMethod")
             .and_then(|m| m.attr("Algorithm"))
             .unwrap_or("");
-        if FONT_OBFUSCATION.contains(&algorithm) {
-            continue;
-        }
         for reference in data.find_all("CipherReference") {
             let uri = reference.attr("URI").unwrap_or("?");
-            encrypted.push(
-                resolve("", uri)
-                    .map(|(path, _)| path)
-                    .unwrap_or_else(|| uri.to_string()),
-            );
+            let path = resolve("", uri)
+                .map(|(path, _)| path)
+                .unwrap_or_else(|| uri.to_string());
+            if FONT_OBFUSCATION.contains(&algorithm) && is_font(&path) {
+                continue;
+            }
+            encrypted.push(path);
         }
     }
     if encrypted.is_empty() {
@@ -48,7 +56,7 @@ pub(crate) fn container(zip: &mut Archive) -> Result<String, BookError> {
     let bytes = zip
         .read("META-INF/container.xml")?
         .ok_or_else(|| BookError::Container("missing".to_string()))?;
-    let root = parse(&bytes).map_err(BookError::Container)?;
+    let root = zip.parse(&bytes).map_err(BookError::Container)?;
     let rootfiles = root.find_all("rootfile");
     let chosen = rootfiles
         .iter()
@@ -105,12 +113,12 @@ pub(crate) struct Package {
     pub guide: Vec<Pointer>,
 }
 
-pub(crate) fn package(path: &str, bytes: &[u8]) -> Result<Package, BookError> {
+pub(crate) fn package(path: &str, bytes: &[u8], depth: usize) -> Result<Package, BookError> {
     let error = |reason: String| BookError::Package {
         file: path.to_string(),
         reason,
     };
-    let root = parse(bytes).map_err(error)?;
+    let root = parse(bytes, depth).map_err(error)?;
     if root.local != "package" {
         return Err(error(format!("the root element is <{}>, not <package>", root.qname)));
     }

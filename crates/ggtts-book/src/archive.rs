@@ -4,22 +4,57 @@ use std::io::{Cursor, Read};
 
 use crate::error::BookError;
 
-/// The largest single entry ggtts-book reads, in bytes. A zip bomb is refused rather than inflated.
+/// The largest single entry ggtts-book reads by default, in bytes. A zip bomb is refused rather than inflated.
 pub const MAX_ENTRY_BYTES: u64 = 64 << 20;
+/// The most a book may inflate to in total by default, in bytes, every read counted. A book whose entries are each
+/// under [`MAX_ENTRY_BYTES`] but which reads one large file many times is refused at this cap, not inflated.
+pub const MAX_BOOK_BYTES: u64 = 256 << 20;
+/// The deepest element nesting any document may have by default. The tree walks recurse once per level, so a deeper
+/// document is refused with a named error instead of overflowing the stack.
+pub const MAX_DEPTH: usize = 256;
+
+/// The resource limits a book is read under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// The largest single entry, inflated, in bytes.
+    pub entry_bytes: u64,
+    /// The most all reads of the book may inflate to together, in bytes.
+    pub book_bytes: u64,
+    /// The deepest element nesting in any XML document.
+    pub depth: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits {
+            entry_bytes: MAX_ENTRY_BYTES,
+            book_bytes: MAX_BOOK_BYTES,
+            depth: MAX_DEPTH,
+        }
+    }
+}
 
 pub(crate) struct Archive {
     zip: zip::ZipArchive<Cursor<Vec<u8>>>,
+    pub(crate) limits: Limits,
+    /// Bytes inflated so far, every read counted.
+    total: u64,
 }
 
 impl Archive {
-    pub(crate) fn new(bytes: Vec<u8>) -> Result<Self, BookError> {
+    pub(crate) fn new(bytes: Vec<u8>, limits: Limits) -> Result<Self, BookError> {
         zip::ZipArchive::new(Cursor::new(bytes))
-            .map(|zip| Self { zip })
+            .map(|zip| Self { zip, limits, total: 0 })
             .map_err(|e| BookError::NotZip(e.to_string()))
     }
 
     pub(crate) fn has(&self, name: &str) -> bool {
         self.zip.index_for_name(name).is_some()
+    }
+
+    /// Parse an XML document from the book under the book's depth limit.
+    pub(crate) fn parse(&self, bytes: &[u8]) -> Result<crate::dom::Element, String> {
+        crate::dom::parse(bytes, self.limits.depth)
     }
 
     /// The entry's bytes, or `None` when the archive has no entry of that name. A zip-level encrypted entry is
@@ -37,20 +72,31 @@ impl Archive {
                 files: vec![name.to_string()],
             });
         }
+        let Limits {
+            entry_bytes,
+            book_bytes,
+            ..
+        } = self.limits;
         let entry = self.zip.by_index(index).map_err(zip_error)?;
-        if entry.size() > MAX_ENTRY_BYTES {
+        if entry.size() > entry_bytes {
             return Err(BookError::TooLarge { file: name.to_string() });
         }
+        // Never inflate past what the book's budget has left, whatever the entry's header claims.
+        let budget = book_bytes.saturating_sub(self.total);
         let mut out = Vec::new();
         entry
-            .take(MAX_ENTRY_BYTES + 1)
+            .take(entry_bytes.min(budget) + 1)
             .read_to_end(&mut out)
             .map_err(|e| BookError::Zip {
                 file: name.to_string(),
                 reason: e.to_string(),
             })?;
-        if out.len() as u64 > MAX_ENTRY_BYTES {
+        if out.len() as u64 > entry_bytes {
             return Err(BookError::TooLarge { file: name.to_string() });
+        }
+        self.total += out.len() as u64;
+        if self.total > book_bytes {
+            return Err(BookError::BookTooLarge { limit: book_bytes });
         }
         Ok(Some(out))
     }

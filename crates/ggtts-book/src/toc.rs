@@ -1,7 +1,7 @@
 //! The table of contents: the EPUB 3 nav document, else the EPUB 2 NCX. Each entry is a place a chapter starts.
 
 use crate::archive::{resolve, Archive};
-use crate::dom::{parse, Element};
+use crate::dom::Element;
 use crate::error::BookError;
 use crate::package::{Package, Pointer};
 use crate::xhtml::normalize;
@@ -98,7 +98,7 @@ fn read_doc(zip: &mut Archive, path: Option<&str>) -> Result<Result<(String, Ele
     let Some(bytes) = zip.read(path)? else {
         return Ok(Err("it is not in the book".to_string()));
     };
-    Ok(parse(&bytes).map(|root| (path.to_string(), root)))
+    Ok(zip.parse(&bytes).map(|root| (path.to_string(), root)))
 }
 
 fn nav_entries(path: &str, root: &Element) -> (Vec<Entry>, Vec<Pointer>) {

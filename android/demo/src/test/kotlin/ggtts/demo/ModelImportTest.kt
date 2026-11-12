@@ -103,6 +103,39 @@ class ModelImportTest {
     }
 
     @Test
+    fun midCopyOnlyThePartFileExists() {
+        // What .part is for: a copy killed partway (no catch block runs) must leave nothing under the real name. So
+        // look from inside the copy: partway through reading, NAME.part exists and NAME does not.
+        val big = gguf + ByteArray(4 shl 20) { (it % 251).toByte() }
+        val seen = mutableListOf<Pair<Boolean, Boolean>>()
+        val watching = object : InputStream() {
+            var n = 0
+            override fun read(): Int = if (n < big.size) big[n++].toInt() and 0xff else -1
+            override fun read(b: ByteArray, off: Int, len: Int): Int {
+                if (n >= big.size) return -1
+                if (n > 2 shl 20 && seen.isEmpty()) {
+                    seen += File(dir, "lm.gguf.part").exists() to File(dir, "lm.gguf").exists()
+                }
+                val k = minOf(len, big.size - n)
+                System.arraycopy(big, n, b, off, k)
+                n += k
+                return k
+            }
+        }
+        ModelImport(dir).importFile("lm.gguf", big.size.toLong(), watching)
+        assertEquals("looked once, partway through", 1, seen.size)
+        assertEquals("partway: NAME.part exists, NAME does not", true to false, seen.single())
+        assertEquals(listOf("lm.gguf"), ModelImport.listed(dir))
+        assertFalse(File(dir, "lm.gguf.part").exists())
+    }
+
+    @Test
+    fun aVoiceJsonWithLongLeadingWhitespaceIsImported() {
+        ModelImport(dir).importFile("voice.json", null, ByteArrayInputStream("\n\n    \t {\"v\": 1}".toByteArray()))
+        assertEquals(listOf("voice.json"), ModelImport.listed(dir))
+    }
+
+    @Test
     fun aCopyShorterThanTheReportedSizeIsRefused() =
         refused(ModelImport(dir), "lm.gguf", gguf.size + 10L, gguf, "incomplete")
 

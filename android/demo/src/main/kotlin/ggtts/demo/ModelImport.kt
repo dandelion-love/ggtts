@@ -4,6 +4,7 @@
 // never appears in the lists.
 package ggtts.demo
 
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -43,7 +44,6 @@ class ModelImport(
             base.endsWith(".json", ignoreCase = true) -> "json"
             else -> throw ImportException("$base is not a model file: import a .gguf model or a .json voice")
         }
-        if (size != null && size <= 0L) throw ImportException("$base is empty")
         val target = File(dir, base)
         if (target.exists()) throw ImportException("$base is already imported; it was not replaced")
         dir.mkdirs()
@@ -53,19 +53,31 @@ class ModelImport(
         try {
             DigestInputStream(input, digest).use { src ->
                 part.outputStream().use { out ->
-                    val head = ByteArray(4)
-                    val n = src.readNBytesCompat(head)
-                    if (n == 0) throw ImportException("$base is empty")
+                    // The bytes read to recognise the file, written out before the rest.
+                    val head = ByteArrayOutputStream()
                     when (kind) {
-                        "gguf" -> if (n < 4 || !head.contentEquals(GGUF_MAGIC)) {
-                            throw ImportException("$base is not a GGUF file")
+                        "gguf" -> {
+                            val magic = ByteArray(4)
+                            val n = src.readNBytesCompat(magic)
+                            head.write(magic, 0, n)
+                            if (n == 0) throw ImportException("$base is empty")
+                            if (n < 4 || !magic.contentEquals(GGUF_MAGIC)) {
+                                throw ImportException("$base is not a GGUF file")
+                            }
                         }
-                        "json" -> if (head.take(n).firstOrNull { !it.toInt().toChar().isWhitespace() } != '{'.code.toByte()) {
-                            throw ImportException("$base is not a voice JSON file")
+                        "json" -> {
+                            // Any amount of leading whitespace (up to 64 KiB), then the object's '{'.
+                            var c: Int
+                            do {
+                                c = src.read()
+                                if (c >= 0) head.write(c)
+                            } while (c >= 0 && c.toChar().isWhitespace() && head.size() < 65536)
+                            if (head.size() == 0) throw ImportException("$base is empty")
+                            if (c != '{'.code) throw ImportException("$base is not a voice JSON file")
                         }
                     }
-                    out.write(head, 0, n)
-                    copied = n + src.copyTo(out, 1 shl 20)
+                    head.writeTo(out)
+                    copied = head.size() + src.copyTo(out, 1 shl 20)
                 }
             }
             if (size != null && copied != size) {

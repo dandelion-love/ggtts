@@ -251,11 +251,18 @@ notices() { # DIR LIB
       echo
       echo "$llvm"; } > "$d/licenses/libc++-LICENSE.txt"
     version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' "$root/Cargo.toml")
+    # ggtts_commit is what was built. On a pull request, CI builds its merge into the base, so the record also names
+    # the pull request's head, read from the event GitHub Actions describes the run with (empty elsewhere).
+    local pr_head
+    pr_head=$(python3 -c 'import json, os
+p = os.environ.get("GITHUB_EVENT_PATH")
+print(json.load(open(p)).get("pull_request", {}).get("head", {}).get("sha", "") if p and os.path.isfile(p) else "")')
     cat > "$d/BUILDINFO.json" <<EOF
 {
   "artifact": "ggtts Android library (AAR)",
   "version": "$version",
   "ggtts_commit": "$(git -C "$root" rev-parse HEAD)",
+  "pull_request_head": "$pr_head",
   "ggml_commit": "$(pin)",
   "ggml_describe": "$(sed -n 's/^ *pub const DESCRIBE: &str = "\(.*\)";$/\1/p' "$root/crates/ggtts-core/src/lib.rs")",
   "rustc": "$(rustc -V)",

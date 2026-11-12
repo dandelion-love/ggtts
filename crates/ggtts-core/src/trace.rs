@@ -34,6 +34,7 @@ use serde_json::{Map, Value};
 
 use crate::audio::{judge_f32, trim_edges_f32};
 use crate::engine::{ChunkRequest, Codes, Engine, EngineError, Pcm, Stop};
+use crate::steer::Steering;
 
 /// The trace format this module writes and reads.
 pub const FORMAT: &str = "ggtts-trace/2";
@@ -87,6 +88,9 @@ pub struct Header {
     pub models: Vec<Value>,
     /// The render's style instruction, when it has a non-empty one. Absent from the line otherwise.
     pub instruction: Option<String>,
+    /// The render's steering, as [`Steering::record`](crate::steer::Steering::record) writes it: the file's sha256,
+    /// the layers applied and the scale. Absent from the line for an unsteered render.
+    pub steer: Option<Value>,
 }
 
 impl Header {
@@ -108,6 +112,7 @@ impl Header {
             trace_level,
             models: Vec::new(),
             instruction: None,
+            steer: None,
         }
     }
 }
@@ -206,6 +211,7 @@ impl Event<'_> {
                     m.insert("models".into(), Value::Array(h.models.clone()));
                 }
                 put(&mut m, "instruction", h.instruction.clone());
+                put(&mut m, "steer", h.steer.clone());
             }
             Event::ChunkBegin {
                 chunk,
@@ -616,8 +622,33 @@ fn u32_of(m: &Map<String, Value>, k: &str) -> Result<u32, TraceError> {
 ///
 /// Pass a fresh engine built as the header names it: an engine with state (the fake's per-text draw count) only
 /// replays from the same starting state.
+///
+/// A steered trace is refused: its header names the steering file by sha256 and cannot rebuild it. Replay it with
+/// [`replay_steered`].
 pub fn replay(engine: &mut dyn Engine, lines: &[Map<String, Value>]) -> Result<ReplayReport, TraceError> {
+    replay_steered(engine, lines, None)
+}
+
+/// [`replay`] with the steering the render used. The header's `steer` and `steer`'s
+/// [`record`](Steering::record) must be the same, both present or both absent.
+pub fn replay_steered(
+    engine: &mut dyn Engine,
+    lines: &[Map<String, Value>],
+    steer: Option<&Steering>,
+) -> Result<ReplayReport, TraceError> {
     let head = lines.first().ok_or_else(|| TraceError("empty trace".into()))?;
+    let given = steer.map(Steering::record);
+    if head.get("steer") != given.as_ref() {
+        return Err(TraceError(match (head.get("steer"), given) {
+            (Some(rec), None) => format!("the trace is of a steered render ({rec}); replay it with its steering"),
+            (None, Some(_)) => "the trace is of an unsteered render; replay it without steering".into(),
+            (rec, given) => format!(
+                "the trace was steered with {}, not {}",
+                rec.map_or("nothing".into(), Value::to_string),
+                given.map_or("nothing".into(), |v| v.to_string())
+            ),
+        }));
+    }
     let level = head
         .get("trace_level")
         .and_then(Value::as_u64)
@@ -675,6 +706,7 @@ pub fn replay(engine: &mut dyn Engine, lines: &[Map<String, Value>]) -> Result<R
             chunk: u32_of(m, "chunk")?,
             draw: u32_of(m, "draw")?,
             instruction: m.get("instruction").and_then(Value::as_str),
+            steer,
         };
         let pcm = generate_chunk(engine, &req, &mut rec).map_err(|e| TraceError(format!("engine: {e}")))?;
         last = Some((req.chunk, pcm));

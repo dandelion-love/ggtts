@@ -148,6 +148,7 @@ fn every_variant() -> Vec<Map<String, Value>> {
             json!({"role": "codec", "path": "codec.gguf", "sha256": "1".repeat(64), "source": "path", "url": null}),
         ],
         instruction: Some("Speak slowly and softly.".into()),
+        steer: Some(json!({"sha256": "2".repeat(64), "layers": [12, 13], "scale": 0.5})),
     };
     let bare = Header {
         model_sha256: None,
@@ -156,6 +157,7 @@ fn every_variant() -> Vec<Map<String, Value>> {
         trace_level: 1,
         models: Vec::new(),
         instruction: None,
+        steer: None,
         ..full.clone()
     };
     let (cb, cb_p) = ([3u16, 4, 5], [0.5, 0.25, 1.0]);
@@ -387,6 +389,40 @@ fn the_schema_refuses_planted_defects_and_ignores_the_clock() {
         ("a short model hash", {
             let mut m = head.clone();
             m.insert("model_sha256".into(), "abc".into());
+            m
+        }),
+        ("steering without its scale", {
+            let mut m = head.clone();
+            m.insert("steer".into(), json!({"sha256": "2".repeat(64), "layers": [3]}));
+            m
+        }),
+        ("steering with no layer", {
+            let mut m = head.clone();
+            m.insert(
+                "steer".into(),
+                json!({"sha256": "2".repeat(64), "layers": [], "scale": 1.0}),
+            );
+            m
+        }),
+        ("steering naming a layer twice", {
+            let mut m = head.clone();
+            m.insert(
+                "steer".into(),
+                json!({"sha256": "2".repeat(64), "layers": [3, 3], "scale": 1.0}),
+            );
+            m
+        }),
+        ("steering with a short file hash", {
+            let mut m = head.clone();
+            m.insert("steer".into(), json!({"sha256": "abc", "layers": [3], "scale": 1.0}));
+            m
+        }),
+        ("steering with an undeclared field", {
+            let mut m = head.clone();
+            m.insert(
+                "steer".into(),
+                json!({"sha256": "2".repeat(64), "layers": [3], "scale": 1.0, "file": "x"}),
+            );
             m
         }),
         ("not an event at all", line(json!({"t_ms": 0}))),

@@ -51,6 +51,12 @@ class ReadingLifecycleTest {
     }
 
     @Test
+    fun aStopThatReachesAServiceWithNoReadStopsItAgain() {
+        command(ForegroundGate.ACTION_STOP)
+        assertEquals("the read is asked to stop, and the service it started goes", listOf("stopRead", "stop"), events)
+    }
+
+    @Test
     fun theNotificationsStopEndsTheReadAsTheScreensDoes() {
         val statuses = mutableListOf<String>()
         val view = object : DemoView {
@@ -186,6 +192,30 @@ class ReadingLifecycleTest {
         DemoController(binding, view, Audio(), { it.run() }, { it.run() }, cache = cache).speak(qwen, "y", Ggtts.DEFAULT_SEED)
         assertEquals("busy: ERROR_SERVICE", listOf("error ${TtsCodes.ERROR_SERVICE}"), out.events)
         assertEquals(1, loads.size)
+        assertFalse(engines.single().closed)
+    }
+
+    @Test
+    fun releaseRefusesWhileAReadHoldsTheEngine() {
+        val cache = EngineCache(TtsBinding { r -> loads += r; Engine().also { engines += it } })
+        cache.acquire(qwen)
+        assertFalse("a read holds it: refused", cache.release())
+        assertFalse("and nothing closed", engines.single().closed)
+        assertTrue(cache.holds(qwen))
+        cache.done()
+        assertTrue("idle: released", cache.release())
+        assertTrue(engines.single().closed)
+    }
+
+    @Test
+    fun aTrimDuringAReadDoesNotEvenTryToRelease() {
+        // The trim's own busy check, apart from release()'s guard: during a read it must not call release() at all,
+        // which the cache would log as a refusal.
+        val log = mutableListOf<String>()
+        val cache = EngineCache(TtsBinding { r -> loads += r; Engine().also { engines += it } }) { log += it }
+        cache.acquire(qwen)
+        assertFalse(TrimPolicy.trim(TrimPolicy.RUNNING_CRITICAL, false, cache))
+        assertFalse("not tried: $log", log.any { it.startsWith("release refused") })
         assertFalse(engines.single().closed)
     }
 

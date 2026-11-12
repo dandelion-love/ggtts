@@ -74,6 +74,9 @@ class ForegroundGate(private val startService: () -> Unit, private val stopServi
     fun onCommand(action: String?, stopRead: () -> Unit, goForeground: () -> Unit) {
         if (action == ACTION_STOP) {
             stopRead()
+            // A Stop that reached a service with no read behind it (a stale notification) started it just for this:
+            // stop it again, or it would stay.
+            if (!foreground && !pending) stopService()
             return
         }
         pending = false

@@ -145,6 +145,7 @@ fn fake_engine_available_catalogue_preserves_tokens_and_samples_and_sees_a_sampl
         instruments_dir: Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments")),
         models: None,
         instruction: None,
+        steer: None,
     };
     let result = ggtts_instruments::run(&config, &inputs).unwrap();
     assert!(

@@ -161,6 +161,7 @@ fn measure(a: Args, log: LogSettings) -> Result<u8, String> {
         instruments_dir: None,
         models: None,
         instruction: None,
+        steer: None,
     };
     let summary = ggtts_instruments::runner::run_with_logging(&config, &inputs, log)?;
     for e in &summary.envelopes {

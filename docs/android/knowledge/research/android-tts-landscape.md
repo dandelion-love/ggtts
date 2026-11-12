@@ -52,7 +52,7 @@ distributes its engine APKs on GitHub and Hugging Face.
 | Supertonic TTS | unverified | unverified | yes | "minimal latency" (no figure) | unverified | 4.7, 77 reviews, 5K+ installs[^supertonic-play] |
 | ToBe SAID | English built in, more downloadable | unverified | yes | unverified | unverified | 4.5, 68 reviews, 5K+ installs[^tobesaid-play] |
 | Code Factory Vocalizer | paid voice packs | yes, Cantonese (HK) for purchase | yes | unverified | proprietary | 2.8, 9.31K reviews, 1M+ installs[^vocalizer-play] |
-| **ggtts (this track)** | **2.3 to 2.5 GB, user-supplied** | **yes: a Hong Kong Cantonese Qwen3-TTS voice** | **no (an app library and demo)** | **7 (Qwen3-TTS) and 12 (Kitten-TTS 2) on a Galaxy Z Fold5** | Apache-2.0 code; models' own licences | not published |
+| **ggtts (this track)** | **2.3 to 2.5 GB, user-supplied** | **yes: a Hong Kong Cantonese Qwen3-TTS voice** | **yes, from #221 (declared `LATENCY_VERY_HIGH`)** | **7 (Qwen3-TTS) and 12 (Kitten-TTS 2) on a Galaxy Z Fold5** | Apache-2.0 code; models' own licences | not published |
 
 # What it shows
 
@@ -64,4 +64,4 @@ distributes its engine APKs on GitHub and Hugging Face.
 - **Every engine with a published speed gives first audio in under a second.** ggtts on a phone takes tens of
   seconds ([limitations](/research/limitations.md)).
 - **Almost every app is a system TTS engine** (an Android `TextToSpeechService`), so screen readers and other apps
-  can use it. ggtts on Android is not one yet.
+  can use it. ggtts became one with #221, with its voices declared as very high latency.

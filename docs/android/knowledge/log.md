@@ -2,6 +2,9 @@
 
 ## 2026-11-12
 
+- Pattern 1 is done: ggtts is a system TTS engine (#221). Integration is rated 3 (from 2), and the landscape row is
+  updated.
+
 - Added the low-memory decision (warn on the first Speak, load on the second) and the streaming measurements on the
   phone. Pattern 5 is now done: the screen states each engine's costs (#223).
 

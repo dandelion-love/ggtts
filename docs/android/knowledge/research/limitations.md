@@ -48,7 +48,7 @@ On a 1 to 5 scale, judged against the shipped engines above:
 | First audio | 1 | tens of seconds, against under one second |
 | Memory and size | 1 | an order of magnitude above the rest |
 | Cantonese offline | 4 | one of very few offline Cantonese voices; quality not yet judged by listeners on the phone |
-| Integration | 2 | an AAR and a demo app; not a system TTS engine |
+| Integration | 3 | an AAR, a demo app, and a system TTS engine (#221) that any app can name; not yet the phone's default, and with no voice-data check screen |
 
 These ratings are this track's own judgement, not user reviews. They should be revisited after each speed or
 integration change.

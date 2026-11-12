@@ -13,6 +13,16 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **`ggtts-kitten-convert --layout tq1_0` writes an exact `TQ1_0` Kitten-TTS 2 GGUF**
+  ([#200](https://github.com/dandelion-love/ggtts/issues/200)). The layout is `tq1_0-pad128`: each stock `TQ1_0`
+  block holds one 128-weight group and 128 zero trits, with the group's own scale, so every trit and every scale of
+  the source survives. The readback check verifies it as it does `q4_0` and `tq2_0`, and `--verify` checks an
+  existing one. The 196 ternary matrices take 3.375 bits a weight, about 595 MB against 793 MB for `Q4_0`. `Q4_0`
+  stays the default: on the CPU the padded `TQ1_0` product is bit-identical to padded `TQ2_0`'s, which misses the
+  ternary parity bar that `Q4_0` passes. On CUDA every layout is held as the same exact f16. The engine and
+  `ggtts-render` load the new layout on the CPU and on CUDA. Files in the older 256-weight `tq1_0-256-experimental`
+  layout still load; that layout gives two 128-weight groups one scale, which is lossy for this model, and the
+  converter refuses to write it.
 - **Steering: `ggtts-render --steer FILE` adds vectors to the Qwen3-TTS talker's hidden state.** The file is
   safetensors with one F32 vector per talker layer, named `talker.layer.<i>`, each of the talker's hidden size.
   Each vector, times `--steer-scale X` (default 1.0), is added at the output of its layer, after the layer's residual

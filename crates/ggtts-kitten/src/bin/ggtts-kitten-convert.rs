@@ -1,7 +1,7 @@
 //! ggtts-kitten-convert: a Kitten-TTS 2 language model to a ggtts GGUF, then the readback check.
 //!
 //! ```text
-//! ggtts-kitten-convert --repo DIR [--weights FILE] --out FILE.gguf [--plant group256|absmean]
+//! ggtts-kitten-convert --repo DIR [--weights FILE] --out FILE.gguf [--layout q4_0|tq2_0|tq1_0] [--plant group256|absmean]
 //! ggtts-kitten-convert --repo DIR [--weights FILE] --verify FILE.gguf
 //! ggtts-kitten-convert --s3gen s3gen_meanflow.safetensors [--pyannote speaker/model.safetensors] --out FILE.gguf
 //! ```
@@ -21,12 +21,15 @@ use ggtts_kitten::gguf::Gguf;
 use ggtts_kitten::safetensors::SafeTensors;
 use ggtts_kitten::ternary::{Rule, ScaleRule};
 
-const USAGE: &str = "usage: ggtts-kitten-convert --repo DIR [--weights FILE] (--out FILE.gguf [--layout q4_0|tq2_0] [--plant group256|absmean] | --verify FILE.gguf)
+const USAGE: &str = "usage: ggtts-kitten-convert --repo DIR [--weights FILE] (--out FILE.gguf [--layout q4_0|tq2_0|tq1_0] [--plant group256|absmean] | --verify FILE.gguf)
        ggtts-kitten-convert --s3gen s3gen_meanflow.safetensors [--pyannote speaker/model.safetensors] --out FILE.gguf
        ggtts-kitten-convert --version
 
 --repo: a KittenML/kitten-tts-2 download (config.json, lm/config.json, lm/model.safetensors, lm/tokenizer.json).
   Writes the language model GGUF for `ggtts-render --model`, with the tokenizer embedded, then checks it by readback.
+--layout: how the ternary matrices are stored, each exact: q4_0 (the default, 4.5 bits a weight), tq2_0 (padded,
+  4.125) or tq1_0 (padded TQ1_0, `tq1_0-pad128`, 3.375). Each 128-weight group keeps its own scale; the older
+  256-weight TQ1_0 layout gives two groups one scale, is lossy for this model, and is read but never written.
 --s3gen: ResembleAI/chatterbox-turbo's s3gen_meanflow.safetensors, with --pyannote the Kitten download's
   speaker/model.safetensors. Writes the decoder GGUF for `ggtts-render --codec` and `ggtts-kitten prepare --s3gguf`.";
 

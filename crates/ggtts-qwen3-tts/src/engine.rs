@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm};
 use ggtts_core::hooks::{Hooks, Step, StopTrace, TensorHook, Wants};
 use ggtts_core::profile::Profile;
+use ggtts_core::steer::Steering;
 use ggtts_core::trace::{Event, Events, NullEvents};
 
 use crate::codec::Decoder;
@@ -74,9 +75,34 @@ impl Qwen3Tts {
         instruction: Option<&str>,
     ) -> Result<Self, EngineError> {
         voice.sampling.check()?;
-        let language_id =
-            language_id(&voice.language).ok_or_else(|| EngineError(format!("unknown language: {}", voice.language)))?;
+        let language_id = language_of(&voice)?;
         let talker = Talker::load_on(talker, threads, voice.device)?;
+        Self::with_talker(talker, language_id, codec, threads, voice, instruction)
+    }
+
+    /// [`load`](Self::load) with a planted defect in the talker, for the identity tests' expected failures.
+    #[cfg(feature = "plant")]
+    pub fn load_planted(
+        talker: &Path,
+        codec: &Path,
+        threads: i32,
+        voice: Voice,
+        plant: crate::talker::Plant,
+    ) -> Result<Self, EngineError> {
+        voice.sampling.check()?;
+        let language_id = language_of(&voice)?;
+        let talker = Talker::load_planted(talker, threads, voice.device, plant)?;
+        Self::with_talker(talker, language_id, codec, threads, voice, None)
+    }
+
+    fn with_talker(
+        talker: Talker,
+        language_id: i32,
+        codec: &Path,
+        threads: i32,
+        voice: Voice,
+        instruction: Option<&str>,
+    ) -> Result<Self, EngineError> {
         talker.check_instruction(instruction)?;
         // An unknown speaker fails here, before any text is rendered, with the model's own speaker names.
         talker.speaker(&voice.speaker)?;
@@ -106,6 +132,11 @@ impl Qwen3Tts {
             trace,
         })
     }
+}
+
+/// The voice's language as the talker's id, or the error a user sees for one it does not know.
+fn language_of(voice: &Voice) -> Result<i32, EngineError> {
+    language_id(&voice.language).ok_or_else(|| EngineError(format!("unknown language: {}", voice.language)))
 }
 
 /// What the talker must export this request: what the caller's hooks want, plus `p_stop` when the voice has its
@@ -170,6 +201,18 @@ impl Qwen3Tts {
         self.talker.check_instruction(instruction)
     }
 
+    /// `Ok` for steering this talker can take ([`ChunkRequest::steer`]): every layer in range and every vector of
+    /// the talker's hidden size. The error [`generate`](Engine::generate) would return otherwise, without rendering
+    /// anything.
+    pub fn check_steer(&self, steer: &Steering) -> Result<(), EngineError> {
+        self.talker.check_steer(steer)
+    }
+
+    /// The talker, for checks that drive it directly ([`Talker::prefill_hidden`]).
+    pub fn talker_mut(&mut self) -> &mut Talker {
+        &mut self.talker
+    }
+
     /// Render one request with frame-level streaming: the talker hands each frame to an [`IncrementalDecoder`]
     /// as it is generated, and `sink` gets each batch of ready samples with the number of frames generated so far.
     /// `every` and `hold` are the decoder's (see [`crate::stream`]): at `hold = 32` the concatenated samples were
@@ -209,7 +252,7 @@ impl Qwen3Tts {
         let mut on_step = |frame, token, p_stop, logits: Option<&[f32]>| {
             deliver(req, trace, &mut hooks, frame, token, p_stop, logits)
         };
-        let g = talker.generate_streamed(
+        let g = talker.generate_steered(
             req.text,
             req.instruction(),
             &voice.speaker,
@@ -217,6 +260,7 @@ impl Qwen3Tts {
             req.seed,
             voice.max_frames,
             voice.sampling,
+            req.steer,
             wants.any().then_some((wants, &mut on_step as &mut _)),
             Some(&mut hook),
         )?;
@@ -288,7 +332,7 @@ impl Engine for Qwen3Tts {
             }
             deliver(req, trace, hooks, frame, token, p_stop, logits);
         };
-        let g = self.talker.generate_streamed(
+        let g = self.talker.generate_steered(
             req.text,
             req.instruction(),
             &self.voice.speaker,
@@ -296,6 +340,7 @@ impl Engine for Qwen3Tts {
             req.seed,
             self.voice.max_frames,
             self.voice.sampling,
+            req.steer,
             wants.any().then_some((wants, &mut on_step as &mut _)),
             None,
         )?;

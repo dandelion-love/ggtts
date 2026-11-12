@@ -121,3 +121,64 @@ fn version_names_the_binary() {
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("ggtts-book "));
 }
+
+/// Story 3, AC1: `ggtts-book render --engine fake` renders a book end to end and reports each chapter.
+#[test]
+fn render_through_the_fake_engine() {
+    let path = nested().write_temp("render-fake");
+    let out = path.parent().unwrap().join("out");
+    let run = || {
+        ggtts_book()
+            .arg("render")
+            .arg(&path)
+            .arg("--out")
+            .arg(&out)
+            .args(["--engine", "fake"])
+            .output()
+            .unwrap()
+    };
+    let first = run();
+    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    let chapters = report["chapters"].as_array().unwrap();
+    assert_eq!(chapters.len(), 10);
+    assert_eq!(chapters.iter().filter(|c| c["state"] == "written").count(), 6);
+    assert_eq!(report["engine"], "fake");
+    let file = out.join(chapters[4]["file"].as_str().unwrap());
+    assert!(file.exists(), "{}", file.display());
+    // A second run has nothing left to render.
+    let again: serde_json::Value = serde_json::from_slice(&run().stdout).unwrap();
+    assert!(again["chapters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|c| c["rendered"].as_u64().unwrap_or(0) == 0));
+    std::fs::remove_dir_all(path.parent().unwrap()).ok();
+}
+
+/// Rendering needs an engine named, and only the fake engine can render until a real engine's loader is wired in.
+#[test]
+fn render_refuses_without_a_renderable_engine() {
+    let path = nested().write_temp("render-refuse");
+    let out = path.parent().unwrap().join("out");
+    for args in [vec![], vec!["--engine", "qwen3-tts"], vec!["--engine", "kitten-tts-2"]] {
+        let o = ggtts_book()
+            .arg("render")
+            .arg(&path)
+            .arg("--out")
+            .arg(&out)
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(!out.exists(), "{args:?} wrote output before refusing");
+    }
+    let o = ggtts_book()
+        .arg("render")
+        .arg(&path)
+        .args(["--engine", "fake"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2), "no --out");
+    std::fs::remove_dir_all(path.parent().unwrap()).ok();
+}

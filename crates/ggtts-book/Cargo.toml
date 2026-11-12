@@ -16,6 +16,10 @@ path = "src/bin/ggtts-book.rs"
 ggtts-core.workspace = true
 # Only for the engine profile the chunk plan is made with: its default build links no ggml.
 ggtts-qwen3-tts.workspace = true
+# The fake engine: the one engine `render` drives until a real engine's loader is wired in. No model, no ggml.
+ggtts-fake.workspace = true
+# Reads the stored chunk FLACs back when a chapter is joined.
+claxon.workspace = true
 serde_json.workspace = true
 # The EPUB container. No default features: reading needs only stored and deflated entries, through flate2's
 # pure-Rust backend below, so no C library and none of zip's other codecs or its encryption support are linked.

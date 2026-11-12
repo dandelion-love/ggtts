@@ -30,6 +30,11 @@ that a merge places under a released heading is caught.
   per-chapter manifest (`ggtts-book-manifest/1`), written atomically and checksummed, from which a killed
   render resumes without redoing a finished chunk; a truncated, edited or mismatched manifest is refused and the
   chapter re-planned.
+- **`ggtts-book render --engine fake` renders a book end to end.** Each chapter that is not front or back matter
+  is rendered chunk by chunk at its planned seeds through one engine, stored per chunk with its manifest, then
+  joined with the profile's pauses, levelled, and written as one FLAC per chapter. A stopped render resumes on
+  the next run with the same `--out`, rendering only what was left, and ends byte-identical to an uninterrupted
+  one. Only the fake engine (no model) renders for now: this is the walking skeleton a real engine plugs into.
 
 ## v0.1.0-rc.11 (2026-11-12)
 

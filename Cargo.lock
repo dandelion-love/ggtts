@@ -389,8 +389,10 @@ dependencies = [
 name = "ggtts-book"
 version = "0.0.1"
 dependencies = [
+ "claxon",
  "flate2",
  "ggtts-core",
+ "ggtts-fake",
  "ggtts-qwen3-tts",
  "quick-xml",
  "serde_json",

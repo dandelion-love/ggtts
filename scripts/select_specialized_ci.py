@@ -64,9 +64,16 @@ PYTHON_ENGINE_CRATES = ("crates/ggtts-core/", "crates/ggtts-fake/", "crates/ggtt
                         "crates/ggtts-ggml-sys/", "crates/ggtts-models/", "crates/ggtts-ffi/")
 
 
+# The scripts the python job runs to build, check and smoke the release wheel as release.yml does, and release.yml
+# itself (its build-wheel and smoke-wheel jobs run only on a tag, so the python job is their proof on a pull request).
+PYTHON_PATHS = {"scripts/python_wheel.sh", "scripts/check_python_lock.py", "scripts/test_check_python_lock.py",
+                "scripts/third_party_notices.py", "licenses/python-crates.txt", "scripts/check_glibc_floor.py",
+                ".github/workflows/release.yml"}
+
+
 def python_path(path):
     """A path whose change can break the Python binding's build or behaviour."""
-    if path.startswith(PYTHON_CRATE):
+    if path.startswith(PYTHON_CRATE) or path in PYTHON_PATHS:
         return True
     return path.startswith(PYTHON_ENGINE_CRATES) and "/tests/" not in path and "/benches/" not in path
 

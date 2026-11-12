@@ -3,7 +3,8 @@ name: Release
 # Four stages: build (one job per kind of archive), smoke (one job per kind, on the artifact the build uploaded,
 # before anything is published), attest and publish, and verify-published (the published assets against the sha256
 # each build recorded, and their attestations). A new kind of archive adds a build job or matrix entry that uploads
-# dist-<target> and sums-<target>, and a smoke job or matrix entry for it; publish needs both.
+# dist-<target> and sums-<target>, and a smoke job or matrix entry for it; publish needs both. The Python wheels are
+# one such kind: build-wheel and smoke-wheel.
 
 on:
   push:
@@ -288,10 +289,154 @@ jobs:
           set -eu
           for a in dist/*.tar.gz; do bash scripts/release_smoke.sh archive "$a" sums "$TAG" "$GITHUB_SHA" --cuda-stub; done
 
+  build-wheel:
+    name: build (Python wheel, ${{ matrix.target }})
+    # The abi3 wheel (Python 3.9 and later) of crates/ggtts-py, built, checked and smoked by scripts/python_wheel.sh,
+    # which ci.yml's python job runs on every pull request that selects it: the tag's version, the release features
+    # only (never the test-only plant), ggml built portable, Linux tagged manylinux_2_35 (the archives' floor) with
+    # every ELF in it held to that floor, and the licence notices packed in it.
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-linux
+            python: "3.9"
+            engines: ggml
+            libclang: ""
+          # The committed ggml bindings are for x86_64 Linux only, so Windows generates its own, as the archives do.
+          - os: windows-latest
+            target: x86_64-windows
+            python: "3.13"
+            engines: bindgen
+            libclang: C:\Program Files\LLVM\bin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      LIBCLANG_PATH: ${{ matrix.libclang }}
+      PYTHON: python
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Fetch the ggml submodule at its pin
+        run: |
+          set -eu
+          git submodule update --init crates/ggtts-ggml-sys/ggml
+          pin=$(sed -n 's/^pub const GGML_COMMIT: &str = "\([0-9a-f]\{40\}\)";$/\1/p' crates/ggtts-ggml-sys/src/lib.rs)
+          test "$(git -C crates/ggtts-ggml-sys/ggml rev-parse HEAD)" = "$pin"
+      - name: The binding's lockfile agrees with the main one, and its notices are complete
+        run: |
+          set -eu
+          python scripts/check_python_lock.py
+          python scripts/third_party_notices.py --check-python
+      - name: The pinned build tools
+        run: python -m pip install -r crates/ggtts-py/requirements-build.txt
+      - name: Build and check the wheel
+        env:
+          TAG: ${{ github.ref_name }}
+          ENGINES: ${{ matrix.engines }}
+        run: |
+          set -euo pipefail
+          scripts/python_wheel.sh build "$TAG" "$ENGINES" dist
+          n=0
+          for w in dist/*.whl; do scripts/python_wheel.sh check "$w" "$TAG"; n=$((n + 1)); done
+          test "$n" -eq 1
+      - name: Record the wheel's sha256, which the smoke and the published check hold it to
+        run: |
+          set -euo pipefail
+          mkdir -p sums
+          for w in dist/*.whl; do scripts/release_smoke.sh sum "$w" | tee "sums/$(basename "$w").sha256"; done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-wheel-${{ matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sums-wheel-${{ matrix.target }}
+          path: sums/*
+          if-no-files-found: error
+
+  smoke-wheel:
+    name: smoke (Python wheel, ${{ matrix.target }}, before publishing)
+    # The wheel as its build uploaded it: the sha256 its build recorded, then installed alone into a clean venv
+    # (scripts/python_wheel.sh smoke): ggtts.VERSION is the tag, the engines are exactly the shipped ones, a fake-engine
+    # line renders to FLAC, and on Linux one real Qwen3-TTS line renders from the default model with hk_voice_343 and an
+    # unknown speaker is refused. On Python 3.9, the oldest the abi3 wheel claims, on both systems.
+    needs: build-wheel
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-linux
+            smoke: --render
+          - os: windows-latest
+            target: x86_64-windows
+            smoke: ""
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      GGTTS_CACHE_DIR: ${{ github.workspace }}/ggtts-model-cache
+      PYTHON: python
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.9"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist-wheel-${{ matrix.target }}
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sums-wheel-${{ matrix.target }}
+          path: sums
+      - name: The default model's cache key, from its pinned sha256s in crates/ggtts-models
+        id: model
+        run: echo "key=$(scripts/release_smoke.sh model-key)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.smoke != ''
+        with:
+          path: ggtts-model-cache
+          key: ${{ steps.model.outputs.key }}
+          enableCrossOsArchive: true
+      - name: Smoke the wheel before it is published
+        env:
+          TAG: ${{ github.ref_name }}
+          SMOKE: ${{ matrix.smoke }}
+        run: |
+          set -euo pipefail
+          n=0
+          for w in dist/*.whl; do
+            scripts/release_smoke.sh check-sum "$w" sums
+            # SMOKE is a list of options, split on purpose.
+            scripts/python_wheel.sh smoke "$w" "$TAG" $SMOKE
+            n=$((n + 1))
+          done
+          test "$n" -eq 1
+
   publish:
     name: attest and publish
-    # Nothing is attested or published until every archive has passed its smoke.
-    needs: [build, cuda-build, smoke, smoke-cuda]
+    # Nothing is attested or published until every archive and wheel has passed its smoke.
+    needs: [build, cuda-build, smoke, smoke-cuda, build-wheel, smoke-wheel]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

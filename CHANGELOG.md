@@ -38,8 +38,15 @@ that a merge places under a released heading is caught.
   `array.array`, or the bytes) and their rate, `Audio.write_flac` writes FLAC with the library's writer, and
   `TTS.stream` (or `render_stream` with a callback) yields the chunks in order and can be stopped. An invalid
   argument or a refusal raises `ggtts.GgttsError` with the C-ABI's `code` and the `message`; a panic is caught and
-  raised as `ERR_PANIC`, and the GIL is released while an engine loads and renders. It is built from a checkout
-  (README, "Python") and is not on PyPI; release wheels are to follow.
+  raised as `ERR_PANIC`, and the GIL is released while an engine loads and renders. It is not on PyPI.
+- **Every release ships the Python wheels** beside the archives, attested like them:
+  `ggtts-<version>-cp39-abi3-manylinux_2_35_x86_64.whl` (Linux x86_64; Ubuntu 22.04 / glibc 2.35 or later, the
+  archives' floor) and `ggtts-<version>-cp39-abi3-win_amd64.whl` (Windows x86_64), one wheel each for every Python
+  from 3.9. `<version>` is the tag's (`v0.1.0-rc.11` is `0.1.0rc11`), and `ggtts.VERSION` is the tag. Install one with
+  `pip install <file>.whl`; numpy is optional. The wheel carries the engines (Qwen3-TTS and Kitten-TTS 2) and its
+  licence notices in `ggtts/licenses/`; the Linux wheel bundles the GNU OpenMP runtime (libgomp) and its licence.
+  Before publishing, each wheel is installed into a clean venv and renders a line, and on Linux one real Qwen3-TTS
+  line from the default model.
 
 ### Changed
 

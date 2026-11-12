@@ -337,8 +337,12 @@ completed-file format. There is no native MP3, AAC or Opus encoder selection in 
 ## Python
 
 `crates/ggtts-py` is the Python binding: `import ggtts`, with the engines and settings of the C-ABI's
-`ggtts_load_with` (Qwen3-TTS with a speaker and a style instruction, Kitten-TTS 2). It is not on PyPI; build the
-wheel from a checkout (Rust, Python 3.9 or later, and for the engines CMake and a C++ compiler):
+`ggtts_load_with` (Qwen3-TTS with a speaker and a style instruction, Kitten-TTS 2). It is not on PyPI. Each release
+ships its wheels beside the archives, attested like them: one abi3 wheel for Linux x86_64
+(`manylinux_2_35`, the archives' Ubuntu 22.04 floor) and one for Windows x86_64, each for every Python from 3.9.
+Install one with `pip install ggtts-<version>-cp39-abi3-<platform>.whl` (numpy is optional), and verify it first
+with `gh attestation verify <file> -R dandelion-love/ggtts`. Or build the wheel from a checkout (Rust, Python 3.9 or
+later, and for the engines CMake and a C++ compiler):
 
 ```sh
 pip install maturin

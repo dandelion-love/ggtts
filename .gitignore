@@ -9,3 +9,5 @@ crates/ggtts-py/target
 crates/ggtts-py/dist
 __pycache__/
 .pytest_cache/
+crates/ggtts-py/python/ggtts/licenses/
+crates/ggtts-py/pyproject.toml.orig

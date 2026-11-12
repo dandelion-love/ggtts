@@ -7,8 +7,7 @@ use std::path::Path;
 use ggtts_core::seed::{hex, sha256};
 use serde_json::{json, Value};
 
-use crate::archive::Archive;
-use crate::dom::parse;
+use crate::archive::{Archive, Limits};
 use crate::error::BookError;
 use crate::package::{check_drm, container, package, Pointer};
 use crate::toc::{self, TocSource};
@@ -85,15 +84,20 @@ impl Book {
         Book::read(bytes)
     }
 
-    /// Read an EPUB from its bytes.
+    /// Read an EPUB from its bytes, under the default [`Limits`].
     ///
     /// The checks run in this order: zip, DRM, `container.xml`, the package, the spine, then the content.
     pub fn read(bytes: Vec<u8>) -> Result<Book, BookError> {
-        let mut zip = Archive::new(bytes)?;
+        Book::read_with_limits(bytes, Limits::default())
+    }
+
+    /// [`read`](Self::read) under the given resource limits: per entry, for the whole book, and nesting depth.
+    pub fn read_with_limits(bytes: Vec<u8>, limits: Limits) -> Result<Book, BookError> {
+        let mut zip = Archive::new(bytes, limits)?;
         check_drm(&mut zip)?;
         let opf_path = container(&mut zip)?;
         let opf = zip.read(&opf_path)?.unwrap_or_default();
-        let pkg = package(&opf_path, &opf)?;
+        let pkg = package(&opf_path, &opf, zip.limits.depth)?;
         let mut warnings = Vec::new();
 
         struct SpineFile {
@@ -103,6 +107,7 @@ impl Book {
             is_nav: bool,
         }
         let mut spine = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
         for r in &pkg.spine {
             let item = pkg
                 .manifest
@@ -120,6 +125,15 @@ impl Book {
                     idref: r.idref.clone(),
                     href: Some(item.path.clone().unwrap_or_else(|| item.href.clone())),
                 })?;
+            if !seen.insert(path.clone()) {
+                // One file is read once: a spine that lists it again (through another manifest id) would otherwise
+                // read and speak it again, and many such items inflate a small zip into a huge book.
+                warnings.push(format!(
+                    "spine item {:?} names {path}, which the spine already lists; read once",
+                    r.idref
+                ));
+                continue;
+            }
             spine.push(SpineFile {
                 idref: r.idref.clone(),
                 path,
@@ -154,7 +168,7 @@ impl Book {
         let mut opened: HashSet<usize> = HashSet::new();
         for sf in &spine {
             let bytes = zip.read(&sf.path)?.unwrap_or_default();
-            let root = parse(&bytes).map_err(|reason| BookError::Content {
+            let root = zip.parse(&bytes).map_err(|reason| BookError::Content {
                 file: sf.path.clone(),
                 reason,
             })?;

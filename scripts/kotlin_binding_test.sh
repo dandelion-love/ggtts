@@ -27,11 +27,17 @@ kotlinc android/ggtts/src/main/kotlin/ggtts/Ggtts.kt android/ggtts/src/test/kotl
 stdlib=$(dirname "$(readlink -f "$(command -v kotlinc)")")/../lib/kotlin-stdlib.jar
 java -Dggtts.lib="$lib" -cp "$out/classes:$stdlib" ggtts.BindingTestKt
 
-# The documentation's examples, each run on the fake engine from an empty directory (FirstRender writes its WAV there).
+# The documentation's examples, compiled against the binding's classes, then each run on the fake engine from an
+# empty directory (FirstRender writes its WAV there).
+kotlinc -cp "$out/classes" docs/bindings/examples/kotlin/*.kt -d "$out/examples" 2>&1 \
+    | grep -v "^warning: unable to find kotlin-stdlib" || true
 for main in firstrender.FirstRenderKt streaming.StreamKt; do
-    [ -f "$out/classes/${main//.//}.class" ] || { echo "kotlin_binding_test: doc example $main did not compile" >&2; exit 1; }
+    class="$out/examples/$(echo "$main" | tr . /).class"
+    [ -f "$class" ] || { echo "kotlin_binding_test: doc example $main did not compile" >&2; exit 1; }
     mkdir -p "$out/run-$main"
-    (cd "$out/run-$main" && java -Dggtts.lib="$lib" -cp "$out/classes:$stdlib" "$main" fake)         || { echo "kotlin_binding_test: doc example $main failed on the fake engine" >&2; exit 1; }
+    (cd "$out/run-$main" && java -Dggtts.lib="$lib" -cp "$out/examples:$out/classes:$stdlib" "$main" fake) \
+        || { echo "kotlin_binding_test: doc example $main failed on the fake engine" >&2; exit 1; }
 done
-[ -s "$out/run-firstrender.FirstRenderKt/first_render.wav" ]     || { echo "kotlin_binding_test: FirstRender wrote no first_render.wav" >&2; exit 1; }
+[ -s "$out/run-firstrender.FirstRenderKt/first_render.wav" ] \
+    || { echo "kotlin_binding_test: FirstRender wrote no first_render.wav" >&2; exit 1; }
 echo "kotlin_binding_test: the doc examples compiled and ran on the fake engine"

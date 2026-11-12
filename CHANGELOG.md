@@ -25,6 +25,9 @@ that a merge places under a released heading is caught.
 - **The Android demo plays a line as it renders.** Each chunk plays as soon as it is made, so first audio comes after
   one chunk instead of the whole line. Stop ends both the playback and the rendering, the screen shows progress, and a
   menu picks 2, 4, 6 or 8 CPU threads (4 by default).
+- **The Android demo says what each engine costs before loading it:** the model size, the memory it peaked at on a
+  phone, the wait for first audio, and that it is too slow for a screen reader. When free memory is below an engine's
+  measured peak, the first Speak warns instead of loading; a second Speak loads it anyway.
 
 ### Changed
 

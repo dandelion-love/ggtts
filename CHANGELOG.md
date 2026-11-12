@@ -13,6 +13,22 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **The C and Kotlin binding find the default model, and the C ABI can render on the GPU.** The C ABI is now
+  version 3: `ggtts_settings` gains three trailing fields, `device`, `cache_dir` and `allow_download`
+  (`GGTTS_SETTINGS_INIT` sets them to NULL, NULL and 0). With engine `qwen3-tts` and no model or codec path,
+  `ggtts_load_with` loads the default model `ggtts-render` uses, from the same cache, verified against the same
+  sha256, with its default speaker `hk_voice_343` when no speaker is given
+  ([#164](https://github.com/dandelion-love/ggtts/issues/164)). It downloads a missing file only when
+  `allow_download` is 1; otherwise the error (`GGTTS_ERR_ENGINE`) names the file and its URL. `device = "cuda"`
+  renders Qwen3-TTS on the GPU in a library built with `ggtts-ffi`'s new `cuda` feature (Kitten-TTS 2 takes the same
+  setting, but its CUDA path through the C ABI is not yet tested); a library
+  without it refuses with `GGTTS_ERR_ENGINE` before reading any file, and an unknown device is `GGTTS_ERR_ARG`
+  ([#167](https://github.com/dandelion-love/ggtts/issues/167)). The archives' C library is the CPU build, so it
+  refuses `cuda`. In Kotlin, `Ggtts.load` takes `cacheDir` and `allowDownload`; it has no device, because Android has
+  no GPU backend. Existing callers are unchanged: `ggtts_load`, NULL settings and a struct from the version-2 header
+  load the paths they give, on the CPU, as before, and the seven-parameter Kotlin `Ggtts.load` stays in the compiled
+  class and loads as it did. The library now links the same HTTPS client as `ggtts-render` (ureq with rustls), used
+  only when a download is allowed.
 - **The release archives ship the C library and `ggtts.h`.** Until now the C ABI (and with it
   `ggtts_load_with` and `ggtts_abi_version`) could only be had by building from source. Every archive now has
   `include/ggtts.h` and the library in `lib/`: `libggtts_ffi.so` in the Linux CPU and CUDA archives, and

@@ -68,8 +68,11 @@ Every release archive also ships ggtts behind its C ABI, for programs that rende
 | Windows | `ggtts_ffi.dll`, and `ggtts_ffi.dll.lib` (the MSVC import library you link against) | `include/ggtts.h` |
 
 The library carries the Qwen3-TTS, Kitten-TTS 2 and fake engines and renders on the CPU backend. That is true in
-the CUDA archive too: the C ABI has no device choice yet, so that archive ships the CPU build of the library, which
-loads without the NVIDIA driver or the CUDA runtime. `BUILDINFO.json` lists the files under `"libraries"`. The
+the CUDA archive too: that archive ships the CPU build of the library, which loads without the NVIDIA driver or the
+CUDA runtime, so it refuses the C ABI's `device = "cuda"` setting (version 3) with `GGTTS_ERR_ENGINE`. A library
+that renders on the GPU is built from source with `cargo build --release -p ggtts-ffi --features cuda`. With engine
+`qwen3-tts` and no model path, the library loads the same default model as `ggtts-render`, from the same cache; it
+downloads it only when the caller allows (`allow_download`). `BUILDINFO.json` lists the files under `"libraries"`. The
 functions, codes and threading rules are in the header's comments and in
 [docs/android/binding-api.md](docs/android/binding-api.md). The header's `GGTTS_ABI_VERSION` and the library's
 `ggtts_abi_version()` say which functions exist; check one against the other before calling a function newer than

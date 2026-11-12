@@ -130,7 +130,8 @@ and no matrix has a single scale. A 256-weight `TQ1_0` file of that export made 
 On the CPU, padded `TQ1_0` and padded `TQ2_0` hold the same trits and scales and both take `Q8_K` activations, and
 their products are bit-identical (`tests/tq1_padded.rs`, `tests/tq1_load.rs`). So padded `TQ1_0` inherits padded
 `TQ2_0`'s ternary-arm result below: it misses the cosine bar that `Q4_0` passes, which is why `Q4_0` stays the
-default. On CUDA every layout is held as the same exact f16 matrices. The readback check covers padded `TQ1_0` as
+default. That result is inferred from the bit-identity on synthetic matrices; no parity run of padded `TQ1_0` on the
+real weights has been made. On CUDA every layout is held as the same exact f16 matrices. The readback check covers padded `TQ1_0` as
 it does the others: canonical code bytes, zero padding trits, every trit equal to the source's, every scale equal
 bit for bit, every value equal through the runtime's decoder.
 

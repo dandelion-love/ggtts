@@ -8,8 +8,11 @@
 //!    products agree bit for bit;
 //! 2. the padding half contributes exactly 0: with zero activations there, nonzero trits planted in the padding
 //!    half leave the product bit-identical;
-//! 3. the control for 2: the same planted trits with a nonzero activation in the padding half do change the
-//!    product, so the comparison in 2 can see the padding;
+//! 3. the control for 2: at one nonzero padding activation, shared by both arms, the planted matrix and the clean
+//!    one give different products, so the comparison in 2 can see the padding half. The two arms share the
+//!    activation, so `Q8_K`'s per-256 scale is the same in both and only the padding trits differ. The plant is
+//!    all +1, which does not cancel against a constant activation. A no-op plant (the clean matrix in both arms)
+//!    must read as no change here, which the test also checks;
 //! 4. against the unpadded product in f64 (`W x` on the source values), the padded product is within the `Q8_K`
 //!    activation rounding, rel L2 below `1e-2`, and a sign-flipped row is far outside it.
 #![cfg(feature = "ggml")]
@@ -107,17 +110,25 @@ fn pack(w: &[f32], tq1: bool) -> Vec<u8> {
     out
 }
 
-/// The same TQ1 bytes with every padding trit set to +1 or -1 (alternating by block), re-encoded canonically.
+/// The same TQ1 bytes with every padding trit set to +1, re-encoded canonically. All +1, so that the plant does not
+/// cancel against a constant padding activation.
 fn with_padding_trits(tq1: &[u8]) -> Vec<u8> {
     let mut out = tq1.to_vec();
-    for (b, blk) in out.chunks_exact_mut(TQ1_0_BLOCK_BYTES).enumerate() {
+    for blk in out.chunks_exact_mut(TQ1_0_BLOCK_BYTES) {
         let mut t = tq1_decode(&blk[..52]).unwrap();
-        for (j, x) in t[GROUP..].iter_mut().enumerate() {
-            *x = if (b + j) % 2 == 0 { 1 } else { -1 };
-        }
+        t[GROUP..].fill(1);
         blk[..52].copy_from_slice(&tq1_encode(&t));
     }
     out
+}
+
+/// Whether the padding half of `planted` is seen: its product against `x` differs from `clean`'s against the same
+/// `x`.
+fn padding_seen(clean: &[u8], planted: &[u8], x: &[f32]) -> bool {
+    !bits_equal(
+        &product(g::GGML_TYPE_TQ1_0, clean, x),
+        &product(g::GGML_TYPE_TQ1_0, planted, x),
+    )
 }
 
 fn bits_equal(a: &[f32], b: &[f32]) -> bool {
@@ -163,21 +174,22 @@ fn the_padding_half_contributes_exactly_zero_and_the_control_sees_it() {
     let clean = pack(&w, true);
     let planted = with_padding_trits(&clean);
     assert_ne!(clean, planted);
+    // Zero padding activations, as the model gives them: the planted padding trits contribute exactly 0.
     let x0 = padded(&xs, 0.0);
-    let y = product(g::GGML_TYPE_TQ1_0, &clean, &x0);
     assert!(
-        bits_equal(&y, &product(g::GGML_TYPE_TQ1_0, &planted, &x0)),
+        !padding_seen(&clean, &planted, &x0),
         "nonzero padding trits changed the product with zero padding activations"
     );
-    // The control: the same planted trits against a nonzero padding activation must move the product.
+    // The control, both arms at the same nonzero padding activation: the plant must be seen.
     let x1 = padded(&xs, 0.5);
     assert!(
-        !bits_equal(&y, &product(g::GGML_TYPE_TQ1_0, &planted, &x1)),
+        padding_seen(&clean, &planted, &x1),
         "the comparison cannot see the padding half"
     );
-    // Not asserted: the clean matrix against that nonzero padding is not bit-identical either, though its padding
-    // trits are zero, because  takes one activation scale per 256 values and the padding enters that absmax.
-    // That is why the padding must be zero, which  gives.
+    // And the control's own no-op: with no plant, the same comparison reads no change.
+    assert!(!padding_seen(&clean, &clean, &x1), "the control fires without a plant");
+    // The padding activations must be zero (the model's `ggml_pad`) for a second reason: `Q8_K` takes one scale per
+    // 256 activations, so a nonzero padding value would also change how the real 128 are rounded.
 }
 
 #[test]

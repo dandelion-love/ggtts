@@ -46,6 +46,8 @@ class DemoController(
     private val clock: () -> Long = System::nanoTime,
     /** Available memory in bytes, and whether the system reports memory is low; tests pass their own. */
     private val memory: () -> Pair<Long, Boolean> = { Long.MAX_VALUE to false },
+    /** Told the request of every read that finished, so the system engine can speak with the same files. */
+    private val onSpoke: (LoadRequest) -> Unit = {},
 ) {
     @Volatile private var loaded: LoadRequest? = null
     @Volatile private var engine: TtsEngine? = null
@@ -155,6 +157,8 @@ class DemoController(
             "rendered ${request.engine}: ${all.size} samples at $rate Hz (%.2f s) in $renderMs ms, RTF %.2f, ".format(seconds, rtf) +
                 "first audio after $firstMs ms, ${pieces.size} chunks, seed $seed, wrote $path",
         )
+        // The files rendered: remember them now (the system engine can use them while this read still plays).
+        onSpoke(request)
         audio.finish()
         return "${request.engine}: %.2f s of audio in %.1f s (RTF %.2f); first audio after %.1f s. Saved to $path".format(
             seconds, renderMs / 1000.0, rtf, firstMs / 1000.0,

@@ -130,6 +130,21 @@ When the line is done, the whole read is saved to `/sdcard/Android/data/ggtts.de
 heard can differ slightly in loudness. The app logs to logcat under the tag `ggtts-demo`: what it loaded, the time
 to first audio, how long the render took, and its real-time factor.
 
+## ggtts as Android's text-to-speech engine
+
+The demo app also provides a system TTS engine, a `TextToSpeechService` labelled "ggtts (on-device, slow)". Any app
+that speaks through Android's `TextToSpeech` API can use it, either by naming the engine (`ggtts.demo`) or after the
+user picks it in the phone's text-to-speech settings. The app does not change that setting itself.
+
+- **Voices:** Cantonese (Hong Kong), `yue-HK`, from Qwen3-TTS, and English (US) from Kitten-TTS 2. Each voice uses
+  the model files of that engine's last finished Speak in the demo. Until there has been one, the engine reports the
+  language as missing data, and a request gets `ERROR_NOT_INSTALLED_YET`.
+- **Latency:** every voice is declared `LATENCY_VERY_HIGH`, so a client that reads voice latency can see it before
+  choosing it. It streams like the demo: the platform gets each chunk as it is rendered.
+- **Not for screen readers.** The first audio takes tens of seconds.
+- **"Speak through Android's TTS"** on the demo's screen speaks the line the way another app would: through
+  `TextToSpeech`, with `ggtts.demo` named as the engine.
+
 ## Driving the demo from adb
 
 For a scripted check, a **debug build** of the activity takes its settings as extras; `speak` presses Speak. A file
@@ -145,6 +160,7 @@ adb shell am start --activity-single-top -n ggtts.demo/.MainActivity --es engine
     --es model qwen-talker-hk-cantonese-cc0-v0.0.5-q8_0.gguf --es codec qwen-tokenizer-12hz-q8_0.gguf \
     --es speaker hk_voice_343 --ei threads 4 --ez speak true
 adb shell am start --activity-single-top -n ggtts.demo/.MainActivity --ez stop true   # presses Stop
+adb shell am start --activity-single-top -n ggtts.demo/.MainActivity --ez speak_system true   # through Android's TTS
 adb logcat -s ggtts-demo
 adb pull /sdcard/Android/data/ggtts.demo/files/out/qwen3-tts.wav
 ```

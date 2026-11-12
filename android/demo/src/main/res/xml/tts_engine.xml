@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ggtts as a system TTS engine: its settings are the demo's own screen (pick the model files there). -->
+<tts-engine xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="ggtts.demo.MainActivity" />

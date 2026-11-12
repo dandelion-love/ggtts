@@ -22,6 +22,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.OpenableColumns
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import android.view.View
 import android.view.Window
@@ -67,6 +69,8 @@ class MainActivity : Activity(), DemoView {
     private lateinit var threads: Spinner
     private lateinit var speak: Button
     private lateinit var stop: Button
+    private lateinit var systemSpeak: Button
+    private var platformTts: TextToSpeech? = null
     private lateinit var importButton: Button
     private lateinit var status: TextView
 
@@ -87,6 +91,7 @@ class MainActivity : Activity(), DemoView {
                 (getSystemService(ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(info)
                 info.availMem to info.lowMemory
             },
+            onSpoke = { VoiceStore(GgttsTtsService.prefs(this)).save(it) },
         )
         setContentView(layout())
         refreshFiles()
@@ -100,7 +105,53 @@ class MainActivity : Activity(), DemoView {
         applyIntent(intent)
     }
 
+    /**
+     * Speak the line the way another app would: through Android's TextToSpeech API, naming ggtts as the engine (so no
+     * system setting changes). The system engine uses the model files of this engine's last finished Speak.
+     */
+    private fun speakThroughAndroid() {
+        val engine = ENGINES[engines.checkedRadioButtonId - 100]
+        val locale = GgttsTtsService.VOICES.first { it.third == engine }.second
+        val line = text.text.toString()
+        val t0 = System.nanoTime()
+        fun ms() = (System.nanoTime() - t0) / 1_000_000
+        showStatus("Asking Android's TextToSpeech for engine $packageName...")
+        platformTts?.shutdown()
+        lateinit var tts: TextToSpeech
+        tts = TextToSpeech(this, { status ->
+            if (status != TextToSpeech.SUCCESS) {
+                showError("Android's TextToSpeech could not start the ggtts engine (status $status)")
+                return@TextToSpeech
+            }
+            val lang = tts.setLanguage(locale)
+            Log.i(TAG, "platform tts: engine ${tts.defaultEngine.let { "default $it" }}, setLanguage($locale) = $lang")
+            if (lang < TextToSpeech.LANG_AVAILABLE) {
+                showError("ggtts has no model files for $locale yet (code $lang): press Speak with $engine first.")
+                return@TextToSpeech
+            }
+            tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(id: String?) {
+                    Log.i(TAG, "platform tts: utterance started after ${ms()} ms")
+                    handler.post { showStatus("Android's TTS is speaking through ggtts (started after ${ms() / 1000} s)...") }
+                }
+                override fun onDone(id: String?) {
+                    Log.i(TAG, "platform tts: utterance done after ${ms()} ms")
+                    handler.post { showStatus("Android's TTS spoke the line through ggtts in ${ms() / 1000} s.") }
+                }
+                @Deprecated("Deprecated in Java")
+                override fun onError(id: String?) = onError(id, TextToSpeech.ERROR)
+                override fun onError(id: String?, code: Int) {
+                    Log.w(TAG, "platform tts: utterance error $code after ${ms()} ms")
+                    handler.post { showError("Android's TTS reported error $code from ggtts.") }
+                }
+            })
+            tts.speak(line, TextToSpeech.QUEUE_FLUSH, null, "ggtts-check")
+        }, packageName)
+        platformTts = tts
+    }
+
     override fun onDestroy() {
+        platformTts?.shutdown()
         worker.execute { controller.close() }
         worker.shutdown()
         super.onDestroy()
@@ -183,6 +234,9 @@ class MainActivity : Activity(), DemoView {
         buttons.addView(speak, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         buttons.addView(stop, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         col.addView(buttons)
+        systemSpeak = Button(this).apply { text = "Speak through Android's TTS (ggtts as the engine)" }
+        systemSpeak.setOnClickListener { speakThroughAndroid() }
+        col.addView(systemSpeak)
         status = TextView(this).apply { textSize = 16f; setPadding(0, pad, 0, 0) }
         col.addView(status)
         engines.check(100)
@@ -232,6 +286,7 @@ class MainActivity : Activity(), DemoView {
             THREADS.indexOf(extras.getInt("threads")).takeIf { it >= 0 }?.let { threads.setSelection(it) }
         }
         if (extras.getBoolean("stop", false)) controller.stop()
+        if (extras.getBoolean("speak_system", false)) speakThroughAndroid()
         extras.getString("text")?.let { text.setText(it) }
         if (extras.getBoolean("speak", false)) speakNow()
     }

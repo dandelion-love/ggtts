@@ -10,6 +10,7 @@ members = [
     "crates/ggtts-ffi",
     "crates/ggtts-instruments",
     "crates/ggtts-kitten",
+    "crates/ggtts-book",
     "instruments/templates/rust/event",
     "instruments/templates/rust/tensor",
 ]

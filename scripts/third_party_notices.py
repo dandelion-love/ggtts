@@ -5,6 +5,8 @@
     scripts/third_party_notices.py --check [FILE]          # exit 1 unless FILE (default: licenses/rust-crates.txt)
                                                            # is complete and current
     scripts/third_party_notices.py --check-python [FILE]   # the same for the wheel (default: licenses/python-crates.txt)
+    scripts/third_party_notices.py --check-android [FILE]  # the same for the Android library in the AAR
+                                                           # (default: licenses/android-crates.txt)
 
 The crates are the normal (not build, not dev) dependencies of the packages that build the shipped binaries
 (ggtts-render, ggtts-measure, and the Kitten tools ggtts-kitten-convert and ggtts-kitten) and the shipped C library
@@ -48,6 +50,11 @@ FEATURE_SETS = ((), ("ggtts-cli/ggml", "ggtts-ffi/ggml"), ("ggtts-cli/bindgen", 
                 ("ggtts-cli/cuda",))
 # The targets archives are released for. A dependency that no released target compiles is not linked.
 TARGETS = ("x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc")
+# The Android library (scripts/android_build.sh app packs it into the AAR, with this list): ggtts-ffi's cdylib with
+# the engines and the JNI entry points, for arm64 Android.
+ANDROID_NOTICES = ROOT / "licenses" / "android-crates.txt"
+ANDROID_FEATURE_SETS = (("ggtts-ffi/ggml", "ggtts-ffi/jni"),)
+ANDROID_TARGETS = ("aarch64-linux-android",)
 # LICENSE, LICENSE-MIT, MIT-LICENSE, COPYING, NOTICE and the like; never a source file.
 LICENCE_FILE = re.compile(r"(licen[sc]e|copying|notice|copyright)", re.IGNORECASE)
 NOT_A_LICENCE = (".rs", ".toml", ".json", ".yml", ".yaml", ".lock")
@@ -63,13 +70,16 @@ def metadata(features, target, manifest=None):
     return json.loads(subprocess.check_output(cmd, cwd=ROOT))
 
 
-def linked_packages(python=False):
+def linked_packages(python=False, android=False):
     """Every third-party package reachable from a shipped binary's package through normal dependencies (with
-    `python`, from the wheel's native module)."""
+    `python`, from the wheel's native module; with `android`, from the Android library)."""
     found = {}
     binaries, libraries = ((), PYTHON_LIBRARIES) if python else (SHIPPED_BINARIES, SHIPPED_LIBRARIES)
     feature_sets = PYTHON_FEATURE_SETS if python else FEATURE_SETS
-    for features, target in ((f, t) for f in feature_sets for t in TARGETS):
+    targets = TARGETS
+    if android:
+        binaries, libraries, feature_sets, targets = (), SHIPPED_LIBRARIES, ANDROID_FEATURE_SETS, ANDROID_TARGETS
+    for features, target in ((f, t) for f in feature_sets for t in targets):
         meta = metadata(features, target, PYTHON_MANIFEST if python else None)
         packages = {p["id"]: p for p in meta["packages"]}
         nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
@@ -88,6 +98,10 @@ def linked_packages(python=False):
                     stack.append(dep["pkg"])
         for pid in seen:
             package = packages[pid]
+            # A proc-macro runs at build time and is never linked. The Android list leaves them out (the JNI crates'
+            # jni-sys-macros ships no licence file); the release lists keep their existing contents.
+            if android and all(k == "proc-macro" for t in package["targets"] for k in t["kind"]):
+                continue
             if package["source"] is not None:
                 found[(package["name"], package["version"])] = package
     return [found[key] for key in sorted(found)]
@@ -106,9 +120,9 @@ def licence_texts(package):
     return texts
 
 
-def generate(python=False):
+def generate(python=False, android=False):
     crates, texts, users, problems = [], {}, {}, []
-    for package in linked_packages(python):
+    for package in linked_packages(python, android):
         name = f"{package['name']} {package['version']}"
         files = licence_texts(package)
         if not package.get("license"):
@@ -125,6 +139,9 @@ def generate(python=False):
     if python:
         title = ["Licences of the Rust crates linked into the ggtts Python wheel's native module (ggtts._native, "
                  "built from crates/ggtts-py with PyO3)"]
+    elif android:
+        title = ["Licences of the Rust crates linked into the ggtts Android library (libggtts_ffi.so with its JNI "
+                 "entry points, for arm64-v8a, in the AAR)"]
     else:
         title = [f"Licences of the Rust crates linked into the ggtts binaries ({', '.join(SHIPPED_BINARIES)})"
                  f" and the C library ({', '.join(SHIPPED_LIBRARIES)})"]
@@ -146,10 +163,10 @@ def read(path):
     return path.read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
-def check(path, python=False):
+def check(path, python=False, android=False):
     """Every reason the notices are not complete; empty when they are."""
     problems = []
-    expected = generate(python)
+    expected = generate(python, android)
     actual = read(path) if path.is_file() else ""
     if not actual:
         problems.append(f"{path} is missing or empty")
@@ -173,14 +190,17 @@ def main(argv):
         NOTICES.write_text(generate(), encoding="utf-8", newline="\n")
         PYTHON_NOTICES.write_text(generate(python=True), encoding="utf-8", newline="\n")
         print(f"wrote {PYTHON_NOTICES}", file=sys.stderr)
+        ANDROID_NOTICES.write_text(generate(android=True), encoding="utf-8", newline="\n")
+        print(f"wrote {ANDROID_NOTICES}", file=sys.stderr)
         if GGML_SOURCE.is_file():
             GGML_NOTICE.write_text(read(GGML_SOURCE), encoding="utf-8", newline="\n")
         print(f"wrote {NOTICES}", file=sys.stderr)
         return 0
-    if argv[:1] in (["--check"], ["--check-python"]) and len(argv) <= 2:
-        python = argv[0] == "--check-python"
+    if argv[:1] in (["--check"], ["--check-python"], ["--check-android"]) and len(argv) <= 2:
+        python, android = argv[0] == "--check-python", argv[0] == "--check-android"
         given = Path(argv[1]) if len(argv) == 2 else None
-        problems = check(given or (PYTHON_NOTICES if python else NOTICES), python)
+        default = PYTHON_NOTICES if python else ANDROID_NOTICES if android else NOTICES
+        problems = check(given or default, python, android)
         for problem in problems:
             print("third-party notices: " + problem, file=sys.stderr)
         if problems:
@@ -188,7 +208,8 @@ def main(argv):
                   file=sys.stderr)
             return 1
         print("third-party notices: every crate linked into the shipped "
-              + ("Python wheel" if python else "binaries and library") + " has its notice",
+              + ("Python wheel" if python else "Android library" if android else "binaries and library")
+              + " has its notice",
               file=sys.stderr)
         return 0
     print(__doc__, file=sys.stderr)

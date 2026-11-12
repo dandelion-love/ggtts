@@ -33,10 +33,13 @@ class SystemEngineTest {
     }
 
     private class Engine(val chunks: Int = 2, val during: (Int) -> Unit = {}) : TtsEngine {
+        /** Chunks rendered: Stop must end rendering, not only the audio. */
+        var rendered = 0
         override fun render(text: String, seed: Long): Pcm = error("streams")
         override fun renderStream(text: String, seed: Long, onPiece: (FloatArray, Int) -> Boolean): Boolean {
             for (i in 0 until chunks) {
                 during(i)
+                rendered++
                 if (!onPiece(FloatArray(2400) { 0.5f }, 24000)) return false
             }
             return true
@@ -88,10 +91,12 @@ class SystemEngineTest {
         voices.save(qwen)
         val out = Out()
         lateinit var s: SynthesisSession
-        s = SynthesisSession({ Engine(chunks = 5) { i -> if (i == 1) s.stop() } }, voices)
+        val engine = Engine(chunks = 5) { i -> if (i == 1) s.stop() }
+        s = SynthesisSession({ engine }, voices)
         s.synthesize("yue", "HKG", "今日天氣好好。", Ggtts.DEFAULT_SEED, out)
         assertEquals("only the first chunk went out, and no done", listOf("start 24000", "audio"), out.events)
         assertEquals(2400 * 2, out.bytes)
+        assertEquals("rendering ended at the chunk in progress", 2, engine.rendered)
     }
 
     @Test

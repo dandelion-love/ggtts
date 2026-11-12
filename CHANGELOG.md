@@ -11,6 +11,8 @@ that a merge places under a released heading is caught.
 
 ## Unreleased
 
+## v0.1.0-rc.11 (2026-11-12)
+
 ### Added
 
 - **`ggtts-kitten-convert --layout tq1_0` writes an exact `TQ1_0` Kitten-TTS 2 GGUF**
@@ -40,11 +42,6 @@ that a merge places under a released heading is caught.
   scale. An unsteered render writes none. The field is added within `ggtts-trace/2`, `ggtts-timing/1`,
   `ggtts-duration/1` and `ggtts-report/2`, as `instruction` and `models` were: a document without it is still valid.
   Replay refuses a steered trace unless it is given the same steering.
-
-## v0.1.0-rc.11 (2026-11-12)
-
-### Added
-
 - **The C and Kotlin binding find the default model, and the C ABI can render on the GPU.** The C ABI is now
   version 3: `ggtts_settings` gains three trailing fields, `device`, `cache_dir` and `allow_download`
   (`GGTTS_SETTINGS_INIT` sets them to NULL, NULL and 0). With engine `qwen3-tts` and no model or codec path,

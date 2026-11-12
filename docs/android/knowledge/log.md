@@ -1,0 +1,10 @@
+# Log
+
+## 2026-11-12
+
+- Bundle started for the Android track. It holds:
+  - five decisions: the integration branch, 16 KB alignment, user-supplied models with checked imports, streaming
+    playback, and measuring through the CLI;
+  - the on-device parity and budget finding, the landscape of other Android TTS with Play ratings read that day, our
+    limitations with a stated rating, and the thread measurement;
+  - the UX patterns worth copying, with issues #221, #222 and #223 filed for the ones not yet done.

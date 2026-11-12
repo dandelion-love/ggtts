@@ -463,6 +463,7 @@ impl Engine for KittenEngine {
 
     fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
         refuse_instruction(req, &self.info.family)?;
+        ggtts_core::steer::refuse_steer(req, &self.info.family)?;
         let (ids, stop) = self.generate_ids(req.text, req.seed).map_err(EngineError)?;
         let (lo, hi) = (self.tm.audio_base, self.tm.audio_base + self.tm.audio_count);
         let frames = ids

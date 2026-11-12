@@ -1,7 +1,7 @@
 //! Kitten-TTS 2's language model (or a QAT export in the same key layout) to a ggtts GGUF, and the readback check.
 //!
-//! Tensor names are kept as Kitten writes them. The 196 ternary linears become padded `TQ2_0` (see
-//! [`crate::ternary`]); the token embedding, which is also the tied output head, stays bf16 byte for byte; every
+//! Tensor names are kept as Kitten writes them. The 196 ternary linears become `Q4_0`, padded `TQ2_0` or padded
+//! `TQ1_0` (see [`crate::ternary`]), each exact; the token embedding, which is also the tied output head, stays bf16 byte for byte; every
 //! other tensor (the norms and `spk_proj`) is widened to f32, which is exact.
 
 use std::collections::BTreeMap;
@@ -145,7 +145,11 @@ pub fn convert(
     tokenizer_json: Option<&str>,
 ) -> Result<Summary, String> {
     if layout == Layout::Tq1 {
-        return Err("TQ1_0 export is not supported; this runtime only reads existing TQ1 files".into());
+        return Err(
+            "the tq1_0-256-experimental layout is read but not written: it gives two 128-weight groups one scale, \
+             which is lossy; --layout tq1_0 writes the exact tq1_0-pad128"
+                .into(),
+        );
     }
     let kv = metadata(model, lm, source, layout, tokenizer_json)?;
     let mut tensors = Vec::new();
@@ -170,11 +174,7 @@ pub fn convert(
             tensors.push(TensorOut {
                 name: name.clone(),
                 dims: vec![layout.stored_cols(cols) as u64, rows as u64],
-                ty: if layout == Layout::Q4 {
-                    GgmlType::Q4_0
-                } else {
-                    GgmlType::TQ2_0
-                },
+                ty: layout.ggml_type(),
                 data: packed,
             });
         } else if name == EMBED {
@@ -276,11 +276,7 @@ pub fn verify(st: &SafeTensors, g: &Gguf) -> Result<Verified, String> {
         let (t, data) = g.tensor(name)?;
         if is_ternary(name) {
             let (rows, cols) = (info.shape[0], info.shape[1]);
-            let want = if layout == Layout::Q4 {
-                GgmlType::Q4_0
-            } else {
-                GgmlType::TQ2_0
-            };
+            let want = layout.ggml_type();
             if t.ty != want || t.dims != [layout.stored_cols(cols) as u64, rows as u64] {
                 return Err(format!("{name}: stored as {:?} {:?}", t.ty, t.dims));
             }
@@ -448,6 +444,58 @@ mod tests {
             scale: ScaleRule::AbsMax,
         };
         assert!(round_trip_in(wrong, false, Layout::Q4).is_err());
+    }
+
+    #[test]
+    fn tq1_0_converts_exactly_and_planted_rules_are_red() {
+        let v = round_trip_in(Rule::KITTEN, true, Layout::Tq1Pad).unwrap();
+        assert_eq!(v.ternary, 4);
+        assert_eq!(v.groups, 4 * 256 * 2);
+        assert_eq!(v.others, 2);
+        let g256 = Rule {
+            group: 256,
+            scale: ScaleRule::AbsMax,
+        };
+        assert!(
+            round_trip_in(g256, true, Layout::Tq1Pad).is_err(),
+            "strict conversion refuses it"
+        );
+        assert!(round_trip_in(g256, false, Layout::Tq1Pad).is_err());
+        let absmean = Rule {
+            group: GROUP,
+            scale: ScaleRule::AbsMean,
+        };
+        assert!(round_trip_in(absmean, false, Layout::Tq1Pad).is_err());
+    }
+
+    #[test]
+    fn the_lossy_256_layout_is_not_written() {
+        let e = round_trip_in(Rule::KITTEN, true, Layout::Tq1).unwrap_err();
+        assert!(e.contains("lossy"), "{e}");
+    }
+
+    #[test]
+    fn a_flipped_trit_in_a_tq1_file_is_red() {
+        let st = SafeTensors::from_bytes(tiny_safetensors()).unwrap();
+        let (model, lm) = configs();
+        let dir = std::env::temp_dir().join(format!("ggtts-kitten-conv-{}-tq1-flip", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("m.gguf");
+        convert(&st, &model, &lm, "tiny", &out, Rule::KITTEN, true, Layout::Tq1Pad, None).unwrap();
+        let mut g = Gguf::open(&out).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(verify(&st, &g).is_ok());
+        // Row 7, group 1 of k_proj: one trit changed and the block re-encoded, so only the readback can see it.
+        let t = &g.tensors["model.layers.0.self_attn.k_proj.weight"];
+        let at = t.start + (7 * 2 + 1) * crate::ternary::TQ1_0_BLOCK_BYTES;
+        let mut trits = crate::ternary::tq1_decode(&g.bytes[at..at + 52]).unwrap();
+        trits[10] = if trits[10] == 1 { -1 } else { 1 };
+        g.bytes[at..at + 52].copy_from_slice(&crate::ternary::tq1_encode(&trits));
+        let e = verify(&st, &g).unwrap_err();
+        assert!(
+            e.contains("k_proj") && e.contains("row 7") && e.contains("col 138"),
+            "{e}"
+        );
     }
 
     #[test]

@@ -14,7 +14,7 @@ try:
 except ImportError:
     tomllib = None  # Without a TOML parser the full matrix is mandatory.
 
-JOBS = ("package", "binding", "android", "release", "ggml")
+JOBS = ("package", "binding", "android", "release", "ggml", "python")
 WORKFLOW = ".github/workflows/ci.yml"
 CORE_MANIFEST = "crates/ggtts-core/Cargo.toml"
 CLI_MANIFEST = "crates/ggtts-cli/Cargo.toml"
@@ -39,9 +39,11 @@ JOB_MAP = {
     "package-smoke": {"package"}, "binding": {"binding"}, "android-arm64": {"android"},
     "release-build": {"release"}, "ggml": {"ggml"}, "ggml-windows": {"ggml"},
     # cuda-compile never runs on an ordinary PR (cuda_decision below), so an edit to it selects nothing here; the
-    # push to rc that lands a workflow edit runs it.
+    # push to rc that lands a workflow edit runs it. A PR that changes a CUDA archive script runs it (CUDA_SCRIPTS).
     "cuda-compile": set(), "specialized-selection": set(JOBS),
-    "check": set(), "build-test": set(), "planted-ceiling": set(),
+    "check": set(), "build-test": set(), "planted-ceiling": set(), "python": {"python"},
+    # tiny-model is selected by tiny_decision below, which reads its own block of ci.yml (workflow_touches).
+    "tiny-model": set(),
 }
 
 # Where `feature = "ggml"` gates code: the default build compiles none of it, so only the ggml job runs its tests.
@@ -53,8 +55,51 @@ GGML_GATED_FILES = {
     "crates/ggtts-cli/tests/default_models_cli.rs",
     "crates/ggtts-cli/tests/kitten_refusals.rs",
     "crates/ggtts-cli/tests/no_change_real.rs",
+    "crates/ggtts-cli/tests/steer_cli.rs",
     "crates/ggtts-cli/tests/version_engines.rs",
 }
+
+# The Python binding (crates/ggtts-py) is its own workspace, built and tested by the python job only, which compiles
+# its ggml-gated code on Linux. It links these crates (ggtts-ffi only for a test that holds the error codes equal), so a
+# change to their source or manifest also runs it. Their own tests do not reach the binding.
+PYTHON_CRATE = "crates/ggtts-py/"
+PYTHON_ENGINE_CRATES = ("crates/ggtts-core/", "crates/ggtts-fake/", "crates/ggtts-qwen3-tts/", "crates/ggtts-kitten/",
+                        "crates/ggtts-ggml-sys/", "crates/ggtts-models/", "crates/ggtts-ffi/")
+
+
+# The scripts the python job runs to build, check and smoke the release wheel as release.yml does, and release.yml
+# itself (its build-wheel and smoke-wheel jobs run only on a tag, so the python job is their proof on a pull request).
+PYTHON_PATHS = {"scripts/python_wheel.sh", "scripts/check_python_lock.py", "scripts/test_check_python_lock.py",
+                "scripts/third_party_notices.py", "licenses/python-crates.txt", "scripts/check_glibc_floor.py",
+                ".github/workflows/release.yml"}
+
+
+# The binding docs (docs/bindings) and the example files their code blocks copy. The check job holds every block to
+# its file on every run (scripts/check_doc_examples.py); these jobs compile and run the files on the fake engine: the C
+# examples in package-smoke (scripts/c_examples.sh, against the packed lib/ and include/), the Kotlin ones in binding
+# (scripts/kotlin_binding_test.sh), the Python ones in python (crates/ggtts-py/tests/test_doc_examples.py). An example
+# selects its own language's job; a page, or anything else there, selects all three.
+DOC_BINDINGS = "docs/bindings/"
+DOC_EXAMPLE_JOBS = {"docs/bindings/examples/c/": "package", "docs/bindings/examples/kotlin/": "binding",
+                    "docs/bindings/examples/python/": "python"}
+
+
+def doc_bindings_jobs(path):
+    """The jobs that run the binding docs' examples a change to `path` can break (empty outside docs/bindings)."""
+    if not path.startswith(DOC_BINDINGS):
+        return set()
+    for prefix, job in DOC_EXAMPLE_JOBS.items():
+        if path.startswith(prefix):
+            return {job}
+    return {"package", "binding", "python"}
+
+
+def python_path(path):
+    """A path whose change can break the Python binding's build or behaviour."""
+    if path.startswith(PYTHON_CRATE) or path in PYTHON_PATHS:
+        return True
+    return path.startswith(PYTHON_ENGINE_CRATES) and "/tests/" not in path and "/benches/" not in path
+
 
 # Generic measurement/reporting paths are compiled and tested on both CPU hosts for every PR.
 # CPU release, Android and binding builds run on the rc-to-main promotion.
@@ -212,6 +257,13 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
             continue
         if path in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".gitmodules"):
             return set(JOBS)
+        selected.update(doc_bindings_jobs(path))
+        if path == "scripts/c_examples.sh":
+            selected.add("package")
+        if python_path(path):
+            selected.add("python")
+            if path.startswith(PYTHON_CRATE):
+                continue
         if path.startswith(GGML_GATED_CRATES) or path in GGML_GATED_FILES:
             # Code behind `feature = "ggml"` is compiled and tested only by the ggml job.
             selected.add("ggml")
@@ -233,6 +285,10 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
             if path.startswith(("crates/ggtts-ggml-sys/", "crates/ggtts-ffi/")):
                 # Direct changes to native build or bindings need their targeted checks.
                 selected.update(("binding", "android", "ggml"))
+                if path.startswith("crates/ggtts-ffi/"):
+                    # The C library and ggtts.h ship in the archives: the package smoke compiles a C program
+                    # against them and renders through them.
+                    selected.add("package")
             else:
                 # Ordinary source PRs get the CPU checks and package smoke; promotion
                 # above still runs the CPU native, binding and release jobs.
@@ -241,20 +297,25 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
             selected.update(("android", "binding"))
         if path.startswith(("scripts/kotlin_binding_test.sh",)):
             selected.add("binding")
-        if path.startswith(("scripts/package_and_smoke.sh", "scripts/check_release_version.py", "instruments/", "fixtures/")):
+        if path.startswith(("scripts/package_and_smoke.sh", "scripts/check_release_version.py", "instruments/", "fixtures/",
+                            "scripts/ffi_smoke.c", "scripts/check_pe_imports.py", "scripts/test_check_pe_imports.py")):
             selected.add("package")
         if path == "scripts/buildinfo_engines.sh":
             selected.update(("ggml", "release"))
         if path == "scripts/check_glibc_floor.py":
             # The release build runs it on the real binaries; its tests run in the selection job on every run.
             selected.add("release")
-        if path in (".github/workflows/release.yml", "scripts/package_cuda_release.sh"):
+        if path in (".github/workflows/release.yml", "scripts/package_cuda_release.sh", "scripts/release_smoke.sh"):
+            # release_smoke.sh: package-smoke runs its checks on the fake-engine archive, release-build its real render.
             selected.update(("package", "release"))
     return selected
 
 
 RELEASE_WORKFLOW = ".github/workflows/release.yml"
 GGML_SUBMODULE = "crates/ggtts-ggml-sys/ggml"
+# The scripts the CUDA archive is built and smoked with. A pull request into rc that changes one runs the CUDA compile,
+# so the change is proven before it merges rather than first on the push to rc. No other pull request into rc runs it.
+CUDA_SCRIPTS = ("scripts/package_cuda_release.sh", "scripts/release_smoke.sh")
 
 
 def cuda_push_path(path):
@@ -263,7 +324,7 @@ def cuda_push_path(path):
     A crate's build script, anything in the ggml bindings crate (its submodule pointer included), any manifest, the
     lockfile, the script the archive is built with, and the workflows.
     """
-    return (path in ("Cargo.lock", ".gitmodules", "Cargo.toml", "scripts/package_cuda_release.sh")
+    return (path in ("Cargo.lock", ".gitmodules", "Cargo.toml") or path in CUDA_SCRIPTS
             or path.endswith("/Cargo.toml")
             or path == GGML_SUBMODULE or path.startswith("crates/ggtts-ggml-sys/")
             or path.startswith(".github/workflows/")
@@ -273,15 +334,61 @@ def cuda_push_path(path):
 def cuda_decision(event, base_ref, ref, paths):
     """Whether the hosted CUDA archive compile runs. It is a separate output, never part of JOBS.
 
-    It runs on every pull request into main (the promotion), and on a push to rc that touches a cuda_push_path. It
-    never runs on a pull request into any other branch, whatever that pull request changes. `paths` is None when the
-    pushed range could not be read, which runs the compile. Each push is judged by its own range, so ci.yml must
+    It runs on every pull request into main (the promotion), on a pull request into rc that changes one of
+    CUDA_SCRIPTS, and on a push to rc that touches a cuda_push_path. It never runs on any other pull request, whatever
+    that pull request changes. `paths` is the pull request's changed paths, or the pushed range's; for a push it is
+    None when the range could not be read, which runs the compile. Each push is judged by its own range, so ci.yml must
     never cancel or supersede a push run (its concurrency group is per run for pushes; a test holds it to that).
     """
     if event == "pull_request":
-        return base_ref == "main"
+        return base_ref == "main" or (base_ref == "rc" and any(path in CUDA_SCRIPTS for path in paths or ()))
     if event == "push" and ref == "refs/heads/rc":
         return paths is None or any(cuda_push_path(path) for path in paths)
+    return False
+
+
+# The tiny-model job: the no-change check on a real Qwen3-TTS engine cut to one layer (crates/ggtts-qwen3-tts/fixtures/
+# tiny), on CPU. What it reads: the engine, the core it implements (the engine trait, hooks, trace, pipeline), ggml and
+# its bindings (the submodule pointer included), the instruments and the CLI the event check runs them from, the
+# fixture's pins and scripts, and the workspace's manifests and toolchain. Documentation never selects it.
+TINY_PREFIXES = ("crates/ggtts-qwen3-tts/", "crates/ggtts-core/", "crates/ggtts-ggml-sys/", "crates/ggtts-instruments/",
+                 "crates/ggtts-cli/", "instruments/")
+TINY_FILES = {"scripts/tiny_fixture.sh", "scripts/cut_tiny_fixture.py", "Cargo.toml", "Cargo.lock",
+              "rust-toolchain.toml", ".gitmodules"}
+TINY_JOB = "tiny-model"
+
+
+def tiny_path(path):
+    """A path whose change can change what the tiny-model job checks or how it runs."""
+    if path in TINY_FILES:
+        return True
+    return path.startswith(TINY_PREFIXES) and not path.endswith(".md")
+
+
+def workflow_touches(before, after, job):
+    """Whether a ci.yml edit changes `job`'s block, the selection job's, or the header; unreadable is a change."""
+    try:
+        old_header, old = workflow_sections(before)
+        new_header, new = workflow_sections(after)
+    except ValueError:
+        return True
+    return (old_header != new_header or old.get(job) != new.get(job)
+            or old.get("specialized-selection") != new.get("specialized-selection"))
+
+
+def tiny_decision(event, base_ref, head_ref, same_repo, ref, paths, workflow_touched=True):
+    """Whether the tiny-model job runs. A separate output, like `cuda`, never part of JOBS.
+
+    It runs on every promotion pull request (rc into main, so the commit being promoted carries a tiny-model result),
+    on any other pull request that changes a tiny_path or touches the job in ci.yml (`workflow_touched`), and on a
+    push to rc whose range changes a tiny_path or cannot be read (`paths` None).
+    """
+    if event == "pull_request":
+        if base_ref == "main" and head_ref == "rc" and same_repo:
+            return True
+        return any(tiny_path(p) or (p == WORKFLOW and workflow_touched) for p in paths or ())
+    if event == "push" and ref == "refs/heads/rc":
+        return paths is None or any(tiny_path(p) for p in paths)
     return False
 
 
@@ -348,6 +455,7 @@ def main():
     same_repo = bool(os.environ.get("REPOSITORY")) and os.environ.get("REPOSITORY") == os.environ.get("HEAD_REPO")
     paths = []
     workflow_selected = None
+    workflow_touched_tiny = True
     logging_lock_safe = False
     if event == "pull_request" and not (base_ref == "main" and head_ref == "rc" and same_repo):
         base, head = os.environ["BASE_SHA"], os.environ["HEAD_SHA"]
@@ -361,6 +469,7 @@ def main():
             old = subprocess.check_output(["git", "show", f"{merge_base}:{WORKFLOW}"], text=True)
             new = subprocess.check_output(["git", "show", f"{head}:{WORKFLOW}"], text=True)
             workflow_selected = workflow_changes(old, new)
+            workflow_touched_tiny = workflow_touches(old, new, TINY_JOB)
         if "Cargo.lock" in paths and CORE_MANIFEST in paths:
             manifests = [path for path in paths if path.endswith("Cargo.toml")]
             if set(manifests) <= {CORE_MANIFEST, CLI_MANIFEST, EVENT_MANIFEST}:
@@ -379,11 +488,15 @@ def main():
         print(f"{job}={'true' if job in selected else 'false'}")
     ref = os.environ.get("REF", "")
     pushed = pushed_paths(os.environ.get("PUSH_BEFORE", ""), os.environ.get("PUSH_AFTER", "")) \
-        if event == "push" and ref == "refs/heads/rc" else []
+        if event == "push" and ref == "refs/heads/rc" else paths
     cuda = cuda_decision(event, base_ref, ref, pushed)
     print(f"cuda={'true' if cuda else 'false'}")
     if cuda:
         print("CUDA archive compile selected", file=sys.stderr)
+    tiny = tiny_decision(event, base_ref, head_ref, same_repo, ref, pushed, workflow_touched_tiny)
+    print(f"tiny={'true' if tiny else 'false'}")
+    if tiny:
+        print("tiny-model no-change check selected", file=sys.stderr)
     print("Selected: " + (", ".join(sorted(selected)) or "none") + "; skipped is not passed", file=sys.stderr)
 
 

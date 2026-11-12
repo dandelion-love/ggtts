@@ -10,6 +10,7 @@ from io import StringIO
 
 from select_specialized_ci import GGML_GATED_CRATES, GGML_GATED_FILES
 from select_specialized_ci import cuda_decision, cuda_drift, cuda_push_path, pushed_paths
+from select_specialized_ci import TINY_JOB, tiny_decision, tiny_path, workflow_touches
 from select_specialized_ci import JOBS, LOGGING_PACKAGES, decide, logging_lockfile_change, main, tomllib, workflow_changes, workflow_sections
 
 
@@ -42,10 +43,19 @@ class SelectionTest(unittest.TestCase):
         for base in ("rc", "feature", ""):
             self.assertFalse(cuda_decision("pull_request", base, "refs/pull/1/merge",
                                            ["Cargo.lock", ".github/workflows/ci.yml", "crates/ggtts-ggml-sys/build.rs"]))
+            self.assertFalse(cuda_decision("pull_request", base, "refs/pull/1/merge", []))
+        # A pull request into rc that changes a script the CUDA archive is built or smoked with runs the compile, so the
+        # change is proven before it merges; into any other branch it does not.
+        for path in ("scripts/package_cuda_release.sh", "scripts/release_smoke.sh"):
+            self.assertTrue(cuda_decision("pull_request", "rc", "refs/pull/1/merge", ["README.md", path]), path)
+            self.assertFalse(cuda_decision("pull_request", "feature", "refs/pull/1/merge", [path]), path)
+        for path in ("scripts/package_and_smoke.sh", "scripts/package_cuda_release.sh.bak", "scripts/release_smoke.py"):
+            self.assertFalse(cuda_decision("pull_request", "rc", "refs/pull/1/merge", [path]), path)
         # A push to rc, only for a path that can break the CUDA build.
         for path in ("Cargo.lock", "crates/ggtts-ggml-sys/ggml", ".gitmodules", ".github/workflows/ci.yml",
                      ".github/workflows/release.yml", "crates/ggtts-ggml-sys/build.rs", "crates/ggtts-core/build.rs",
-                     "scripts/package_cuda_release.sh", "Cargo.toml", "crates/ggtts-cli/Cargo.toml",
+                     "scripts/package_cuda_release.sh", "scripts/release_smoke.sh", "Cargo.toml",
+                     "crates/ggtts-cli/Cargo.toml",
                      "instruments/templates/rust/event/Cargo.toml", "crates/ggtts-ggml-sys/src/lib.rs",
                      "crates/ggtts-ggml-sys/src/bindings/x86_64-unknown-linux-gnu.rs"):
             self.assertTrue(cuda_push_path(path), path)
@@ -64,6 +74,52 @@ class SelectionTest(unittest.TestCase):
         self.assertIsNone(pushed_paths("", "a" * 40))
         self.assertIsNone(pushed_paths("not-a-commit", "HEAD"))
         self.assertFalse(cuda_decision("workflow_dispatch", "main", "refs/heads/rc", ["Cargo.lock"]))
+
+    def test_tiny_model_runs_when_the_engine_ggml_or_the_fixture_changes(self):
+        engine = ("crates/ggtts-qwen3-tts/src/talker.rs", "crates/ggtts-qwen3-tts/fixtures/tiny/SOURCE",
+                  "crates/ggtts-qwen3-tts/tests/tiny_model.rs", "crates/ggtts-core/src/hooks.rs",
+                  "crates/ggtts-ggml-sys/ggml", "crates/ggtts-ggml-sys/build.rs",
+                  "crates/ggtts-instruments/src/runner.rs", "crates/ggtts-cli/tests/no_change_real.rs",
+                  "instruments/examples/python/loudness-ends/instrument.py", "scripts/tiny_fixture.sh",
+                  "scripts/cut_tiny_fixture.py", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".gitmodules")
+        for path in engine:
+            self.assertTrue(tiny_path(path), path)
+            self.assertTrue(tiny_decision("pull_request", "rc", "feature", True, "refs/pull/1/merge",
+                                          ["README.md", path]), path)
+            self.assertTrue(tiny_decision("push", "", "", False, "refs/heads/rc", ["README.md", path]), path)
+            self.assertFalse(tiny_decision("push", "", "", False, "refs/heads/main", [path]), path)
+            self.assertFalse(tiny_decision("workflow_dispatch", "rc", "", False, "refs/heads/rc", [path]), path)
+        unrelated = ("README.md", "crates/ggtts-qwen3-tts/README.md", "fixtures/tiny/SOURCE",
+                     "crates/ggtts-kitten/src/lib.rs", "crates/ggtts-py/src/core.rs", "android/app/build.gradle",
+                     "scripts/android_build.sh", "scripts/rc_gate.py", "docs/tiny.md")
+        for path in unrelated:
+            self.assertFalse(tiny_path(path), path)
+            self.assertFalse(tiny_decision("pull_request", "rc", "feature", True, "refs/pull/1/merge", [path]), path)
+            self.assertFalse(tiny_decision("push", "", "", False, "refs/heads/rc", [path]), path)
+        # Every promotion runs it, whatever it changes, so the promoted commit carries a result.
+        self.assertTrue(tiny_decision("pull_request", "main", "rc", True, "refs/pull/1/merge", []))
+        self.assertFalse(tiny_decision("pull_request", "main", "rc", False, "refs/pull/1/merge", []))
+        # An unreadable pushed range runs it; it is never read as "nothing changed".
+        self.assertTrue(tiny_decision("push", "", "", False, "refs/heads/rc", None))
+        self.assertFalse(tiny_decision("push", "", "", False, "refs/heads/rc", []))
+        # A ci.yml edit runs it only when it touches the job, the selection job or the shared header.
+        wf = ".github/workflows/ci.yml"
+        self.assertTrue(tiny_decision("pull_request", "rc", "f", True, "r", [wf], workflow_touched=True))
+        self.assertFalse(tiny_decision("pull_request", "rc", "f", True, "r", [wf], workflow_touched=False))
+        base = ("name: CI\njobs:\n  tiny-model:\n    run: old\n  ggml:\n    run: same\n"
+                "  specialized-selection:\n    run: s\n")
+        self.assertTrue(workflow_touches(base, base.replace("run: old", "run: new"), TINY_JOB))
+        self.assertTrue(workflow_touches(base, base.replace("run: s\n", "run: t\n"), TINY_JOB))
+        self.assertTrue(workflow_touches(base, base.replace("name: CI", "name: Other"), TINY_JOB))
+        self.assertFalse(workflow_touches(base, base.replace("run: same", "run: new"), TINY_JOB))
+        self.assertTrue(workflow_touches(base, "not a workflow", TINY_JOB))
+
+    def test_the_tiny_model_job_exists_and_is_gated_on_its_output(self):
+        root = Path(__file__).resolve().parent.parent
+        jobs = workflow_sections((root / ".github/workflows/ci.yml").read_text())[1]
+        self.assertIn(TINY_JOB, jobs)
+        self.assertIn("if: needs.specialized-selection.outputs.tiny == 'true'", jobs[TINY_JOB])
+        self.assertIn("tiny: ${{ steps.select.outputs.tiny }}", jobs["specialized-selection"])
 
     def test_cuda_compile_cannot_drift_from_the_release_cuda_build(self):
         root = Path(__file__).resolve().parent.parent
@@ -148,7 +204,8 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(matrix(ci), matrix(release))
         linux = [entry for entry in matrix(release) if entry["target"] == "x86_64-linux"]
         # The Linux CPU archive's glibc floor is its runner's; ubuntu-latest (24.04) needed glibc 2.39.
-        self.assertEqual(linux, [{"os": "ubuntu-22.04", "target": "x86_64-linux", "features": "ggtts-cli/ggml"}])
+        self.assertEqual(linux, [{"os": "ubuntu-22.04", "target": "x86_64-linux",
+                                  "features": "ggtts-cli/ggml,ggtts-ffi/ggml"}])
         # The check reads the packed directory's BUILDINFO "binaries" (pack's own list), never a list kept by hand,
         # so a binary that is packed is always checked; it runs after pack and after BUILDINFO is written.
         for name, block, check in (("ci.yml release-build", ci, "check_glibc_floor.py --packed dist/release-ci"),
@@ -158,7 +215,7 @@ class SelectionTest(unittest.TestCase):
                              block, name)
             self.assertLess(block.index("scripts/package_and_smoke.sh pack"), block.index(check), name)
             self.assertLess(block.index("BUILDINFO.json"), block.index(check), name)
-        self.assertIn("ggtts-unlisted is an ELF file that BUILDINFO.json's binaries leaves out", ci)
+        self.assertIn("ggtts-unlisted is an ELF file that BUILDINFO.json's binaries and libraries leave out", ci)
         self.assertIn("--floor GLIBC=2.17", ci)
         # The in-job drift step compares the runner too, not only the features.
         self.assertIn('test "$os" = "$OS"', ci)
@@ -192,15 +249,20 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(select(["android/demo.kt"]), {"android", "binding"})
         self.assertEqual(select(["scripts/package_and_smoke.sh"]), {"package"})
         self.assertEqual(select(["scripts/check_release_version.py"]), {"package"})
-        self.assertEqual(select([".github/workflows/release.yml"]), {"package", "release"})
+        self.assertEqual(select([".github/workflows/release.yml"]), {"package", "release", "python"})
         self.assertEqual(select(["scripts/package_cuda_release.sh"]), {"package", "release"})
+        self.assertEqual(select(["scripts/release_smoke.sh"]), {"package", "release"})
         self.assertEqual(select(["scripts/buildinfo_engines.sh"]), {"ggml", "release"})
-        self.assertEqual(select(["scripts/check_glibc_floor.py"]), {"release"})
+        self.assertEqual(select(["scripts/check_glibc_floor.py"]), {"release", "python"})
         self.assertEqual(select(["scripts/test_check_glibc_floor.py"]), set())
-        self.assertEqual(select(["crates/ggtts-qwen3-tts/src/lib.rs"]), {"ggml", "package"})
-        self.assertEqual(select(["crates/ggtts-core/src/pipeline.rs", "crates/ggtts-cli/Cargo.toml"]), {"package"})
-        self.assertEqual(select(["crates/ggtts-ffi/src/lib.rs"]), {"binding", "android", "ggml"})
-        self.assertEqual(select(["crates/ggtts-ggml-sys/build.rs"]), {"binding", "android", "ggml"})
+        self.assertEqual(select(["crates/ggtts-qwen3-tts/src/lib.rs"]), {"ggml", "package", "python"})
+        self.assertEqual(select(["crates/ggtts-core/src/pipeline.rs", "crates/ggtts-cli/Cargo.toml"]), {"package", "python"})
+        self.assertEqual(select(["crates/ggtts-cli/Cargo.toml"]), {"package"})
+        self.assertEqual(select(["crates/ggtts-ffi/src/lib.rs"]), {"binding", "android", "ggml", "package", "python"})
+        self.assertEqual(select(["crates/ggtts-ffi/include/ggtts.h"]), {"binding", "android", "ggml", "package", "python"})
+        for path in ("scripts/ffi_smoke.c", "scripts/check_pe_imports.py", "scripts/test_check_pe_imports.py"):
+            self.assertEqual(select([path]), {"package"}, path)
+        self.assertEqual(select(["crates/ggtts-ggml-sys/build.rs"]), {"binding", "android", "ggml", "python"})
         for path in (".github/workflows/ci.yml", "Cargo.lock"):
             self.assertEqual(select([path]), set(JOBS))
         self.assertEqual(select(["scripts/select_specialized_ci.py", "scripts/test_select_specialized_ci.py"]), set())
@@ -216,7 +278,7 @@ class SelectionTest(unittest.TestCase):
                  "crates/ggtts-core/tests/report.rs", "crates/ggtts-instruments/src/runner.rs",
                  "crates/ggtts-instruments/tests/runner.rs", "instruments/python/ggtts_instrument/envelope.py",
                  "schemas/ggtts-report-2.schema.json"]
-        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"ggml", "package"})
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"ggml", "package", "python"})
         self.assertEqual(decide("pull_request", "main", "rc", True, paths), set(JOBS))
         self.assertEqual(decide("pull_request", "rc", "feature", True,
                                 ["crates/unknown/src/lib.rs"]), set(JOBS))
@@ -247,7 +309,45 @@ class SelectionTest(unittest.TestCase):
         self.assertTrue(any(p.startswith(GGML_GATED_CRATES) for p in gated))
         self.assertTrue(GGML_GATED_FILES <= set(gated), sorted(GGML_GATED_FILES - set(gated)))
         for path in gated:
-            self.assertIn("ggml", select([path]), path + " gates on the ggml feature but does not select the ggml job")
+            # The Python binding is its own workspace; the python job compiles its gated code with ggml on Linux.
+            job = "python" if path.startswith("crates/ggtts-py/") else "ggml"
+            self.assertIn(job, select([path]), path + f" gates on the ggml feature but does not select the {job} job")
+
+    def test_the_binding_docs_select_the_jobs_that_run_their_examples(self):
+        select = lambda paths: decide("pull_request", "rc", "feature", True, paths)
+        self.assertEqual(select(["docs/bindings/examples/c/first_render.c"]), {"package"})
+        self.assertEqual(select(["docs/bindings/examples/kotlin/Stream.kt"]), {"binding"})
+        self.assertEqual(select(["docs/bindings/examples/python/stream.py"]), {"python"})
+        for path in ("docs/bindings/README.md", "docs/bindings/c.md", "docs/bindings/examples/README.md"):
+            self.assertEqual(select([path]), {"package", "binding", "python"}, path)
+        self.assertEqual(select(["scripts/c_examples.sh"]), {"package"})
+        self.assertEqual(select(["scripts/kotlin_binding_test.sh"]), {"binding"})
+        self.assertEqual(select(["crates/ggtts-py/tests/test_doc_examples.py"]), {"python"})
+        # Other docs select nothing; the check job holds every binding page's blocks to their files on every run.
+        self.assertEqual(select(["docs/android/binding-api.md", "docs/bindingsX.md"]), set())
+        self.assertEqual(select(["scripts/check_doc_examples.py"]), set())
+
+    def test_the_python_binding_and_what_it_links_select_the_python_job(self):
+        select = lambda paths: decide("pull_request", "rc", "feature", True, paths)
+        for path in ("crates/ggtts-py/src/core.rs", "crates/ggtts-py/python/ggtts/__init__.py",
+                     "crates/ggtts-py/tests/test_ggtts.py", "crates/ggtts-py/Cargo.toml", "crates/ggtts-py/Cargo.lock",
+                     "crates/ggtts-py/pyproject.toml"):
+            self.assertEqual(select([path]), {"python"}, path)
+        for path in ("crates/ggtts-core/src/pipeline.rs", "crates/ggtts-fake/src/lib.rs", "crates/ggtts-kitten/src/flow.rs",
+                     "crates/ggtts-qwen3-tts/Cargo.toml", "crates/ggtts-ggml-sys/build.rs", "crates/ggtts-ffi/src/lib.rs",
+                     "crates/ggtts-models/src/lib.rs"):
+            self.assertIn("python", select([path]), path)
+        # The release wheel's scripts and release.yml, whose wheel jobs run only on a tag, are proven by the python job.
+        for path in ("scripts/python_wheel.sh", "scripts/check_python_lock.py", "scripts/test_check_python_lock.py",
+                     "scripts/third_party_notices.py", "licenses/python-crates.txt", "scripts/check_glibc_floor.py",
+                     ".github/workflows/release.yml"):
+            self.assertIn("python", select([path]), path)
+        self.assertEqual(select(["scripts/python_wheel.sh"]), {"python"})
+        # The engines' own tests, the CLI and the docs do not reach the binding.
+        for path in ("crates/ggtts-qwen3-tts/tests/frame_hook.rs", "crates/ggtts-core/tests/report.rs",
+                     "crates/ggtts-cli/src/bin/ggtts-measure.rs", "README.md", "android/demo.kt"):
+            self.assertNotIn("python", select([path]), path)
+        self.assertIn("python", decide("pull_request", "main", "rc", True, []))
 
     def test_logging_change_gets_lightweight_pr_and_cpu_promotion(self):
         paths = ["crates/ggtts-cli/Cargo.toml", "crates/ggtts-cli/src/bin/ggtts-render.rs",
@@ -256,7 +356,7 @@ class SelectionTest(unittest.TestCase):
                  "crates/ggtts-core/src/trace.rs", "crates/ggtts-core/tests/trace.rs",
                  "crates/ggtts-qwen3-tts/src/lib.rs", "crates/ggtts-qwen3-tts/src/native_logging.rs",
                  "crates/ggtts-instruments/src/runner.rs", "scripts/select_specialized_ci.py"]
-        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"ggml", "package"})
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths), {"ggml", "package", "python"})
         self.assertEqual(decide("pull_request", "main", "rc", True, paths), set(JOBS))
         self.assertEqual(decide("push", "", "", True, paths), set())
 
@@ -296,7 +396,8 @@ class SelectionTest(unittest.TestCase):
         self.assertFalse(compare_event(event_after.replace('ggtts traces', 'different traces')))
         self.assertFalse(compare_event('not valid TOML = ='))
         paths = ["Cargo.lock", "crates/ggtts-core/Cargo.toml"]
-        self.assertEqual(decide("pull_request", "rc", "feature", True, paths, logging_lock_safe=True), {"package"})
+        # The core manifest is linked into the Python binding too.
+        self.assertEqual(decide("pull_request", "rc", "feature", True, paths, logging_lock_safe=True), {"package", "python"})
         self.assertEqual(decide("pull_request", "main", "rc", True, paths, logging_lock_safe=True), set(JOBS))
         self.assertEqual(decide("pull_request", "rc", "feature", True, paths), set(JOBS))
         self.assertEqual(decide("pull_request", "rc", "feature", True, paths + ["Cargo.toml"],
@@ -325,7 +426,10 @@ class SelectionTest(unittest.TestCase):
             with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
                 main()
                 self.assertIn("package=true", stdout.getvalue())
-                self.assertEqual(stdout.getvalue().count("=true"), 1)
+                self.assertIn("python=true", stdout.getvalue())
+                # The lockfile is a tiny-model input too (tiny_decision).
+                self.assertIn("tiny=true", stdout.getvalue())
+                self.assertEqual(stdout.getvalue().count("=true"), 3)
             paths.append(".github/workflows/ci.yml")
             blob["base:.github/workflows/ci.yml"] = "name: CI\njobs:\n  ggml:\n    run: old\n"
             blob["head:.github/workflows/ci.yml"] = "name: CI\njobs:\n  ggml:\n    run: new\n"
@@ -336,7 +440,7 @@ class SelectionTest(unittest.TestCase):
             paths.append("crates/ggtts-ggml-sys/Cargo.toml")
             with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
                 main()
-                self.assertEqual(stdout.getvalue().count("=true"), len(JOBS))
+                self.assertEqual(stdout.getvalue().count("=true"), len(JOBS) + 1)
             paths.remove("crates/ggtts-ggml-sys/Cargo.toml")
             paths.remove(".github/workflows/ci.yml")
             event_path = "instruments/templates/rust/event/Cargo.toml"
@@ -349,20 +453,22 @@ class SelectionTest(unittest.TestCase):
             blob["head:" + event_path] = event_after
             with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
                 main()
-                self.assertEqual(stdout.getvalue().count("=true"), 1)
+                self.assertEqual(stdout.getvalue().count("=true"), 3)
                 self.assertIn("package=true", stdout.getvalue())
+                self.assertIn("python=true", stdout.getvalue())
+                self.assertIn("tiny=true", stdout.getvalue())
             for altered in (event_after.replace('serde_json = "1"', 'serde_json = "2"'),
                             event_after + '[features]\nextra = []\n',
                             event_after.replace('[dependencies]', 'build = "build.rs"\n[dependencies]')):
                 blob["head:" + event_path] = altered
                 with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
                     main()
-                    self.assertEqual(stdout.getvalue().count("=true"), len(JOBS))
+                    self.assertEqual(stdout.getvalue().count("=true"), len(JOBS) + 1)
             paths.remove(event_path)
             del blob["base:Cargo.lock"]
             with patch("sys.stdout", new_callable=StringIO) as stdout, patch("sys.stderr", new_callable=StringIO):
                 main()
-                self.assertEqual(stdout.getvalue().count("=true"), len(JOBS))
+                self.assertEqual(stdout.getvalue().count("=true"), len(JOBS) + 1)
     def test_pitch_catalogue_and_package_changes_do_not_select_engine_archives(self):
         paths = ["crates/ggtts-instruments/src/catalogue.rs", "crates/ggtts-core/tests/python_instruments.rs",
                  "instruments/examples/python/pitch-range/instrument.py", "instruments/vendor/pitchy-4.1.0/index.js",
@@ -407,8 +513,9 @@ class SelectionTest(unittest.TestCase):
                        BASE_SHA=base, HEAD_SHA=head, REPOSITORY="x/y", HEAD_REPO="x/y")
             result = subprocess.run([sys.executable, str(script)], cwd=d, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.count("=false"), len(JOBS) + 1)
+            self.assertEqual(result.stdout.count("=false"), len(JOBS) + 2)
             self.assertIn("cuda=false", result.stdout)
+            self.assertIn("tiny=false", result.stdout)
             (Path(d) / "scripts").mkdir()
             (Path(d) / "scripts" / "android_build.sh").write_text("build")
             git("add", ".")
@@ -439,8 +546,9 @@ class SelectionTest(unittest.TestCase):
             env.update(BASE_REF="main", HEAD_REF="rc")
             result = subprocess.run([sys.executable, str(script)], cwd=d, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.count("=true"), len(JOBS) + 1)
+            self.assertEqual(result.stdout.count("=true"), len(JOBS) + 2)
             self.assertIn("cuda=true", result.stdout)
+            self.assertIn("tiny=true", result.stdout)
             # A push to rc: the compile is selected by the pushed range, and nothing else is.
             push = dict(os.environ, EVENT="push", REF="refs/heads/rc", PUSH_BEFORE=base, PUSH_AFTER=head)
             result = subprocess.run([sys.executable, str(script)], cwd=d, env=push, capture_output=True, text=True)
@@ -449,7 +557,9 @@ class SelectionTest(unittest.TestCase):
             self.assertIn("cuda=false", result.stdout)
             push["PUSH_AFTER"] = git("rev-parse", "HEAD")
             result = subprocess.run([sys.executable, str(script)], cwd=d, env=push, capture_output=True, text=True)
-            self.assertEqual(result.stdout.strip().splitlines()[-1], "cuda=true")
+            self.assertIn("cuda=true", result.stdout.splitlines())
+            # The pushed range touches neither the engine nor the fixture, so the tiny-model job is not selected.
+            self.assertIn("tiny=false", result.stdout.splitlines())
             self.assertEqual(result.stdout.count("=true"), 1)
             push["REF"] = "refs/heads/main"
             result = subprocess.run([sys.executable, str(script)], cwd=d, env=push, capture_output=True, text=True)
@@ -457,6 +567,7 @@ class SelectionTest(unittest.TestCase):
             push.update(REF="refs/heads/rc", PUSH_BEFORE="0" * 40)
             result = subprocess.run([sys.executable, str(script)], cwd=d, env=push, capture_output=True, text=True)
             self.assertIn("cuda=true", result.stdout)
+            self.assertIn("tiny=true", result.stdout)
 
 
 # CI invokes this suite explicitly; include the logging probe launch test.

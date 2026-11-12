@@ -78,7 +78,7 @@ pub enum Inexact {
     NotTernary { col: usize, value: f32, scale: f32 },
     /// A scale has no exact fp16.
     ScaleNotF16 { group: usize, scale: f32 },
-    /// This experimental runtime reads TQ1 but does not export it.
+    /// The lossy 256-weight TQ1 layout is read, never written (`tq1_0-pad128` is the exact one).
     UnsupportedTq1Export,
 }
 
@@ -334,8 +334,12 @@ pub const Q4_0_BLOCK_BYTES: usize = 18;
 /// How the ternary matrices are stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
-    /// Experimental stock TQ1_0, one scale per 256 values.
+    /// Experimental stock TQ1_0, one scale per 256 values. Read only: two Kitten groups share a scale, so it is lossy
+    /// for this model, and the converter does not write it.
     Tq1,
+    /// Stock `TQ1_0`, one Kitten group per 256-weight block with zeros in the second half (`Q8_K` activations), as
+    /// [`Layout::Tq2Pad`] does with `TQ2_0`. Exact: the block's scale is its group's.
+    Tq1Pad,
     /// `TQ2_0`, one Kitten group per 256-weight block with zeros in the second half (`Q8_K` activations).
     Tq2Pad,
     /// Stock `Q4_0`: each 32-weight block carries its group's scale as `d` and codes 7, 8, 9 for -1, 0, +1, which is
@@ -347,6 +351,7 @@ impl Layout {
     pub fn name(self) -> &'static str {
         match self {
             Layout::Tq1 => "tq1_0-256-experimental",
+            Layout::Tq1Pad => "tq1_0-pad128",
             Layout::Tq2Pad => "tq2_0-pad128",
             Layout::Q4 => "q4_0-g128",
         }
@@ -354,15 +359,21 @@ impl Layout {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "tq1_0-256-experimental" => Some(Layout::Tq1),
+            "tq1_0-pad128" | "tq1_0" => Some(Layout::Tq1Pad),
             "tq2_0-pad128" | "tq2_0" => Some(Layout::Tq2Pad),
             "q4_0-g128" | "q4_0" => Some(Layout::Q4),
             _ => None,
         }
     }
+    /// True for the layouts that store each 128-weight group in its own 256-weight block, so every activation
+    /// entering a ternary matrix is padded the same way at run time.
+    pub fn padded(self) -> bool {
+        matches!(self, Layout::Tq2Pad | Layout::Tq1Pad)
+    }
     /// The ggml type the layout's matrices are stored as.
     pub fn ggml_type(self) -> crate::gguf::GgmlType {
         match self {
-            Layout::Tq1 => crate::gguf::GgmlType::TQ1_0,
+            Layout::Tq1 | Layout::Tq1Pad => crate::gguf::GgmlType::TQ1_0,
             Layout::Tq2Pad => crate::gguf::GgmlType::TQ2_0,
             Layout::Q4 => crate::gguf::GgmlType::Q4_0,
         }
@@ -371,13 +382,14 @@ impl Layout {
     pub fn stored_cols(self, cols: usize) -> usize {
         match self {
             Layout::Tq1 => cols,
-            Layout::Tq2Pad => 2 * cols,
+            Layout::Tq1Pad | Layout::Tq2Pad => 2 * cols,
             Layout::Q4 => cols,
         }
     }
     pub fn row_bytes(self, cols: usize) -> usize {
         match self {
             Layout::Tq1 => cols / 256 * TQ1_0_BLOCK_BYTES,
+            Layout::Tq1Pad => cols / GROUP * TQ1_0_BLOCK_BYTES,
             Layout::Tq2Pad => cols / GROUP * TQ2_0_BLOCK_BYTES,
             Layout::Q4 => cols / 32 * Q4_0_BLOCK_BYTES,
         }
@@ -385,6 +397,7 @@ impl Layout {
     pub fn pack_row(self, row: &[f32], rule: Rule, strict: bool, out: &mut Vec<u8>) -> Result<(), Inexact> {
         match self {
             Layout::Tq1 => Err(Inexact::UnsupportedTq1Export),
+            Layout::Tq1Pad => pack_row_tq1(row, rule, strict, out),
             Layout::Tq2Pad => pack_row(row, rule, strict, out),
             Layout::Q4 => pack_row_q4(row, rule, strict, out),
         }
@@ -392,6 +405,7 @@ impl Layout {
     pub fn check_row(self, src: &[f32], packed: &[u8]) -> Result<(), String> {
         match self {
             Layout::Tq1 => Err("experimental TQ1 source readback is not supported".into()),
+            Layout::Tq1Pad => check_row_tq1(src, packed),
             Layout::Tq2Pad => check_row(src, packed),
             Layout::Q4 => check_row_q4(src, packed),
         }
@@ -399,6 +413,7 @@ impl Layout {
     pub fn dequantize_row(self, packed: &[u8], n: usize) -> Result<Vec<f32>, String> {
         match self {
             Layout::Tq1 => dequantize_tq1(packed, n),
+            Layout::Tq1Pad => dequantize_row_tq1(packed, n),
             Layout::Tq2Pad => dequantize_row(packed, n),
             Layout::Q4 => dequantize_row_q4(packed, n),
         }
@@ -606,5 +621,313 @@ mod q4_tests {
         )
         .unwrap();
         assert!(check_row_q4(&row, &bad).is_err());
+    }
+}
+
+/// Write ggml's TQ1_0 byte for `trits` (first trit most significant), as `quantize_row_tq1_0_ref` does: the base-3
+/// number of the codes `trit + 1`, multiplied by 3 once more for a four-trit field, scaled to a byte with a ceiling
+/// division by 243.
+fn tq1_byte(trits: impl Iterator<Item = i8>, four: bool) -> u8 {
+    let mut q: u16 = 0;
+    for t in trits {
+        q = q * 3 + (t + 1) as u16;
+    }
+    if four {
+        q *= 3;
+    }
+    (q * 256).div_ceil(243) as u8
+}
+
+/// Encode 256 trits as one TQ1_0 block's 52 code bytes, in ggml's order: `qs[m]` (m < 32) holds weights
+/// `m + 32 n`, `qs[32 + m]` (m < 16) weights `160 + m + 16 n`, both for n in 0..5; `qh[m]` weights `240 + m + 4 n`
+/// for n in 0..4.
+pub fn tq1_encode(t: &[i8; 256]) -> [u8; 52] {
+    let mut b = [0u8; 52];
+    for m in 0..32 {
+        b[m] = tq1_byte((0..5).map(|n| t[m + 32 * n]), false);
+    }
+    for m in 0..16 {
+        b[32 + m] = tq1_byte((0..5).map(|n| t[160 + m + 16 * n]), false);
+    }
+    for m in 0..4 {
+        b[48 + m] = tq1_byte((0..4).map(|n| t[240 + m + 4 * n]), true);
+    }
+    b
+}
+
+/// Decode one TQ1_0 block's 52 code bytes to 256 trits, as ggml's dequantization does, and refuse a block that is
+/// not the canonical encoding of the trits it decodes to (ggml would read such a byte as some trits, silently).
+pub fn tq1_decode(code: &[u8]) -> Result<[i8; 256], String> {
+    const POW: [u8; 5] = [1, 3, 9, 27, 81];
+    let digit = |byte: u8, p: u8| ((u16::from(byte.wrapping_mul(p)) * 3) >> 8) as i8 - 1;
+    let mut t = [0i8; 256];
+    for (n, &p) in POW.iter().enumerate() {
+        for m in 0..32 {
+            t[m + 32 * n] = digit(code[m], p);
+        }
+        for m in 0..16 {
+            t[160 + m + 16 * n] = digit(code[32 + m], p);
+        }
+    }
+    for (n, &p) in POW[..4].iter().enumerate() {
+        for m in 0..4 {
+            t[240 + m + 4 * n] = digit(code[48 + m], p);
+        }
+    }
+    if tq1_encode(&t)[..] != code[..52] {
+        return Err("a TQ1 code byte is not the encoding of its trits".into());
+    }
+    Ok(t)
+}
+
+/// Pack one row into padded `TQ1_0` blocks (`row.len() / 128` blocks of 54 bytes): a group's 128 trits, then 128
+/// zero trits, then the group's scale as fp16. Strict and planted modes as [`pack_row`].
+pub fn pack_row_tq1(row: &[f32], rule: Rule, strict: bool, out: &mut Vec<u8>) -> Result<(), Inexact> {
+    let (trits, scales) = quantize_row(row, rule);
+    for (g, chunk) in trits.chunks(GROUP).enumerate() {
+        let s = scales[g];
+        let h = match f32_to_f16_exact(s) {
+            Some(h) => h,
+            None if strict => return Err(Inexact::ScaleNotF16 { group: g, scale: s }),
+            None => half_round(s),
+        };
+        if strict {
+            for (j, &t) in chunk.iter().enumerate() {
+                let v = row[g * GROUP + j];
+                if f32::from(t) * s != v {
+                    return Err(Inexact::NotTernary {
+                        col: g * GROUP + j,
+                        value: v,
+                        scale: s,
+                    });
+                }
+            }
+        }
+        let mut block = [0i8; 256];
+        block[..GROUP].copy_from_slice(chunk);
+        out.extend_from_slice(&tq1_encode(&block));
+        out.extend_from_slice(&h.to_le_bytes());
+    }
+    Ok(())
+}
+
+/// Dequantize a padded `TQ1_0` row back to its `n` weights, through the same decoder as the 256-weight layout
+/// ([`dequantize_tq1`]), refusing a block whose padding half is not zero.
+pub fn dequantize_row_tq1(packed: &[u8], n: usize) -> Result<Vec<f32>, String> {
+    if n == 0 || n % GROUP != 0 || packed.len() != n / GROUP * TQ1_0_BLOCK_BYTES {
+        return Err("bad padded TQ1 row size".into());
+    }
+    let mut out = Vec::with_capacity(n);
+    for (b, blk) in packed.chunks_exact(TQ1_0_BLOCK_BYTES).enumerate() {
+        let v = dequantize_tq1(blk, 256)?;
+        if v[GROUP..].iter().any(|&x| x != 0.0) {
+            return Err(format!("block {b}: the padding half is not zero"));
+        }
+        out.extend_from_slice(&v[..GROUP]);
+    }
+    Ok(out)
+}
+
+/// The readback check for a padded `TQ1_0` row, as [`check_row`] is for padded `TQ2_0`: every block's code bytes
+/// are canonical, its padding half is 128 zero trits, its scale equals its group's absmax bit for bit, every trit
+/// equals the source's, and every weight read back (through [`dequantize_tq1`], the decoder the runtime uses)
+/// equals the source's value.
+pub fn check_row_tq1(src: &[f32], packed: &[u8]) -> Result<(), String> {
+    if packed.len() != src.len() / GROUP * TQ1_0_BLOCK_BYTES {
+        return Err("bad padded TQ1 row size".into());
+    }
+    let (trits, scales) = quantize_row(src, Rule::KITTEN);
+    for (b, &scale) in scales.iter().enumerate() {
+        let blk = &packed[b * TQ1_0_BLOCK_BYTES..(b + 1) * TQ1_0_BLOCK_BYTES];
+        let t = tq1_decode(blk).map_err(|e| format!("group {b}: {e}"))?;
+        if t[GROUP..].iter().any(|&x| x != 0) {
+            return Err(format!("group {b}: the padding half is not zero"));
+        }
+        let d = f16_to_f32(u16::from_le_bytes([blk[52], blk[53]]));
+        if d.to_bits() != scale.to_bits() {
+            return Err(format!("group {b}: scale {d} read back, source absmax {scale}"));
+        }
+        let values = dequantize_tq1(blk, 256).map_err(|e| format!("group {b}: {e}"))?;
+        for j in 0..GROUP {
+            let col = b * GROUP + j;
+            if t[j] != trits[col] {
+                return Err(format!("col {col}: trit {} read back, source {}", t[j], trits[col]));
+            }
+            // Value equality: -0.0 == 0.0, the one thing a trit cannot carry (DESIGN.md, parity level 1).
+            if values[j] != src[col] || values[j] != f32::from(t[j]) * d {
+                return Err(format!("col {col}: {} read back, source {}", values[j], src[col]));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tq1_pad_tests {
+    use super::tests::kitten_row;
+    use super::*;
+
+    #[test]
+    fn the_encoder_is_the_inverse_of_ggmls_decoder_on_the_reference_fixture() {
+        // The fixture's blocks were written by ggml; decoding then encoding each must give its bytes back.
+        let fixture = include_bytes!("../tests/fixtures/tq1-reference.bin");
+        for sample in fixture.chunks_exact(TQ1_0_BLOCK_BYTES + 1024) {
+            let (bytes, values) = sample.split_at(TQ1_0_BLOCK_BYTES);
+            let t = tq1_decode(bytes).unwrap();
+            assert_eq!(tq1_encode(&t)[..], bytes[..52]);
+            let d = f16_to_f32(u16::from_le_bytes([bytes[52], bytes[53]]));
+            for (i, v) in values.chunks_exact(4).enumerate() {
+                let want = f32::from_le_bytes([v[0], v[1], v[2], v[3]]);
+                assert_eq!((f32::from(t[i]) * d).to_bits(), want.to_bits(), "weight {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_trit_pattern_round_trips_at_every_position() {
+        // Each of the 52 code bytes at every one of its 3^5 (or 3^4) values.
+        for m in 0..52 {
+            let (first, step, n) = match m {
+                0..=31 => (m, 32, 5),
+                32..=47 => (160 + m - 32, 16, 5),
+                _ => (240 + m - 48, 4, 4),
+            };
+            for v in 0..3u32.pow(n) {
+                let mut t = [0i8; 256];
+                let mut x = v;
+                for k in (0..n as usize).rev() {
+                    t[first + step * k] = (x % 3) as i8 - 1;
+                    x /= 3;
+                }
+                let code = tq1_encode(&t);
+                assert_eq!(tq1_decode(&code).unwrap(), t, "byte {m} value {v}");
+                let deq = dequantize_tq1(&[&code[..], &0x3c00u16.to_le_bytes()[..]].concat(), 256).unwrap();
+                assert!(
+                    deq.iter().zip(&t).all(|(a, &b)| *a == f32::from(b)),
+                    "byte {m} value {v}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn kitten_rows_of_odd_lengths_pack_exactly_and_read_back() {
+        for (seed, n) in [(0, 128), (1, 384), (2, 2048), (3, 6144), (4, 1152)] {
+            let row = kitten_row(n, seed);
+            let mut out = Vec::new();
+            pack_row_tq1(&row, Rule::KITTEN, true, &mut out).unwrap();
+            assert_eq!(out.len(), n / GROUP * TQ1_0_BLOCK_BYTES);
+            assert_eq!(Layout::Tq1Pad.row_bytes(n), out.len());
+            check_row_tq1(&row, &out).unwrap();
+            let back = dequantize_row_tq1(&out, n).unwrap();
+            assert!(back.iter().zip(&row).all(|(a, b)| a == b));
+        }
+    }
+
+    #[test]
+    fn a_zero_group_and_an_all_negative_group_pack() {
+        let mut row = vec![0f32; 2 * GROUP];
+        row[GROUP..].fill(-0.5);
+        let mut out = Vec::new();
+        pack_row_tq1(&row, Rule::KITTEN, true, &mut out).unwrap();
+        check_row_tq1(&row, &out).unwrap();
+    }
+
+    #[test]
+    fn a_flipped_trit_is_red() {
+        let row = kitten_row(1024, 5);
+        let mut out = Vec::new();
+        pack_row_tq1(&row, Rule::KITTEN, true, &mut out).unwrap();
+        // Weight 3 of group 2, changed to another trit, the block re-encoded canonically.
+        let b = 2 * TQ1_0_BLOCK_BYTES;
+        let mut t = tq1_decode(&out[b..b + 52]).unwrap();
+        t[3] = if t[3] == 1 { 0 } else { 1 };
+        out[b..b + 52].copy_from_slice(&tq1_encode(&t));
+        let e = check_row_tq1(&row, &out).unwrap_err();
+        assert!(e.contains("col 259"), "{e}");
+    }
+
+    #[test]
+    fn a_wrong_scale_is_red() {
+        let row = kitten_row(1024, 6);
+        let mut out = Vec::new();
+        pack_row_tq1(&row, Rule::KITTEN, true, &mut out).unwrap();
+        out[3 * TQ1_0_BLOCK_BYTES + 52] ^= 1; // one f16 ulp
+        let e = check_row_tq1(&row, &out).unwrap_err();
+        assert!(e.contains("group 3: scale"), "{e}");
+    }
+
+    #[test]
+    fn a_nonzero_padding_trit_is_red_in_the_check_and_in_the_reader() {
+        let row = kitten_row(512, 8);
+        let mut out = Vec::new();
+        pack_row_tq1(&row, Rule::KITTEN, true, &mut out).unwrap();
+        let b = TQ1_0_BLOCK_BYTES;
+        let mut t = tq1_decode(&out[b..b + 52]).unwrap();
+        t[200] = 1;
+        out[b..b + 52].copy_from_slice(&tq1_encode(&t));
+        assert!(check_row_tq1(&row, &out).unwrap_err().contains("padding"));
+        assert!(dequantize_row_tq1(&out, 512).unwrap_err().contains("padding"));
+    }
+
+    #[test]
+    fn a_non_canonical_code_byte_is_red() {
+        // Byte 1 decodes (to five trits of -1) but the encoder writes those as 0: only 243 of the 256 byte values
+        // are codes.
+        let row = kitten_row(256, 9);
+        let mut out = Vec::new();
+        pack_row_tq1(&row, Rule::KITTEN, true, &mut out).unwrap();
+        out[0] = 1;
+        assert!(check_row_tq1(&row, &out).is_err());
+    }
+
+    #[test]
+    fn planted_group_256_and_absmean_are_red() {
+        let row = kitten_row(2048, 7);
+        let g256 = Rule {
+            group: 256,
+            scale: ScaleRule::AbsMax,
+        };
+        assert!(matches!(
+            pack_row_tq1(&row, g256, true, &mut Vec::new()),
+            Err(Inexact::NotTernary { .. })
+        ));
+        for wrong in [
+            g256,
+            Rule {
+                group: GROUP,
+                scale: ScaleRule::AbsMean,
+            },
+        ] {
+            let mut out = Vec::new();
+            pack_row_tq1(&row, wrong, false, &mut out).unwrap();
+            assert!(check_row_tq1(&row, &out).is_err(), "{wrong:?} must fail the readback");
+        }
+    }
+
+    #[test]
+    fn a_non_ternary_row_and_an_inexact_scale_are_refused() {
+        let mut row = kitten_row(256, 3);
+        row[5] = row[0] * 0.5;
+        assert!(matches!(
+            pack_row_tq1(&row, Rule::KITTEN, true, &mut Vec::new()),
+            Err(Inexact::NotTernary { col: 5, .. })
+        ));
+        let mut row = vec![0f32; GROUP];
+        row[0] = 1.0 + f32::EPSILON;
+        assert!(matches!(
+            pack_row_tq1(&row, Rule::KITTEN, true, &mut Vec::new()),
+            Err(Inexact::ScaleNotF16 { .. })
+        ));
+    }
+
+    #[test]
+    fn the_layout_names_parse() {
+        assert_eq!(Layout::parse("tq1_0"), Some(Layout::Tq1Pad));
+        assert_eq!(Layout::parse("tq1_0-pad128"), Some(Layout::Tq1Pad));
+        assert_eq!(Layout::parse("tq1_0-256-experimental"), Some(Layout::Tq1));
+        assert_eq!(Layout::Tq1Pad.stored_cols(1024), 2048);
+        assert!(Layout::Tq1Pad.padded() && Layout::Tq2Pad.padded());
+        assert!(!Layout::Tq1.padded() && !Layout::Q4.padded());
     }
 }

@@ -5,7 +5,8 @@
 //! the redraw, the joins and the level), FLAC output ([`flac`]), in-process tensor hooks ([`hooks`]), and the
 //! instrument events with the trace format, replay and the trace-identity check ([`trace`]), streaming output
 //! ([`stream`], fed by [`pipeline::render_story_streamed`]), and the instruments' report envelope with its merger
-//! ([`report`]). The provenance manifest comes next.
+//! ([`report`]), and the steering a request can carry with its safetensors reader ([`steer`]). The provenance manifest
+//! comes next.
 //!
 //! The core holds the rules and no protocol number: the ceilings, the pause table, the judge bars and the level
 //! target come from the [`profile::Profile`] the engine declares.
@@ -23,6 +24,7 @@ pub mod pipeline;
 pub mod profile;
 pub mod report;
 pub mod seed;
+pub mod steer;
 pub mod stream;
 pub mod text;
 pub mod trace;

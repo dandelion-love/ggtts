@@ -1,0 +1,45 @@
+[package]
+name = "ggtts-py"
+description = "ggtts for Python: load an engine and render, with the settings of the C-ABI, as the `ggtts` module"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/dandelion-love/ggtts"
+rust-version = "1.88"
+publish = false
+
+# Its own workspace, so the main workspace's builds and tests never need a Python interpreter or libpython: the
+# Python job builds and tests this crate (.github/workflows/ci.yml, job `python`).
+[workspace]
+
+[lib]
+name = "ggtts_py"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ggtts-core = { path = "../ggtts-core" }
+ggtts-fake = { path = "../ggtts-fake" }
+ggtts-models = { path = "../ggtts-models" }
+ggtts-qwen3-tts = { path = "../ggtts-qwen3-tts" }
+ggtts-kitten = { path = "../ggtts-kitten" }
+# The stable ABI from Python 3.9 on: one wheel per platform serves every later Python.
+pyo3 = { version = "0.25.1", features = ["abi3-py39"], optional = true }
+
+[dev-dependencies]
+# The error codes are the C-ABI's; a test holds them equal.
+ggtts-ffi = { path = "../ggtts-ffi" }
+
+[features]
+default = []
+# The Python module (maturin turns it on, with pyo3/extension-module). Without it the crate is the plain-Rust core,
+# which `cargo test` runs with no Python at all.
+python = ["dep:pyo3"]
+# The engines over ggml; without it only the fake engine loads, and the others report that the build has none.
+ggml = ["ggtts-qwen3-tts/ggml", "ggtts-kitten/ggml"]
+# The CUDA backend as well, for device="cuda".
+cuda = ["ggml", "ggtts-qwen3-tts/cuda", "ggtts-kitten/cuda"]
+# The ggml bindings generated at build time, for targets with no committed bindings (Windows). Needs libclang.
+bindgen = ["ggml", "ggtts-qwen3-tts/bindgen"]
+# Test-only engines: `panic` (generating panics) and `slow` (each chunk takes a quarter second), for the panic and
+# GIL tests.
+plant = []

@@ -13,8 +13,9 @@ members = [
     "instruments/templates/rust/event",
     "instruments/templates/rust/tensor",
 ]
-# A spike with its own workspace; it builds ggml and needs libclang, so the main CI jobs leave it out.
-exclude = ["spike/layer0"]
+# A spike with its own workspace; it builds ggml and needs libclang, so the main CI jobs leave it out. The Python
+# binding is its own workspace too, so the main builds never need Python; the `python` CI job builds and tests it.
+exclude = ["spike/layer0", "crates/ggtts-py"]
 
 [workspace.package]
 version = "0.0.1"

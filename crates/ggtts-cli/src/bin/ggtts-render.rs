@@ -22,6 +22,9 @@
 //! prompt as the reference runtime places it. A Qwen3-TTS custom_voice checkpoint of 1.7B or a voice_design
 //! checkpoint takes one; any other checkpoint, and any other engine, refuses it before rendering. An empty
 //! instruction is no instruction: the output is the same as without the flag.
+//! `--threads` (default 4) is the CPU threads asked for. Before each graph the count is capped at the CPUs this process
+//! may use now, re-read at most every 100 ms, and the first time the cap lowers it ggtts says so once on stderr.
+//! On Windows the cap sees only the processor count, not affinity or job objects.
 //! `--engine auto` (the default) picks the engine from the model's `general.architecture`. `--text` renders one
 //! request at one seed (default 20260905). `--story` reads a story file (title line, then one paragraph per line)
 //! and renders it on the core's story path. For stories `--trace` writes a complete ggtts-trace/2 event stream;

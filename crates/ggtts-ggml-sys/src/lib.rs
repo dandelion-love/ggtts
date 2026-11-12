@@ -24,34 +24,75 @@ mod raw {
 #[cfg(feature = "ggml")]
 pub use raw::*;
 
-/// The CPU threads to run a graph with now: `configured`, but never more than `allowed`, the CPUs this process may
-/// run on at this moment, and at least one.
+/// The CPU threads to run a graph with now: `configured`, but never more than `allowed`, the CPUs that may be used
+/// at this moment. A `configured` of 0 or less is returned as it is: unset, so the count the engine was loaded with
+/// stands, as before this cap existed.
 ///
 /// More threads than allowed CPUs does not just waste them: ggml's threads wait for each other at every step, so a
 /// thread the kernel has parked stalls the rest. Measured on an Android phone whose off-screen app is confined to
 /// three cores: four threads did not finish a line in 400 s that three threads rendered in 87 s.
 pub fn cap_threads(configured: i32, allowed: usize) -> i32 {
-    configured.min(allowed.min(i32::MAX as usize) as i32).max(1)
+    if configured <= 0 {
+        return configured;
+    }
+    configured.min(allowed.clamp(1, i32::MAX as usize) as i32)
 }
 
-/// [`cap_threads`] against the CPUs this process may run on now. On Linux and Android that is the CPU affinity
-/// mask, which follows the process's cpuset (Android moves an app to a smaller one when it leaves the screen).
+/// The CPUs the calling thread may run on, as `std::thread::available_parallelism` reports them, read afresh.
+///
+/// * **Linux and Android:** the calling thread's affinity mask (`sched_getaffinity(0)`), and cgroup CPU quotas. A
+///   cpuset applies to every thread of a process, so on Android, where an app is moved to a smaller cpuset when it
+///   leaves the screen, the render thread's mask follows it.
+/// * **Windows:** the number of logical processors (`GetSystemInfo`). It does **not** see affinity or job-object
+///   limits, so on Windows this cap never lowers the count below the machine's processors.
+/// * **macOS:** the number of logical CPUs.
+pub fn allowed_cpus_now() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+}
+
+/// [`allowed_cpus_now`], re-read at most every 100 ms: it re-reads cgroup files (about 23 us a call), and a render
+/// computes many graphs a second. A change of cpuset is seen within 100 ms.
+pub fn allowed_cpus() -> usize {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static LAST: Mutex<Option<(Instant, usize)>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, n)) = *last {
+        if at.elapsed() < Duration::from_millis(100) {
+            return n;
+        }
+    }
+    let n = allowed_cpus_now();
+    *last = Some((Instant::now(), n));
+    n
+}
+
+/// [`cap_threads`] against [`allowed_cpus`].
 pub fn threads_now(configured: i32) -> i32 {
-    cap_threads(
-        configured,
-        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
-    )
+    cap_threads(configured, allowed_cpus())
 }
 
 /// Before a graph compute: set every CPU backend on `sched` to [`threads_now`]`(configured)`. The count can change
 /// between computes, because the CPUs a process may use can change while it runs. The thread count changes speed
-/// only: the engines' output is the same at any count.
+/// only: the engines' output is the same at any count. A `configured` of 0 or less leaves the backends as loaded.
+/// The first time the cap lowers the count, it says so once on stderr.
 ///
 /// # Safety
 /// `sched` must be a live scheduler.
 #[cfg(feature = "ggml")]
 pub unsafe fn cap_sched_threads(sched: ggml_backend_sched_t, configured: i32) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if configured <= 0 {
+        return;
+    }
     let n = threads_now(configured);
+    if n < configured && !WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "ggtts: {configured} CPU threads were asked for, but only {n} CPUs may be used now; running {n} \
+             (more threads than CPUs would stall). Said once."
+        );
+    }
     for i in 0..ggml_backend_sched_get_n_backends(sched) {
         let b = ggml_backend_sched_get_backend(sched, i);
         if !b.is_null() && ggml_backend_is_cpu(b) {
@@ -90,15 +131,32 @@ mod tests {
         assert_eq!(cap_threads(4, 8), 4, "room: the configured count");
         assert_eq!(cap_threads(4, 3), 3, "an off-screen app on three cores");
         assert_eq!(cap_threads(4, 1), 1);
-        assert_eq!(cap_threads(0, 8), 1, "at least one");
-        assert_eq!(cap_threads(-2, 8), 1);
+        assert_eq!(cap_threads(4, 0), 1, "at least one");
+        assert_eq!(cap_threads(0, 8), 0, "unset stays unset: the loaded count stands");
+        assert_eq!(cap_threads(-2, 8), -2);
         assert_eq!(cap_threads(8, usize::MAX), 8);
-        let allowed = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-        assert_eq!(
-            threads_now(i32::MAX) as usize,
-            allowed.min(i32::MAX as usize),
-            "never more than allowed"
-        );
+    }
+
+    /// A thread confined to one CPU must read one allowed CPU, so the cap gives it one thread. This is the case the
+    /// cap exists for, made on any Linux machine (CI included) by restricting this test's own thread: a version that
+    /// read the machine's processor count instead of the thread's affinity would fail here.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn a_thread_confined_to_one_cpu_is_capped_to_one_thread() {
+        extern "C" {
+            fn sched_setaffinity(pid: i32, cpusetsize: usize, mask: *const u64) -> i32;
+        }
+        let read = std::thread::spawn(|| {
+            // CPU 0 only, for this spawned thread (pid 0 is the calling thread); other tests are not affected.
+            let mut mask = [0u64; 16];
+            mask[0] = 1;
+            let rc = unsafe { sched_setaffinity(0, std::mem::size_of_val(&mask), mask.as_ptr()) };
+            assert_eq!(rc, 0, "sched_setaffinity");
+            (allowed_cpus_now(), cap_threads(8, allowed_cpus_now()))
+        })
+        .join()
+        .unwrap();
+        assert_eq!(read, (1, 1), "one allowed CPU, so one thread");
     }
 
     /// The cap on a live scheduler whose CPU backend was configured for far more threads than this process may use:

@@ -86,7 +86,7 @@ ggtts.load(engine="qwen3-tts", model=None, codec=None, voice=None, speaker=None,
 | `speaker` | A Qwen3-TTS speaker the model has, such as `"hk_voice_777"`. Case is ignored. |
 | `instruction` | A Qwen3-TTS style instruction for every chunk, such as `"Speak slowly and softly."` |
 | `device` | `"cpu"` or `"cuda"`. See [CUDA](#cuda). |
-| `threads` | CPU threads. None means 4. |
+| `threads` | CPU threads. None means 4. Before each graph the count is capped at the CPUs the process may use: never more than the CPUs this process may use at that moment (re-read before each graph, at most every 100 ms); when that lowers the count, ggtts says so once on stderr. On Windows the cap sees only the machine's processor count, not affinity or job-object limits. |
 | `offline` | True: never download. A default model file missing from the cache is then an error naming it and its URL. |
 | `progress` | A function called with each download message. By default they go to stderr. |
 

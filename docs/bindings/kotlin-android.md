@@ -137,7 +137,7 @@ In an app, `load` and `render` block: call them off the main thread. To play a `
 | `model` | null | The model GGUF path: Qwen3-TTS's talker, or Kitten-TTS 2's LM. Null for Qwen3-TTS means the default model (below). |
 | `codec` | null | The audio decoder GGUF: Qwen3-TTS's 12 Hz codec, or Kitten-TTS 2's S3Gen GGUF. Null for Qwen3-TTS means the default codec. |
 | `voice` | null | Kitten-TTS 2's prepared reference voice (a JSON file). |
-| `threads` | 4 | CPU threads. 0 or less means 4. |
+| `threads` | 4 | CPU threads. 0 or less means 4. Before each graph the count is capped at the CPUs the app may use, so an app moved to the little cores when it leaves the screen does not stall; the first cap is said once on stderr, which an Android app does not show in logcat. |
 | `speaker` | null | A Qwen3-TTS speaker the model has, such as `"hk_voice_777"`. Case is ignored. |
 | `instruction` | null | A Qwen3-TTS style instruction for every chunk, such as `"Speak slowly and softly."` |
 | `cacheDir` | null | Where the default model files are cached. An app passes its own (below). |

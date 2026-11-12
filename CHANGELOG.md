@@ -11,6 +11,18 @@ that a merge places under a released heading is caught.
 
 ## Unreleased
 
+### Documented
+
+- **How to use each binding: [docs/bindings](docs/bindings/README.md)**
+  ([#192](https://github.com/dandelion-love/ggtts/issues/192)). One page each for the C library, Kotlin on Android
+  and Python, and a table comparing them (for one, the C and Kotlin bindings download the default model only when
+  asked, while Python downloads it unless `offline=True`). Each page shows how to get the binding and a first render
+  that works, then covers loading options, streaming and stopping, every error code and what to do about it,
+  threads, freeing, Kitten-TTS 2 and platform notes. Every code example is a file CI compiles and runs on the fake engine. The README's
+  C library and Python sections, `docs/android/binding-api.md` and `crates/ggtts-py/README.md` now point there.
+  There is still no published Android package: the Kotlin page says how to build the class and its library into an
+  app.
+
 ## v0.1.0-rc.11 (2026-11-12)
 
 ### Added

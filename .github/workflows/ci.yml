@@ -71,6 +71,11 @@ jobs:
           cat planted-notices.err
           grep -F "no notice for linked crate pyo3 " planted-notices.err
           rm planted-notices.txt planted-notices.err
+      - name: Every C, Python and Kotlin block in docs/bindings is a copy of the example file CI runs (planted pages are red)
+        run: |
+          set -eu
+          python3 scripts/check_doc_examples.py --self-test
+          python3 scripts/check_doc_examples.py
       - name: Fail if Cargo.lock was missing
         if: always()
         run: test -z "${LOCK_MISSING:-}"
@@ -372,6 +377,8 @@ jobs:
           cat smoke.err
           grep -F "ffi smoke: ok: ABI version" smoke.err
           grep -F "a C program built against include/ggtts.h and lib/ loaded and rendered on the fake engine" smoke.err
+      - name: The binding docs' C examples compile against the packed include/ and lib/ and run on the fake engine
+        run: scripts/c_examples.sh dist/ggtts-ci
       - name: Archive it as release.yml does (a .zip on windows) and smoke the archive by its relative path
         run: |
           set -eu

@@ -71,6 +71,26 @@ PYTHON_PATHS = {"scripts/python_wheel.sh", "scripts/check_python_lock.py", "scri
                 ".github/workflows/release.yml"}
 
 
+# The binding docs (docs/bindings) and the example files their code blocks copy. The check job holds every block to
+# its file on every run (scripts/check_doc_examples.py); these jobs compile and run the files on the fake engine: the C
+# examples in package-smoke (scripts/c_examples.sh, against the packed lib/ and include/), the Kotlin ones in binding
+# (scripts/kotlin_binding_test.sh), the Python ones in python (crates/ggtts-py/tests/test_doc_examples.py). An example
+# selects its own language's job; a page, or anything else there, selects all three.
+DOC_BINDINGS = "docs/bindings/"
+DOC_EXAMPLE_JOBS = {"docs/bindings/examples/c/": "package", "docs/bindings/examples/kotlin/": "binding",
+                    "docs/bindings/examples/python/": "python"}
+
+
+def doc_bindings_jobs(path):
+    """The jobs that run the binding docs' examples a change to `path` can break (empty outside docs/bindings)."""
+    if not path.startswith(DOC_BINDINGS):
+        return set()
+    for prefix, job in DOC_EXAMPLE_JOBS.items():
+        if path.startswith(prefix):
+            return {job}
+    return {"package", "binding", "python"}
+
+
 def python_path(path):
     """A path whose change can break the Python binding's build or behaviour."""
     if path.startswith(PYTHON_CRATE) or path in PYTHON_PATHS:
@@ -234,6 +254,9 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
             continue
         if path in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".gitmodules"):
             return set(JOBS)
+        selected.update(doc_bindings_jobs(path))
+        if path == "scripts/c_examples.sh":
+            selected.add("package")
         if python_path(path):
             selected.add("python")
             if path.startswith(PYTHON_CRATE):

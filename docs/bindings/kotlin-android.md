@@ -7,9 +7,15 @@ desktop JVM. [All bindings](README.md) compares it with C and Python.
 
 ## Get it
 
-**No Android package is published.** There is no AAR, no Maven artifact and no Gradle project in this repository, and
-the C library in the release archives does not export the JNI entry points. You build two pieces from source and add
-them to your app:
+**No Android package is published**: there is no Maven artifact, and the C library in the release archives does not
+export the JNI entry points. There are two ways to get it.
+
+**The AAR.** [`android/`](../../android/README.md) is a Gradle project. Its `ggtts` module packs `Ggtts.kt` and the
+arm64-v8a library into an AAR, and its `demo` module is a one-screen app that uses it.
+`scripts/android_build.sh app OUT_DIR` builds both, and CI's `android-arm64` job uploads them as its artifact. Add the
+AAR to your app as a file dependency.
+
+**By hand.** Build two pieces from source and add them to your app:
 
 1. **The Kotlin class.** Copy `Ggtts.kt` into your app as it is. Keep its package, `ggtts`: the JNI function names
    (`Java_ggtts_Native_*`) are tied to the package and class names.
@@ -33,8 +39,7 @@ cargo ndk -t arm64-v8a --platform 24 build --release --locked -p ggtts-ffi -p gg
 # the library: target/aarch64-linux-android/release/libggtts_ffi.so
 ```
 
-CI does not build this library for Android; it builds `ggtts-render` that way, and runs the binding against a host
-build (below). Check what the library needs with the NDK's `llvm-readelf -d libggtts_ffi.so`, and ship any `NEEDED`
+CI builds this library for Android inside the AAR (above), and also runs the binding against a host build (below). Check what the library needs with the NDK's `llvm-readelf -d libggtts_ffi.so`, and ship any `NEEDED`
 library that is not an Android system library beside it. For `ggtts-render` that is the NDK's `libc++_shared.so`,
 which `scripts/android_build.sh` copies.
 

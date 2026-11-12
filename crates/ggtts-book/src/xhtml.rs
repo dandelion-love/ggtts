@@ -4,8 +4,9 @@
 //!   text before it and starts a new block. `<br/>` ends a block too, so a line of verse is its own paragraph.
 //! * Not read: `head`, `script`, `style`, `noscript`, `template`, `svg`, `math`, ruby annotations (`rt`, `rp`),
 //!   note references and the notes themselves (`epub:type` `noteref`, `footnote`, `endnote`, `rearnote` and their
-//!   plurals, or the matching `doc-*` roles), page-break markers, and a `<sup>` holding only a marker such as `12`
-//!   or `*`.
+//!   plurals, or the matching `doc-*` roles), page-break markers, and a `<sup>` that is a note marker: one that
+//!   links somewhere, or holds only digits or note symbols and does not follow a letter or digit directly. An
+//!   exponent (`mc<sup>2</sup>`, `10<sup>6</sup>`) is read.
 //! * Whitespace runs become one space, and a space between two CJK characters (or full-width punctuation) is
 //!   dropped, so a line break inside Chinese text does not become a pause. Soft hyphens and zero-width spaces are
 //!   removed.
@@ -127,12 +128,30 @@ struct State<'a> {
 }
 
 impl State<'_> {
+    /// Whether a `<sup>` is a note marker (not read) rather than part of the text (an exponent, read).
+    ///
+    /// It is a marker when it links somewhere (an `<a href>` inside), or when it holds only digits or note symbols
+    /// and does not follow a letter or digit directly: `wool.<sup>2</sup>`, `<sup>*</sup>` at a paragraph's start.
+    /// Digits right after a letter or digit, with no link, are an exponent and are read: `mc<sup>2</sup>`,
+    /// `10<sup>6</sup>`. A word's note marker without a link (`shown<sup>3</sup>`) is read too; that is the price of
+    /// keeping exponents, and books mostly link their notes.
+    fn note_marker(&self, sup: &Element) -> bool {
+        if sup.find_all("a").iter().any(|a| a.attr("href").is_some()) {
+            return true;
+        }
+        if !is_marker(&sup.text()) {
+            return false;
+        }
+        let before = self.buf.chars().next_back();
+        !before.is_some_and(char::is_alphanumeric)
+    }
+
     fn walk(&mut self, el: &Element) {
         let local = el.local.as_str();
         if NOT_READ.contains(&local)
             || el.epub_types().iter().any(|t| NOTE_TYPES.contains(&t.as_str()))
             || el.attr("role").is_some_and(|r| NOTE_ROLES.contains(&r))
-            || (local == "sup" && is_marker(&el.text()))
+            || (local == "sup" && self.note_marker(el))
         {
             return;
         }
@@ -239,6 +258,39 @@ mod tests {
         assert_eq!(normalize("今日\n  好熱。\n我哋"), "今日好熱。我哋");
         assert_eq!(normalize("今日 hot 好"), "今日 hot 好");
         assert_eq!(normalize("hy\u{ad}phen\u{200b}ated"), "hyphenated");
+    }
+
+    fn paragraphs(body: &str) -> Vec<String> {
+        let doc = format!("<html><body>{body}</body></html>");
+        let root = crate::dom::parse(doc.as_bytes(), crate::archive::MAX_DEPTH).unwrap();
+        extract(&root)
+            .items
+            .into_iter()
+            .filter_map(|i| match i {
+                Item::Block(b) => Some(b.text().to_string()),
+                Item::Anchor { .. } => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn exponents_are_read_and_note_markers_are_not() {
+        // An exponent, right after a letter or digit, with no link: read.
+        assert_eq!(paragraphs("<p>E = mc<sup>2</sup>.</p>"), ["E = mc2."]);
+        assert_eq!(paragraphs("<p>About 10<sup>6</sup> stars.</p>"), ["About 106 stars."]);
+        // A marker after punctuation or a space, or at the start: not read.
+        assert_eq!(
+            paragraphs("<p>Thick as wool.<sup>2</sup> Then rain.</p>"),
+            ["Thick as wool. Then rain."]
+        );
+        assert_eq!(paragraphs("<p><sup>*</sup>Starred.</p>"), ["Starred."]);
+        // A superscript that links somewhere is a note marker, whatever precedes it.
+        assert_eq!(
+            paragraphs("<p>As shown<sup><a href=\"#n3\">3</a></sup> here.</p>"),
+            ["As shown here."]
+        );
+        // Text that is not a marker is always read.
+        assert_eq!(paragraphs("<p>The 1<sup>st</sup> keeper.</p>"), ["The 1st keeper."]);
     }
 
     #[test]

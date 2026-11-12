@@ -71,8 +71,10 @@ copyright page, table of contents, index, colophon, imprint, errata and the like
   declares (`<!ENTITY c "Company">`) are decoded. A DTD entity's value is taken as written, never expanded again,
   so nested entities cannot multiply; external (`SYSTEM`, `PUBLIC`) and parameter entities are never fetched or
   used. A paragraph holding an entity nothing declares keeps its text as written.
-* A `<sup>` holding only digits or note symbols is treated as a note marker and not read. The trade-off: an
-  exponent such as `mc<sup>2</sup>` loses its `2` (issue 214).
+* A `<sup>` is a note marker, and not read, when it links somewhere (an `<a href>` inside) or holds only digits or
+  note symbols and does not follow a letter or digit directly (`wool.<sup>2</sup>`). Digits right after a letter
+  or digit with no link are an exponent and are read: `mc<sup>2</sup>` reads as `mc2`, `10<sup>6</sup>` as `106`.
+  The price: a note marker without a link straight after a word (`shown<sup>3</sup>`) is read too.
 * Whitespace runs become one space. A space between two CJK characters or full-width punctuation is dropped, so a line
   break in the middle of Chinese text does not become a pause. Soft hyphens and zero-width spaces are removed.
 * Content files must be UTF-8 and well-formed XML, nested no deeper than 256 elements.

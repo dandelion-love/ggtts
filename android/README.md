@@ -106,8 +106,19 @@ the model), the screen shows the library's error, for example `ggtts error -3: .
 press Speak. A model the phone cannot hold in memory may still stop the app; Kitten-TTS 2 at Q4_0 is the smaller of
 the two.
 
-Each line is saved to `/sdcard/Android/data/ggtts.demo/files/out/<engine>.wav` (16-bit) and played. The app logs to
-logcat under the tag `ggtts-demo`: what it loaded, how long the render took, and its real-time factor.
+**Speaking streams.** The line plays chunk by chunk: each chunk starts playing as soon as it is rendered, while the
+next renders. On a phone, a chunk takes tens of seconds (the engines run at 7 to 13 times slower than real time on
+a Snapdragon 8 Gen 2), so the first sound comes after the first chunk, not after the whole line. Stop silences
+playback at once and ends the render after the chunk in progress. The status line shows which chunk is ready and
+when the first audio came.
+
+**CPU threads** can be 2, 4, 6 or 8 (default 4). On the phone this was measured on, 4 to 8 threads rendered at
+about the same speed within thermal drift, 2 was slower, and the audio was bit-identical at every count.
+
+When the line is done, the whole read is saved to `/sdcard/Android/data/ggtts.demo/files/out/<engine>.wav`
+(16-bit). The streamed pieces are the render's samples before its final level step, so the saved file and what was
+heard can differ slightly in loudness. The app logs to logcat under the tag `ggtts-demo`: what it loaded, the time
+to first audio, how long the render took, and its real-time factor.
 
 ## Driving the demo from adb
 
@@ -119,7 +130,8 @@ launcher), so any app on the phone could send it these extras; a release build i
 adb install -r dist/android-arm64/ggtts-demo-debug.apk
 adb shell am start -n ggtts.demo/.MainActivity --es engine qwen3-tts \
     --es model qwen-talker-hk-cantonese-cc0-v0.0.5-q8_0.gguf --es codec qwen-tokenizer-12hz-q8_0.gguf \
-    --es speaker hk_voice_343 --ez speak true
+    --es speaker hk_voice_343 --ei threads 4 --ez speak true
+adb shell am start -n ggtts.demo/.MainActivity --ez stop true          # presses Stop
 adb logcat -s ggtts-demo
 adb pull /sdcard/Android/data/ggtts.demo/files/out/qwen3-tts.wav
 ```

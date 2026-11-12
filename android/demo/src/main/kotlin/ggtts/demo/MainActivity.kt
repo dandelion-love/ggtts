@@ -10,6 +10,7 @@
 package ggtts.demo
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.graphics.Color
@@ -81,6 +82,11 @@ class MainActivity : Activity(), DemoView {
             background = { worker.execute(it) },
             main = { handler.post(it) },
             log = { Log.i(TAG, it) },
+            memory = {
+                val info = ActivityManager.MemoryInfo()
+                (getSystemService(ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(info)
+                info.availMem to info.lowMemory
+            },
         )
         setContentView(layout())
         refreshFiles()
@@ -135,9 +141,16 @@ class MainActivity : Activity(), DemoView {
         ENGINES.forEachIndexed { i, name ->
             engines.addView(RadioButton(this).apply { id = 100 + i; text = name })
         }
-        engines.setOnCheckedChangeListener { _, id -> text.setText(LINES[ENGINES[id - 100]]) }
+        // What the chosen engine costs, said before anyone waits for it.
+        val cost = TextView(this).apply { setPadding(0, 0, 0, pad / 2) }
+        engines.setOnCheckedChangeListener { _, id ->
+            val engine = ENGINES[id - 100]
+            text.setText(LINES[engine])
+            cost.text = EngineCosts.describe(engine)
+        }
         col.addView(label("Engine"))
         col.addView(engines)
+        col.addView(cost)
 
         model = Spinner(this); codec = Spinner(this); voice = Spinner(this)
         col.addView(label("Model (Qwen3-TTS talker, or Kitten-TTS 2 LM)")); col.addView(model)

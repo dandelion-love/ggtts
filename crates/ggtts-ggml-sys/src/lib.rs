@@ -99,18 +99,19 @@ pub fn warn_once(configured: i32, running: i32, said: &std::sync::atomic::Atomic
 /// Before a graph compute: set every CPU backend on `sched` to [`threads_now`]`(configured)`. The count can change
 /// between computes, because the CPUs a process may use can change while it runs. The thread count changes speed
 /// only: the engines' output is the same at any count. A `configured` of 0 or less leaves the backends as loaded.
-/// The first time the cap lowers the count, it says so once on stderr.
+/// The first time the cap lowers the count, it says so once on stderr. Returns whether this call said so.
 ///
 /// # Safety
 /// `sched` must be a live scheduler.
 #[cfg(feature = "ggml")]
-pub unsafe fn cap_sched_threads(sched: ggml_backend_sched_t, configured: i32) {
+pub unsafe fn cap_sched_threads(sched: ggml_backend_sched_t, configured: i32) -> bool {
     static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if configured <= 0 {
-        return;
+        return false;
     }
     let n = threads_now(configured);
-    if warn_once(configured, n, &WARNED) {
+    let said = warn_once(configured, n, &WARNED);
+    if said {
         eprintln!(
             "ggtts: {configured} CPU threads were asked for, but only {n} CPUs may be used now; running {n} \
              (more threads than CPUs would stall). Said once."
@@ -122,6 +123,7 @@ pub unsafe fn cap_sched_threads(sched: ggml_backend_sched_t, configured: i32) {
             ggml_backend_cpu_set_n_threads(b, n);
         }
     }
+    said
 }
 
 /// `GGML_PAD(x, n)`: a function-like macro, which bindgen does not translate. `n` must be a power of two.
@@ -164,23 +166,55 @@ mod tests {
     /// the engines use: the fresh read, the per-thread cached one, and `threads_now`. This is the case the cap exists
     /// for, made on any Linux machine (CI included) by restricting this test's own thread: a reader of the machine's
     /// processor count, a cache shared across threads, or a `threads_now` that skips the cap would fail here.
+    ///
+    /// The cache is warmed before the thread is confined, then read again past its TTL, so a cache that never
+    /// refreshes fails too. The thread is confined to one CPU it is already allowed (the lowest in its own mask),
+    /// not a fixed CPU 0, which a runner's cpuset may exclude; if the kernel refuses, the test says so and skips.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn a_thread_confined_to_one_cpu_is_capped_to_one_thread() {
         extern "C" {
+            fn sched_getaffinity(pid: i32, cpusetsize: usize, mask: *mut u64) -> i32;
             fn sched_setaffinity(pid: i32, cpusetsize: usize, mask: *const u64) -> i32;
         }
         let read = std::thread::spawn(|| {
-            // CPU 0 only, for this spawned thread (pid 0 is the calling thread); other tests are not affected.
+            // pid 0 is the calling thread: only this spawned thread is confined; other tests are not affected.
             let mut mask = [0u64; 16];
-            mask[0] = 1;
-            let rc = unsafe { sched_setaffinity(0, std::mem::size_of_val(&mask), mask.as_ptr()) };
-            assert_eq!(rc, 0, "sched_setaffinity");
-            (allowed_cpus_now(), allowed_cpus(), threads_now(8), threads_now(0))
+            let size = std::mem::size_of_val(&mask);
+            if unsafe { sched_getaffinity(0, size, mask.as_mut_ptr()) } != 0 {
+                eprintln!(
+                    "skipped: sched_getaffinity refused ({})",
+                    std::io::Error::last_os_error()
+                );
+                return None;
+            }
+            let before = allowed_cpus(); // warms this thread's cache
+            let Some(word) = mask.iter().position(|w| *w != 0) else {
+                eprintln!("skipped: the thread's affinity mask is empty");
+                return None;
+            };
+            let mut one = [0u64; 16];
+            one[word] = 1u64 << mask[word].trailing_zeros();
+            if unsafe { sched_setaffinity(0, size, one.as_ptr()) } != 0 {
+                eprintln!(
+                    "skipped: sched_setaffinity refused ({})",
+                    std::io::Error::last_os_error()
+                );
+                return None;
+            }
+            std::thread::sleep(ALLOWED_CPUS_TTL + std::time::Duration::from_millis(20));
+            Some((
+                before,
+                (allowed_cpus_now(), allowed_cpus(), threads_now(8), threads_now(0)),
+            ))
         })
         .join()
         .unwrap();
+        let Some((before, read)) = read else { return };
         assert_eq!(read, (1, 1, 1, 0), "one allowed CPU, so one thread; unset stays unset");
+        if before == 1 {
+            eprintln!("note: this machine allows one CPU already, so the stale-cache case is not exercised here");
+        }
     }
 
     /// The cache's rule: a read younger than the TTL is reused, an older one is read again.
@@ -244,7 +278,12 @@ mod tests {
             let bv = vec![0.5f32; 1024];
             ggml_backend_tensor_set(a, av.as_ptr().cast(), 0, 4096);
             ggml_backend_tensor_set(b, bv.as_ptr().cast(), 0, 4096);
-            cap_sched_threads(sched, 64);
+            // The only caller in this test process, so the once-only warning is this test's to see. On a machine
+            // that allows 64 CPUs or more there is nothing to lower, so nothing to say.
+            let lowers = allowed_cpus() < 64;
+            assert_eq!(cap_sched_threads(sched, 64), lowers, "the first lowering is said");
+            assert!(!cap_sched_threads(sched, 64), "and said once");
+            assert!(!cap_sched_threads(sched, 0), "unset: nothing to say");
             assert_eq!(ggml_backend_sched_graph_compute(sched, gf), GGML_STATUS_SUCCESS);
             let mut out = vec![0f32; 1024];
             ggml_backend_tensor_get(c, out.as_mut_ptr().cast(), 0, 4096);

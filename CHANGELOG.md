@@ -28,6 +28,10 @@ that a merge places under a released heading is caught.
 - **The Android demo says what each engine costs before loading it:** the model size, the memory it peaked at on a
   phone, the wait for first audio, and that it is too slow for a screen reader. When free memory is below an engine's
   measured peak, the first Speak warns instead of loading; a second Speak loads it anyway.
+- **ggtts can be Android's text-to-speech engine.** The demo app registers a system TTS engine (`TextToSpeechService`)
+  that other apps can pick in the phone's settings: Hong Kong Cantonese with Qwen3-TTS and US English with Kitten-TTS 2,
+  from the model files of the demo's last finished Speak. It streams each chunk to the platform as it is made, and
+  declares its voices as very high latency (first audio takes tens of seconds), so it is not meant for screen readers.
 
 ### Changed
 

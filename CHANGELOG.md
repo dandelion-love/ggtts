@@ -23,6 +23,8 @@ that a merge places under a released heading is caught.
   is absent, each with its own error code. A book is read under limits: 64 MiB per entry, 256 MiB for the whole
   book (`book-too-large`), and 256 levels of element nesting, so a zip bomb or a deeply nested document is refused
   with a named error rather than exhausting memory or the stack. Rendering a book comes later. See `docs/book.md`.
+- **An exponent in a book is read.** `ggtts-book` drops a superscript only when it is a note marker: it links
+  somewhere, or holds only digits or note symbols after punctuation or a space. `mc<sup>2</sup>` keeps its 2.
 - **`ggtts-book inspect` plans every chunk and its seed.** Chapters are chunked by ggtts's own story chunker at
   the engine profile's ceiling (`--engine`, default `qwen3-tts`), and each chunk gets a seed derived from the
   seed root (`--seed-root`, default `20260905`), the book's identifier, the chapter, paragraph, chunk and draw,

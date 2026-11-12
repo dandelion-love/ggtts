@@ -202,11 +202,11 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(select(["android/demo.kt"]), {"android", "binding"})
         self.assertEqual(select(["scripts/package_and_smoke.sh"]), {"package"})
         self.assertEqual(select(["scripts/check_release_version.py"]), {"package"})
-        self.assertEqual(select([".github/workflows/release.yml"]), {"package", "release"})
+        self.assertEqual(select([".github/workflows/release.yml"]), {"package", "release", "python"})
         self.assertEqual(select(["scripts/package_cuda_release.sh"]), {"package", "release"})
         self.assertEqual(select(["scripts/release_smoke.sh"]), {"package", "release"})
         self.assertEqual(select(["scripts/buildinfo_engines.sh"]), {"ggml", "release"})
-        self.assertEqual(select(["scripts/check_glibc_floor.py"]), {"release"})
+        self.assertEqual(select(["scripts/check_glibc_floor.py"]), {"release", "python"})
         self.assertEqual(select(["scripts/test_check_glibc_floor.py"]), set())
         self.assertEqual(select(["crates/ggtts-qwen3-tts/src/lib.rs"]), {"ggml", "package", "python"})
         self.assertEqual(select(["crates/ggtts-core/src/pipeline.rs", "crates/ggtts-cli/Cargo.toml"]), {"package", "python"})
@@ -276,6 +276,12 @@ class SelectionTest(unittest.TestCase):
                      "crates/ggtts-qwen3-tts/Cargo.toml", "crates/ggtts-ggml-sys/build.rs", "crates/ggtts-ffi/src/lib.rs",
                      "crates/ggtts-models/src/lib.rs"):
             self.assertIn("python", select([path]), path)
+        # The release wheel's scripts and release.yml, whose wheel jobs run only on a tag, are proven by the python job.
+        for path in ("scripts/python_wheel.sh", "scripts/check_python_lock.py", "scripts/test_check_python_lock.py",
+                     "scripts/third_party_notices.py", "licenses/python-crates.txt", "scripts/check_glibc_floor.py",
+                     ".github/workflows/release.yml"):
+            self.assertIn("python", select([path]), path)
+        self.assertEqual(select(["scripts/python_wheel.sh"]), {"python"})
         # The engines' own tests, the CLI and the docs do not reach the binding.
         for path in ("crates/ggtts-qwen3-tts/tests/frame_hook.rs", "crates/ggtts-core/tests/report.rs",
                      "crates/ggtts-cli/src/bin/ggtts-measure.rs", "README.md", "android/demo.kt"):

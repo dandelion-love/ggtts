@@ -1,0 +1,4 @@
+# Pinned test tools for the Python wheel (CI python job). numpy 2.0 is the last line with Python 3.9 wheels.
+pytest==8.3.5
+numpy==2.0.2; python_version < "3.10"
+numpy==2.2.6; python_version >= "3.10"

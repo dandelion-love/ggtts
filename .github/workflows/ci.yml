@@ -58,6 +58,19 @@ jobs:
           cat planted-notices.err
           grep -F "no notice for linked crate serde_json" planted-notices.err
           rm planted-notices.txt planted-notices.err
+      - name: Every crate linked into the Python wheel has its licence notice (a planted missing one is red)
+        run: |
+          set -u
+          python3 scripts/third_party_notices.py --check-python
+          grep -v '^pyo3 ' licenses/python-crates.txt > planted-notices.txt
+          if python3 scripts/third_party_notices.py --check-python planted-notices.txt 2> planted-notices.err; then
+            cat planted-notices.err
+            echo "::error::the wheel's notice check passed with pyo3's notice removed"
+            exit 1
+          fi
+          cat planted-notices.err
+          grep -F "no notice for linked crate pyo3 " planted-notices.err
+          rm planted-notices.txt planted-notices.err
       - name: Fail if Cargo.lock was missing
         if: always()
         run: test -z "${LOCK_MISSING:-}"
@@ -800,26 +813,34 @@ jobs:
   python:
     needs: specialized-selection
     if: needs.specialized-selection.outputs.python == 'true'
-    # The Python binding (crates/ggtts-py, its own workspace): its Rust layer checked and tested without Python, then
-    # the wheel built with maturin, installed, and tested with pytest. Linux builds the engines too (the committed ggml
-    # bindings), so the binding's ggml-gated code compiles here, on Python 3.9, the floor the abi3 wheel claims.
-    name: python (${{ matrix.os }}, Python ${{ matrix.python }}; wheel built with maturin, then pytest)
+    # The Python binding (crates/ggtts-py, its own workspace). First the release wheel exactly as release.yml builds,
+    # checks and smokes it (scripts/python_wheel.sh, with a fake tag; on Linux the smoke renders a real Qwen3-TTS line
+    # from the cached default model), with planted failures; then a test build with the planted engines for pytest.
+    # Linux runs Python 3.9, the floor the abi3 wheel claims, on Ubuntu 22.04, the archives' build host and glibc floor.
+    name: python (${{ matrix.os }}, Python ${{ matrix.python }}; the release wheel built, checked and smoked, then pytest)
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Ubuntu 22.04: the runner that has a Python 3.9 build, and the release archives' build host.
           - os: ubuntu-22.04
             python: "3.9"
-            engines: ",ggml"
+            engines: ggml
+            libclang: ""
+          # The committed ggml bindings are for x86_64 Linux only, so Windows generates its own, as the archives do.
           - os: windows-latest
             python: "3.13"
-            engines: ""
+            engines: bindgen
+            libclang: C:\Program Files\LLVM\bin
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
+    env:
+      LIBCLANG_PATH: ${{ matrix.libclang }}
+      GGTTS_CACHE_DIR: ${{ github.workspace }}/ggtts-model-cache
+      # The interpreter setup-python installed, for scripts/python_wheel.sh.
+      PYTHON: python
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -829,27 +850,77 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: rustup show active-toolchain || rustup toolchain install
       - name: Fetch the ggml submodule at its pin
-        if: matrix.engines != ''
         run: git submodule update --init crates/ggtts-ggml-sys/ggml
+      - name: The binding's lockfile agrees with the main one (a planted drift is red)
+        run: |
+          set -eu
+          python scripts/check_python_lock.py
+          python scripts/test_check_python_lock.py
       - name: The binding's Rust layer (fmt, clippy with the Python module, and its tests, which need no Python)
         working-directory: crates/ggtts-py
         run: |
           set -eu
           cargo fmt --check
-          cargo clippy --locked --all-targets --features "python,plant${{ matrix.engines }}" -- -D warnings
-          cargo test --locked --features "plant${{ matrix.engines }}" -- --nocapture
-      - name: Build the wheel with maturin (pinned) and install it
+          cargo clippy --locked --all-targets --features "python,plant,${{ matrix.engines }}" -- -D warnings
+          cargo test --locked --features "plant,${{ matrix.engines }}" -- --nocapture
+      - name: The pinned build and test tools
+        run: python -m pip install -r crates/ggtts-py/requirements-build.txt -r crates/ggtts-py/requirements-test.txt
+      - name: Build the release wheel as release.yml does, and check it
+        env:
+          GITHUB_SHA: ${{ github.sha }}
         run: |
-          set -eu
-          # patchelf: maturin's manylinux repair bundles the engines' shared libraries (OpenMP) into the Linux wheel.
-          python -m pip install "maturin==1.9.4" pytest numpy
-          if [ "$RUNNER_OS" = Linux ]; then python -m pip install "patchelf==0.19.1.0"; fi
-          cd crates/ggtts-py
-          maturin build --release --locked --out dist --features "python,pyo3/extension-module,plant${{ matrix.engines }}"
-          ls dist
-          # One abi3 wheel serves every Python from 3.9.
-          ls dist | grep -E '^ggtts-[^-]+-cp39-abi3-'
-          python -m pip install --no-index --find-links dist ggtts
+          set -euo pipefail
+          scripts/python_wheel.sh build v0.1.0-rc.999 "${{ matrix.engines }}" dist-wheel
+          wheel=$(ls dist-wheel/*.whl)
+          scripts/python_wheel.sh check "$wheel" v0.1.0-rc.999
+          # Planted: the same wheel under another tag's version is refused.
+          if scripts/python_wheel.sh check "$wheel" v0.1.0-rc.998 2> check.err; then
+            echo "::error::the wheel check passed a wheel whose version is not the tag's"; exit 1
+          fi
+          cat check.err
+          grep -F "the tag's is 0.1.0rc998" check.err
+          # Planted: a wheel without its notices is refused, naming the missing one.
+          mkdir -p planted
+          python -c "import sys, zipfile; src, dst = zipfile.ZipFile(sys.argv[1]), zipfile.ZipFile(sys.argv[2], 'w'); [dst.writestr(i, src.read(i)) for i in src.infolist() if not i.filename.endswith('python-crates.txt')]; dst.close()" \
+            "$wheel" "planted/$(basename "$wheel")"
+          if scripts/python_wheel.sh check "planted/$(basename "$wheel")" v0.1.0-rc.999 2> check.err; then
+            echo "::error::the wheel check passed a wheel without licenses/python-crates.txt"; exit 1
+          fi
+          cat check.err
+          grep -F "no ggtts/licenses/python-crates.txt" check.err
+          # A bad tag has no wheel version.
+          if scripts/python_wheel.sh version v1.2 2> version.err; then echo "::error::v1.2 was given a version"; exit 1; fi
+          test "$(scripts/python_wheel.sh version v0.1.0-rc.9)" = 0.1.0rc9
+          test "$(scripts/python_wheel.sh version v1.2.3)" = 1.2.3
+      - name: The default model's cache key, from its pinned sha256s in crates/ggtts-models
+        if: runner.os == 'Linux'
+        id: model
+        run: echo "key=$(scripts/release_smoke.sh model-key)" >> "$GITHUB_OUTPUT"
+      # The default model (2.3 GB), as the release smoke renders it; the cache only spares the download.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: runner.os == 'Linux'
+        with:
+          path: ggtts-model-cache
+          key: ${{ steps.model.outputs.key }}
+          enableCrossOsArchive: true
+      - name: Smoke the release wheel as release.yml does (a clean venv; on Linux one real Qwen3-TTS line)
+        run: |
+          set -euo pipefail
+          render=""
+          if [ "$RUNNER_OS" = Linux ]; then render=--render; fi
+          scripts/python_wheel.sh smoke dist-wheel/*.whl v0.1.0-rc.999 $render
+      - name: Build the test wheel (with the planted engines) and install it; the release smoke refuses it
+        run: |
+          set -euo pipefail
+          # Built as the release wheel is, under the same tag, so only its engines differ.
+          (cd crates/ggtts-py && GGTTS_RELEASE_VERSION=v0.1.0-rc.999 GGML_PORTABLE=1 python -m maturin build --release --locked \
+            --out ../../dist-test --features "python,pyo3/extension-module,plant,${{ matrix.engines }}")
+          if scripts/python_wheel.sh smoke dist-test/*.whl v0.1.0-rc.999 2> smoke.err; then
+            echo "::error::the release smoke passed a wheel built with the test engines"; exit 1
+          fi
+          cat smoke.err
+          grep -F "not exactly the shipped engines" smoke.err
+          python -m pip install --no-index --find-links dist-test ggtts
       - name: pytest (the fake engine, the planted panic and the GIL; the real-model tests report skipped)
         run: |
           set -eu

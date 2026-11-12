@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Licence notices for everything linked into the shipped binaries, generated and checked.
 
-    scripts/third_party_notices.py --write            # regenerate licenses/rust-crates.txt
-    scripts/third_party_notices.py --check [FILE]     # exit 1 unless FILE (default: that file) is complete and current
+    scripts/third_party_notices.py --write                 # regenerate licenses/rust-crates.txt and python-crates.txt
+    scripts/third_party_notices.py --check [FILE]          # exit 1 unless FILE (default: licenses/rust-crates.txt)
+                                                           # is complete and current
+    scripts/third_party_notices.py --check-python [FILE]   # the same for the wheel (default: licenses/python-crates.txt)
 
 The crates are the normal (not build, not dev) dependencies of the packages that build the shipped binaries
 (ggtts-render, ggtts-measure, and the Kitten tools ggtts-kitten-convert and ggtts-kitten) and the shipped C library
@@ -10,6 +12,11 @@ The crates are the normal (not build, not dev) dependencies of the packages that
 with, on every target an archive is released for. Each crate's name, version and licence expression come from its manifest, and its licence
 texts from the files in its source directory in the cargo registry. Nothing is installed and nothing is written by
 hand: a crate added to Cargo.lock without a regenerated notice fails --check, which CI and the pack step run.
+
+The Python wheel (crates/ggtts-py, its own workspace and lockfile) has its own list, licenses/python-crates.txt: the
+normal dependencies of its native module, resolved from crates/ggtts-py/Cargo.toml with the features the release
+builds the wheel with (`python`, `pyo3/extension-module`, and `ggml` on Linux or `bindgen` on Windows): the engine
+crates the archives link, plus PyO3 and its dependencies. scripts/python_wheel.sh packs it into the wheel.
 
 --check also holds licenses/ggml-LICENSE.txt, the licence of the statically linked ggml, to the copy in the ggml
 submodule when the submodule is checked out.
@@ -23,6 +30,11 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 NOTICES = ROOT / "licenses" / "rust-crates.txt"
+PYTHON_NOTICES = ROOT / "licenses" / "python-crates.txt"
+PYTHON_MANIFEST = ROOT / "crates" / "ggtts-py" / "Cargo.toml"
+# The Python wheel's native module, ggtts-py's cdylib, with every feature set release.yml builds a wheel with.
+PYTHON_LIBRARIES = ("ggtts_py",)
+PYTHON_FEATURE_SETS = (("python", "pyo3/extension-module", "ggml"), ("python", "pyo3/extension-module", "bindgen"))
 GGML_NOTICE = ROOT / "licenses" / "ggml-LICENSE.txt"
 GGML_SOURCE = ROOT / "crates" / "ggtts-ggml-sys" / "ggml" / "LICENSE"
 # The binaries `scripts/package_and_smoke.sh pack` copies into an archive. The Kitten tools are built from
@@ -42,27 +54,32 @@ NOT_A_LICENCE = (".rs", ".toml", ".json", ".yml", ".yaml", ".lock")
 CRATE_LINE = re.compile(r"^([A-Za-z0-9_-]+) (\S+) \| ")
 
 
-def metadata(features, target):
+def metadata(features, target, manifest=None):
     cmd = ["cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", target]
+    if manifest is not None:
+        cmd += ["--manifest-path", str(manifest)]
     if features:
         cmd += ["--features", ",".join(features)]
     return json.loads(subprocess.check_output(cmd, cwd=ROOT))
 
 
-def linked_packages():
-    """Every third-party package reachable from a shipped binary's package through normal dependencies."""
+def linked_packages(python=False):
+    """Every third-party package reachable from a shipped binary's package through normal dependencies (with
+    `python`, from the wheel's native module)."""
     found = {}
-    for features, target in ((f, t) for f in FEATURE_SETS for t in TARGETS):
-        meta = metadata(features, target)
+    binaries, libraries = ((), PYTHON_LIBRARIES) if python else (SHIPPED_BINARIES, SHIPPED_LIBRARIES)
+    feature_sets = PYTHON_FEATURE_SETS if python else FEATURE_SETS
+    for features, target in ((f, t) for f in feature_sets for t in TARGETS):
+        meta = metadata(features, target, PYTHON_MANIFEST if python else None)
         packages = {p["id"]: p for p in meta["packages"]}
         nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
         roots = [p["id"] for p in meta["packages"] if p["id"] in meta["workspace_members"]
-                 and any(("bin" in t["kind"] and t["name"] in SHIPPED_BINARIES)
-                         or ("cdylib" in t["kind"] and t["name"] in SHIPPED_LIBRARIES) for t in p["targets"])]
+                 and any(("bin" in t["kind"] and t["name"] in binaries)
+                         or ("cdylib" in t["kind"] and t["name"] in libraries) for t in p["targets"])]
         shipped = {t["name"] for r in roots for t in packages[r]["targets"] if {"bin", "cdylib"} & set(t["kind"])}
-        if not set(SHIPPED_BINARIES + SHIPPED_LIBRARIES) <= shipped:
+        if not set(binaries + libraries) <= shipped:
             raise ValueError("no workspace package builds "
-                             + ", ".join(sorted(set(SHIPPED_BINARIES + SHIPPED_LIBRARIES) - shipped)))
+                             + ", ".join(sorted(set(binaries + libraries) - shipped)))
         seen, stack = set(roots), list(roots)
         while stack:
             for dep in nodes[stack.pop()]["deps"]:
@@ -89,9 +106,9 @@ def licence_texts(package):
     return texts
 
 
-def generate():
+def generate(python=False):
     crates, texts, users, problems = [], {}, {}, []
-    for package in linked_packages():
+    for package in linked_packages(python):
         name = f"{package['name']} {package['version']}"
         files = licence_texts(package)
         if not package.get("license"):
@@ -105,8 +122,13 @@ def generate():
                       + ", ".join(f"{filename} [{key}]" for filename, key, _ in files))
     if problems:
         raise ValueError("; ".join(problems))
-    out = [f"Licences of the Rust crates linked into the ggtts binaries ({', '.join(SHIPPED_BINARIES)})"
-           f" and the C library ({', '.join(SHIPPED_LIBRARIES)})",
+    if python:
+        title = ["Licences of the Rust crates linked into the ggtts Python wheel's native module (ggtts._native, "
+                 "built from crates/ggtts-py with PyO3)"]
+    else:
+        title = [f"Licences of the Rust crates linked into the ggtts binaries ({', '.join(SHIPPED_BINARIES)})"
+                 f" and the C library ({', '.join(SHIPPED_LIBRARIES)})"]
+    out = title + [
            "",
            "Generated by scripts/third_party_notices.py from `cargo metadata --locked` and each crate's own source.",
            "Do not edit: run `python3 scripts/third_party_notices.py --write` after changing Cargo.lock.",
@@ -124,10 +146,10 @@ def read(path):
     return path.read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
-def check(path):
+def check(path, python=False):
     """Every reason the notices are not complete; empty when they are."""
     problems = []
-    expected = generate()
+    expected = generate(python)
     actual = read(path) if path.is_file() else ""
     if not actual:
         problems.append(f"{path} is missing or empty")
@@ -149,19 +171,24 @@ def check(path):
 def main(argv):
     if argv == ["--write"]:
         NOTICES.write_text(generate(), encoding="utf-8", newline="\n")
+        PYTHON_NOTICES.write_text(generate(python=True), encoding="utf-8", newline="\n")
+        print(f"wrote {PYTHON_NOTICES}", file=sys.stderr)
         if GGML_SOURCE.is_file():
             GGML_NOTICE.write_text(read(GGML_SOURCE), encoding="utf-8", newline="\n")
         print(f"wrote {NOTICES}", file=sys.stderr)
         return 0
-    if argv[:1] == ["--check"] and len(argv) <= 2:
-        problems = check(Path(argv[1]) if len(argv) == 2 else NOTICES)
+    if argv[:1] in (["--check"], ["--check-python"]) and len(argv) <= 2:
+        python = argv[0] == "--check-python"
+        given = Path(argv[1]) if len(argv) == 2 else None
+        problems = check(given or (PYTHON_NOTICES if python else NOTICES), python)
         for problem in problems:
             print("third-party notices: " + problem, file=sys.stderr)
         if problems:
             print("third-party notices: run `python3 scripts/third_party_notices.py --write` and commit the result",
                   file=sys.stderr)
             return 1
-        print("third-party notices: every crate linked into the shipped binaries and library has its notice",
+        print("third-party notices: every crate linked into the shipped "
+              + ("Python wheel" if python else "binaries and library") + " has its notice",
               file=sys.stderr)
         return 0
     print(__doc__, file=sys.stderr)

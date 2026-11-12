@@ -1,0 +1,4 @@
+# Pinned build tools for the Python wheel (scripts/python_wheel.sh build, and CI).
+maturin==1.9.4
+# maturin repairs the Linux wheel to manylinux with it, bundling libgomp.
+patchelf==0.19.1.0; sys_platform == "linux"

@@ -23,6 +23,12 @@ fun interface TtsBinding {
 /** A loaded engine. */
 interface TtsEngine : AutoCloseable {
     fun render(text: String, seed: Long): Pcm
+
+    /**
+     * Render [text], handing each chunk's samples to [onPiece] as soon as it is ready (before the level step).
+     * Return false from [onPiece] to stop. Returns false if it was stopped.
+     */
+    fun renderStream(text: String, seed: Long, onPiece: (FloatArray, Int) -> Boolean): Boolean
 }
 
 /**
@@ -43,6 +49,8 @@ class GgttsBinding(private val cacheDir: String) : TtsBinding {
         )
         return object : TtsEngine {
             override fun render(text: String, seed: Long): Pcm = tts.render(text, seed)
+            override fun renderStream(text: String, seed: Long, onPiece: (FloatArray, Int) -> Boolean): Boolean =
+                tts.renderStream(text, seed) { samples, rate -> onPiece(samples, rate) }
             override fun close() = tts.close()
         }
     }

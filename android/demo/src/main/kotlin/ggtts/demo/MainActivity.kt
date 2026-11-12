@@ -4,7 +4,8 @@
 // A debug build can also be driven from adb, for scripted checks (a release build ignores these extras): every extra
 // is optional, and `speak` presses Speak once loaded.
 //   adb shell am start -n ggtts.demo/.MainActivity --es engine kitten-tts-2 --es model lm.gguf \
-//       --es codec s3gen.gguf --es voice voice.json --es text "Hello." --ez speak true
+//       --es codec s3gen.gguf --es voice voice.json --es text "Hello." --ei threads 4 --ez speak true
+//   adb shell am start -n ggtts.demo/.MainActivity --ez stop true      # presses Stop
 // A file name is looked up in the models directory; an absolute path is used as it is.
 package ggtts.demo
 
@@ -33,11 +34,11 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import ggtts.Ggtts
-import ggtts.Pcm
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
 
 class MainActivity : Activity(), DemoView {
     companion object {
@@ -46,6 +47,9 @@ class MainActivity : Activity(), DemoView {
         private const val NONE = "(none)"
         val ENGINES = listOf("qwen3-tts", "kitten-tts-2")
         val LINES = mapOf("qwen3-tts" to "今日天氣好好。", "kitten-tts-2" to "Hello from ggtts, running on this phone.")
+        val THREADS = listOf(2, 4, 6, 8)
+        /** The binding's default. See android/README.md for what more threads buy on a phone. */
+        const val DEFAULT_THREADS = 4
     }
 
     private val worker = Executors.newSingleThreadExecutor()
@@ -59,7 +63,9 @@ class MainActivity : Activity(), DemoView {
     private lateinit var voice: Spinner
     private lateinit var speaker: EditText
     private lateinit var text: EditText
+    private lateinit var threads: Spinner
     private lateinit var speak: Button
+    private lateinit var stop: Button
     private lateinit var importButton: Button
     private lateinit var status: TextView
 
@@ -98,6 +104,7 @@ class MainActivity : Activity(), DemoView {
 
     override fun setBusy(busy: Boolean) {
         speak.isEnabled = !busy
+        stop.isEnabled = busy
         importButton.isEnabled = !busy
     }
 
@@ -150,9 +157,19 @@ class MainActivity : Activity(), DemoView {
 
         text = EditText(this)
         col.addView(label("Line to speak")); col.addView(text)
+        threads = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, THREADS.map { "$it threads" })
+            setSelection(THREADS.indexOf(DEFAULT_THREADS))
+        }
+        col.addView(label("CPU threads")); col.addView(threads)
+        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         speak = Button(this).apply { text = "Speak" }
         speak.setOnClickListener { speakNow() }
-        col.addView(speak)
+        stop = Button(this).apply { text = "Stop"; isEnabled = false }
+        stop.setOnClickListener { controller.stop() }
+        buttons.addView(speak, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        buttons.addView(stop, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        col.addView(buttons)
         status = TextView(this).apply { textSize = 16f; setPadding(0, pad, 0, 0) }
         col.addView(status)
         engines.check(100)
@@ -198,6 +215,10 @@ class MainActivity : Activity(), DemoView {
         pick(codec, extras.getString("codec"))
         pick(voice, extras.getString("voice"))
         extras.getString("speaker")?.let { speaker.setText(it) }
+        if (extras.containsKey("threads")) {
+            THREADS.indexOf(extras.getInt("threads")).takeIf { it >= 0 }?.let { threads.setSelection(it) }
+        }
+        if (extras.getBoolean("stop", false)) controller.stop()
         extras.getString("text")?.let { text.setText(it) }
         if (extras.getBoolean("speak", false)) speakNow()
     }
@@ -216,6 +237,7 @@ class MainActivity : Activity(), DemoView {
             codec = path(codec),
             voice = if (engine == "kitten-tts-2") path(voice) else null,
             speaker = if (engine == "qwen3-tts") speaker.text.toString().trim().ifEmpty { null } else null,
+            threads = THREADS[threads.selectedItemPosition],
         )
         Log.i(TAG, "speak: $request")
         controller.speak(request, text.text.toString(), Ggtts.DEFAULT_SEED)
@@ -257,40 +279,78 @@ class MainActivity : Activity(), DemoView {
     }
 }
 
-/** Saves a render as a 16-bit WAV in [dir] (one file per engine, overwritten) and plays it through AudioTrack. */
+/**
+ * Plays a stream of pieces through one AudioTrack, on its own thread, so rendering the next chunk never waits for
+ * playback; saves a whole read as a 16-bit WAV in [dir] (one file per engine, overwritten).
+ */
 class DeviceAudio(private val dir: File) : AudioOut {
-    override fun save(pcm: Pcm, engine: String): String {
-        dir.mkdirs()
-        val file = File(dir, "$engine.wav")
-        val data = pcm.samples.size * 2
-        val b = ByteBuffer.allocate(44 + data).order(ByteOrder.LITTLE_ENDIAN)
-        b.put("RIFF".toByteArray()).putInt(36 + data).put("WAVEfmt ".toByteArray())
-        b.putInt(16).putShort(1).putShort(1).putInt(pcm.sampleRate).putInt(pcm.sampleRate * 2).putShort(2).putShort(16)
-        b.put("data".toByteArray()).putInt(data)
-        for (x in pcm.samples) b.putShort((x.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
-        file.writeBytes(b.array())
-        return file.path
-    }
+    private val queue = LinkedBlockingQueue<FloatArray>()
+    private val end = FloatArray(0)
+    @Volatile private var track: AudioTrack? = null
+    @Volatile private var player: Thread? = null
 
-    override fun play(pcm: Pcm) {
-        if (pcm.samples.isEmpty()) return
-        val track = AudioTrack.Builder()
+    override fun begin(rate: Int) {
+        stop()
+        val t = AudioTrack.Builder()
             .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
             .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-                .setSampleRate(pcm.sampleRate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+                .setSampleRate(rate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
             .setTransferMode(AudioTrack.MODE_STREAM)
-            .setBufferSizeInBytes(AudioTrack.getMinBufferSize(pcm.sampleRate, AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_FLOAT).coerceAtLeast(pcm.sampleRate))
+            .setBufferSizeInBytes(AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_FLOAT).coerceAtLeast(rate))
             .build()
-        try {
-            track.play()
-            track.write(pcm.samples, 0, pcm.samples.size, AudioTrack.WRITE_BLOCKING)
-            // Let the last buffer drain before stopping.
-            Thread.sleep(250)
-            track.stop()
-        } finally {
-            track.release()
-        }
+        track = t
+        t.play()
+        player = Thread({
+            try {
+                while (true) {
+                    val piece = queue.take()
+                    if (piece === end) break
+                    t.write(piece, 0, piece.size, AudioTrack.WRITE_BLOCKING)
+                }
+                Thread.sleep(250) // let the last buffer drain
+            } catch (_: InterruptedException) {
+            }
+        }, "ggtts-player").apply { start() }
+    }
+
+    override fun play(samples: FloatArray) {
+        if (samples.isNotEmpty()) queue.put(samples)
+    }
+
+    override fun finish() {
+        val p = player ?: return
+        queue.put(end)
+        p.join()
+        release()
+    }
+
+    override fun stop() {
+        queue.clear()
+        player?.interrupt()
+        track?.let { runCatching { it.pause(); it.flush() } }
+        player?.join(1000)
+        release()
+    }
+
+    private fun release() {
+        player = null
+        track?.let { runCatching { it.stop() }; it.release() }
+        track = null
+        queue.clear()
+    }
+
+    override fun save(samples: FloatArray, rate: Int, engine: String): String {
+        dir.mkdirs()
+        val file = File(dir, "$engine.wav")
+        val data = samples.size * 2
+        val b = ByteBuffer.allocate(44 + data).order(ByteOrder.LITTLE_ENDIAN)
+        b.put("RIFF".toByteArray()).putInt(36 + data).put("WAVEfmt ".toByteArray())
+        b.putInt(16).putShort(1).putShort(1).putInt(rate).putInt(rate * 2).putShort(2).putShort(16)
+        b.put("data".toByteArray()).putInt(data)
+        for (x in samples) b.putShort((x.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
+        file.writeBytes(b.array())
+        return file.path
     }
 }

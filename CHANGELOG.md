@@ -22,6 +22,9 @@ that a merge places under a released heading is caught.
   [android/README.md](android/README.md).
 - `licenses/android-crates.txt`: the licences of the Rust crates linked into the Android library, generated and
   checked by `scripts/third_party_notices.py --check-android`.
+- **The Android demo plays a line as it renders.** Each chunk plays as soon as it is made, so first audio comes after
+  one chunk instead of the whole line. Stop ends both the playback and the rendering, the screen shows progress, and a
+  menu picks 2, 4, 6 or 8 CPU threads (4 by default).
 
 ### Changed
 

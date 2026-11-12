@@ -8,7 +8,7 @@ chapter tags and a chaptered audiobook export are later steps.
 ```text
 ggtts-book inspect BOOK.epub [--engine qwen3-tts|fake] [--seed-root R]
                                  print the chapter model, and each chapter's planned chunks and seeds, as JSON
-ggtts-book render BOOK.epub --out DIR --engine fake [--seed-root R]
+ggtts-book render BOOK.epub --out DIR [--engine ...] [--seed-root R] [model flags, see Rendering]
                                  render every chapter into DIR, resuming what an earlier run finished
 ggtts-book --version
 ```
@@ -211,12 +211,24 @@ chapter starts again from its plan: a wrong resume would splice another book's o
 one. A chunk recorded as done whose output file is missing, or no longer has its recorded SHA-256, is rendered again;
 no other finished chunk is.
 
-## Rendering (walking skeleton)
+## Rendering
 
-`ggtts-book render BOOK.epub --out DIR --engine fake` runs the whole path end to end with ggtts's fake engine, which
-needs no model: chapters, seeds, manifests, resume and one FLAC per chapter. `--engine` must be named, and only
-`fake` renders for now; a real engine (`qwen3-tts`, `kitten-tts-2`) is refused until its loader is wired into
-`ggtts-book`. The engine is loaded once and used for every chunk of every chapter.
+```text
+ggtts-book render BOOK.epub --out DIR [--engine qwen3-tts|kitten-tts-2|fake] [--seed-root R]
+                 [--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME]
+                 [--device cpu|cuda] [--threads N] [--offline]
+```
+
+The engine is `qwen3-tts` by default, as for `ggtts-render`, and the model flags mean what they mean there: a file
+not given is the engine's pinned default, taken from the per-user cache (`GGTTS_CACHE_DIR` overrides where) and
+downloaded the first time unless `--offline`; with the default talker and no `--speaker`, the default speaker is used.
+The model engines need a build with the `ggml` feature (`cargo build --release -p ggtts-book --features ggml`, or
+`cuda` for `--device cuda`). Without it they are refused with a named reason and nothing is downloaded, and
+`--engine fake` (a tone per chunk, no model) still runs the whole path.
+
+**The engine is loaded once for the whole book**, through the `ggtts-load` crate, which resolves and opens an engine
+by the same rules `ggtts-render` uses. The book is read first, so a refused book costs no model load. Each chunk is
+planned with the loaded engine's own profile (its ceiling and split marks).
 
 For each chapter that is not front or back matter:
 
@@ -226,14 +238,30 @@ For each chapter that is not front or back matter:
    story path joins them), levelled by the story path's level step, and written as `DIR/NNN-<chapter id>.flac`.
 
 Front and back matter, and a chapter with nothing to speak, are left out, with the reason in the report. The report
-on stdout is JSON (`ggtts-book-render/1`): per chapter, `written` with its file and how many chunks were rendered in
-this run and taken from an earlier one, or `skipped` with the reason.
+on stdout is JSON (`ggtts-book-render/1`): the engine's provenance, then per chapter `written` with its file and how
+many chunks were rendered in this run and taken from an earlier one, or `skipped` with the reason.
+
+### Provenance, and what a resume trusts
+
+Every chapter manifest records what rendered it (`engine`): the engine family, backend and parity, the profile, each
+model file's role and SHA-256, the speaker, and the ggtts version and commit. Each done chunk also records how long it
+took to render (`render_ms`, generate to encoded FLAC), for reading back; timings are never checked.
 
 A render that stops (a failed chunk, a killed process) keeps what it finished. Run the same command again with the
 same `--out` to resume: only the chunks not recorded as done are rendered, and because chapters are always joined from
-the stored chunk files, a resumed chapter is byte-identical to one rendered in a single run. The same book and seed
-root give byte-identical chapters (with the fake engine; a real engine's identity is bounded by its own guarantees
-on one hardware class). Redraws of chunks the judge rejects are not done yet: every chunk is a first draw.
+the stored chunk files, a resumed chapter is byte-identical to one rendered in a single run. A resume with another
+engine, backend, model file, speaker or ggtts build does not splice two renders into one chapter: the earlier
+manifest is refused (`for engine ...`) and the chapter is rendered again. The same book, seed root and engine give
+byte-identical chapters with the fake engine; a real engine's identity is bounded by its own guarantees on one
+hardware class. Redraws of chunks the judge rejects are not done yet: every chunk is a first draw.
+
+`DIR/book.json` names the book rendered into `DIR`. A `DIR` holding another book, or a non-empty `DIR` with no
+`book.json`, is refused before anything is written, so one book never overwrites another's chunks.
+
+### Not yet
+
+A ggtts serve process that is already running, when one is reachable, will be used instead of loading a second copy
+of the model; that needs a resident serve mode in ggtts first.
 
 ## Tests
 
@@ -242,7 +270,9 @@ book (and no binary file) is stored in the repository. They cover a nested table
 two files, chapters that start at fragments, an NCX-only EPUB 2 book with a percent-escaped href, a spine-only book,
 and one rejection per refusal above, each planted into an otherwise working book. `tests/plan.rs` and
 `tests/manifest.rs` cover the plan, the committed seeds, every manifest refusal and resume, with a renderer that
-records which chunks it was asked for.
+records which chunks it was asked for. `tests/render.rs` and `tests/engine.rs` render the fixture through the fake engine:
+end to end, killed and resumed, one engine load per book, provenance in every manifest, a resume with
+another engine refused, and an output directory holding another book refused.
 
 ## Dependencies
 

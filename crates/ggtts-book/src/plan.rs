@@ -9,6 +9,7 @@
 use ggtts_core::profile::Profile;
 use ggtts_core::seed::{hex, sha256};
 use ggtts_core::text::{plan, validate_speech};
+use serde_json::Value;
 
 use crate::book::{Book, Chapter};
 
@@ -104,6 +105,10 @@ pub struct ChapterPlan {
     /// The chunk ceiling the plan was made at: the profile's `story_ceiling`.
     pub ceiling: usize,
     pub chunks: Vec<PlannedChunk>,
+    /// What renders the chunks: engine, backend, model files' SHA-256, speaker and ggtts build, as the renderer
+    /// records them ([`render::provenance`](crate::render::provenance)). `Null` for a plan not yet tied to an engine.
+    /// A manifest written by another engine is not resumed.
+    pub engine: Value,
 }
 
 impl ChapterPlan {
@@ -176,6 +181,7 @@ pub fn plan_chapter(
         profile: profile.name.to_string(),
         ceiling: profile.story_ceiling,
         chunks,
+        engine: Value::Null,
     })
 }
 

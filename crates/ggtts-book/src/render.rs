@@ -118,6 +118,115 @@ pub fn join_chapter(profile: &Profile, dir: &Path, plan: &ChapterPlan, out: &Pat
     write_flac(out, &read, rate).map_err(|e| format!("{}: {e}", out.display()))
 }
 
+/// The file in an output directory that names the book rendered into it.
+pub const BOOK_MARKER: &str = "book.json";
+
+/// Refuse an output directory that holds another book; mark a fresh one as this book's. Without this, a second book
+/// rendered into the same directory would refuse the first book's manifests and overwrite its chunks.
+fn claim_output(out: &Path, book_id: &str) -> Result<(), String> {
+    let marker = out.join(BOOK_MARKER);
+    match std::fs::read_to_string(&marker) {
+        Ok(text) => {
+            let held = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("book_id").and_then(|b| b.as_str()).map(String::from));
+            match held {
+                Some(id) if id == book_id => Ok(()),
+                Some(id) => Err(format!(
+                    "{} holds another book ({id}), not {book_id}: render into another --out",
+                    out.display()
+                )),
+                None => Err(format!("{} is not a book marker this tool wrote", marker.display())),
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let has_entries = std::fs::read_dir(out).map_err(|e| e.to_string())?.next().is_some();
+            if has_entries {
+                return Err(format!(
+                    "{} is not empty and holds no {BOOK_MARKER}: render into an empty directory or one this tool wrote",
+                    out.display()
+                ));
+            }
+            let text = serde_json::json!({"format": "ggtts-book-output/1", "book_id": book_id}).to_string();
+            crate::manifest::write_atomic(&marker, text.as_bytes()).map_err(|e| format!("{}: {e}", marker.display()))
+        }
+        Err(e) => Err(format!("{}: {e}", marker.display())),
+    }
+}
+
+/// What a render's chunks come from, recorded in every chapter manifest and checked on resume: the engine family,
+/// backend and parity, the profile, each model file's role and SHA-256, the speaker, and the ggtts build.
+pub fn provenance(engine: &dyn Engine, files: &[(String, String)], speaker: Option<&str>) -> serde_json::Value {
+    let info = engine.info();
+    serde_json::json!({
+        "family": info.family,
+        "backend": info.backend,
+        "parity": info.parity,
+        "profile": engine.profile().name,
+        "files": files.iter().map(|(role, sha)| serde_json::json!({"role": role, "sha256": sha})).collect::<Vec<_>>(),
+        "speaker": speaker,
+        "ggtts_version": ggtts_core::VERSION,
+        "ggtts_commit": ggtts_core::SOURCE_COMMIT,
+    })
+}
+
+/// The engine, the files it came from (role and SHA-256) and its speaker: what [`render_command`]'s loader returns.
+pub struct LoadedEngine {
+    pub engine: Box<dyn Engine>,
+    pub files: Vec<(String, String)>,
+    pub speaker: Option<String>,
+}
+
+/// The whole `ggtts-book render`: read the book, load the engine once through `load`, plan every chapter with the
+/// engine's own profile, tie the plans to the engine's provenance, and render into `out`. The book is read before the
+/// engine is loaded, so a refused book costs no model load.
+pub fn render_command(
+    book_path: &Path,
+    out: &Path,
+    seed_root: &str,
+    load: impl FnOnce() -> Result<LoadedEngine, String>,
+) -> Result<serde_json::Value, String> {
+    let book = Book::open(book_path).map_err(|e| e.to_string())?;
+    let LoadedEngine {
+        mut engine,
+        files,
+        speaker,
+    } = load()?;
+    let profile = *engine.profile();
+    let mut plans = crate::plan::plan_book(&profile, &book, seed_root)?;
+    let engine_record = provenance(engine.as_ref(), &files, speaker.as_deref());
+    for plan in &mut plans {
+        plan.engine = engine_record.clone();
+    }
+    let reports = render_book(engine.as_mut(), &book, &plans, out)?;
+    let chapters: Vec<_> = reports
+        .iter()
+        .map(|r| match &r.outcome {
+            ChapterOutcome::Written {
+                file,
+                rendered,
+                resumed,
+                refused,
+            } => serde_json::json!({
+                "id": r.id,
+                "state": "written",
+                "file": file.strip_prefix(out).unwrap_or(file).to_string_lossy(),
+                "rendered": rendered.len(),
+                "resumed": resumed,
+                "refused_manifest": refused,
+            }),
+            ChapterOutcome::Skipped { reason } => serde_json::json!({"id": r.id, "state": "skipped", "reason": reason}),
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "format": "ggtts-book-render/1",
+        "book_id": book.book_id(),
+        "engine": engine_record,
+        "seed_root": seed_root,
+        "chapters": chapters,
+    }))
+}
+
 /// Render every chapter of `book` into `out`, with `engine` loaded once for all of them.
 ///
 /// Skippable chapters (front and back matter) are left out. A chapter whose chunk fails stops the render with that
@@ -129,6 +238,7 @@ pub fn render_book(
     out: &Path,
 ) -> Result<Vec<ChapterReport>, String> {
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+    claim_output(out, &book.book_id())?;
     let mut reports = Vec::new();
     for (i, (chapter, plan)) in book.chapters.iter().zip(plans).enumerate() {
         if let Some(reason) = chapter.skip_reason.clone().filter(|_| chapter.skippable) {
@@ -154,7 +264,11 @@ pub fn render_book(
             render_chunk(engine, p, index)
         })
         .map_err(|e| match e {
-            RunError::Render { index, reason } => format!("chapter {}, chunk {index}: {reason}", chapter.id),
+            RunError::Render { index, reason } => format!(
+                "render stopped at chapter {}, chunk {index}: {reason}; what was finished is kept, run again with the \
+                 same --out to resume",
+                chapter.id
+            ),
             RunError::Io(e) => format!("chapter {}: {e}", chapter.id),
         })?;
         let profile = *engine.profile();

@@ -3,33 +3,40 @@
 //! ```text
 //! ggtts-book inspect BOOK.epub [--engine qwen3-tts|fake] [--seed-root R]
 //!                                   print the chapter model, and each chapter's planned chunks and seeds, as JSON
-//! ggtts-book render BOOK.epub --out DIR --engine fake [--seed-root R]
+//! ggtts-book render BOOK.epub --out DIR [--engine qwen3-tts|kitten-tts-2|fake] [--seed-root R]
+//!                  [--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME]
+//!                  [--device cpu|cuda] [--threads N] [--offline]
 //!                                   render every chapter into DIR, resuming what an earlier run finished
 //! ggtts-book --version
 //! ```
 //!
-//! `--engine` names the engine: for `inspect`, the one whose profile the chunks are planned with (default
-//! `qwen3-tts`, ggtts-render's default engine); for `render`, the one that renders, which must be named. Only `fake`
-//! renders today: it needs no model, so the whole path (chapters, seeds, manifests, resume, one FLAC per chapter) runs
-//! end to end. `--seed-root` is the root every chunk's seed is derived from; the default is ggtts-render's default
-//! seed, `20260905`.
+//! `--engine` is `qwen3-tts` by default, as for `ggtts-render`. For `inspect` it names the profile the chunks are
+//! planned with; for `render`, the engine that renders, loaded once for the whole book. The model flags are
+//! `ggtts-render`'s: a file not given is the engine's pinned default, from the per-user cache (`GGTTS_CACHE_DIR`),
+//! downloaded the first time unless `--offline`. Model engines need a build with the `ggml` feature
+//! (`cargo build -p ggtts-book --features ggml`); without it `render` refuses them, and `--engine fake` (a tone per
+//! chunk, no model) runs the whole path. `--seed-root` is the root every chunk's seed is derived from; the default is
+//! ggtts-render's default seed, `20260905`.
 //!
-//! `render` writes `DIR/NNN-<chapter id>/` (the chapter's chunks and manifest) and `DIR/NNN-<chapter id>.flac`, and
-//! prints a JSON report. Front and back matter is left out. Run it again on the same `DIR` to resume.
+//! `render` writes `DIR/book.json`, `DIR/NNN-<chapter id>/` (the chapter's chunks and manifest) and
+//! `DIR/NNN-<chapter id>.flac`, and prints a JSON report. Front and back matter is left out. Run it again on the same
+//! `DIR` to resume; a `DIR` holding another book is refused.
 //!
-//! Exit 0 on success; 2 when the book is refused (the reason, with its code, on stderr), a render fails (what was
+//! Exit 0 on success; 2 when the book or the engine is refused (the reason on stderr), a render fails (what was
 //! finished is kept), or the command line is wrong.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use ggtts_book::plan::{engine_profile, plan_book, DEFAULT_SEED_ROOT};
-use ggtts_book::render::{render_book, ChapterOutcome};
+use ggtts_book::render::{render_command, LoadedEngine};
 use ggtts_book::Book;
 use serde_json::json;
 
 const USAGE: &str = "usage: ggtts-book inspect BOOK.epub [--engine qwen3-tts|fake] [--seed-root R]\n       \
-ggtts-book render BOOK.epub --out DIR --engine fake [--seed-root R]\n       ggtts-book --version";
+ggtts-book render BOOK.epub --out DIR [--engine qwen3-tts|kitten-tts-2|fake] [--seed-root R]\n                  \
+[--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME] [--device cpu|cuda] [--threads N] [--offline]\n       \
+ggtts-book --version";
 
 fn fail(message: &str) -> ExitCode {
     eprintln!("ggtts-book: {message}");
@@ -63,30 +70,61 @@ fn main() -> ExitCode {
 
 struct Options {
     book: String,
-    engine: Option<String>,
     seed_root: String,
     out: Option<PathBuf>,
+    load: ggtts_load::Request,
 }
 
 impl Options {
     fn parse(command: &str, args: &[String]) -> Result<Options, String> {
         let mut o = Options {
             book: String::new(),
-            engine: None,
             seed_root: DEFAULT_SEED_ROOT.to_string(),
             out: None,
+            load: ggtts_load::Request {
+                engine: "qwen3-tts".into(),
+                ..Default::default()
+            },
+        };
+        let render_only = |flag: &str| -> Result<(), String> {
+            if command == "render" {
+                Ok(())
+            } else {
+                Err(format!("{flag} is for render"))
+            }
         };
         let mut book = None;
         let mut it = args.iter();
         while let Some(arg) = it.next() {
             match arg.as_str() {
-                flag @ ("--engine" | "--seed-root" | "--out") => {
+                "--offline" => {
+                    render_only("--offline")?;
+                    o.load.offline = true;
+                }
+                flag @ ("--engine" | "--seed-root" | "--out" | "--model" | "--codec" | "--voice" | "--speaker"
+                | "--device" | "--threads") => {
                     let value = it.next().ok_or_else(|| format!("{flag} needs a value"))?.clone();
+                    if !matches!(flag, "--engine" | "--seed-root") {
+                        render_only(flag)?;
+                    }
                     match flag {
-                        "--engine" => o.engine = Some(value),
+                        "--engine" => o.load.engine = value,
                         "--seed-root" => o.seed_root = value,
-                        _ if command == "render" => o.out = Some(PathBuf::from(value)),
-                        _ => return Err("--out is for render".to_string()),
+                        "--out" => o.out = Some(PathBuf::from(value)),
+                        "--model" => o.load.model = Some(PathBuf::from(value)),
+                        "--codec" => o.load.codec = Some(PathBuf::from(value)),
+                        "--voice" => o.load.voice = Some(PathBuf::from(value)),
+                        "--speaker" => o.load.speaker = Some(value),
+                        "--device" => o.load.device = Some(value),
+                        _ => {
+                            let n: i32 = value
+                                .parse()
+                                .map_err(|_| format!("--threads must be a number, not {value}"))?;
+                            if n < 1 {
+                                return Err("--threads must be at least 1".into());
+                            }
+                            o.load.threads = Some(n);
+                        }
                     }
                 }
                 a if a.starts_with("--") => return Err(format!("unknown option {a}")),
@@ -100,7 +138,7 @@ impl Options {
 }
 
 fn inspect(o: Options) -> ExitCode {
-    let engine = o.engine.unwrap_or_else(|| "qwen3-tts".to_string());
+    let engine = o.load.engine;
     let profile = match engine_profile(&engine) {
         Ok(p) => p,
         Err(e) => return fail(&e),
@@ -146,63 +184,38 @@ fn inspect(o: Options) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Load the engine through `ggtts-load`, hashing every model file for the manifest's provenance.
+fn load_engine(req: ggtts_load::Request) -> Result<LoadedEngine, String> {
+    let ggtts_load::Loaded {
+        engine,
+        mut files,
+        speaker,
+    } = ggtts_load::load_default(req)?;
+    let mut hashed = Vec::new();
+    for f in &mut files {
+        f.ensure_sha256()?;
+        hashed.push((f.role.clone(), f.sha256.clone().unwrap_or_default()));
+    }
+    Ok(LoadedEngine {
+        engine,
+        files: hashed,
+        speaker,
+    })
+}
+
 fn render(o: Options) -> ExitCode {
     let Some(out_dir) = o.out else {
         return fail("render needs --out DIR");
     };
-    let mut engine = match o.engine.as_deref() {
-        Some("fake") => ggtts_fake::FakeEngine::default(),
-        Some(other) => {
-            return fail(&format!(
-                "render: engine {other:?} cannot render from ggtts-book yet; only --engine fake renders until a real \
-                 engine's loader is wired in"
-            ))
+    let req = o.load;
+    match render_command(Path::new(&o.book), &out_dir, &o.seed_root, || load_engine(req)) {
+        Ok(report) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).expect("JSON values serialize")
+            );
+            ExitCode::SUCCESS
         }
-        None => return fail("render needs --engine: only fake renders until a real engine's loader is wired in"),
-    };
-    let book = match Book::open(Path::new(&o.book)) {
-        Ok(book) => book,
-        Err(e) => return fail(&e.to_string()),
-    };
-    let profile = *ggtts_core::engine::Engine::profile(&engine);
-    let plans = match plan_book(&profile, &book, &o.seed_root) {
-        Ok(plans) => plans,
-        Err(e) => return fail(&e),
-    };
-    let reports = match render_book(&mut engine, &book, &plans, &out_dir) {
-        Ok(r) => r,
-        Err(e) => return fail(&format!("render stopped: {e}; run again with the same --out to resume")),
-    };
-    let chapters: Vec<_> = reports
-        .iter()
-        .map(|r| match &r.outcome {
-            ChapterOutcome::Written {
-                file,
-                rendered,
-                resumed,
-                refused,
-            } => json!({
-                "id": r.id,
-                "state": "written",
-                "file": file.strip_prefix(&out_dir).unwrap_or(file).to_string_lossy(),
-                "rendered": rendered.len(),
-                "resumed": resumed,
-                "refused_manifest": refused,
-            }),
-            ChapterOutcome::Skipped { reason } => json!({"id": r.id, "state": "skipped", "reason": reason}),
-        })
-        .collect();
-    let report = json!({
-        "format": "ggtts-book-render/1",
-        "book_id": book.book_id(),
-        "engine": "fake",
-        "profile": profile.name,
-        "seed_root": o.seed_root,
-        "chapters": chapters,
-    });
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&report).expect("JSON values serialize")
-    );
-    ExitCode::SUCCESS
+        Err(e) => fail(&e),
+    }
 }

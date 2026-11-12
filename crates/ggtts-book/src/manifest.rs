@@ -38,6 +38,9 @@ pub struct Manifest {
     pub plan: ChapterPlan,
     /// One entry per planned chunk: `Some` once it is done.
     pub done: Vec<Option<Output>>,
+    /// How long each done chunk took to render (generate, decode, trim and encode), in milliseconds. Recorded for
+    /// reading back; never checked.
+    pub render_ms: Vec<Option<u64>>,
 }
 
 /// Why a manifest is not trusted.
@@ -87,7 +90,8 @@ impl Manifest {
     /// A manifest with nothing done.
     pub fn new(plan: ChapterPlan) -> Self {
         let done = vec![None; plan.chunks.len()];
-        Manifest { plan, done }
+        let render_ms = vec![None; plan.chunks.len()];
+        Manifest { plan, done, render_ms }
     }
 
     fn body(&self) -> Value {
@@ -99,16 +103,21 @@ impl Manifest {
             "seed_root": p.seed_root,
             "profile": p.profile,
             "ceiling": p.ceiling,
-            "chunks": p.chunks.iter().zip(&self.done).map(|(c, done)| json!({
-                "index": c.index,
-                "paragraph": c.paragraph,
-                "chunk": c.chunk,
-                "text": c.text,
-                "text_sha256": c.text_sha256,
-                "seed": c.seed,
-                "state": if done.is_some() { "done" } else { "planned" },
-                "output": done.as_ref().map(|o| json!({"file": o.file, "sha256": o.sha256})),
-            })).collect::<Vec<_>>(),
+            "engine": p.engine,
+            "chunks": p.chunks.iter().enumerate().map(|(i, c)| {
+                let done = &self.done[i];
+                json!({
+                    "index": c.index,
+                    "paragraph": c.paragraph,
+                    "chunk": c.chunk,
+                    "text": c.text,
+                    "text_sha256": c.text_sha256,
+                    "seed": c.seed,
+                    "state": if done.is_some() { "done" } else { "planned" },
+                    "output": done.as_ref().map(|o| json!({"file": o.file, "sha256": o.sha256})),
+                    "render_ms": self.render_ms[i],
+                })
+            }).collect::<Vec<_>>(),
         })
     }
 
@@ -181,11 +190,22 @@ impl Manifest {
                 });
             }
         }
+        // The engine that rendered the done chunks: a resume with another engine, backend, model, speaker or ggtts
+        // build would splice two renders into one chapter.
+        let engine = body.get("engine").cloned().unwrap_or(Value::Null);
+        if engine != plan.engine {
+            return Err(ManifestError::Mismatch {
+                field: "engine",
+                manifest: engine.to_string(),
+                plan: plan.engine.to_string(),
+            });
+        }
         let chunks = body
             .get("chunks")
             .and_then(Value::as_array)
             .ok_or_else(|| ManifestError::Format("no chunks".into()))?;
         let mut done = Vec::with_capacity(plan.chunks.len());
+        let mut render_ms = Vec::with_capacity(plan.chunks.len());
         for (i, planned) in plan.chunks.iter().enumerate() {
             let Some(c) = chunks.get(i) else {
                 return Err(ManifestError::PlanChanged { index: i });
@@ -214,6 +234,7 @@ impl Manifest {
                 (Some("planned"), _) => None,
                 (state, _) => return Err(ManifestError::Format(format!("chunk {i} has state {state:?}"))),
             };
+            render_ms.push(output.as_ref().and(c.get("render_ms").and_then(Value::as_u64)));
             done.push(output);
         }
         if chunks.len() != plan.chunks.len() {
@@ -224,6 +245,7 @@ impl Manifest {
         Ok(Manifest {
             plan: plan.clone(),
             done,
+            render_ms,
         })
     }
 
@@ -275,6 +297,7 @@ pub fn resume(dir: &Path, plan: &ChapterPlan) -> Resume {
             let mut manifest = manifest;
             for &i in &todo {
                 manifest.done[i] = None;
+                manifest.render_ms[i] = None;
             }
             Resume {
                 manifest,
@@ -332,13 +355,16 @@ pub fn run_chapter(
     let mut manifest = start.manifest.clone();
     manifest.save(dir).map_err(RunError::Io)?;
     for &index in &start.todo {
+        let started = std::time::Instant::now();
         let bytes = render(plan, index).map_err(|reason| RunError::Render { index, reason })?;
+        let ms = started.elapsed().as_millis() as u64;
         let file = chunk_file(index);
         write_atomic(&dir.join(&file), &bytes).map_err(RunError::Io)?;
         manifest.done[index] = Some(Output {
             file,
             sha256: hex(&sha256(&bytes)),
         });
+        manifest.render_ms[index] = Some(ms);
         manifest.save(dir).map_err(RunError::Io)?;
     }
     Ok(start)

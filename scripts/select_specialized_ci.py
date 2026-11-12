@@ -49,7 +49,7 @@ JOB_MAP = {
 # Where `feature = "ggml"` gates code: the default build compiles none of it, so only the ggml job runs its tests.
 # The engine crates are gated throughout; elsewhere it is these files. A test greps the tree and fails when a gated
 # file is in neither list. (crates/ggtts-ggml-sys/ and crates/ggtts-ffi/ select ggml by their own rule below.)
-GGML_GATED_CRATES = ("crates/ggtts-kitten/", "crates/ggtts-qwen3-tts/")
+GGML_GATED_CRATES = ("crates/ggtts-kitten/", "crates/ggtts-qwen3-tts/", "crates/ggtts-load/")
 GGML_GATED_FILES = {
     "crates/ggtts-cli/src/bin/ggtts-render.rs",
     "crates/ggtts-cli/tests/default_models_cli.rs",
@@ -284,7 +284,7 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
                 continue
             if not path.startswith(("crates/ggtts-core/", "crates/ggtts-cli/", "crates/ggtts-instruments/",
                                     "crates/ggtts-qwen3-tts/", "crates/ggtts-kitten/", "crates/ggtts-ggml-sys/",
-                                    "crates/ggtts-fake/", "crates/ggtts-ffi/")):
+                                    "crates/ggtts-fake/", "crates/ggtts-ffi/", "crates/ggtts-load/")):
                 return set(JOBS)
             if path.startswith(("crates/ggtts-ggml-sys/", "crates/ggtts-ffi/")):
                 # Direct changes to native build or bindings need their targeted checks.

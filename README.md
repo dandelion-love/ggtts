@@ -208,6 +208,12 @@ instruction is no instruction. Whether a fine-tuned checkpoint still follows ins
 model: the published Cantonese models are `custom_voice` exports, so they accept the option, and nothing here
 claims what an instruction does to their speech.
 
+`--steer FILE` adds vectors to the Qwen3-TTS talker's hidden state at the output of chosen layers, as a PyTorch
+forward hook would: one F32 vector per layer in a safetensors file, named `talker.layer.<i>`, times
+`--steer-scale X` (default 1.0), at the layers `--steer-layers LIST` names (default: all in the file). A render without
+it is unchanged, any other engine refuses it, and every report and trace header records the file's sha256, the layers
+and the scale. See [docs/steering.md](docs/steering.md).
+
 ```bash
 # Run from the extracted archive; edit these paths and DEVICE for your machine.
 GGTTS=./ggtts-render                    # on Windows: ./ggtts-render.exe

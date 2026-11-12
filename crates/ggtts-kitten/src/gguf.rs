@@ -350,7 +350,10 @@ impl Gguf {
                 return Err(format!("{name}: data overruns the file"));
             }
             if ty == GgmlType::TQ1_0 {
-                if kv.get("kitten.ternary.layout").and_then(Value::as_str) != Some("tq1_0-256-experimental") {
+                if !matches!(
+                    kv.get("kitten.ternary.layout").and_then(Value::as_str),
+                    Some("tq1_0-256-experimental" | "tq1_0-pad128")
+                ) {
                     return Err(format!("{name}: unsupported TQ1 layout"));
                 }
                 for block in bytes[start..end].chunks_exact(crate::ternary::TQ1_0_BLOCK_BYTES) {

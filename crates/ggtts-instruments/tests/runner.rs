@@ -100,6 +100,7 @@ fn setup_with(tag: &str, paragraphs: &[String]) -> (PathBuf, Inputs) {
         instruments_dir: Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments")),
         models: None,
         instruction: None,
+        steer: None,
     };
     (dir, inputs)
 }
@@ -646,6 +647,7 @@ fn missing_reference_and_output_respect_requirement_and_on_error() {
         instruments_dir: Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../instruments")),
         models: None,
         instruction: None,
+        steer: None,
     };
     let mut missing = Config::default();
     missing
@@ -736,6 +738,37 @@ fn the_instruction_is_recorded_in_the_report_and_the_run_log() {
         assert_eq!(
             log.contains("instruction \"Speak slowly and softly.\""),
             want.is_some(),
+            "{tag}: {log}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// A steered render's steering (the file's sha256, the layers and the scale) is recorded in `report.json`, which
+/// still validates against the published schema, and in `run.log`; an unsteered run writes neither.
+#[test]
+fn the_steering_is_recorded_in_the_report_and_the_run_log() {
+    let mut s = serde_json::from_str::<serde_json::Value>(&read(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/ggtts-report-2.schema.json"),
+    ))
+    .unwrap();
+    s["$ref"] = serde_json::json!("#/$defs/report");
+    let validator = jsonschema::validator_for(&s).expect("the schema compiles");
+    let record = serde_json::json!({"sha256": "a".repeat(64), "layers": [23, 24, 25], "scale": 0.5});
+    for (tag, steer) in [("steered", Some(record.clone())), ("unsteered", None)] {
+        let (dir, mut inputs) = setup(tag);
+        inputs.steer = steer.clone();
+        let mut c = Config::default();
+        c.apply_instrument_flag("selftest").unwrap();
+        run(&c, &inputs).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&read(inputs.report_dir.join("report.json"))).unwrap();
+        assert_eq!(report.get("steer"), steer.as_ref(), "{tag}");
+        let errors: Vec<String> = validator.iter_errors(&report).map(|e| e.to_string()).collect();
+        assert!(errors.is_empty(), "{tag}: {errors:?}");
+        let log = read(inputs.report_dir.join("run.log"));
+        assert_eq!(
+            log.contains(&format!("steer {record}")),
+            steer.is_some(),
             "{tag}: {log}"
         );
         let _ = std::fs::remove_dir_all(dir);

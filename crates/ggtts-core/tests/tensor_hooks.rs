@@ -145,6 +145,7 @@ fn first_token_diff(planted: bool, mut hooks: impl FnMut() -> Hooks) -> Option<S
                 chunk: *chunk,
                 draw: *draw,
                 instruction: None,
+                steer: None,
             };
             let x = a.generate_hooked(&req, &mut NullEvents, &mut Hooks::new()).unwrap();
             let y = b.generate_hooked(&req, &mut NullEvents, &mut h).unwrap();
@@ -238,6 +239,7 @@ fn the_stop_trace_hook_writes_the_values_the_engine_has() {
         chunk: 2,
         draw: 1,
         instruction: None,
+        steer: None,
     };
     let buf = Shared::default();
     let mut h = Hooks::new();
@@ -270,6 +272,7 @@ fn a_logits_hook_sees_the_engine_logits() {
         chunk: 0,
         draw: 0,
         instruction: None,
+        steer: None,
     };
     let seen = Rc::new(RefCell::new(Vec::<f32>::new()));
     struct Logits(Rc<RefCell<Vec<f32>>>);
@@ -480,6 +483,7 @@ fn an_engine_that_exports_nothing_refuses_a_hook_rather_than_starve_it() {
         chunk: 0,
         draw: 0,
         instruction: None,
+        steer: None,
     };
     assert!(e.generate_hooked(&req, &mut NullEvents, &mut Hooks::new()).is_ok());
     let mut h = Hooks::new();

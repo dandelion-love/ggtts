@@ -1,0 +1,16 @@
+{
+  "talker_sha256": "33502b2035f97d7f458248d91e965a6800026549d382c5e8e300176027c70b67",
+  "layer": 14,
+  "scale": 0.5,
+  "tokens": 5,
+  "seed": 1,
+  "input_std": 0.05,
+  "vector_std": 1.0816211700439453,
+  "steering_effect_max_abs": 11.292020797729492,
+  "versions": {
+    "torch": "2.4.1+cu121",
+    "transformers": "4.57.3",
+    "safetensors": "0.5.3",
+    "gguf": "unknown"
+  }
+}

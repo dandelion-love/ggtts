@@ -50,26 +50,50 @@ pub fn allowed_cpus_now() -> usize {
     std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
 }
 
-/// [`allowed_cpus_now`], re-read at most every 100 ms: it re-reads cgroup files (about 23 us a call), and a render
-/// computes many graphs a second. A change of cpuset is seen within 100 ms.
-pub fn allowed_cpus() -> usize {
-    use std::sync::Mutex;
-    use std::time::{Duration, Instant};
-    static LAST: Mutex<Option<(Instant, usize)>> = Mutex::new(None);
-    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((at, n)) = *last {
-        if at.elapsed() < Duration::from_millis(100) {
-            return n;
+/// How long a read of the allowed CPUs is reused.
+pub const ALLOWED_CPUS_TTL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The cache rule, apart from the clock and the reader: reuse `last` while it is younger than [`ALLOWED_CPUS_TTL`],
+/// else call `read`. Returns the count and the entry to keep.
+pub fn cached_cpus(
+    last: Option<(std::time::Instant, usize)>,
+    now: std::time::Instant,
+    read: impl FnOnce() -> usize,
+) -> (usize, (std::time::Instant, usize)) {
+    match last {
+        Some((at, n)) if now.saturating_duration_since(at) < ALLOWED_CPUS_TTL => (n, (at, n)),
+        _ => {
+            let n = read();
+            (n, (now, n))
         }
     }
-    let n = allowed_cpus_now();
-    *last = Some((Instant::now(), n));
-    n
 }
 
-/// [`cap_threads`] against [`allowed_cpus`].
+/// [`allowed_cpus_now`], re-read at most every 100 ms: it re-reads cgroup files (about 23 us a call), and a render
+/// computes many graphs a second. A change of cpuset is seen within 100 ms. The cache is per thread, because on Linux
+/// and Android the read is the calling thread's affinity mask: two engines on threads with different masks each see
+/// their own.
+pub fn allowed_cpus() -> usize {
+    use std::cell::Cell;
+    thread_local! {
+        static LAST: Cell<Option<(std::time::Instant, usize)>> = const { Cell::new(None) };
+    }
+    LAST.with(|last| {
+        let (n, keep) = cached_cpus(last.get(), std::time::Instant::now(), allowed_cpus_now);
+        last.set(Some(keep));
+        n
+    })
+}
+
+/// [`cap_threads`] against [`allowed_cpus`]: the count the engines run a graph with.
 pub fn threads_now(configured: i32) -> i32 {
     cap_threads(configured, allowed_cpus())
+}
+
+/// Whether to say that the cap lowered `configured` to `running`: only when it did, and only the first time `said`
+/// is consulted for it (it is set then).
+pub fn warn_once(configured: i32, running: i32, said: &std::sync::atomic::AtomicBool) -> bool {
+    running < configured && !said.swap(true, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Before a graph compute: set every CPU backend on `sched` to [`threads_now`]`(configured)`. The count can change
@@ -81,13 +105,12 @@ pub fn threads_now(configured: i32) -> i32 {
 /// `sched` must be a live scheduler.
 #[cfg(feature = "ggml")]
 pub unsafe fn cap_sched_threads(sched: ggml_backend_sched_t, configured: i32) {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static WARNED: AtomicBool = AtomicBool::new(false);
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if configured <= 0 {
         return;
     }
     let n = threads_now(configured);
-    if n < configured && !WARNED.swap(true, Ordering::Relaxed) {
+    if warn_once(configured, n, &WARNED) {
         eprintln!(
             "ggtts: {configured} CPU threads were asked for, but only {n} CPUs may be used now; running {n} \
              (more threads than CPUs would stall). Said once."
@@ -137,9 +160,10 @@ mod tests {
         assert_eq!(cap_threads(8, usize::MAX), 8);
     }
 
-    /// A thread confined to one CPU must read one allowed CPU, so the cap gives it one thread. This is the case the
-    /// cap exists for, made on any Linux machine (CI included) by restricting this test's own thread: a version that
-    /// read the machine's processor count instead of the thread's affinity would fail here.
+    /// A thread confined to one CPU must read one allowed CPU, so the cap gives it one thread, through every reader
+    /// the engines use: the fresh read, the per-thread cached one, and `threads_now`. This is the case the cap exists
+    /// for, made on any Linux machine (CI included) by restricting this test's own thread: a reader of the machine's
+    /// processor count, a cache shared across threads, or a `threads_now` that skips the cap would fail here.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn a_thread_confined_to_one_cpu_is_capped_to_one_thread() {
@@ -152,11 +176,43 @@ mod tests {
             mask[0] = 1;
             let rc = unsafe { sched_setaffinity(0, std::mem::size_of_val(&mask), mask.as_ptr()) };
             assert_eq!(rc, 0, "sched_setaffinity");
-            (allowed_cpus_now(), cap_threads(8, allowed_cpus_now()))
+            (allowed_cpus_now(), allowed_cpus(), threads_now(8), threads_now(0))
         })
         .join()
         .unwrap();
-        assert_eq!(read, (1, 1), "one allowed CPU, so one thread");
+        assert_eq!(read, (1, 1, 1, 0), "one allowed CPU, so one thread; unset stays unset");
+    }
+
+    /// The cache's rule: a read younger than the TTL is reused, an older one is read again.
+    #[test]
+    fn the_cpu_count_is_reread_once_the_cache_is_stale() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let fresh = Some((t0, 3));
+        assert_eq!(cached_cpus(None, t0, || 8), (8, (t0, 8)), "nothing cached: read");
+        let soon = t0 + Duration::from_millis(50);
+        assert_eq!(
+            cached_cpus(fresh, soon, || 8),
+            (3, (t0, 3)),
+            "younger than the TTL: reused, not read"
+        );
+        let later = t0 + ALLOWED_CPUS_TTL;
+        assert_eq!(
+            cached_cpus(fresh, later, || 8),
+            (8, (later, 8)),
+            "as old as the TTL: read again"
+        );
+    }
+
+    /// The warning: said once, and only when the cap lowered the count.
+    #[test]
+    fn the_cap_is_said_once_and_only_when_it_lowers_the_count() {
+        use std::sync::atomic::AtomicBool;
+        let said = AtomicBool::new(false);
+        assert!(!warn_once(4, 4, &said), "not lowered: nothing to say");
+        assert!(warn_once(4, 3, &said), "lowered: said");
+        assert!(!warn_once(4, 3, &said), "said once");
+        assert!(!warn_once(8, 1, &said));
     }
 
     /// The cap on a live scheduler whose CPU backend was configured for far more threads than this process may use:

@@ -124,7 +124,7 @@ impl StreamTiming {
     }
 }
 const USAGE: &str = "usage: ggtts-render [--model M.gguf] [--codec C.gguf] [--offline] --out x.flac \
-[--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--speaker NAME] [--instruction TEXT] \
+[--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N (capped at the CPUs allowed)] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--speaker NAME] [--instruction TEXT] \
 [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
 [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID] \

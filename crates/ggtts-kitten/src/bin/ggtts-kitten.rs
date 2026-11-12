@@ -30,6 +30,10 @@
 //! `"source": "self"`, and `parity` says so whenever it compares against such a reference.
 //! `step-parity` runs the same positions batched and one token at a time, as generation does, and compares the
 //! logits (the prompt recorded in `--ref DIR`, or fixed pseudo-random ids; the last `--steps`, default 16, one by one).
+//!
+//! `--threads` is the CPU thread count asked for, and the bench JSON's `threads` records that count. The engines
+//! may run fewer: before each graph the count is capped at the CPUs the process may use
+//! (`ggtts_ggml_sys::threads_now`), and the first time that lowers it, stderr says so.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

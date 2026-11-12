@@ -2,6 +2,9 @@
 
 ## 2026-11-12
 
+- Added the low-memory decision (warn on the first Speak, load on the second) and the streaming measurements on the
+  phone. Pattern 5 is now done: the screen states each engine's costs (#223).
+
 - Bundle started for the Android track. It holds:
   - five decisions: the integration branch, 16 KB alignment, user-supplied models with checked imports, streaming
     playback, and measuring through the CLI;

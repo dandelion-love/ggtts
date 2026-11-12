@@ -22,6 +22,13 @@ for every chunk: 104 s for the 5-minute read, against 47 s for its first chunk
 ([measured](/research/on-device-parity-and-budget.md)). Every shipped engine streams, and Android's engine API is
 built around it.[^callback] This is the first of the [UX patterns](/patterns/ux-patterns-from-other-tts-apps.md).
 
+# Measured on the phone
+
+Qwen3-TTS at 4 threads read a three-sentence Cantonese line that rendered in 2 chunks. The first audio came at
+49.9 s and 50.7 s in two runs, against 78.2 s and 78.9 s for the whole line, so streaming cut the wait by about
+28 s. Stop pressed 3 s after first audio ended the render when the chunk in progress finished, 22.8 s later. The
+app stayed up.
+
 # Trade-off
 
 The streamed pieces are the render's samples before its final level step, so their loudness can differ a little

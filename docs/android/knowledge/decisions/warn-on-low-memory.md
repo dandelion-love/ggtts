@@ -1,10 +1,10 @@
 ---
 type: Decision
 title: Warn, do not refuse, on low memory
-description: Below an engine's measured peak memory, the demo warns on the first press of Speak and loads on the second, because the peak counts model files Android can reclaim.
+description: Below an engine's measured peak memory, the demo warns on the first press of Speak and loads on the second, because the peak is a few seconds of load and a render needs less.
 tags: [android, ux, memory]
 status: draft
-generated: { by: claude-code/opus-5.5, at: 2026-11-12T11:45:00-07:00 }
+generated: { by: claude-code/opus-5.5, at: 2026-11-12T12:05:00-07:00 }
 ---
 # Decision
 
@@ -20,9 +20,11 @@ The screen also says each engine's size, memory and wait before anyone presses S
 
 # Why a warning and not a refusal
 
-The measured peak is the process's resident set, and that includes the memory-mapped model files, which Android can
-drop and read back. Kitten-TTS 2 rendered on the phone with 3.2 GB "available" against its 3.7 GB peak. A refusal
-at the peak would have blocked a read that works. A warning tells the user the risk (the system may stop the app)
+The measured peak is a spike during the load, not what a read holds. Kitten-TTS 2 reads each GGUF whole onto the heap
+and copies its tensors once more, so for about 6 s it holds up to 3.8 GB; once loaded, a render holds about 2.9 GB
+([where the memory goes](/research/kitten-memory-and-tq1.md)). The files are not memory-mapped, so none of that is
+memory Android can reclaim; the risk is only during the load. Kitten-TTS 2 rendered on the phone with 3.2 GB
+"available" against its 3.8 GB peak. A refusal at the peak would have blocked a read that works. A warning tells the user the risk (the system may stop the app)
 and leaves the choice to them.
 
 # Undo

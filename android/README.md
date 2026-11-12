@@ -113,8 +113,9 @@ the two.
 
 Before loading, the app checks free memory. Below the engine's measured peak, or when Android reports low memory,
 the first press of Speak only shows a warning; pressing Speak again loads anyway. It warns rather than refuses
-because the peak counts the memory-mapped model files, which Android can reclaim: Kitten-TTS 2 rendered with
-3.2 GB available against a 3.7 GB peak.
+because the peak is a spike of a few seconds while the model loads (its files are read whole and copied); a render
+then holds less, about 2.9 GB for Kitten-TTS 2, which rendered with 3.2 GB available against a 3.8 GB peak. If memory
+runs out, it is during the load that Android stops the app.
 
 **Speaking streams.** The line plays chunk by chunk: each chunk starts playing as soon as it is rendered, while the
 next renders. On a phone, a chunk takes tens of seconds (the engines run at 7 to 13 times slower than real time on

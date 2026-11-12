@@ -2,8 +2,8 @@
 
 ## 2026-11-12
 
-- Kitten-TTS 2 on the phone with the released Cantonese TQ1_0 LM against the base Q4_0: 195 MB lower peak, 25 to 35%
-  slower generation. The 3.78 GB peak is two load-time spikes (whole-file reads and per-tensor copies), about 0.9 GB
+- Kitten-TTS 2 on the phone with the released Cantonese TQ1_0 LM against the base Q4_0: 195 MB lower peak, 24% and 35%
+  slower generation in two pairs. The 3.78 GB peak is two load-time spikes (whole-file reads and per-tensor copies), about 0.9 GB
   above what a render holds. Peak-memory figures corrected for a KiB slip (3.69 to 3.78 GB, 2.93 to 3.00 GB), here and
   in the demo's cost line. The landscape's unsourced "default on many phones" is removed.
 

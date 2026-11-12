@@ -39,8 +39,8 @@ object EngineCosts {
 
     /**
      * A warning when [availableBytes] is below what [engine] peaked at, or when the system says memory is low; null
-     * when there is room. The peak counts mapped model files, which the system can drop, so this warns, it does not
-     * forbid: the controller loads anyway on a second press.
+     * when there is room. The peak is a few seconds of load (the model files are read whole and copied); a render holds
+     * less, so this warns, it does not forbid: the controller loads anyway on a second press.
      */
     fun memoryWarning(engine: String, availableBytes: Long, lowMemory: Boolean): String? {
         val c = BY_ENGINE[engine] ?: return null

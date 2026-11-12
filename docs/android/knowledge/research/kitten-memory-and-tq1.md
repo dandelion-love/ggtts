@@ -1,10 +1,10 @@
 ---
 type: Research Finding
 title: Kitten-TTS 2's memory, and the released TQ1_0 model on a phone
-description: On a Galaxy Z Fold5, the released Cantonese TQ1_0 LM peaks 195 MB lower than the base Q4_0 LM but generates 25 to 35% slower; Kitten-TTS 2's 3.78 GB peak is a load-time spike, about 0.9 GB above what a render holds, from whole-file reads and per-tensor copies.
+description: On a Galaxy Z Fold5, the released Cantonese TQ1_0 LM peaks 195 MB lower than the base Q4_0 LM but generates 24% and 35% slower in two pairs; Kitten-TTS 2's 3.78 GB peak is a load-time spike, about 0.9 GB above what a render holds, from whole-file reads and per-tensor copies.
 tags: [android, kitten-tts-2, memory, tq1_0, measurement]
 status: draft
-generated: { by: claude-code/opus-5.5, at: 2026-11-12T11:45:00-07:00 }
+generated: { by: claude-code/opus-5.5, at: 2026-11-12T12:05:00-07:00 }
 sources:
   - { id: record, resource: "/research/on-device-parity-and-budget.md", title: "On-device parity and resource budget" }
   - { id: scripts, resource: "https://github.com/dandelion-love/ggtts/tree/track/android/scripts/android_on_device", title: "The phone scripts: run-mem.sh, tq1-measure.sh" }
@@ -23,7 +23,8 @@ models, everything else the same:[^scripts]
 
 The text was a two-sentence Cantonese story (`tq1-measure.sh`), at the default seed and 4 threads, with `--stream-raw`
 so first audio is the first chunk. The runs alternated Q4_0, TQ1_0, Q4_0, TQ1_0 with a minute between them, so warming
-reaches both. `run-mem.sh` sampled the process's memory every 0.25 s.
+reaches both. `run-mem.sh` sampled the process's memory every 0.25 s. The raw files (each run's log, timing report, peak and
+memory timeline) are in `docs/android/data/kitten-tq1-2026-11-12/`.
 
 # Results
 
@@ -41,9 +42,9 @@ different speech (224 against 235 frames for the same text), so speed is compare
   LMs' layer matrices (0.793 GB as Q4_0, 0.595 GB as TQ1_0), and nothing else. It does not bring Kitten-TTS 2 within the
   budget's 3.0 GB.[^record]
 - **Speed: TQ1_0 generates more slowly.** Its LM ran at 2.70 against 3.56 frames per second in the first pair and 1.87
-  against 2.87 in the second: 25 to 35% slower, in both pairs, even though each TQ1_0 run was followed by a faster Q4_0
-  run. The phone warmed through the session (each model's second run was slower than its first), so the absolute
-  numbers drift; the order within each pair does not. The decoder, which is the same in both, took about the same time.
+  against 2.87 in the second: 24% and 35% slower. The phone warmed through the session (each model's second run was
+  slower than its first), so the absolute numbers drift. Within each pair TQ1_0 was slower, and the first TQ1_0 run was
+  slower than the Q4_0 run that followed it, so the gap is not only warming. The decoder, which is the same in both, took about the same time.
   So TQ1_0's first audio and RTF are worse, not better. Two runs a side; the keep-awake session also drove the phone
   during them.
 - **The audio is plausible on both** (0 first-draw defects, 2 chunks each); nobody listened for quality here.

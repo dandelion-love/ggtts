@@ -4,7 +4,7 @@ title: Threads on the phone
 description: On a Galaxy Z Fold5, 4 to 8 CPU threads render at about the same speed within thermal drift, 2 is slower, and the output is bit-identical at every thread count.
 tags: [android, performance]
 status: draft
-generated: { by: claude-code/opus-5.5, at: 2026-11-12T11:45:00-07:00 }
+generated: { by: claude-code/opus-5.5, at: 2026-11-12T12:05:00-07:00 }
 ---
 # What was run
 
@@ -16,14 +16,15 @@ The scripts are `scripts/android_on_device/threads.sh` and `threads_rev.sh`, bes
 # Results
 
 Peak RSS is `VmHWM` (KiB, from `/proc`), given in GB of 10^9 bytes (corrected 2026-11-12; first given as
-3.70 and 2.93, reading the KiB as 1000 bytes).
+3.70 and 2.93, reading the KiB as 1000 bytes). The sweep's raw KiB were not kept; Kitten-TTS 2's figure is the
+load spike every run of it reaches, 3,693,596 to 3,696,204 KiB in the runs that kept them, which is 3.78 GB.
 
 | Engine | Threads | RTF | First chunk ready (s) | Peak RSS |
 |---|---|---|---|---|
-| Kitten-TTS 2 | 2 | 14.31 | 62.2 | 3.79 GB |
-| | 4 | 12.71 | 55.7 | 3.79 GB |
-| | 6 | 14.25 | 70.5 | 3.79 GB |
-| | 8 | 17.98 | 105.1 | 3.79 GB |
+| Kitten-TTS 2 | 2 | 14.31 | 62.2 | 3.78 GB |
+| | 4 | 12.71 | 55.7 | 3.78 GB |
+| | 6 | 14.25 | 70.5 | 3.78 GB |
+| | 8 | 17.98 | 105.1 | 3.78 GB |
 | Qwen3-TTS | 2 | 9.37 | 40.1 | 3.00 GB |
 | | 4 | 7.14 | 32.2 | 3.00 GB |
 | | 6 | 8.39 | 40.0 | 3.00 GB |

@@ -2,6 +2,11 @@
 
 ## 2026-11-12
 
+- Kitten-TTS 2 on the phone with the released Cantonese TQ1_0 LM against the base Q4_0: 195 MB lower peak, 25 to 35%
+  slower generation. The 3.78 GB peak is two load-time spikes (whole-file reads and per-tensor copies), about 0.9 GB
+  above what a render holds. Peak-memory figures corrected for a KiB slip (3.69 to 3.78 GB, 2.93 to 3.00 GB), here and
+  in the demo's cost line. The landscape's unsourced "default on many phones" is removed.
+
 - Review corrections. The benchmark's 440 ms and Kokoro's 8.2 s and 15.3 s are whole-utterance synthesis times,
   not time to first audio, and its "Android System TTS" names no vendor; the rows say so. Work still in open PRs
   (233, 234, 235, 237, 240) is marked by PR, not Done, and Integration is 2 until PR 235 lands. Each first-audio

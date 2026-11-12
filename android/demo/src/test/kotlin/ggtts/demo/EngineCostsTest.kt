@@ -25,7 +25,9 @@ class EngineCostsTest {
     fun theWarningComesBelowTheMeasuredPeakOrWhenTheSystemSaysLow() {
         assertNull(EngineCosts.memoryWarning("kitten-tts-2", 4_000_000_000, lowMemory = false))
         val w = EngineCosts.memoryWarning("kitten-tts-2", 2_000_000_000, lowMemory = false)!!
-        assertTrue(w, w.startsWith("Low memory: kitten-tts-2 used up to 3.7 GB") && w.contains("2.0 GB is available"))
+        assertTrue(w, w.startsWith("Low memory: kitten-tts-2 used up to 3.8 GB") && w.contains("2.0 GB is available"))
+        // The peak is VmHWM's 3,693,672 KiB, 3.78 GB of 10^9 bytes, compared with available bytes: 3.75 GB is short.
+        assertTrue("3.75 GB is below the 3.78 GB peak", EngineCosts.memoryWarning("kitten-tts-2", 3_750_000_000, lowMemory = false) != null)
         val low = EngineCosts.memoryWarning("qwen3-tts", 8_000_000_000, lowMemory = true)!!
         assertTrue(low, low.contains("the system reports memory is low"))
         assertNull("an engine with no figures is not checked", EngineCosts.memoryWarning("fake", 0, lowMemory = true))

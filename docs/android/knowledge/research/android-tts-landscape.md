@@ -4,7 +4,7 @@ title: Other on-device TTS on Android
 description: The on-device text-to-speech engines people use on Android, with size, Cantonese support, system-engine status, speed, licence and Play ratings read on 2026-11-12.
 tags: [android, research, competition]
 status: draft
-generated: { by: claude-code/opus-5.5, at: 2026-11-12T10:24:00-07:00 }
+generated: { by: claude-code/opus-5.5, at: 2026-11-12T11:45:00-07:00 }
 stale_after: 2027-05-12T00:00:00-07:00
 sources:
   - { id: voiceping, resource: "https://voiceping-landingpage-prod.pages.dev/en/blog/research-offline-tts-eval/", title: "VoicePing offline TTS evaluation (Galaxy S10, 4 threads, Feb 2026)" }
@@ -41,7 +41,7 @@ distributes its engine APKs on GitHub and Hugging Face.
 
 | Engine | Model or download | Cantonese offline | System TTS engine | Speed (RTF; lower is faster) | Licence | Rating (Play, 2026-11-12) |
 |---|---|---|---|---|---|---|
-| Google Speech Recognition & Synthesis | unverified | Cantonese (HK) is supported; an offline voice is unverified | yes, the default on many phones | unverified | proprietary | 4.0, 4.37M reviews, 10B+ installs[^play-google] |
+| Google Speech Recognition & Synthesis | unverified | Cantonese (HK) is supported; an offline voice is unverified | yes | unverified | proprietary | 4.0, 4.37M reviews, 10B+ installs[^play-google] |
 | The device's system TTS on a Galaxy S10 (the benchmark's "Android System TTS", engine not named; likely Samsung's) | built in | not tested | yes | 0.058; a whole utterance in 440 ms (median)[^voiceping] | proprietary | not applicable |
 | Samsung TTS | Cantonese voice pack about 69.5 MB[^samsung-yue] | yes, Galaxy only | yes | unverified | proprietary | preinstalled; not on Play |
 | eSpeak NG | 9 MiB APK[^espeak-fdroid] | lists `yue`, quality undocumented[^espeak-langs] | yes | unverified (formant synthesis, fast) | GPL-3.0+ | F-Droid only |

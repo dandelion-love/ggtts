@@ -4,12 +4,12 @@ title: Warn, do not refuse, on low memory
 description: Below an engine's measured peak memory, the demo warns on the first press of Speak and loads on the second, because the peak counts model files Android can reclaim.
 tags: [android, ux, memory]
 status: draft
-generated: { by: claude-code/opus-5.5, at: 2026-11-12T08:15:00-07:00 }
+generated: { by: claude-code/opus-5.5, at: 2026-11-12T11:45:00-07:00 }
 ---
 # Decision
 
 Before a load, the demo compares the available memory (`ActivityManager.MemoryInfo.availMem`, and its `lowMemory`
-flag) with the engine's measured peak: 2.93 GB for Qwen3-TTS, 3.70 GB for Kitten-TTS 2. Below that, or when the
+flag) with the engine's measured peak: 3.00 GB for Qwen3-TTS, 3.78 GB for Kitten-TTS 2 (corrected 2026-11-12 from 2.93 and 3.70, a KiB slip). Below that, or when the
 system reports low memory:
 - the first press of Speak shows a warning and does not load;
 - a second press with the same settings loads anyway;

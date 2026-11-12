@@ -40,6 +40,9 @@ that a merge places under a released heading is caught.
 
 ### Changed
 
+- **The Android demo states peak memory in bytes, as it compares them.** Its figures read the kernel's KiB as 1000
+  bytes: Kitten-TTS 2 peaks at 3.78 GB, not 3.70, and Qwen3-TTS at 3.00 GB, not 2.93, so the low-memory warning now
+  comes at the right point.
 - **The CPU thread count is capped at the CPUs the process may use, checked before each graph.** Asking for more threads
   than CPUs no longer stalls: ggml's threads wait for each other, so on an Android phone whose app is moved to three
   cores when it leaves the screen, four threads did not finish a line in 400 s that three rendered in 87 s. The count is

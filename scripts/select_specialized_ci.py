@@ -42,6 +42,8 @@ JOB_MAP = {
     # push to rc that lands a workflow edit runs it. A PR that changes a CUDA archive script runs it (CUDA_SCRIPTS).
     "cuda-compile": set(), "specialized-selection": set(JOBS),
     "check": set(), "build-test": set(), "planted-ceiling": set(), "python": {"python"},
+    # tiny-model is selected by tiny_decision below, which reads its own block of ci.yml (workflow_touches).
+    "tiny-model": set(),
 }
 
 # Where `feature = "ggml"` gates code: the default build compiles none of it, so only the ggml job runs its tests.
@@ -344,6 +346,51 @@ def cuda_decision(event, base_ref, ref, paths):
     return False
 
 
+# The tiny-model job: the no-change check on a real Qwen3-TTS engine cut to one layer (crates/ggtts-qwen3-tts/fixtures/
+# tiny), on CPU. What it reads: the engine, the core it implements (the engine trait, hooks, trace, pipeline), ggml and
+# its bindings (the submodule pointer included), the instruments and the CLI the event check runs them from, the
+# fixture's pins and scripts, and the workspace's manifests and toolchain. Documentation never selects it.
+TINY_PREFIXES = ("crates/ggtts-qwen3-tts/", "crates/ggtts-core/", "crates/ggtts-ggml-sys/", "crates/ggtts-instruments/",
+                 "crates/ggtts-cli/", "instruments/")
+TINY_FILES = {"scripts/tiny_fixture.sh", "scripts/cut_tiny_fixture.py", "Cargo.toml", "Cargo.lock",
+              "rust-toolchain.toml", ".gitmodules"}
+TINY_JOB = "tiny-model"
+
+
+def tiny_path(path):
+    """A path whose change can change what the tiny-model job checks or how it runs."""
+    if path in TINY_FILES:
+        return True
+    return path.startswith(TINY_PREFIXES) and not path.endswith(".md")
+
+
+def workflow_touches(before, after, job):
+    """Whether a ci.yml edit changes `job`'s block, the selection job's, or the header; unreadable is a change."""
+    try:
+        old_header, old = workflow_sections(before)
+        new_header, new = workflow_sections(after)
+    except ValueError:
+        return True
+    return (old_header != new_header or old.get(job) != new.get(job)
+            or old.get("specialized-selection") != new.get("specialized-selection"))
+
+
+def tiny_decision(event, base_ref, head_ref, same_repo, ref, paths, workflow_touched=True):
+    """Whether the tiny-model job runs. A separate output, like `cuda`, never part of JOBS.
+
+    It runs on every promotion pull request (rc into main, so the commit being promoted carries a tiny-model result),
+    on any other pull request that changes a tiny_path or touches the job in ci.yml (`workflow_touched`), and on a
+    push to rc whose range changes a tiny_path or cannot be read (`paths` None).
+    """
+    if event == "pull_request":
+        if base_ref == "main" and head_ref == "rc" and same_repo:
+            return True
+        return any(tiny_path(p) or (p == WORKFLOW and workflow_touched) for p in paths or ())
+    if event == "push" and ref == "refs/heads/rc":
+        return paths is None or any(tiny_path(p) for p in paths)
+    return False
+
+
 def pushed_paths(before, after):
     """The paths a push changed, or None when the range cannot be read (a new branch, a rewritten history)."""
     if not before or not after or set(before) == {"0"}:
@@ -407,6 +454,7 @@ def main():
     same_repo = bool(os.environ.get("REPOSITORY")) and os.environ.get("REPOSITORY") == os.environ.get("HEAD_REPO")
     paths = []
     workflow_selected = None
+    workflow_touched_tiny = True
     logging_lock_safe = False
     if event == "pull_request" and not (base_ref == "main" and head_ref == "rc" and same_repo):
         base, head = os.environ["BASE_SHA"], os.environ["HEAD_SHA"]
@@ -420,6 +468,7 @@ def main():
             old = subprocess.check_output(["git", "show", f"{merge_base}:{WORKFLOW}"], text=True)
             new = subprocess.check_output(["git", "show", f"{head}:{WORKFLOW}"], text=True)
             workflow_selected = workflow_changes(old, new)
+            workflow_touched_tiny = workflow_touches(old, new, TINY_JOB)
         if "Cargo.lock" in paths and CORE_MANIFEST in paths:
             manifests = [path for path in paths if path.endswith("Cargo.toml")]
             if set(manifests) <= {CORE_MANIFEST, CLI_MANIFEST, EVENT_MANIFEST}:
@@ -443,6 +492,10 @@ def main():
     print(f"cuda={'true' if cuda else 'false'}")
     if cuda:
         print("CUDA archive compile selected", file=sys.stderr)
+    tiny = tiny_decision(event, base_ref, head_ref, same_repo, ref, pushed, workflow_touched_tiny)
+    print(f"tiny={'true' if tiny else 'false'}")
+    if tiny:
+        print("tiny-model no-change check selected", file=sys.stderr)
     print("Selected: " + (", ".join(sorted(selected)) or "none") + "; skipped is not passed", file=sys.stderr)
 
 

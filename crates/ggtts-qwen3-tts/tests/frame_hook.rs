@@ -32,6 +32,21 @@ fn env_path(name: &str) -> PathBuf {
     PathBuf::from(std::env::var(name).unwrap_or_else(|_| panic!("set {name}")))
 }
 
+/// The frame cap for the promotion gate's two cases: the fixture's own unless `GGTTS_NO_CHANGE_MAX_FRAMES` lowers it.
+/// The hosted CI job lowers it on the tiny fixture, which never stops and so always runs to the cap; the gate leaves
+/// it unset, so on the full model nothing changes.
+fn frame_cap(gold: &Golden) -> i32 {
+    let own = gold.max_tokens as i32;
+    match std::env::var("GGTTS_NO_CHANGE_MAX_FRAMES") {
+        Ok(v) => {
+            let cap: i32 = v.parse().expect("GGTTS_NO_CHANGE_MAX_FRAMES must be a whole number");
+            assert!(cap > 0, "GGTTS_NO_CHANGE_MAX_FRAMES must be above zero");
+            cap.min(own)
+        }
+        Err(_) => own,
+    }
+}
+
 fn goldens() -> Vec<Golden> {
     let g = Golden::load_all(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/cpu")).unwrap();
     assert!(!g.is_empty());
@@ -82,7 +97,7 @@ fn stop_trace_tensor_hook_preserves_real_tokens_and_samples() {
     let voice = Voice {
         speaker: gold.speaker.clone(),
         language: gold.language.clone(),
-        max_frames: gold.max_tokens as i32,
+        max_frames: frame_cap(&gold),
         device,
         ..Default::default()
     };
@@ -169,7 +184,7 @@ fn a_hook_boundary_logit_mutation_is_detected_on_real_qwen() {
                 &gold.speaker,
                 language_id(&gold.language).unwrap(),
                 gold.seed,
-                gold.max_tokens as i32,
+                frame_cap(&gold),
                 Sampling::default(),
                 if observe { Some((wants, &mut callback)) } else { None },
                 None,

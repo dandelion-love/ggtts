@@ -11,6 +11,8 @@ that a merge places under a released heading is caught.
 
 ## Unreleased
 
+## v0.1.0-rc.11 (2026-11-12)
+
 ### Added
 
 - **The C and Kotlin binding find the default model, and the C ABI can render on the GPU.** The C ABI is now

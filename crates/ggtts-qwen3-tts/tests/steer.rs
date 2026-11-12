@@ -10,8 +10,10 @@
 //! * Scale zero gives the unsteered tokens.
 //! * A non-zero vector changes the tokens, the same request twice gives the same tokens, and the planted missing add
 //!   node (`Plant::SteerAddMissing`) turns that check red.
-//! * The final hidden state under steering agrees with a PyTorch forward-hook reference
-//!   (`scripts/steer_reference.py`, `fixtures/steer/`) within the engine's own error on the unsteered prefill.
+//! * The steering's effect on the final hidden state agrees with a PyTorch forward-hook reference
+//!   (`scripts/steer_reference.py`) within twice the engine's own error on the unsteered prefill: on the tiny talker
+//!   at layer 0 (`fixtures/steer/`), and on the full talker at layer 14 of 28 (`fixtures/steer/full/`), where the
+//!   planted vector one layer late, the planted vector at an extra layer and the planted missing add each fail it.
 //! * Steering the talker cannot take is refused before anything is generated.
 //! * The trace-identity check passes on steered requests, and its planted instrument still turns it red.
 //! * A layer subset of a file gives the tokens of a file holding only those layers.
@@ -368,9 +370,17 @@ fn a_layer_subset_is_the_file_of_those_layers() {
     }
 }
 
-/// The reference fixture (`scripts/steer_reference.py`): `(meta, input, plain, steered, steering)`.
-fn reference() -> (serde_json::Value, Vec<f32>, Vec<f32>, Vec<f32>, Steering) {
-    let dir = here().join("fixtures/steer");
+/// A reference fixture (`scripts/steer_reference.py`) in `fixtures/<dir>`.
+struct Reference {
+    meta: serde_json::Value,
+    input: Vec<f32>,
+    plain: Vec<f32>,
+    steered: Vec<f32>,
+    steering: Steering,
+}
+
+fn reference(dir: &str) -> Reference {
+    let dir = here().join("fixtures").join(dir);
     let meta: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("reference.json")).unwrap()).unwrap();
     let mut t = read_f32_tensors(&std::fs::read(dir.join("reference.safetensors")).unwrap(), |_| Ok(())).unwrap();
     let mut take = |k: &str| t.remove(k).unwrap_or_else(|| panic!("the reference lacks {k}")).1;
@@ -379,65 +389,71 @@ fn reference() -> (serde_json::Value, Vec<f32>, Vec<f32>, Vec<f32>, Steering) {
         .unwrap()
         .select(None, meta["scale"].as_f64().unwrap())
         .unwrap();
-    (meta, input, plain, steered, steering)
-}
-
-fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
-    assert_eq!(a.len(), b.len());
-    a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
+    Reference {
+        meta,
+        input,
+        plain,
+        steered,
+        steering,
+    }
 }
 
 /// The root-mean-square difference over the root-mean-square of `b`.
 fn relative_rms(a: &[f32], b: &[f32]) -> f64 {
+    assert_eq!(a.len(), b.len());
     let d: f64 = a.iter().zip(b).map(|(x, y)| f64::from(x - y).powi(2)).sum();
     let n: f64 = b.iter().map(|y| f64::from(*y).powi(2)).sum();
     (d / n).sqrt()
 }
 
-/// How far the engine's final hidden state is from the reference's: unsteered, steered, and steered with the add
-/// node planted out. Also the steering's own effect on the reference.
-fn reference_errors(t: &mut Talker) -> (f32, f32, f32) {
-    let (meta, input, plain, steered, steering) = reference();
-    let n = meta["tokens"].as_u64().unwrap() as usize;
-    let got_plain = t.prefill_hidden(&input, n, None).unwrap();
-    let got_steered = t.prefill_hidden(&input, n, Some(&steering)).unwrap();
-    println!(
-        "relative rms |engine - reference|: unsteered {:.5}, steered {:.5}",
-        relative_rms(&got_plain, &plain),
-        relative_rms(&got_steered, &steered)
-    );
-    (
-        max_abs_diff(&got_plain, &plain),
-        max_abs_diff(&got_steered, &steered),
-        max_abs_diff(&steered, &plain),
-    )
+fn minus(a: &[f32], b: &[f32]) -> Vec<f32> {
+    a.iter().zip(b).map(|(x, y)| x - y).collect()
 }
 
-/// The steered hidden state must be as close to the reference as the unsteered one is: within twice the engine's
-/// own unsteered error, which comes from the q8_0 activations and the f16 KV cache, not from steering. The steering's
-/// effect on the reference must be well over that (five times), or the check could not tell an add from no add.
+/// The reference check, on talker `t` and the fixture in `fixtures/<dir>`, whose talker sha256 must be `sha`.
+///
+/// What it compares is the steering's effect: the engine's steered hidden state minus its unsteered one, against the
+/// reference's steered minus unsteered, as a relative root-mean-square difference. Taking the difference cancels most
+/// of the error the engine already has unsteered (the q8_0 activations and the f16 KV cache), which grows with depth:
+/// about 1% relative on the one-layer talker, about 16% after 28 layers. The tolerance is twice that unsteered error.
+/// A missing add gives an effect error of 1 (no effect at all), so the tolerance must stay under 0.5 for the check
+/// to see one. `Err` names what failed; the tests assert on it.
+fn reference_check(t: &mut Talker, dir: &str, sha: &str) -> Result<String, String> {
+    let r = reference(dir);
+    assert_eq!(
+        r.meta["talker_sha256"].as_str(),
+        Some(sha),
+        "the reference in {dir} was recorded on another talker"
+    );
+    let n = r.meta["tokens"].as_u64().unwrap() as usize;
+    let got_plain = t.prefill_hidden(&r.input, n, None).unwrap();
+    let got_steered = t.prefill_hidden(&r.input, n, Some(&r.steering)).unwrap();
+    let unsteered = relative_rms(&got_plain, &r.plain);
+    let steered = relative_rms(&got_steered, &r.steered);
+    let effect = relative_rms(&minus(&got_steered, &got_plain), &minus(&r.steered, &r.plain));
+    let tolerance = 2.0 * unsteered;
+    let summary = format!(
+        "{dir} (layers {:?}): relative rms |engine - reference| unsteered {unsteered:.5}, steered {steered:.5}; \
+         steering effect error {effect:.5} (tolerance {tolerance:.5})",
+        r.steering.layer_indices(),
+    );
+    if tolerance >= 0.5 {
+        return Err(format!(
+            "the unsteered error is too large to check steering against: {summary}"
+        ));
+    }
+    if effect > tolerance {
+        return Err(format!("the steering effect is off the reference: {summary}"));
+    }
+    Ok(summary)
+}
+
 #[test]
 #[ignore = "needs GGTTS_TINY_TALKER (scripts/tiny_fixture.sh)"]
 fn the_steered_hidden_state_matches_the_pytorch_reference() {
-    let path = tiny();
-    let (meta, ..) = reference();
-    assert_eq!(
-        meta["talker_sha256"].as_str(),
-        Some(source("CUT_SHA256").as_str()),
-        "the reference was recorded on another talker"
-    );
-    let mut t = Talker::load(&path, 4).unwrap();
-    let (plain, steered, effect) = reference_errors(&mut t);
-    let tolerance = 2.0 * plain;
-    println!(
-        "max |engine - reference|: unsteered {plain:.6}, steered {steered:.6} (tolerance {tolerance:.6}); the \
-         steering's effect on the reference {effect:.6}"
-    );
-    assert!(steered <= tolerance, "steered error {steered} is over {tolerance}");
-    assert!(
-        effect > 5.0 * tolerance,
-        "the steering effect {effect} is too small to check against {tolerance}"
-    );
+    let mut t = Talker::load(&tiny(), 4).unwrap();
+    let summary = reference_check(&mut t, "steer", &source("CUT_SHA256")).unwrap_or_else(|e| panic!("{e}"));
+    println!("{summary}");
 }
 
 #[test]
@@ -446,12 +462,36 @@ fn the_steered_hidden_state_matches_the_pytorch_reference() {
 fn a_missing_add_node_fails_the_reference_check() {
     use ggtts_qwen3_tts::talker::Plant;
     let mut t = Talker::load_planted(&tiny(), 4, Default::default(), Plant::SteerAddMissing).unwrap();
-    let (plain, steered, effect) = reference_errors(&mut t);
-    println!("planted missing add: unsteered error {plain:.6}, steered error {steered:.6}, effect {effect:.6}");
-    assert!(
-        steered > 2.0 * plain,
-        "the reference check passed a talker with no add node"
-    );
+    let e = reference_check(&mut t, "steer", &source("CUT_SHA256"))
+        .expect_err("the reference check passed a talker with no add node");
+    println!("planted missing add: red: {e}");
+}
+
+/// The reference check on the full talker, steering layer 14 of 28: a layer that is neither the first nor the last,
+/// so a vector one layer early, one layer late or at an extra layer changes the hidden state.
+#[test]
+#[ignore = "needs GGTTS_TALKER (the published v0.0.1 talker)"]
+fn full_model_the_steered_hidden_state_at_a_middle_layer_matches_the_pytorch_reference() {
+    let mut t = Talker::load(&full(), 4).unwrap();
+    let summary = reference_check(&mut t, "steer/full", &source("TALKER_SHA256")).unwrap_or_else(|e| panic!("{e}"));
+    println!("{summary}");
+}
+
+/// Each planted placement defect fails the full talker's reference check: the vector one layer late, the vector at
+/// its layer and the next, and no add at all.
+#[test]
+#[cfg(feature = "plant")]
+#[ignore = "needs GGTTS_TALKER (the published v0.0.1 talker)"]
+fn full_model_a_vector_at_a_wrong_or_extra_layer_fails_the_reference_check() {
+    use ggtts_qwen3_tts::cpu::Device;
+    use ggtts_qwen3_tts::talker::Plant;
+    let path = full();
+    for plant in [Plant::SteerLayerShift, Plant::SteerNextLayerToo, Plant::SteerAddMissing] {
+        let mut t = Talker::load_planted(&path, 4, Device::Cpu, plant).unwrap();
+        let e = reference_check(&mut t, "steer/full", &source("TALKER_SHA256"))
+            .expect_err(&format!("the reference check passed the planted {plant:?}"));
+        println!("planted {plant:?}: red: {e}");
+    }
 }
 
 #[test]

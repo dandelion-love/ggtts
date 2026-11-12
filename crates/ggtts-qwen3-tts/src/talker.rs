@@ -135,6 +135,12 @@ mod planted {
         /// The steering add node left out of the talker graph: a steered request renders as an unsteered one. Changes
         /// nothing for a request with no steering. It exists to show that the steering checks can see a missing add.
         SteerAddMissing,
+        /// Each steering vector added one layer late: the vector for layer `k` lands at `k + 1` (and nowhere when `k`
+        /// is the last layer). It exists to show that the reference check sees a vector at the wrong layer.
+        SteerLayerShift,
+        /// Each steering vector added at its own layer and again at the next one. It exists to show that the
+        /// reference check sees a vector at an extra layer.
+        SteerNextLayerToo,
         /// The step hook of [`Talker::generate_steered`](super::Talker::generate_steered) draws once from the
         /// sampler's stream after each step it sees, so every later token moves. It fires only when a step hook is
         /// passed (a traced or hooked render): it exists to show that the trace-identity check sees an instrument that
@@ -145,7 +151,7 @@ mod planted {
     #[cfg(feature = "plant")]
     impl Plant {
         /// `none`, `rope-normal`, `sampler-off-by-one`, `frame-hook-draw`, `instruction-after-role`,
-        /// `steer-add-missing` or `step-hook-draw`.
+        /// `steer-add-missing`, `steer-layer-shift`, `steer-next-layer-too` or `step-hook-draw`.
         pub fn parse(s: &str) -> Option<Self> {
             Some(match s {
                 "" | "none" => Self::None,
@@ -154,6 +160,8 @@ mod planted {
                 "frame-hook-draw" => Self::FrameHookDraw,
                 "instruction-after-role" => Self::InstructionAfterRole,
                 "steer-add-missing" => Self::SteerAddMissing,
+                "steer-layer-shift" => Self::SteerLayerShift,
+                "steer-next-layer-too" => Self::SteerNextLayerToo,
                 "step-hook-draw" => Self::StepHookDraw,
                 _ => return None,
             })
@@ -1317,7 +1325,21 @@ impl Talker {
             return Ok(Vec::new());
         };
         self.check_steer(s)?;
-        Ok(s.scaled().into_iter().map(|(l, v)| (l as usize, v)).collect())
+        let rows: Vec<(usize, Vec<f32>)> = s.scaled().into_iter().map(|(l, v)| (l as usize, v)).collect();
+        let n = self.config.n_layers as usize;
+        Ok(match self.plant {
+            Plant::SteerLayerShift => rows
+                .into_iter()
+                .map(|(l, v)| (l + 1, v))
+                .filter(|(l, _)| *l < n)
+                .collect(),
+            Plant::SteerNextLayerToo => rows
+                .into_iter()
+                .flat_map(|(l, v)| [(l, v.clone()), (l + 1, v)])
+                .filter(|(l, _)| *l < n)
+                .collect(),
+            _ => rows,
+        })
     }
 
     /// One graph input per steered layer, each a row of the hidden size. Set with [`set_steer`](Self::set_steer).

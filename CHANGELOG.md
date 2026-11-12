@@ -19,10 +19,11 @@ that a merge places under a released heading is caught.
   add, at every position of the prompt and of every generated frame: what a PyTorch forward hook on the layer's
   output does. `--steer-layers 23,24,25` applies only those layers of the file (default: every layer in it). The
   code predictor is not steered. A render without `--steer` is the same render as before, and its graph has no
-  steering node. A file that is not readable, a tensor with another name or dtype, a value that is not finite, a
-  vector of the wrong length, a layer out of range, a layer list naming a layer the file does not hold or naming one
-  twice, `--steer-scale` or `--steer-layers` without `--steer`, and `--steer` with any engine but `qwen3-tts`, are
-  each refused before anything is rendered. Steering is a request input, not an instrument: it does not go through
+  steering node. A file that is not readable, a tensor with another name or dtype, a tensor named twice, a value that
+  is not finite, a vector of the wrong length, a layer out of range, a layer list naming a layer the file does not
+  hold or naming one twice, a scale that is not finite in f32 or makes a scaled value overflow f32, `--steer-scale` or
+  `--steer-layers` without `--steer`, and `--steer` with any engine but `qwen3-tts`, are each refused before anything
+  is rendered. Steering is a request input, not an instrument: it does not go through
   the hooks, and the trace-identity check still holds on a steered render. See [docs/steering.md](docs/steering.md).
 - **A steered render says so in every record it writes.** The trace header, the timing and duration reports and the
   instruments' `report.json` gain an optional `steer` object: the steering file's sha256, the layers applied and the

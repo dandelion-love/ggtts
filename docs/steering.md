@@ -51,10 +51,11 @@ Each of these stops the render before anything is generated, with a message nami
 
 - a file that cannot be read, or that is not safetensors;
 - a tensor that is not named `talker.layer.<i>`, is not `F32`, is not one-dimensional, or holds a value that is not
-  finite;
+  finite, and a header that names one tensor twice;
 - a vector that is not the talker's hidden size, or a layer the talker does not have;
 - `--steer-layers` naming a layer the file does not hold, or naming one twice;
-- `--steer-scale` that is not a finite number, and `--steer-scale` or `--steer-layers` without `--steer`;
+- `--steer-scale` that is not a finite number in f32 (the vectors are scaled and added in f32, so `1e39` is refused),
+  a scale that makes any scaled value overflow f32, and `--steer-scale` or `--steer-layers` without `--steer`;
 - `--steer` with an engine that cannot steer (Kitten-TTS 2, the fake engine). The engines refuse a steered request
   themselves too, so a library caller cannot have one ignored.
 
@@ -88,10 +89,16 @@ render with the same steered render traced, and still goes red on its planted in
 - a vector changes the tokens and the same request gives the same tokens twice; with the add node planted out
   (`Plant::SteerAddMissing`) that check is red;
 - the final hidden state agrees with a PyTorch forward-hook reference. `scripts/steer_reference.py` builds the
-  reference from the talker GGUF's own weights, dequantised into `transformers`' Qwen3 decoder, and writes
-  `crates/ggtts-qwen3-tts/fixtures/steer/`. The steered error must be within twice the engine's own unsteered error
-  on the same prefill (about 1% relative, from the q8_0 activations and the f16 KV cache), and the steering's effect
-  must be well over that. With the add node planted out the check is red;
+  reference from the talker GGUF's own weights, dequantised into `transformers`' Qwen3 decoder, and writes a fixture
+  of a five-row prefill: `crates/ggtts-qwen3-tts/fixtures/steer/` for the tiny talker at layer 0, and
+  `fixtures/steer/full/` for the published talker at layer 14 of 28, neither the first layer nor the last. The check
+  compares the steering's effect (steered minus unsteered hidden state) with the reference's, as a relative
+  root-mean-square difference, within twice the engine's own unsteered error on the same prefill. That error comes
+  from the q8_0 activations and the f16 KV cache and grows with depth: about 1% after one layer, about 16% after 28.
+  Taking the difference cancels most of it: the effect is off by 0.3% on the tiny talker and 20% on the full one.
+  Three planted defects turn the full-talker check red: the vector one layer late (`Plant::SteerLayerShift`, effect
+  error 84%), at its layer and the next (`Plant::SteerNextLayerToo`, 71%), and no add at all
+  (`Plant::SteerAddMissing`, 100%), against a tolerance of 31%;
 - the trace-identity check passes on steered requests, and its planted drawing instrument is red;
 - a layer subset of a file gives the tokens of a file holding only those layers.
 

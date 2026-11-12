@@ -93,8 +93,9 @@ render with the same steered render traced, and still goes red on its planted in
   of a five-row prefill: `crates/ggtts-qwen3-tts/fixtures/steer/` for the tiny talker at layer 0, and
   `fixtures/steer/full/` for the published talker at layer 14 of 28, neither the first layer nor the last. The check
   compares the steering's effect (steered minus unsteered hidden state) with the reference's, as a relative
-  root-mean-square difference, within twice the engine's own unsteered error on the same prefill. That error comes
-  from the q8_0 activations and the f16 KV cache and grows with depth: about 1% after one layer, about 16% after 28.
+  root-mean-square difference, within twice the engine's own unsteered error on the same prefill. That error
+  grows with depth: about 1% after one layer, about 16% after 28. Its cause is not yet attributed (the reference
+  already uses the GGUF's dequantised weights, so weight quantisation is not it); see #204.
   Taking the difference cancels most of it: the effect is off by 0.3% on the tiny talker and 20% on the full one.
   Three planted defects turn the full-talker check red: the vector one layer late (`Plant::SteerLayerShift`, effect
   error 84%), at its layer and the next (`Plant::SteerNextLayerToo`, 71%), and no add at all

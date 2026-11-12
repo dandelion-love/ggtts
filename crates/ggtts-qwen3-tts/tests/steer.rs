@@ -414,7 +414,7 @@ fn minus(a: &[f32], b: &[f32]) -> Vec<f32> {
 ///
 /// What it compares is the steering's effect: the engine's steered hidden state minus its unsteered one, against the
 /// reference's steered minus unsteered, as a relative root-mean-square difference. Taking the difference cancels most
-/// of the error the engine already has unsteered (the q8_0 activations and the f16 KV cache), which grows with depth:
+/// of the error the engine already has unsteered (its cause is not yet attributed; see #204), which grows with depth:
 /// about 1% relative on the one-layer talker, about 16% after 28 layers. The tolerance is twice that unsteered error.
 /// A missing add gives an effect error of 1 (no effect at all), so the tolerance must stay under 0.5 for the check
 /// to see one. `Err` names what failed; the tests assert on it.

@@ -1,0 +1,144 @@
+# ggtts on Android: the library and the demo app
+
+Two Gradle modules:
+
+* **`ggtts`**, the Android library (AAR): the Kotlin binding [`Ggtts.kt`](ggtts/src/main/kotlin/ggtts/Ggtts.kt) and
+  `libggtts_ffi.so` for `arm64-v8a` (the C-ABI with its JNI entry points, over ggml), with the NDK's
+  `libc++_shared.so` beside it. How to call it: [ggtts from Kotlin and Android](../docs/bindings/kotlin-android.md).
+* **`demo`**, a one-screen app (package `ggtts.demo`) that loads the model files you pick and speaks one line with
+  Qwen3-TTS or Kitten-TTS 2, through the library.
+
+**No model ships with the app.** The APK holds code only; you bring the model files. The build refuses an APK that
+carries a weights file, by name (`.gguf`, `.safetensors`, `.bin`, `.pt`, `.onnx`) or by content (any entry starting
+with GGUF's magic bytes), and checks both refusals on planted APKs every time it runs.
+
+## Build
+
+```sh
+git submodule update --init crates/ggtts-ggml-sys/ggml
+rustup target add aarch64-linux-android
+cargo install cargo-ndk --version 3.5.4 --locked
+export ANDROID_HOME=/path/to/android-sdk                # with platforms;android-35
+export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018
+export JAVA_HOME=/path/to/jdk-17                        # 17 to 23 (Gradle 8.11's range)
+scripts/android_build.sh app dist/android-arm64
+```
+
+This builds `libggtts_ffi.so` with cargo-ndk (ggml at its pin, NEON checked in the kernels, LOAD segments aligned to
+16 KB), then runs Gradle (8.11.1, downloaded once and checked against its sha256) to build the AAR and the demo's
+debug APK and to run the demo's JVM tests. `scripts/android_build.sh build`, which also builds `ggtts-render` for
+Android, ends by running `app`, so it needs the same JDK and SDK. Both write into `dist/android-arm64/`:
+
+| File | What it is |
+|---|---|
+| `ggtts.aar` | The library: `Ggtts.kt`'s classes, `jni/arm64-v8a/libggtts_ffi.so` and `libc++_shared.so`, and `META-INF/ggtts/` (below). |
+| `ggtts-demo-debug.apk` | The demo app, debug-signed so it installs with `adb install`. |
+| `symbols/arm64-v8a/libggtts_ffi.so` | The same library with its symbols, for reading a native crash (`ndk-stack -sym symbols/arm64-v8a`). |
+
+CI's `android-arm64` job runs it on every pull request that touches `android/` and uploads that directory as the job's
+artifact.
+
+The Android library is arm64-v8a only, API level 24 or later, and runs on the CPU.
+
+### What the AAR carries
+
+* **Its version and build record**, `META-INF/ggtts/BUILDINFO.json`: the ggtts version and commit, the ggml pin, the
+  Rust toolchain, the target and ABI, the minimum SDK, the NDK, and the features built in (the engines, `jni`, and the
+  CPU extensions found in the kernels). The AAR file itself is not versioned by name; read the record.
+* **Licence notices**, under `META-INF/ggtts/`: ggtts's `LICENSE` and `THIRD_PARTY.md`, and in `licenses/` the
+  licences of ggml (`ggml-LICENSE.txt`), of every Rust crate linked into the library (`android-crates.txt`, generated
+  by `scripts/third_party_notices.py` and checked against `Cargo.lock` before every build), and of the NDK's libc++
+  (`libc++-LICENSE.txt`, Apache-2.0 with LLVM exceptions, taken from the NDK that built it). They are Java resources,
+  so they travel into every APK that uses the AAR. An app that shows its users open-source licences should include
+  them. The build refuses an AAR or an APK without them.
+* **Stripped libraries.** Gradle strips debug symbols from both `.so` files when it packs them (`libggtts_ffi.so`
+  goes from about 6.2 MB to 4.7 MB). The library with its symbols is `symbols/arm64-v8a/libggtts_ffi.so` in the same
+  output; `libc++_shared.so`'s symbols come from the NDK.
+
+## Bring your own model
+
+The demo reads model files from its own directory on the device:
+
+```
+/sdcard/Android/data/ggtts.demo/files/models/
+```
+
+Put them there in either of two ways:
+
+* **In the app:** "Import a model file..." opens the system file picker, and copies the file you choose into that
+  directory. Copy each file once; a 2 GB file takes a while. The import takes only a `.gguf` that starts with GGUF's
+  magic bytes or a `.json` voice; it refuses an empty file, and it never replaces a file of the same name. It copies
+  to `NAME.part` and renames the file when the copy is complete, so a cancelled or failed copy never shows in the lists.
+  The default Qwen3-TTS model's two files are checked against their published sha256 while they copy, and a file with
+  other bytes is refused.
+* **With adb**, from a computer, after the app has been opened once (opening it creates the directory):
+
+  ```sh
+  adb push qwen-talker-hk-cantonese-cc0-v0.0.5-q8_0.gguf /sdcard/Android/data/ggtts.demo/files/models/
+  ```
+
+Then pick the files in the three lists, and press Speak.
+
+| Engine | Model | Codec | Voice | Speaker |
+|---|---|---|---|---|
+| Qwen3-TTS | the talker GGUF | the 12 Hz codec GGUF | (none) | one the talker has |
+| Kitten-TTS 2 | the LM GGUF | the S3Gen GGUF | the prepared voice JSON | (none) |
+
+A Qwen3-TTS talker picked as a file uses the speaker `hk_cantonese_speaker` when the Speaker box is empty. The default
+model's talker has `hk_voice_343` and `hk_voice_777` instead, so type one of those; with an unknown speaker the screen
+shows the library's error, which lists the talker's speakers.
+
+* **Qwen3-TTS.** The default model's two files are
+  [`qwen-talker-hk-cantonese-cc0-v0.0.5-q8_0.gguf` and `qwen-tokenizer-12hz-q8_0.gguf`](https://huggingface.co/jmtl/hk-cantonese-cc0-qwen3-tts-GGUF)
+  (2.33 GB together; the README's [default model files](../README.md#default-model-files-what-ggtts-downloads-and-when)
+  lists their sha256). Any Qwen3-TTS talker and codec that `ggtts-render` takes will do. The demo never downloads a
+  model: with no model picked, the library looks for the default files in the app's cache, and says which file is
+  missing and where it comes from.
+* **Kitten-TTS 2.** No ggtts-ready Kitten files are published. Make the three files once on a computer with
+  `ggtts-kitten-convert` and `ggtts-kitten prepare`, as [the Kitten README](../crates/ggtts-kitten/README.md) shows,
+  then copy them to the device. Its licence is the model's: audio rendered with it must not be used to train other
+  models.
+
+Read each model's card before you use its voice; its licence is the model's, not this repository's.
+
+**When a file is missing or wrong** (a path that does not exist, a file that is not a GGUF, a voice JSON picked as
+the model), the screen shows the library's error, for example `ggtts error -3: ...`, and stays usable: pick again and
+press Speak. A model the phone cannot hold in memory may still stop the app; Kitten-TTS 2 at Q4_0 is the smaller of
+the two.
+
+Each line is saved to `/sdcard/Android/data/ggtts.demo/files/out/<engine>.wav` (16-bit) and played. The app logs to
+logcat under the tag `ggtts-demo`: what it loaded, how long the render took, and its real-time factor.
+
+## Driving the demo from adb
+
+For a scripted check, a **debug build** of the activity takes its settings as extras; `speak` presses Speak. A file
+name is looked up in the models directory, an absolute path is used as it is. The activity is exported (it is the
+launcher), so any app on the phone could send it these extras; a release build ignores them.
+
+```sh
+adb install -r dist/android-arm64/ggtts-demo-debug.apk
+adb shell am start -n ggtts.demo/.MainActivity --es engine qwen3-tts \
+    --es model qwen-talker-hk-cantonese-cc0-v0.0.5-q8_0.gguf --es codec qwen-tokenizer-12hz-q8_0.gguf \
+    --es speaker hk_voice_343 --ez speak true
+adb logcat -s ggtts-demo
+adb pull /sdcard/Android/data/ggtts.demo/files/out/qwen3-tts.wav
+```
+
+## Remove it
+
+```sh
+adb uninstall ggtts.demo
+```
+
+This removes the app and everything in its directory, the model files included.
+
+## What the tests cover
+
+`scripts/android_build.sh app` runs the demo's JVM tests (`android/demo/src/test`). `DemoControllerTest` replaces the
+native library with a fake binding that throws the library's `GgttsException`, and checks that a missing model, a file
+that is not a GGUF, a failed render and an unexpected exception each show a message and leave the screen usable.
+`ModelImportTest` gives the import each file it must refuse (the wrong type, empty, a `.gguf` name on other bytes, a
+default model file with other bytes, a name already taken, a copy cut short) and checks that nothing is listed after.
+Both test the
+app's error path, not the native library: a JVM on the build machine cannot load an `arm64-v8a` library, and CI has
+no arm64 device. The native library's errors on a phone are checked by hand on a device.

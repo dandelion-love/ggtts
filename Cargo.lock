@@ -391,6 +391,7 @@ version = "0.0.1"
 dependencies = [
  "flate2",
  "ggtts-core",
+ "ggtts-qwen3-tts",
  "quick-xml",
  "serde_json",
  "zip",

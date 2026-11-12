@@ -11,7 +11,10 @@ data class EngineCost(
     val peakGb: Double,
     /** Seconds of rendering per second of audio. */
     val rtf: String,
-    /** Seconds until the first chunk plays, for a sentence or two. */
+    /**
+     * Seconds until the first chunk plays, for a sentence or two, at 4 threads: Qwen3-TTS 32.2 s (thread sweep) to
+     * 49.9 s (a three-sentence line), Kitten-TTS 2 47.4 s (budget run) to 55.7 s (thread sweep).
+     */
     val firstAudioS: String,
 )
 
@@ -20,7 +23,7 @@ object EngineCosts {
 
     val BY_ENGINE = mapOf(
         "qwen3-tts" to EngineCost(downloadGb = 2.33, peakGb = 2.93, rtf = "about 7", firstAudioS = "30 to 50"),
-        "kitten-tts-2" to EngineCost(downloadGb = 2.54, peakGb = 3.70, rtf = "about 12", firstAudioS = "50 to 70"),
+        "kitten-tts-2" to EngineCost(downloadGb = 2.54, peakGb = 3.70, rtf = "about 12", firstAudioS = "45 to 60"),
     )
 
     /** The line the screen shows for [engine]: what it needs and how long it takes, and what it is not for. */

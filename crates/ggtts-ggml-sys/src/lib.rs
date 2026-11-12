@@ -24,6 +24,42 @@ mod raw {
 #[cfg(feature = "ggml")]
 pub use raw::*;
 
+/// The CPU threads to run a graph with now: `configured`, but never more than `allowed`, the CPUs this process may
+/// run on at this moment, and at least one.
+///
+/// More threads than allowed CPUs does not just waste them: ggml's threads wait for each other at every step, so a
+/// thread the kernel has parked stalls the rest. Measured on an Android phone whose off-screen app is confined to
+/// three cores: four threads did not finish a line in 400 s that three threads rendered in 87 s.
+pub fn cap_threads(configured: i32, allowed: usize) -> i32 {
+    configured.min(allowed.min(i32::MAX as usize) as i32).max(1)
+}
+
+/// [`cap_threads`] against the CPUs this process may run on now. On Linux and Android that is the CPU affinity
+/// mask, which follows the process's cpuset (Android moves an app to a smaller one when it leaves the screen).
+pub fn threads_now(configured: i32) -> i32 {
+    cap_threads(
+        configured,
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
+    )
+}
+
+/// Before a graph compute: set every CPU backend on `sched` to [`threads_now`]`(configured)`. The count can change
+/// between computes, because the CPUs a process may use can change while it runs. The thread count changes speed
+/// only: the engines' output is the same at any count.
+///
+/// # Safety
+/// `sched` must be a live scheduler.
+#[cfg(feature = "ggml")]
+pub unsafe fn cap_sched_threads(sched: ggml_backend_sched_t, configured: i32) {
+    let n = threads_now(configured);
+    for i in 0..ggml_backend_sched_get_n_backends(sched) {
+        let b = ggml_backend_sched_get_backend(sched, i);
+        if !b.is_null() && ggml_backend_is_cpu(b) {
+            ggml_backend_cpu_set_n_threads(b, n);
+        }
+    }
+}
+
 /// `GGML_PAD(x, n)`: a function-like macro, which bindgen does not translate. `n` must be a power of two.
 pub const fn pad_to(x: i64, n: i64) -> i64 {
     (x + n - 1) & !(n - 1)
@@ -47,6 +83,62 @@ mod tests {
         assert_eq!(pad_to(1, 32), 32);
         assert_eq!(pad_to(256, 256), 256);
         assert_eq!(pad_to(257, 256), 512);
+    }
+
+    #[test]
+    fn threads_are_capped_at_the_allowed_cpus() {
+        assert_eq!(cap_threads(4, 8), 4, "room: the configured count");
+        assert_eq!(cap_threads(4, 3), 3, "an off-screen app on three cores");
+        assert_eq!(cap_threads(4, 1), 1);
+        assert_eq!(cap_threads(0, 8), 1, "at least one");
+        assert_eq!(cap_threads(-2, 8), 1);
+        assert_eq!(cap_threads(8, usize::MAX), 8);
+        let allowed = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        assert_eq!(
+            threads_now(i32::MAX) as usize,
+            allowed.min(i32::MAX as usize),
+            "never more than allowed"
+        );
+    }
+
+    /// The cap on a live scheduler whose CPU backend was configured for far more threads than this process may use:
+    /// the call is safe there and the graph's result is unchanged. (The CPU backend keeps its thread count private,
+    /// so the count itself is checked through `cap_threads` above, and its effect by a run on a confined device.)
+    #[cfg(feature = "ggml")]
+    #[test]
+    fn capping_a_live_scheduler_keeps_its_results() {
+        unsafe {
+            let cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, std::ptr::null());
+            assert!(!cpu.is_null());
+            ggml_backend_cpu_set_n_threads(cpu, 64);
+            let mut backends = [cpu];
+            let sched = ggml_backend_sched_new(backends.as_mut_ptr(), std::ptr::null_mut(), 1, 64, false, true);
+            assert!(!sched.is_null());
+            let params = ggml_init_params {
+                mem_size: 1 << 20,
+                mem_buffer: std::ptr::null_mut(),
+                no_alloc: true,
+            };
+            let ctx = ggml_init(params);
+            let a = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1024);
+            let b = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1024);
+            let c = ggml_add(ctx, a, b);
+            let gf = ggml_new_graph(ctx);
+            ggml_build_forward_expand(gf, c);
+            assert!(ggml_backend_sched_alloc_graph(sched, gf));
+            let av: Vec<f32> = (0..1024).map(|i| i as f32).collect();
+            let bv = vec![0.5f32; 1024];
+            ggml_backend_tensor_set(a, av.as_ptr().cast(), 0, 4096);
+            ggml_backend_tensor_set(b, bv.as_ptr().cast(), 0, 4096);
+            cap_sched_threads(sched, 64);
+            assert_eq!(ggml_backend_sched_graph_compute(sched, gf), GGML_STATUS_SUCCESS);
+            let mut out = vec![0f32; 1024];
+            ggml_backend_tensor_get(c, out.as_mut_ptr().cast(), 0, 4096);
+            assert!(out.iter().enumerate().all(|(i, v)| *v == i as f32 + 0.5));
+            ggml_backend_sched_free(sched);
+            ggml_backend_free(cpu);
+            ggml_free(ctx);
+        }
     }
 
     #[test]

@@ -812,6 +812,7 @@ impl<'m> Session<'m> {
                 }
                 g::ggml_backend_tensor_set(mask, mk.as_ptr().cast(), 0, mk.len() * 4);
             }
+            g::cap_sched_threads(sched, self.model.be.threads as i32);
             let st = g::ggml_backend_sched_graph_compute(sched, gf);
             if st != g::GGML_STATUS_SUCCESS {
                 g::ggml_free(ctx);

@@ -229,6 +229,15 @@ app() { # OUT_DIR
     ship_libs "$lib" "$jni/arm64-v8a" > /dev/null
     check_align "$jni"/arm64-v8a/*.so
 
+    # Gradle 8.11 runs on JDK 17 to 23. A runner may default to a newer one (GitHub's ubuntu-latest has 25, which
+    # fails with nothing but its version number), so take its JDK 17 when it names one.
+    export JAVA_HOME=${JAVA_HOME_17_X64:-${JAVA_HOME:?set JAVA_HOME to a JDK 17 to 23}}
+    local major
+    major=$("$JAVA_HOME/bin/java" -XshowSettings:properties -version 2>&1 | sed -n 's/^ *java.specification.version = //p')
+    if [ "${major:-0}" -lt 17 ] || [ "${major:-0}" -gt 23 ]; then
+        say "JAVA_HOME ($JAVA_HOME) is Java ${major:-unknown}; Gradle $gradle_version needs 17 to 23"
+        return 1
+    fi
     local gradle
     gradle=$(gradle_bin)
     export ANDROID_HOME=${ANDROID_HOME:-${ANDROID_SDK_ROOT:?set ANDROID_HOME or ANDROID_SDK_ROOT}}

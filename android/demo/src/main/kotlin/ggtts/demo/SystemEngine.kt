@@ -4,6 +4,7 @@
 package ggtts.demo
 
 import ggtts.GgttsException
+import java.util.Locale
 
 /** A small string store (SharedPreferences on a device, a map in tests). */
 interface KeyValue {
@@ -49,6 +50,27 @@ object Languages {
         "eng" -> "kitten-tts-2"
         else -> null
     }
+
+    /** The country each engine's voice speaks for, in the two- and three-letter forms Android may pass. */
+    fun countriesOf(engine: String): Set<String> = when (engine) {
+        "qwen3-tts" -> setOf("HK", "HKG")
+        "kitten-tts-2" -> setOf("US", "USA")
+        else -> emptySet()
+    }
+}
+
+/** The system engine's voices: name, locale, and the engine that speaks it. */
+object SystemVoices {
+    val ALL = listOf(
+        Triple("yue-hk-ggtts-qwen3", Locale("yue", "HK"), "qwen3-tts"),
+        Triple("en-us-ggtts-kitten", Locale.US, "kitten-tts-2"),
+    )
+
+    /** A voice is usable when its engine's model files are known: the rule onGetVoices lists voices by. */
+    fun usable(name: String?, voices: VoiceStore): Boolean {
+        val v = ALL.firstOrNull { it.first == name } ?: return false
+        return voices.load(v.third) != null
+    }
 }
 
 /** Where a synthesis goes: the platform's SynthesisCallback on a device. */
@@ -71,11 +93,15 @@ class SynthesisSession(
     @Volatile
     private var stopped = false
 
-    /** Whether [iso3]/[country] is spoken, and whether its model files are known. */
+    /**
+     * Whether [iso3]/[country] is spoken, and whether its model files are known. The country counts only when it is
+     * the voice's own: English asked for Britain is English, available, not British English.
+     */
     fun availability(iso3: String, country: String): Int {
         val e = Languages.engineFor(iso3, country) ?: return TtsCodes.LANG_NOT_SUPPORTED
         if (voices.load(e) == null) return TtsCodes.LANG_MISSING_DATA
-        return if (country.isEmpty()) TtsCodes.LANG_AVAILABLE else TtsCodes.LANG_COUNTRY_AVAILABLE
+        return if (country.uppercase() in Languages.countriesOf(e)) TtsCodes.LANG_COUNTRY_AVAILABLE
+        else TtsCodes.LANG_AVAILABLE
     }
 
     /** Called from another thread by the platform: end the synthesis at the next chunk. */

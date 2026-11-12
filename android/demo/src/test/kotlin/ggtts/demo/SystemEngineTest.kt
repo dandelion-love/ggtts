@@ -78,6 +78,30 @@ class SystemEngineTest {
     }
 
     @Test
+    fun theCountryCountsOnlyWhenItIsTheVoicesOwn() {
+        val s = SynthesisSession({ Engine() }, voices)
+        voices.save(qwen)
+        voices.save(LoadRequest("kitten-tts-2", "/m/lm.gguf", "/m/s3gen.gguf", "/m/voice.json", null, 4))
+        assertEquals(TtsCodes.LANG_COUNTRY_AVAILABLE, s.availability("yue", "HK"))
+        assertEquals("Cantonese for mainland China is Cantonese, not the HK voice", TtsCodes.LANG_AVAILABLE, s.availability("yue", "CHN"))
+        assertEquals(TtsCodes.LANG_AVAILABLE, s.availability("yue", ""))
+        assertEquals(TtsCodes.LANG_COUNTRY_AVAILABLE, s.availability("eng", "USA"))
+        assertEquals("British English is English, not the US voice", TtsCodes.LANG_AVAILABLE, s.availability("eng", "GBR"))
+        assertEquals(TtsCodes.LANG_NOT_SUPPORTED, s.availability("zho", "CHN"))
+    }
+
+    @Test
+    fun aVoiceIsValidOnlyWhenItsFilesAreKnown() {
+        val hk = "yue-hk-ggtts-qwen3"
+        assertFalse("listed nowhere yet, so not loadable", SystemVoices.usable(hk, voices))
+        voices.save(qwen)
+        assertTrue(SystemVoices.usable(hk, voices))
+        assertFalse("the English voice's files are still unknown", SystemVoices.usable("en-us-ggtts-kitten", voices))
+        assertFalse(SystemVoices.usable("no-such-voice", voices))
+        assertFalse(SystemVoices.usable(null, voices))
+    }
+
+    @Test
     fun aSynthesisStreamsStartAudioDone() {
         voices.save(qwen)
         val out = Out(maxBytes = 1000)

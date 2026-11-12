@@ -35,6 +35,13 @@ that a merge places under a released heading is caught.
   joined with the profile's pauses, levelled, and written as one FLAC per chapter. A stopped render resumes on
   the next run with the same `--out`, rendering only what was left, and ends byte-identical to an uninterrupted
   one. Only the fake engine (no model) renders for now: this is the walking skeleton a real engine plugs into.
+- **`ggtts-book render` renders with the real engines, loaded once per book.** `--engine qwen3-tts` (now the
+  default, as for `ggtts-render`) or `kitten-tts-2`, with `ggtts-render`'s model flags (`--model`, `--codec`,
+  `--voice`, `--speaker`, `--device`, `--threads`, `--offline`) and its pinned default model files, in a build with
+  the `ggml` feature. A new crate, `ggtts-load`, loads an engine by name with those rules. Every chapter manifest
+  records the engine's provenance (family, backend, profile, model SHA-256s, speaker, ggtts build) and each
+  chunk's render time; a resume with another engine re-renders the chapter rather than mixing two renders. An
+  output directory holding another book is refused.
 
 ## v0.1.0-rc.11 (2026-11-12)
 

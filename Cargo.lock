@@ -393,6 +393,7 @@ dependencies = [
  "flate2",
  "ggtts-core",
  "ggtts-fake",
+ "ggtts-load",
  "ggtts-qwen3-tts",
  "quick-xml",
  "serde_json",
@@ -408,6 +409,7 @@ dependencies = [
  "ggtts-fake",
  "ggtts-instruments",
  "ggtts-kitten",
+ "ggtts-load",
  "ggtts-models",
  "ggtts-qwen3-tts",
  "jsonschema",
@@ -498,6 +500,17 @@ dependencies = [
  "ggtts-core",
  "ggtts-ggml-sys",
  "serde_json",
+]
+
+[[package]]
+name = "ggtts-load"
+version = "0.0.1"
+dependencies = [
+ "ggtts-core",
+ "ggtts-fake",
+ "ggtts-kitten",
+ "ggtts-models",
+ "ggtts-qwen3-tts",
 ]
 
 [[package]]

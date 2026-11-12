@@ -143,7 +143,9 @@ fn render_through_the_fake_engine() {
     let chapters = report["chapters"].as_array().unwrap();
     assert_eq!(chapters.len(), 10);
     assert_eq!(chapters.iter().filter(|c| c["state"] == "written").count(), 6);
-    assert_eq!(report["engine"], "fake");
+    assert_eq!(report["engine"]["family"], "fake");
+    assert_eq!(report["engine"]["profile"], "story-v1/qwen3-tts");
+    assert_eq!(report["engine"]["ggtts_version"], ggtts_core::VERSION);
     let file = out.join(chapters[4]["file"].as_str().unwrap());
     assert!(file.exists(), "{}", file.display());
     // A second run has nothing left to render.
@@ -156,23 +158,48 @@ fn render_through_the_fake_engine() {
     std::fs::remove_dir_all(path.parent().unwrap()).ok();
 }
 
-/// Rendering needs an engine named, and only the fake engine can render until a real engine's loader is wired in.
+/// An engine that cannot load is refused with its reason, before anything is written: in a build without engines,
+/// the default `qwen3-tts` names the missing feature; Kitten-TTS 2 has no default files and needs a model; an
+/// unknown engine is named.
 #[test]
-fn render_refuses_without_a_renderable_engine() {
+fn render_refuses_an_engine_it_cannot_load() {
     let path = nested().write_temp("render-refuse");
     let out = path.parent().unwrap().join("out");
-    for args in [vec![], vec!["--engine", "qwen3-tts"], vec!["--engine", "kitten-tts-2"]] {
+    // With engines built, an empty cache offline names the missing files; without, the missing build feature.
+    let no_engines = if ggtts_load::engines_built() {
+        "offline mode does not download"
+    } else {
+        "--features ggml"
+    };
+    let cases: [(Vec<&str>, &str); 4] = [
+        (vec!["--offline"], no_engines),
+        (vec!["--engine", "qwen3-tts", "--offline"], no_engines),
+        (vec!["--engine", "kitten-tts-2"], "--model is required"),
+        (vec!["--engine", "parrot"], "unknown engine \"parrot\""),
+    ];
+    for (args, reason) in cases {
         let o = ggtts_book()
             .arg("render")
             .arg(&path)
             .arg("--out")
             .arg(&out)
             .args(&args)
+            .env("GGTTS_CACHE_DIR", path.parent().unwrap().join("empty-cache"))
             .output()
             .unwrap();
         assert_eq!(o.status.code(), Some(2), "{args:?}");
+        let stderr = String::from_utf8_lossy(&o.stderr);
+        assert!(stderr.contains(reason), "{args:?}: {stderr}");
         assert!(!out.exists(), "{args:?} wrote output before refusing");
     }
+    // A model flag is for render only.
+    let o = ggtts_book()
+        .arg("inspect")
+        .arg(&path)
+        .args(["--model", "m.gguf"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
     let o = ggtts_book()
         .arg("render")
         .arg(&path)

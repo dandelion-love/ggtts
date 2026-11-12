@@ -16,8 +16,8 @@ path = "src/bin/ggtts-book.rs"
 ggtts-core.workspace = true
 # Only for the engine profile the chunk plan is made with: its default build links no ggml.
 ggtts-qwen3-tts.workspace = true
-# The fake engine: the one engine `render` drives until a real engine's loader is wired in. No model, no ggml.
-ggtts-fake.workspace = true
+# Loads the engine `render` uses, once per book: the fake engine always, the model engines with `ggml`.
+ggtts-load.workspace = true
 # Reads the stored chunk FLACs back when a chapter is joined.
 claxon.workspace = true
 serde_json.workspace = true
@@ -27,3 +27,14 @@ zip = { version = "2.4", default-features = false, features = ["deflate-flate2",
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 # XHTML, OPF, NCX and container.xml. escape-html resolves the HTML5 named entities (&nbsp;, &mdash;) XHTML books use.
 quick-xml = { version = "0.37", features = ["escape-html"] }
+
+[dev-dependencies]
+# The tests drive the render loop with the fake engine directly.
+ggtts-fake.workspace = true
+
+[features]
+default = []
+# The model engines over ggml (qwen3-tts, kitten-tts-2). Off by default, so the crate builds without the ggml
+# submodule; `render` then refuses a model engine with a named reason.
+ggml = ["ggtts-load/ggml"]
+cuda = ["ggml", "ggtts-load/cuda"]

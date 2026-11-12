@@ -301,6 +301,13 @@ class SelectionTest(unittest.TestCase):
         # The promotion still runs everything.
         self.assertEqual(decide("pull_request", "main", "rc", True, ["crates/ggtts-book/src/lib.rs"]), set(JOBS))
 
+    def test_the_loader_crate_selects_the_ggml_job(self):
+        # crates/ggtts-load gates its engine code behind `ggml`: only the ggml job compiles and tests it.
+        select = lambda paths: decide("pull_request", "rc", "feature", True, paths)
+        for path in ("crates/ggtts-load/src/lib.rs", "crates/ggtts-load/tests/load.rs"):
+            self.assertIn("ggml", select([path]), path)
+            self.assertNotEqual(select([path]), set(JOBS), path)
+
     def test_ggml_gated_code_selects_the_ggml_job(self):
         select = lambda paths: decide("pull_request", "rc", "feature", True, paths)
         for path in ("crates/ggtts-kitten/src/model.rs", "crates/ggtts-kitten/src/refdsp.rs",

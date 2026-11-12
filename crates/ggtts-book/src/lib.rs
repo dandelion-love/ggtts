@@ -15,6 +15,8 @@ mod archive;
 mod book;
 mod dom;
 mod error;
+pub mod export;
+pub mod flac;
 pub mod manifest;
 mod package;
 pub mod plan;

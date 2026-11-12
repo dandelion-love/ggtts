@@ -209,3 +209,44 @@ fn render_refuses_an_engine_it_cannot_load() {
     assert_eq!(o.status.code(), Some(2), "no --out");
     std::fs::remove_dir_all(path.parent().unwrap()).ok();
 }
+
+/// Story 4: `ggtts-book export` joins a finished render, and refuses a directory that is not one.
+#[test]
+fn export_through_the_cli() {
+    let path = nested().write_temp("export-cli");
+    let out = path.parent().unwrap().join("out");
+    let book = path.parent().unwrap().join("book.flac");
+    let r = ggtts_book()
+        .arg("render")
+        .arg(&path)
+        .arg("--out")
+        .arg(&out)
+        .args(["--engine", "fake"])
+        .output()
+        .unwrap();
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let e = ggtts_book()
+        .arg("export")
+        .arg(&out)
+        .arg("--out")
+        .arg(&book)
+        .output()
+        .unwrap();
+    assert!(e.status.success(), "{}", String::from_utf8_lossy(&e.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&e.stdout).unwrap();
+    assert_eq!(report["format"], "ggtts-book-export/1");
+    assert_eq!(report["chapters"].as_array().unwrap().len(), 6);
+    assert!(book.exists());
+    let refused = ggtts_book()
+        .arg("export")
+        .arg(path.parent().unwrap())
+        .arg("--out")
+        .arg(&book)
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("book.json"));
+    let usage = ggtts_book().arg("export").arg(&out).output().unwrap();
+    assert_eq!(usage.status.code(), Some(2));
+    std::fs::remove_dir_all(path.parent().unwrap()).ok();
+}

@@ -135,6 +135,45 @@ fn cjk_text_joins_across_lines_and_skips_ruby() {
     assert_eq!(texts(&book, "part2#c4"), ["4. 霧散", "今日霧散咗，我哋可以出海喇。"]);
 }
 
+/// AC4 through a nav landmark alone: a chapter with text and no `epub:type` of its own is skippable because a
+/// landmark names it.
+#[test]
+fn a_nav_landmark_alone_marks_a_chapter_skippable() {
+    let epub = nested();
+    let opf = epub
+        .text("OEBPS/content.opf")
+        .replace(
+            "</manifest>",
+            r#"<item id="index" href="Text/index.xhtml" media-type="application/xhtml+xml"/></manifest>"#,
+        )
+        .replace("</spine>", r#"<itemref idref="index"/></spine>"#);
+    let nav = epub
+        .text("OEBPS/Text/nav.xhtml")
+        .replace(
+            r#"<li><a href="colophon.xhtml">Colophon</a></li>"#,
+            r#"<li><a href="colophon.xhtml">Colophon</a></li><li><a href="index.xhtml">Index</a></li>"#,
+        )
+        .replace(
+            r#"<li><a epub:type="bodymatter" href="part1.xhtml">Start</a></li>"#,
+            r#"<li><a epub:type="bodymatter" href="part1.xhtml">Start</a></li><li><a epub:type="index" href="index.xhtml">Index</a></li>"#,
+        );
+    let index = r#"<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>i</title></head><body><h1>Index</h1><p>lamps, 2; tides, 1</p></body></html>"#;
+    let book = read(
+        &epub
+            .with("OEBPS/content.opf", &opf)
+            .with("OEBPS/Text/nav.xhtml", &nav)
+            .with("OEBPS/Text/index.xhtml", index),
+    );
+    let chapter = book
+        .chapters
+        .iter()
+        .find(|c| c.id == "index")
+        .expect("an index chapter");
+    assert_eq!(texts(&book, "index"), ["Index", "lamps, 2; tides, 1"]);
+    assert!(chapter.skippable);
+    assert_eq!(chapter.skip_reason.as_deref(), Some("landmark index"));
+}
+
 /// AC2 and AC4 for EPUB 2: the NCX, a nested entry at a fragment, a percent-escaped href, the guide's title page.
 #[test]
 fn ncx_is_the_fallback_table_of_contents() {

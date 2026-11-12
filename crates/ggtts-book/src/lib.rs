@@ -16,7 +16,7 @@ mod package;
 mod toc;
 pub mod xhtml;
 
-pub use archive::MAX_ENTRY_BYTES;
+pub use archive::{Limits, MAX_BOOK_BYTES, MAX_DEPTH, MAX_ENTRY_BYTES};
 pub use book::{Book, Chapter, SKIPPABLE_TYPES};
 pub use error::BookError;
 pub use toc::TocSource;

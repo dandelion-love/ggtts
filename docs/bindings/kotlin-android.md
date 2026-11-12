@@ -137,8 +137,10 @@ In an app, `load` and `render` block: call them off the main thread. To play a `
 | `cacheDir` | null | Where the default model files are cached. An app passes its own (below). |
 | `allowDownload` | false | True: download a default model file the cache lacks. False: never download. |
 
-Paths are file paths on the device. A null or empty string is no setting. A setting the engine does not take is
-refused, never ignored. A file that is missing or is not a GGUF is refused before any engine loads. The settings hold
+Paths are file paths on the device. For `speaker`, `instruction` and `cacheDir`, an empty string is the same as null:
+no setting. That is not true of `model`, `codec` and `voice`: an empty one is taken as a path and fails with
+`ERR_ENGINE`, so pass null, not `""`, to get the default model. A setting the engine does not take is refused, never
+ignored. A file that is missing or is not a GGUF is refused before any engine loads. The settings hold
 for the engine's life.
 
 ### The default model (Qwen3-TTS)

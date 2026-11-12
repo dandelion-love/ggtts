@@ -90,8 +90,9 @@ ggtts.load(engine="qwen3-tts", model=None, codec=None, voice=None, speaker=None,
 | `offline` | True: never download. A default model file missing from the cache is then an error naming it and its URL. |
 | `progress` | A function called with each download message. By default they go to stderr. |
 
-A setting the engine does not take is refused (`ERR_ARG`), never ignored. An empty string is no setting. A file that
-is missing or is not a GGUF is refused before any engine loads. The settings hold for the engine's life.
+A setting the engine does not take is refused (`ERR_ARG`), never ignored. For `speaker` and `instruction`, an empty
+string is the same as None: no setting. That is not true of `model`, `codec` and `voice`: an empty one is taken as a
+path and fails with `ERR_ENGINE`, so pass None, not `""`, to get the default model. A file that is missing or is not a GGUF is refused before any engine loads. The settings hold for the engine's life.
 
 What was loaded is on the `TTS`: `tts.engine`, `tts.speaker` (None for the model's own), `tts.instruction`,
 `tts.device`, `tts.info` (the engine's family, backend and parity level) and `tts.model_files` (each file's role,

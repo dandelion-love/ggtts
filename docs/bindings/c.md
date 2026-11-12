@@ -38,9 +38,11 @@ ggtts-cli/bindgen,ggtts-ffi/ggml`.
 * **Linux:** x86-64 with AVX2, FMA, F16C and BMI2. glibc 2.35 or newer (Ubuntu 22.04 or later), libstdc++,
   libgcc_s and libgomp. A minimal system, such as a slim container image, may lack libgomp: install `libgomp1`
   (`apt-get install libgomp1` on Debian and Ubuntu).
-* **Windows:** x86-64 with the same CPU features, and the Microsoft Visual C++ Redistributable for x64
-  (`VCRUNTIME140.dll`, `VCRUNTIME140_1.dll`, `MSVCP140.dll`, and `VCOMP140.dll` for OpenMP). The archive does not
-  include it. MinGW is not tested.
+* **Windows:** x86-64 with the same CPU features, and the Microsoft Visual C++ Redistributable for x64, which the
+  archive does not include. Read from the imports of `ggtts_ffi.dll` as CI's release build makes it (the release's
+  build command, by `scripts/check_pe_imports.py`): beyond Windows' own libraries, it needs `VCRUNTIME140.dll`,
+  `VCRUNTIME140_1.dll`, `MSVCP140.dll` and `VCOMP140.dll` (OpenMP), all from that redistributable. MinGW is not
+  tested.
 * **Disk and network**, for Qwen3-TTS's default model: 2.33 GB, downloaded once, only if you allow it (below).
 
 ## Build your program

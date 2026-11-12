@@ -9,8 +9,8 @@ three bindings. All three run the same engine code, take the same settings and r
 | **Kotlin** | An Android app, or a desktop JVM | [ggtts from Kotlin and Android](kotlin-android.md) |
 | **Python** | Python 3.9 or later | [ggtts from Python](python.md) |
 
-Each page starts with a first render that works, then covers loading, streaming, errors, threads and freeing. Every
-C, Kotlin and Python example on these pages is a real file in [`examples/`](examples/), and CI compiles and runs each
+Each page shows how to get the binding, then a first render that works, then covers loading, streaming, errors,
+threads and freeing. Every C, Kotlin and Python example on these pages is a real file in [`examples/`](examples/), and CI compiles and runs each
 one on every change that could break it, so the examples match the code.
 
 ## The ideas they share

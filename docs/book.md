@@ -75,8 +75,9 @@ copyright page, table of contents, index, colophon, imprint, errata and the like
   note symbols and does not follow a letter or digit directly (`wool.<sup>2</sup>`). Digits right after a letter
   or digit with no link are an exponent and are read: `mc<sup>2</sup>` reads as `mc2`, `10<sup>6</sup>` as `106`.
   The price: a note marker without a link straight after a word (`shown<sup>3</sup>`) is read too.
-* Whitespace runs become one space. A space between two CJK characters or full-width punctuation is dropped, so a line
-  break in the middle of Chinese text does not become a pause. Soft hyphens and zero-width spaces are removed.
+* Whitespace runs become one space. A run holding a line break between two CJK characters or full-width
+  punctuation is dropped, so a line break in the middle of Chinese text does not become a pause; a space the
+  author wrote there (`第一章 退潮`) is kept. Soft hyphens and zero-width spaces are removed.
 * Content files must be UTF-8 and well-formed XML, nested no deeper than 256 elements.
 
 ## Limits

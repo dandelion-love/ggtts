@@ -7,8 +7,9 @@
 //!   plurals, or the matching `doc-*` roles), page-break markers, and a `<sup>` that is a note marker: one that
 //!   links somewhere, or holds only digits or note symbols and does not follow a letter or digit directly. An
 //!   exponent (`mc<sup>2</sup>`, `10<sup>6</sup>`) is read.
-//! * Whitespace runs become one space, and a space between two CJK characters (or full-width punctuation) is
-//!   dropped, so a line break inside Chinese text does not become a pause. Soft hyphens and zero-width spaces are
+//! * Whitespace runs become one space, and a run that holds a line break between two CJK characters (or full-width
+//!   punctuation) is dropped, so a line break inside Chinese text does not become a pause. A space the author wrote
+//!   between CJK characters (`第一章 退潮`) is kept. Soft hyphens and zero-width spaces are
 //!   removed.
 
 use ggtts_core::text::{is_cjk, is_strip_space};
@@ -228,19 +229,25 @@ pub fn normalize(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut last: Option<char> = None;
     let mut pending_space = false;
+    // Whether the pending run of whitespace holds a line break: source formatting, not a space the author wrote.
+    let mut pending_break = false;
     for c in s.chars() {
         if c == '\u{ad}' || c == '\u{200b}' {
             continue;
         }
         if is_strip_space(c) {
-            pending_space = last.is_some();
+            if last.is_some() {
+                pending_space = true;
+                pending_break |= c == '\n' || c == '\r';
+            }
             continue;
         }
         if pending_space {
-            if !(last.is_some_and(wide) && wide(c)) {
+            if !(pending_break && last.is_some_and(wide) && wide(c)) {
                 out.push(' ');
             }
             pending_space = false;
+            pending_break = false;
         }
         out.push(c);
         last = Some(c);
@@ -257,6 +264,11 @@ mod tests {
         assert_eq!(normalize("  a \n\t b\u{a0}c  "), "a b c");
         assert_eq!(normalize("今日\n  好熱。\n我哋"), "今日好熱。我哋");
         assert_eq!(normalize("今日 hot 好"), "今日 hot 好");
+        // A space the author wrote between CJK characters is kept (a chapter number and its title); only a line
+        // break from the source's formatting is dropped.
+        assert_eq!(normalize("第一章 退潮"), "第一章 退潮");
+        assert_eq!(normalize("第一章\u{3000}退潮"), "第一章 退潮");
+        assert_eq!(normalize("第一章 \n 退潮"), "第一章退潮");
         assert_eq!(normalize("hy\u{ad}phen\u{200b}ated"), "hyphenated");
     }
 

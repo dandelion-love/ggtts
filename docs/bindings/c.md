@@ -174,7 +174,7 @@ the calling thread is `ggtts_last_error()`.
 | `model` | The model GGUF: Qwen3-TTS's talker, or Kitten-TTS 2's LM. NULL for Qwen3-TTS means the default model (below). |
 | `codec` | The audio decoder GGUF: Qwen3-TTS's 12 Hz codec, or Kitten-TTS 2's S3Gen GGUF. NULL for Qwen3-TTS means the default codec. |
 | `voice` | Kitten-TTS 2's prepared reference voice (a JSON file). NULL for the other engines. |
-| `threads` | CPU threads. 0 or less means 4. |
+| `threads` | CPU threads. 0 or less means 4. Before each graph, ggtts lowers the count to the CPUs the process may use at that moment, re-read at most every 100 ms, and says so once on stderr. On Windows only the processor count is seen, not affinity or job objects. |
 | `settings` | A `ggtts_settings`, or NULL for none. |
 
 A file that is missing or is not a GGUF is refused before any engine loads.

@@ -1001,6 +1001,7 @@ impl Talker {
             return Err(err("failed to allocate a graph"));
         }
         fill();
+        self.cpu.cap_threads();
         if g::ggml_backend_sched_graph_compute(sched, gf) != g::GGML_STATUS_SUCCESS {
             g::ggml_backend_sched_reset(sched);
             g::ggml_free(ctx);

@@ -28,6 +28,14 @@ that a merge places under a released heading is caught.
 
 ### Changed
 
+- **The CPU thread count is capped at the CPUs the process may use, checked before each graph.** Asking for more threads
+  than CPUs no longer stalls: ggml's threads wait for each other, so on an Android phone whose app is moved to three
+  cores when it leaves the screen, four threads did not finish a line in 400 s that three rendered in 87 s. The count is
+  re-read at most every 100 ms; the first time it lowers your count, ggtts says so once on stderr. The output is the
+  same at any count. On Linux and Android the cap follows affinity masks, cpusets and cgroup quotas; on Windows it sees
+  only the number of logical processors, so affinity and job objects are not honoured there. `--threads`, and `threads`
+  in the bindings, still mean the count asked for, and a value of 0 or less is treated as before. Kitten-TTS 2's bench
+  JSON records the count asked for, not the count run.
 - **Android builds are aligned for 16 KB pages.** `libggtts_ffi.so` and the Android `ggtts-render` link with
   `-z max-page-size=16384`. With 4 KB alignment, Android 15 and later flag the library on a device, and a 16 KB-page
   device refuses it. `scripts/android_build.sh` refuses a library aligned below 16 KB.

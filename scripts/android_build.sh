@@ -5,17 +5,21 @@
 #   scripts/android_build.sh build [OUT_DIR]   # build ggtts-render for aarch64-linux-android, check it, write
 #                                              # OUT_DIR (default dist/android-arm64): the binary, the libraries it
 #                                              # needs that a device lacks (libc++_shared.so), and BUILDINFO.json;
-#                                              # then `app OUT_DIR`
+#                                              # then `app OUT_DIR`, so it needs everything `app` needs
 #   scripts/android_build.sh app OUT_DIR       # build the Android library (AAR) and the demo app (APK) from android/,
-#                                              # run the demo's JVM tests, check both, and copy them to OUT_DIR
+#                                              # run the demo's JVM tests, check both, and copy them to OUT_DIR, with
+#                                              # the library's unstripped copy in OUT_DIR/symbols/arm64-v8a/
 #   scripts/android_build.sh cargo-build TARGET_DIR   # only the cargo build (the planted builds use it)
 #   scripts/android_build.sh check-pin PIN     # refuse unless the ggml submodule is at PIN (the planted case)
 #   scripts/android_build.sh check-neon BIN    # refuse unless BIN's ggml dot product uses NEON vector instructions
 #   scripts/android_build.sh check-align FILE...  # refuse unless every LOAD segment is aligned to 16 KB or more
-#   scripts/android_build.sh check-aar AAR     # refuse unless AAR holds the arm64-v8a libraries and the binding classes
-#   scripts/android_build.sh check-apk APK     # refuse unless APK holds the arm64-v8a library and no model file
+#   scripts/android_build.sh check-aar AAR     # refuse unless AAR holds the arm64-v8a libraries, the binding classes,
+#                                              # and META-INF/ggtts/ (licence notices and build record)
+#   scripts/android_build.sh check-apk APK     # refuse unless APK holds the arm64-v8a library and the notices, and
+#                                              # no model file (by name or by GGUF's magic bytes)
 #
-# Needs the NDK (ANDROID_NDK_HOME) and cargo-ndk; `app` also needs a JDK 17 or later (JAVA_HOME), the Android SDK
+# Needs the NDK (ANDROID_NDK_HOME) and cargo-ndk; `app` (and so `build`) also needs a JDK 17 to 23 (JAVA_HOME, or
+# JAVA_HOME_17_X64 where a runner names one), the Android SDK
 # (ANDROID_HOME or ANDROID_SDK_ROOT), python3, and the network once, for Gradle (pinned below, checked against its
 # sha256) and the Android Gradle plugin. The NEON check reads the disassembly of ggml's Q8_0 dot product,
 # the kernel the engines spend their time in, with the NDK's llvm-objdump: NEON's vector registers (`v0.16b` and the
@@ -109,10 +113,11 @@ ship_libs() { # BIN OUT
 # BUILDINFO's features, from what was built rather than written down: the backend and engines that `$features` turns
 # on (ggtts-render's `engine_lines` lists exactly these for the ggml feature, and a cuda feature would add a backend),
 # then the CPU extensions the dot-product kernel actually uses.
-features_json() { # BIN
-    local f=() kernel
-    case ",$features," in *,ggtts-cli/ggml,*) f+=(cpu ggml qwen3-tts kitten-tts-2) ;; esac
-    case ",$features," in *,ggtts-cli/cuda,*) f+=(cuda) ;; esac
+features_json() { # BIN [FEATURES]
+    local f=() kernel fs=${2:-$features}
+    case ",$fs," in *,ggtts-cli/ggml,*|*,ggtts-ffi/ggml,*) f+=(cpu ggml qwen3-tts kitten-tts-2) ;; esac
+    case ",$fs," in *,ggtts-cli/cuda,*) f+=(cuda) ;; esac
+    case ",$fs," in *,ggtts-ffi/jni,*) f+=(jni) ;; esac
     kernel=$(dot_kernel "$1")
     grep -qE 'v[0-9]+\.(16b|8h|4s|2d)' <<<"$kernel" && f+=(neon)
     grep -qE '^\s*[0-9a-f]+:\s+sdot\b' <<<"$kernel" && f+=(dotprod)
@@ -153,7 +158,7 @@ check_aar() { # AAR
         classes=$(python3 -c 'import io, sys, zipfile
 z = zipfile.ZipFile(sys.argv[1])
 print("\n".join(zipfile.ZipFile(io.BytesIO(z.read("classes.jar"))).namelist()))' "$1")
-        for c in ggtts/Ggtts.class ggtts/Native.class ggtts/GgttsException.class ggtts/Pcm.class; do
+        for c in ggtts/Ggtts.class ggtts/Native.class ggtts/GgttsException.class ggtts/Pcm.class $notice_files; do
             grep -qx "$c" <<<"$classes" || missing="$missing classes.jar:$c"
         done
     fi
@@ -161,37 +166,110 @@ print("\n".join(zipfile.ZipFile(io.BytesIO(z.read("classes.jar"))).namelist()))'
         say "$1 lacks:$missing"
         return 1
     fi
-    say "$1 holds $(grep -c '^jni/arm64-v8a/.*\.so$' <<<"$entries") libraries in jni/arm64-v8a/ and the binding's classes"
+    say "$1 holds $(grep -c '^jni/arm64-v8a/.*\.so$' <<<"$entries") libraries in jni/arm64-v8a/, the binding's classes," \
+        "and its licence notices and build record under META-INF/ggtts/"
 }
 
-# Refuse unless APK holds the Android library for arm64-v8a, and refuse any model file in it: no weights ship.
+# Refuse unless APK holds the Android library for arm64-v8a and the library's licence notices, and refuse any model
+# file in it, by name or by content: an entry named like weights, or any entry that starts with GGUF's magic bytes.
 check_apk() { # APK
-    local entries models
+    local entries models f missing=""
     entries=$(zip_entries "$1")
     models=$(grep -iE '\.(gguf|safetensors|bin|pt|onnx)$' <<<"$entries" || true)
-    if [ -n "$models" ]; then
+    models="$models $(python3 -c 'import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1])
+print(" ".join(i.filename for i in z.infolist() if not i.is_dir() and z.open(i).read(4) == b"GGUF"))' "$1")"
+    if [ -n "${models// /}" ]; then
         say "$1 carries model files: $(tr '\n' ' ' <<<"$models")"
         return 1
     fi
-    if ! grep -qx lib/arm64-v8a/libggtts_ffi.so <<<"$entries"; then
-        say "$1 has no lib/arm64-v8a/libggtts_ffi.so"
+    for f in lib/arm64-v8a/libggtts_ffi.so $notice_files; do
+        grep -qx "$f" <<<"$entries" || missing="$missing $f"
+    done
+    if [ -n "$missing" ]; then
+        say "$1 lacks:$missing"
         return 1
     fi
-    say "$1 holds lib/arm64-v8a/libggtts_ffi.so and no model file"
+    say "$1 holds lib/arm64-v8a/libggtts_ffi.so and the licence notices, and no model file"
 }
 
-# A copy of zip IN at OUT with ENTRY removed (MODE drop) or added (MODE add): the planted cases below.
+# A copy of zip IN at OUT with ENTRY removed (MODE drop) or added with GGUF's magic bytes (MODE add); with MODE
+# drop-jar, ENTRY is removed from the classes.jar inside IN. The planted cases below.
 plant_zip() { # MODE IN OUT ENTRY
     python3 - "$@" <<'EOF'
-import sys, zipfile
+import io, sys, zipfile
 mode, src, dst, entry = sys.argv[1:]
+
+def without(data, name):
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(data)) as zin, zipfile.ZipFile(out, "w") as zout:
+        for item in zin.infolist():
+            if item.filename != name:
+                zout.writestr(item, zin.read(item.filename))
+    return out.getvalue()
+
 with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w") as zout:
     for item in zin.infolist():
-        if not (mode == "drop" and item.filename == entry):
-            zout.writestr(item, zin.read(item.filename))
+        data = zin.read(item.filename)
+        if mode == "drop" and item.filename == entry:
+            continue
+        if mode == "drop-jar" and item.filename == "classes.jar":
+            data = without(data, entry)
+        zout.writestr(item, data)
     if mode == "add":
         zout.writestr(entry, b"GGUF planted")
 EOF
+}
+
+# The licence notices and build record the AAR carries as Java resources under META-INF/ggtts/ (so they also reach
+# every APK that uses it).
+notice_files="META-INF/ggtts/LICENSE META-INF/ggtts/THIRD_PARTY.md META-INF/ggtts/BUILDINFO.json
+META-INF/ggtts/licenses/Apache-2.0.txt META-INF/ggtts/licenses/ggml-LICENSE.txt
+META-INF/ggtts/licenses/android-crates.txt META-INF/ggtts/licenses/libc++-LICENSE.txt"
+
+# Write DIR/META-INF/ggtts: ggtts's licence and THIRD_PARTY.md, the licences of ggml, of every Rust crate linked into
+# LIB (licenses/android-crates.txt, checked against Cargo.lock first) and of the NDK's libc++, and the build record.
+notices() { # DIR LIB
+    local d="$1/META-INF/ggtts" llvm version
+    python3 "$root/scripts/third_party_notices.py" --check-android >&2 \
+        || { say "the Android library's licence notices are incomplete"; return 1; }
+    rm -rf "$1"
+    mkdir -p "$d/licenses"
+    cp "$root/LICENSE" "$root/THIRD_PARTY.md" "$d/"
+    cp "$root/licenses/Apache-2.0.txt" "$root/licenses/ggml-LICENSE.txt" "$root/licenses/android-crates.txt" \
+        "$d/licenses/"
+    # libc++_shared.so is LLVM's libc++, built by the NDK: its licence is the LLVM block of the NDK's own notice.
+    llvm=$(awk '/^The LLVM Project is under the Apache License v2.0 with LLVM Exceptions:/ { on = 1 }
+                on && /^Software from third parties included in the LLVM Project/ { exit }
+                on { print }' "${ANDROID_NDK_HOME:?}/NOTICE.toolchain" | sed '$d')
+    if [ -z "$llvm" ] || ! grep -q 'LLVM Exceptions to the Apache 2.0 License' <<<"$llvm"; then
+        say "no LLVM licence in $ANDROID_NDK_HOME/NOTICE.toolchain for libc++_shared.so"
+        return 1
+    fi
+    { echo "libc++_shared.so is libc++ from the LLVM Project, as built by the Android NDK $(basename "$ANDROID_NDK_HOME")."
+      echo "Its licence, from the NDK's NOTICE.toolchain:"
+      echo
+      echo "$llvm"; } > "$d/licenses/libc++-LICENSE.txt"
+    version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' "$root/Cargo.toml")
+    cat > "$d/BUILDINFO.json" <<EOF
+{
+  "artifact": "ggtts Android library (AAR)",
+  "version": "$version",
+  "ggtts_commit": "$(git -C "$root" rev-parse HEAD)",
+  "ggml_commit": "$(pin)",
+  "ggml_describe": "$(sed -n 's/^ *pub const DESCRIBE: &str = "\(.*\)";$/\1/p' "$root/crates/ggtts-core/src/lib.rs")",
+  "rustc": "$(rustc -V)",
+  "target": "$target",
+  "abi": "arm64-v8a",
+  "min_sdk": $api,
+  "ndk": "$(basename "$ANDROID_NDK_HOME")",
+  "cargo_features": "$ffi_features",
+  "features": $(features_json "$2" "$ffi_features"),
+  "libraries": ["libggtts_ffi.so", "libc++_shared.so"],
+  "stripped": "both libraries are stripped of debug symbols when packed; libggtts_ffi.so with its symbols is symbols/arm64-v8a/libggtts_ffi.so beside the AAR in the build's output"
+}
+EOF
+    python3 -c 'import json, sys; json.load(open(sys.argv[1]))' "$d/BUILDINFO.json"
 }
 
 # A pinned Gradle, downloaded once into a cache and checked against its sha256 before it is used.
@@ -228,6 +306,11 @@ app() { # OUT_DIR
     cp "$lib" "$jni/arm64-v8a/"
     ship_libs "$lib" "$jni/arm64-v8a" > /dev/null
     check_align "$jni"/arm64-v8a/*.so
+    local meta="$tdir/android-meta"
+    notices "$meta" "$lib"
+    # Gradle strips the packed libraries; keep this one's symbols beside the AAR, for reading a native crash.
+    mkdir -p "$out/symbols/arm64-v8a"
+    cp "$lib" "$out/symbols/arm64-v8a/"
 
     # Gradle 8.11 runs on JDK 17 to 23. A runner may default to a newer one (GitHub's ubuntu-latest has 25, which
     # fails with nothing but its version number), so take its JDK 17 when it names one.
@@ -243,7 +326,7 @@ app() { # OUT_DIR
     export ANDROID_HOME=${ANDROID_HOME:-${ANDROID_SDK_ROOT:?set ANDROID_HOME or ANDROID_SDK_ROOT}}
     # The library's release AAR, the demo's debug APK (debug-signed, so it installs with adb), and the demo's JVM tests
     # (its error path, against a fake binding).
-    "$gradle" --no-daemon --console=plain -p "$root/android" -Pggtts.jniLibs="$jni" \
+    "$gradle" --no-daemon --console=plain -p "$root/android" -Pggtts.jniLibs="$jni" -Pggtts.meta="$meta" \
         :ggtts:assembleRelease :demo:assembleDebug :demo:testDebugUnitTest
     cp "$root/android/ggtts/build/outputs/aar/ggtts-release.aar" "$out/ggtts.aar"
     cp "$root/android/demo/build/outputs/apk/debug/demo-debug.apk" "$out/ggtts-demo-debug.apk"
@@ -255,12 +338,20 @@ app() { # OUT_DIR
     mkdir -p "$p"
     plant_zip drop "$out/ggtts.aar" "$p/no-lib.aar" jni/arm64-v8a/libggtts_ffi.so
     if check_aar "$p/no-lib.aar" 2>/dev/null; then say "planted: an AAR without libggtts_ffi.so passed"; return 1; fi
+    plant_zip drop-jar "$out/ggtts.aar" "$p/no-notice.aar" META-INF/ggtts/licenses/android-crates.txt
+    if check_aar "$p/no-notice.aar" 2>/dev/null; then say "planted: an AAR without its crate notices passed"; return 1; fi
     plant_zip add "$out/ggtts-demo-debug.apk" "$p/with-model.apk" assets/model.gguf
     if check_apk "$p/with-model.apk" 2>/dev/null; then say "planted: an APK carrying a .gguf passed"; return 1; fi
+    plant_zip add "$out/ggtts-demo-debug.apk" "$p/with-renamed-model.apk" assets/voice.dat
+    if check_apk "$p/with-renamed-model.apk" 2>/dev/null; then
+        say "planted: an APK carrying a GGUF under another name passed"
+        return 1
+    fi
     echo 'int ggtts_planted(void) { return 0; }' > "$p/planted.c"
     "$(llvm_bin clang)" --target="$target$api" -shared -Wl,-z,max-page-size=4096 -o "$p/lib4k.so" "$p/planted.c"
     if check_align "$p/lib4k.so" 2>/dev/null; then say "planted: a 4 KB-aligned library passed"; return 1; fi
-    say "planted: an AAR without the library, an APK with a .gguf and a 4 KB-aligned library are all refused"
+    say "planted: an AAR without the library, an AAR without its notices, an APK with a .gguf, an APK with GGUF bytes" \
+        "under another name and a 4 KB-aligned library are all refused"
     say "built $out/ggtts.aar and $out/ggtts-demo-debug.apk"
 }
 

@@ -9,7 +9,8 @@ Two Gradle modules:
   Qwen3-TTS or Kitten-TTS 2, through the library.
 
 **No model ships with the app.** The APK holds code only; you bring the model files. The build refuses an APK that
-carries a `.gguf` (or any other weights file), and checks that refusal on a planted APK every time it runs.
+carries a weights file, by name (`.gguf`, `.safetensors`, `.bin`, `.pt`, `.onnx`) or by content (any entry starting
+with GGUF's magic bytes), and checks both refusals on planted APKs every time it runs.
 
 ## Build
 
@@ -19,17 +20,40 @@ rustup target add aarch64-linux-android
 cargo install cargo-ndk --version 3.5.4 --locked
 export ANDROID_HOME=/path/to/android-sdk                # with platforms;android-35
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018
-export JAVA_HOME=/path/to/jdk-17                        # 17 or later
+export JAVA_HOME=/path/to/jdk-17                        # 17 to 23 (Gradle 8.11's range)
 scripts/android_build.sh app dist/android-arm64
 ```
 
-This builds `libggtts_ffi.so` with cargo-ndk (ggml at its pin, NEON checked in the kernels), then runs Gradle (8.11.1,
-downloaded once and checked against its sha256) to build the AAR and the demo's debug APK and to run the demo's JVM
-tests. It writes `dist/android-arm64/ggtts.aar` and `dist/android-arm64/ggtts-demo-debug.apk`, and checks both. CI's
-`android-arm64` job runs it on every pull request that touches `android/` and uploads both files as the job's
+This builds `libggtts_ffi.so` with cargo-ndk (ggml at its pin, NEON checked in the kernels, LOAD segments aligned to
+16 KB), then runs Gradle (8.11.1, downloaded once and checked against its sha256) to build the AAR and the demo's
+debug APK and to run the demo's JVM tests. `scripts/android_build.sh build`, which also builds `ggtts-render` for
+Android, ends by running `app`, so it needs the same JDK and SDK. Both write into `dist/android-arm64/`:
+
+| File | What it is |
+|---|---|
+| `ggtts.aar` | The library: `Ggtts.kt`'s classes, `jni/arm64-v8a/libggtts_ffi.so` and `libc++_shared.so`, and `META-INF/ggtts/` (below). |
+| `ggtts-demo-debug.apk` | The demo app, debug-signed so it installs with `adb install`. |
+| `symbols/arm64-v8a/libggtts_ffi.so` | The same library with its symbols, for reading a native crash (`ndk-stack -sym symbols/arm64-v8a`). |
+
+CI's `android-arm64` job runs it on every pull request that touches `android/` and uploads that directory as the job's
 artifact.
 
 The Android library is arm64-v8a only, API level 24 or later, and runs on the CPU.
+
+### What the AAR carries
+
+* **Its version and build record**, `META-INF/ggtts/BUILDINFO.json`: the ggtts version and commit, the ggml pin, the
+  Rust toolchain, the target and ABI, the minimum SDK, the NDK, and the features built in (the engines, `jni`, and the
+  CPU extensions found in the kernels). The AAR file itself is not versioned by name; read the record.
+* **Licence notices**, under `META-INF/ggtts/`: ggtts's `LICENSE` and `THIRD_PARTY.md`, and in `licenses/` the
+  licences of ggml (`ggml-LICENSE.txt`), of every Rust crate linked into the library (`android-crates.txt`, generated
+  by `scripts/third_party_notices.py` and checked against `Cargo.lock` before every build), and of the NDK's libc++
+  (`libc++-LICENSE.txt`, Apache-2.0 with LLVM exceptions, taken from the NDK that built it). They are Java resources,
+  so they travel into every APK that uses the AAR. An app that shows its users open-source licences should include
+  them. The build refuses an AAR or an APK without them.
+* **Stripped libraries.** Gradle strips debug symbols from both `.so` files when it packs them (`libggtts_ffi.so`
+  goes from about 6.2 MB to 4.7 MB). The library with its symbols is `symbols/arm64-v8a/libggtts_ffi.so` in the same
+  output; `libc++_shared.so`'s symbols come from the NDK.
 
 ## Bring your own model
 
@@ -42,7 +66,11 @@ The demo reads model files from its own directory on the device:
 Put them there in either of two ways:
 
 * **In the app:** "Import a model file..." opens the system file picker, and copies the file you choose into that
-  directory. Copy each file once; a 2 GB file takes a while.
+  directory. Copy each file once; a 2 GB file takes a while. The import takes only a `.gguf` that starts with GGUF's
+  magic bytes or a `.json` voice; it refuses an empty file, and it never replaces a file of the same name. It copies
+  to `NAME.part` and renames the file when the copy is complete, so a cancelled or failed copy never shows in the lists.
+  The default Qwen3-TTS model's two files are checked against their published sha256 while they copy, and a file with
+  other bytes is refused.
 * **With adb**, from a computer, after the app has been opened once (opening it creates the directory):
 
   ```sh
@@ -83,8 +111,9 @@ logcat under the tag `ggtts-demo`: what it loaded, how long the render took, and
 
 ## Driving the demo from adb
 
-For a scripted check, the activity takes its settings as extras; `speak` presses Speak. A file name is looked up in
-the models directory, an absolute path is used as it is.
+For a scripted check, a **debug build** of the activity takes its settings as extras; `speak` presses Speak. A file
+name is looked up in the models directory, an absolute path is used as it is. The activity is exported (it is the
+launcher), so any app on the phone could send it these extras; a release build ignores them.
 
 ```sh
 adb install -r dist/android-arm64/ggtts-demo-debug.apk
@@ -105,8 +134,11 @@ This removes the app and everything in its directory, the model files included.
 
 ## What the tests cover
 
-`scripts/android_build.sh app` runs the demo's JVM tests (`android/demo/src/test`). They replace the native library
-with a fake binding that throws the library's `GgttsException`, and check that a missing model, a file that is not a
-GGUF, a failed render and an unexpected exception each show a message and leave the screen usable. They test the
+`scripts/android_build.sh app` runs the demo's JVM tests (`android/demo/src/test`). `DemoControllerTest` replaces the
+native library with a fake binding that throws the library's `GgttsException`, and checks that a missing model, a file
+that is not a GGUF, a failed render and an unexpected exception each show a message and leave the screen usable.
+`ModelImportTest` gives the import each file it must refuse (the wrong type, empty, a `.gguf` name on other bytes, a
+default model file with other bytes, a name already taken, a copy cut short) and checks that nothing is listed after.
+Both test the
 app's error path, not the native library: a JVM on the build machine cannot load an `arm64-v8a` library, and CI has
 no arm64 device. The native library's errors on a phone are checked by hand on a device.

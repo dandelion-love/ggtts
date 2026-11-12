@@ -13,6 +13,11 @@ val jniLibsDir: String = providers.gradleProperty("ggtts.jniLibs").orNull
         "set -Pggtts.jniLibs=<dir holding arm64-v8a/libggtts_ffi.so>; scripts/android_build.sh does this",
     )
 
+val metaDir: String = providers.gradleProperty("ggtts.meta").orNull
+    ?: throw GradleException(
+        "set -Pggtts.meta=<dir holding META-INF/ggtts, the notices and build record>; scripts/android_build.sh does this",
+    )
+
 android {
     namespace = "ggtts"
     compileSdk = 35
@@ -25,6 +30,9 @@ android {
     }
 
     sourceSets["main"].jniLibs.srcDir(jniLibsDir)
+    // META-INF/ggtts/: the licence notices and the build record, as Java resources, so they travel inside the AAR's
+    // classes.jar into every APK that uses it.
+    sourceSets["main"].resources.srcDir(metaDir)
     // The host-JVM test in src/test is a program run by scripts/kotlin_binding_test.sh, not a Gradle unit test.
     sourceSets["test"].kotlin.setSrcDirs(emptyList<String>())
 

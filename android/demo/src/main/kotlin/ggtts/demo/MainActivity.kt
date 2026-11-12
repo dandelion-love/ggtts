@@ -1,7 +1,8 @@
 // The demo's one screen. It lists the model files in the app's models directory (put there with "Import a model
 // file", or with adb push; see android/README.md), loads the ones picked, and speaks one line with the chosen engine.
 //
-// It can also be driven from adb, for scripted checks: every extra is optional, and `speak` presses Speak once loaded.
+// A debug build can also be driven from adb, for scripted checks (a release build ignores these extras): every extra
+// is optional, and `speak` presses Speak once loaded.
 //   adb shell am start -n ggtts.demo/.MainActivity --es engine kitten-tts-2 --es model lm.gguf \
 //       --es codec s3gen.gguf --es voice voice.json --es text "Hello." --ez speak true
 // A file name is looked up in the models directory; an absolute path is used as it is.
@@ -9,6 +10,7 @@ package ggtts.demo
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.graphics.Color
 import android.media.AudioAttributes
 import android.media.AudioFormat
@@ -166,7 +168,7 @@ class MainActivity : Activity(), DemoView {
     }
 
     private fun refreshFiles() {
-        val files = listOf(NONE) + (modelsDir.listFiles()?.filter { it.isFile }?.map { it.name }?.sorted() ?: emptyList())
+        val files = listOf(NONE) + ModelImport.listed(modelsDir)
         for (s in listOf(model, codec, voice)) {
             val keep = s.selectedItem as String?
             s.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, files)
@@ -187,6 +189,9 @@ class MainActivity : Activity(), DemoView {
     }
 
     private fun applyIntent(intent: Intent?) {
+        // The scripted extras (any path, and Speak pressed for you) are for testing a debug build from adb. Another
+        // app can send this exported activity an intent too, so a release build ignores them.
+        if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) return
         val extras = intent?.extras ?: return
         extras.getString("engine")?.let { e -> ENGINES.indexOf(e).takeIf { it >= 0 }?.let { engines.check(100 + it) } }
         pick(model, extras.getString("model"))
@@ -237,11 +242,16 @@ class MainActivity : Activity(), DemoView {
     }
 
     private fun copyIn(uri: Uri): File {
-        val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
-            if (it.moveToFirst()) it.getString(0) else null
-        } ?: "model-${System.currentTimeMillis()}"
-        val out = File(modelsDir, File(name).name)
-        contentResolver.openInputStream(uri)!!.use { input -> out.outputStream().use { input.copyTo(it, 1 shl 20) } }
+        var name: String? = null
+        var size: Long? = null
+        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use {
+            if (it.moveToFirst()) {
+                name = it.getString(0)
+                size = if (it.isNull(1)) null else it.getLong(1)
+            }
+        }
+        val input = contentResolver.openInputStream(uri) ?: throw ImportException("the picked file cannot be read")
+        val out = input.use { ModelImport(modelsDir).importFile(name ?: "unnamed", size, it) }
         Log.i(TAG, "imported $out (${out.length()} bytes)")
         return out
     }

@@ -11,6 +11,26 @@ that a merge places under a released heading is caught.
 
 ## Unreleased
 
+### Added
+
+- **An Android library (AAR) and a demo app, built in CI.** `android/` is a Gradle project, and
+  `scripts/android_build.sh app OUT_DIR` builds it. It writes `ggtts.aar`, which holds the Kotlin binding,
+  `libggtts_ffi.so` for arm64-v8a with `libc++_shared.so`, and under `META-INF/ggtts/` the licence notices and a build
+  record (`BUILDINFO.json`: version, commit, ggml pin, features, ABI, minimum SDK). It also writes a one-screen demo
+  app that speaks a line with either engine from model files you supply, and the library's unstripped copy for crash
+  symbols. No model ships in either. The `android-arm64` CI job uploads all three. See
+  [android/README.md](android/README.md).
+- `licenses/android-crates.txt`: the licences of the Rust crates linked into the Android library, generated and
+  checked by `scripts/third_party_notices.py --check-android`.
+
+### Changed
+
+- **Android builds are aligned for 16 KB pages.** `libggtts_ffi.so` and the Android `ggtts-render` link with
+  `-z max-page-size=16384`. With 4 KB alignment, Android 15 and later flag the library on a device, and a 16 KB-page
+  device refuses it. `scripts/android_build.sh` refuses a library aligned below 16 KB.
+- `scripts/android_build.sh build` now ends by building the AAR and the demo app, so it needs a JDK 17 to 23 and the
+  Android SDK as well as the NDK.
+
 ## v0.1.0-rc.11 (2026-11-12)
 
 ### Added

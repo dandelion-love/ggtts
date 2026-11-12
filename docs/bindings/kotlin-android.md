@@ -13,7 +13,8 @@ export the JNI entry points. There are two ways to get it.
 **The AAR.** [`android/`](../../android/README.md) is a Gradle project. Its `ggtts` module packs `Ggtts.kt` and the
 arm64-v8a library into an AAR, and its `demo` module is a one-screen app that uses it.
 `scripts/android_build.sh app OUT_DIR` builds both, and CI's `android-arm64` job uploads them as its artifact. Add the
-AAR to your app as a file dependency.
+AAR to your app as a file dependency. It carries its licence notices and build record under `META-INF/ggtts/`
+([what the AAR carries](../../android/README.md#what-the-aar-carries)).
 
 **By hand.** Build two pieces from source and add them to your app:
 

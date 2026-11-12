@@ -4,7 +4,7 @@ title: Off-screen reads run on the little cores, and stall with too many threads
 description: Off screen, Android confines the app to three little cores even under a foreground service; with more ggml threads than allowed cores, rendering stalls.
 tags: [android, performance, scheduling]
 status: draft
-generated: { by: claude-code/opus-5.5, at: 2026-11-12T09:25:00-07:00 }
+generated: { by: claude-code/opus-5.5, at: 2026-11-12T10:24:00-07:00 }
 ---
 # What was seen
 
@@ -37,11 +37,11 @@ Unpinned, it ran at RTF 4.3 (4.5 before). The audio was byte-identical in every 
 
 # Consequences
 
-- **Engine fix** ([#236](https://github.com/dandelion-love/ggtts/issues/236)): never run more threads than the CPUs
+- **Engine fix**, in PR 240 (for [#236](https://github.com/dandelion-love/ggtts/issues/236)): never run more threads than the CPUs
   the process may use, re-checked at each compute (`std::thread::available_parallelism`, which follows the
   affinity mask and so the cpuset). Off-screen reads then run at the little cores' speed, about 3 to 4 times
   slower, instead of stalling.
 - **App decision:** keep the screen on while a read runs and the app is open, and say in the reading notification
-  that off-screen reads are slower ([#222](https://github.com/dandelion-love/ggtts/issues/222)).
+  that off-screen reads are slower (PR 237, for [#222](https://github.com/dandelion-love/ggtts/issues/222)).
 - **Limitation:** an app cannot choose its cpuset. A long read off screen will be slow on this phone, whatever the
   app does.

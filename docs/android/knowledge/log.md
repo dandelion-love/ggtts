@@ -2,14 +2,19 @@
 
 ## 2026-11-12
 
-- Off-screen reads: Android confines the app to three little cores even under a foreground service, and four
-  threads on three cores stall (#236 filed for the engine fix). Pattern 3 done (#222).
+- Review corrections. The benchmark's 440 ms and Kokoro's 8.2 s and 15.3 s are whole-utterance synthesis times,
+  not time to first audio, and its "Android System TTS" names no vendor; the rows say so. Work still in open PRs
+  (233, 234, 235, 237, 240) is marked by PR, not Done, and Integration is 2 until PR 235 lands. Each first-audio
+  figure now cites one run. RHVoice's quote and what its listing names are corrected.
 
-- Pattern 1 is done: ggtts is a system TTS engine (#221). Integration is rated 3 (from 2), and the landscape row is
-  updated.
+- Off-screen reads: Android confines the app to three little cores even under a foreground service, and four
+  threads on three cores stall (#236 filed for the engine fix). Pattern 3 built (#222, PR 237).
+
+- Pattern 1 built: ggtts as a system TTS engine (#221, PR 235). Integration was rated 3 (from 2) here; corrected
+  above to 3 only once PR 235 lands.
 
 - Added the low-memory decision (warn on the first Speak, load on the second) and the streaming measurements on the
-  phone. Pattern 5 is now done: the screen states each engine's costs (#223).
+  phone. Pattern 5 built: the screen states each engine's costs (#223, PR 234).
 
 - Bundle started for the Android track. It holds:
   - five decisions: the integration branch, 16 KB alignment, user-supplied models with checked imports, streaming

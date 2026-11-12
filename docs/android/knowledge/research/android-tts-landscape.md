@@ -4,7 +4,7 @@ title: Other on-device TTS on Android
 description: The on-device text-to-speech engines people use on Android, with size, Cantonese support, system-engine status, speed, licence and Play ratings read on 2026-11-12.
 tags: [android, research, competition]
 status: draft
-generated: { by: claude-code/opus-5.5, at: 2026-11-12T07:40:00-07:00 }
+generated: { by: claude-code/opus-5.5, at: 2026-11-12T10:24:00-07:00 }
 stale_after: 2027-05-12T00:00:00-07:00
 sources:
   - { id: voiceping, resource: "https://voiceping-landingpage-prod.pages.dev/en/blog/research-offline-tts-eval/", title: "VoicePing offline TTS evaluation (Galaxy S10, 4 threads, Feb 2026)" }
@@ -41,10 +41,11 @@ distributes its engine APKs on GitHub and Hugging Face.
 
 | Engine | Model or download | Cantonese offline | System TTS engine | Speed (RTF; lower is faster) | Licence | Rating (Play, 2026-11-12) |
 |---|---|---|---|---|---|---|
-| Google Speech Recognition & Synthesis | unverified | Cantonese (HK) is supported; an offline voice is unverified | yes, the default | 0.058, first audio 440 ms[^voiceping] | proprietary | 4.0, 4.37M reviews, 10B+ installs[^play-google] |
+| Google Speech Recognition & Synthesis | unverified | Cantonese (HK) is supported; an offline voice is unverified | yes, the default on many phones | unverified | proprietary | 4.0, 4.37M reviews, 10B+ installs[^play-google] |
+| The device's system TTS on a Galaxy S10 (the benchmark's "Android System TTS", engine not named; likely Samsung's) | built in | not tested | yes | 0.058; a whole utterance in 440 ms (median)[^voiceping] | proprietary | not applicable |
 | Samsung TTS | Cantonese voice pack about 69.5 MB[^samsung-yue] | yes, Galaxy only | yes | unverified | proprietary | preinstalled; not on Play |
 | eSpeak NG | 9 MiB APK[^espeak-fdroid] | lists `yue`, quality undocumented[^espeak-langs] | yes | unverified (formant synthesis, fast) | GPL-3.0+ | F-Droid only |
-| RHVoice | 15 MiB plus voices | no | yes | "talks instantly"; no figure | GPL-3.0+ | 3.1, 1.84K reviews, 100K+ installs[^rhvoice-play] |
+| RHVoice | 15 MiB plus voices | no | yes | "begin talking instantly"[^rhvoice-play]; no figure | GPL-3.0+ | 3.1, 1.84K reviews, 100K+ installs[^rhvoice-play] |
 | sherpa-onnx engine APKs (Piper, VITS, Matcha, Kokoro) | 41 to 343 MiB per APK; Cantonese VITS 121 MB[^sherpa-hf] | yes, a VITS Cantonese APK[^sherpa-apk] (model licence unverified) | yes | Piper 0.077, Matcha 0.135, Kokoro 1.1 to 2.4[^voiceping] | Apache-2.0 code, per-model licences | GitHub and Hugging Face only |
 | SherpaTTS | 86 MiB plus a model[^sherpatts] | unverified | yes | unverified | GPL-3.0 | F-Droid only |
 | VoxSherpa TTS (Kokoro, Piper, Supertonic, cloning) | about 500 MB free recommended[^voxsherpa-gh] | no | yes | Kokoro 20 to 40 s per minute of audio on a flagship (RTF about 0.3 to 0.7)[^voxsherpa-gh] | GPL-3.0 | 4.0, 113 reviews, 10K+ installs[^voxsherpa-play] |
@@ -52,7 +53,7 @@ distributes its engine APKs on GitHub and Hugging Face.
 | Supertonic TTS | unverified | unverified | yes | "minimal latency" (no figure) | unverified | 4.7, 77 reviews, 5K+ installs[^supertonic-play] |
 | ToBe SAID | English built in, more downloadable | unverified | yes | unverified | unverified | 4.5, 68 reviews, 5K+ installs[^tobesaid-play] |
 | Code Factory Vocalizer | paid voice packs | yes, Cantonese (HK) for purchase | yes | unverified | proprietary | 2.8, 9.31K reviews, 1M+ installs[^vocalizer-play] |
-| **ggtts (this track)** | **2.3 to 2.5 GB, user-supplied** | **yes: a Hong Kong Cantonese Qwen3-TTS voice** | **yes, from #221 (declared `LATENCY_VERY_HIGH`)** | **7 (Qwen3-TTS) and 12 (Kitten-TTS 2) on a Galaxy Z Fold5** | Apache-2.0 code; models' own licences | not published |
+| **ggtts (this track)** | **2.3 to 2.5 GB, user-supplied** | **yes: a Hong Kong Cantonese Qwen3-TTS voice** | **yes, in PR 235, not yet merged (declares `LATENCY_VERY_HIGH`)** | **7 (Qwen3-TTS) and 12 (Kitten-TTS 2) on a Galaxy Z Fold5** | Apache-2.0 code; models' own licences | not published |
 
 # What it shows
 
@@ -61,7 +62,9 @@ distributes its engine APKs on GitHub and Hugging Face.
   ternary) and 1.7B (Qwen3-TTS) parameters.
 - **Offline Cantonese is scarce.** It is confirmed only in Samsung's OEM pack, Code Factory's paid voice and
   sherpa-onnx's VITS APK. eSpeak NG lists `yue`, with undocumented quality.
-- **Every engine with a published speed gives first audio in under a second.** ggtts on a phone takes tens of
-  seconds ([limitations](/research/limitations.md)).
+- **No engine here publishes a time to first audio.** The one benchmark times whole utterances: a median of 440 ms
+  for the device's system TTS, and 8.2 s and 15.3 s for Kokoro, on a Galaxy S10.[^voiceping] ggtts on a phone takes
+  tens of seconds before its first chunk plays ([limitations](/research/limitations.md)), more than the whole
+  utterance takes on the slowest of them.
 - **Almost every app is a system TTS engine** (an Android `TextToSpeechService`), so screen readers and other apps
-  can use it. ggtts became one with #221, with its voices declared as very high latency.
+  can use it. ggtts becomes one with PR 235 (open), with its voices declared as very high latency.

@@ -8,7 +8,7 @@
 //!                  [--device cpu|cuda] [--threads N] [--offline]
 //!                  [--include-skippable]
 //!                                   render every chapter into DIR, resuming what an earlier run finished
-//! ggtts-book export DIR --out BOOK.flac
+//! ggtts-book export DIR --out BOOK.flac|BOOK.m4b
 //!                                   join a finished render into one FLAC with a chapter mark per chapter
 //! ggtts-book --version
 //! ```
@@ -43,7 +43,7 @@ const USAGE: &str = "usage: ggtts-book inspect BOOK.epub [--engine qwen3-tts|fak
 ggtts-book render BOOK.epub --out DIR [--engine qwen3-tts|kitten-tts-2|fake] [--seed-root R]\n                  \
 [--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME] [--device cpu|cuda] [--threads N] [--offline]\n                  \
 [--include-skippable]\n       \
-ggtts-book export DIR --out BOOK.flac\n       \
+ggtts-book export DIR --out BOOK.flac|BOOK.m4b\n       \
 ggtts-book --version";
 
 fn fail(message: &str) -> ExitCode {
@@ -253,7 +253,7 @@ fn export(args: &[String]) -> ExitCode {
         }
     }
     let (Some(dir), Some(out)) = (dir, out) else {
-        return fail(&format!("export needs DIR and --out BOOK.flac\n{USAGE}"));
+        return fail(&format!("export needs DIR and --out BOOK.flac or BOOK.m4b\n{USAGE}"));
     };
     match ggtts_book::export::export(&dir, &out) {
         Ok(report) => {

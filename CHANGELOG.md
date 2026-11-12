@@ -50,6 +50,9 @@ that a merge places under a released heading is caught.
   unfinished render, or one that mixes seed roots or engines, is refused naming the chapter. Each chapter FLAC
   now carries `TITLE`, `ALBUM`, `ARTIST` and `TRACKNUMBER` tags, and `render --include-skippable` renders the
   front and back matter too.
+- **`ggtts-book export --out BOOK.m4b` writes an audiobook for audiobook apps.** Lossless ALAC with a chapter
+  track and a `chpl` chapter list, and the book's title and authors; the same samples as the `.flac` export. The
+  container follows the extension; any other is refused.
 
 ## v0.1.0-rc.11 (2026-11-12)
 

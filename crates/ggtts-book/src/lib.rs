@@ -7,12 +7,17 @@
 //!
 //! A DRM-protected book is refused ([`BookError::Drm`]); it is never decrypted or stripped. So are a file that is
 //! not a zip, a missing or malformed container, and a spine item whose file is absent. See `docs/book.md`.
+//!
+//! [`plan`] chunks each chapter with the engine's own chunker at its profile's ceiling and gives every chunk a
+//! seed fixed by its place and text; [`manifest`] records a chapter's progress so a killed render resumes.
 
 mod archive;
 mod book;
 mod dom;
 mod error;
+pub mod manifest;
 mod package;
+pub mod plan;
 mod toc;
 pub mod xhtml;
 

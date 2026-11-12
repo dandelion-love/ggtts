@@ -4,6 +4,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use ggtts_core::seed::{hex, sha256};
 use serde_json::{json, Value};
 
 use crate::archive::Archive;
@@ -38,6 +39,8 @@ pub const SKIPPABLE_TYPES: &[&str] = &[
 pub struct Book {
     /// The package's unique identifier (`dc:identifier` named by `unique-identifier`), if it has one.
     pub identifier: Option<String>,
+    /// The SHA-256 of the package document's bytes, lower-case hex: the book's id when it has no identifier.
+    pub package_sha256: String,
     pub title: String,
     pub authors: Vec<String>,
     pub language: Option<String>,
@@ -68,6 +71,14 @@ pub struct Chapter {
 }
 
 impl Book {
+    /// The id the seed key uses: the package's unique identifier, else `sha256:` and the package document's hash.
+    pub fn book_id(&self) -> String {
+        match &self.identifier {
+            Some(id) => id.clone(),
+            None => format!("sha256:{}", self.package_sha256),
+        }
+    }
+
     /// Read an EPUB file.
     pub fn open(path: &Path) -> Result<Book, BookError> {
         let bytes = std::fs::read(path).map_err(|e| BookError::Io(format!("{}: {e}", path.display())))?;
@@ -225,6 +236,7 @@ impl Book {
 
         Ok(Book {
             identifier: pkg.identifier,
+            package_sha256: hex(&sha256(&opf)),
             title: pkg.title,
             authors: pkg.authors,
             language: pkg.language,
@@ -238,6 +250,7 @@ impl Book {
     pub fn to_json(&self) -> Value {
         json!({
             "format": crate::CHAPTERS_FORMAT,
+            "book_id": self.book_id(),
             "identifier": self.identifier,
             "title": self.title,
             "authors": self.authors,

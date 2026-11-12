@@ -14,6 +14,8 @@ path = "src/bin/ggtts-book.rs"
 
 [dependencies]
 ggtts-core.workspace = true
+# Only for the engine profile the chunk plan is made with: its default build links no ggml.
+ggtts-qwen3-tts.workspace = true
 serde_json.workspace = true
 # The EPUB container. No default features: reading needs only stored and deflated entries, through flate2's
 # pure-Rust backend below, so no C library and none of zip's other codecs or its encryption support are linked.

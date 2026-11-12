@@ -21,6 +21,13 @@ that a merge places under a released heading is caught.
   the chapter model as JSON (`ggtts-book-chapters/1`). A DRM-protected book is refused, never decrypted or
   stripped; so are a file that is not a zip, a missing or malformed `container.xml`, and a spine item whose file
   is absent, each with its own error code. Rendering a book comes later. See `docs/book.md`.
+- **`ggtts-book inspect` plans every chunk and its seed.** Chapters are chunked by ggtts's own story chunker at
+  the engine profile's ceiling (`--engine`, default `qwen3-tts`), and each chunk gets a seed derived from the
+  seed root (`--seed-root`, default `20260905`), the book's identifier, the chapter, paragraph, chunk and draw,
+  and the SHA-256 of its text (key `ggtts-book-seed/1`), so any chunk can be rendered alone. The library adds a
+  per-chapter manifest (`ggtts-book-manifest/1`), written atomically and checksummed, from which a killed
+  render resumes without redoing a finished chunk; a truncated, edited or mismatched manifest is refused and the
+  chapter re-planned.
 
 ## v0.1.0-rc.11 (2026-11-12)
 

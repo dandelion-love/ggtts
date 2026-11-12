@@ -1,13 +1,18 @@
 # ggtts-book: EPUB books
 
 `ggtts-book` reads an EPUB into chapters a ggtts engine can speak. It is a layer on top of the engines, in its own
-crate (`crates/ggtts-book`), and links no engine and no ggml. Today it reads and inspects books; rendering a book
-through an engine, resuming a killed render and writing chapter audio are later steps.
+crate (`crates/ggtts-book`), and links no engine and no ggml. Today it reads a book, plans every chunk with its seed, and keeps
+the per-chapter manifest a resumable render needs; rendering through an engine and writing chapter audio are later
+steps.
 
 ```text
-ggtts-book inspect BOOK.epub     print the chapter model as JSON
+ggtts-book inspect BOOK.epub [--engine qwen3-tts|fake] [--seed-root R]
+                                 print the chapter model, and each chapter's planned chunks and seeds, as JSON
 ggtts-book --version
 ```
+
+`--engine` (default `qwen3-tts`, as for `ggtts-render`) names the engine whose profile the chunks are planned with.
+`--seed-root` (default `20260905`, `ggtts-render`'s default seed) is the root every seed is derived from.
 
 Exit 0 on success. Exit 2 when the book is refused, with the reason on stderr, or when the command line is wrong.
 
@@ -115,12 +120,81 @@ is not DRM and the book reads.
 
 A reader checks `format` before trusting the rest.
 
+## The chunk plan
+
+Each chapter's blocks (headings and paragraphs) are chunked by ggtts's own story chunker, `ggtts_core::text::plan`,
+at the engine profile's `story_ceiling`, with the profile's split marks. There is no second chunker and no ceiling of
+the book's own: Qwen3-TTS plans at its profile's ceiling, and an engine with another profile plans at its own. A
+block with nothing to speak (a scene break such as `* * *`) has no chunks, and the other blocks keep their indices.
+
+Only engines whose profile this binary is built with can plan: `qwen3-tts`, and `fake` (which renders on the Qwen3-TTS
+profile). Kitten-TTS 2's profile is compiled only into ggml builds of its engine, so `--engine kitten-tts-2` is refused
+rather than planned at a guessed ceiling.
+
+## The seed per chunk
+
+A chunk's seed is fixed by where it sits and what it says, so any one chunk can be rendered alone and gives the same
+seed on every platform. The key is the version `ggtts-book-seed/1` followed by seven fields, each written as
+`{byte length}:{value}` and joined by `|`:
+
+| Field | Value |
+|---|---|
+| seed root | `--seed-root` |
+| book id | the package's unique identifier, else `sha256:` and the SHA-256 of the package document |
+| chapter id | the chapter's `id` |
+| paragraph | the block's index in the chapter |
+| chunk | the chunk's index within that block |
+| draw | 0 for the first draw; a redraw is 1, 2, ... |
+| text | the SHA-256 of the chunk's text, lower-case hex |
+
+The seed is the first four bytes of the SHA-256 of that string, big-endian, the way ggtts reads its own story seeds.
+The length prefix makes the encoding unambiguous: a `|` inside a chapter id cannot forge another field. Changing any
+field changes the seed; changing the key's fields or encoding is a new key version, with new expected seeds committed
+(`tests/plan.rs`, checked on Linux and Windows CI, and checked against Python's `hashlib` when committed).
+
+Seeds make a chunk reproducible within ggtts's own guarantees for one engine, model, backend and hardware class. They
+do not promise identical audio across hardware.
+
+## The chapter manifest and resume
+
+A render keeps one `manifest.json` per chapter directory, `ggtts-book-manifest/1`:
+
+```json
+{
+  "manifest": {
+    "format": "ggtts-book-manifest/1",
+    "book_id": "...", "chapter_id": "ch1", "seed_root": "20260905",
+    "profile": "story-v1/qwen3-tts", "ceiling": 45,
+    "chunks": [
+      {"index": 0, "paragraph": 0, "chunk": 0, "text": "...", "text_sha256": "...", "seed": 3621667395,
+       "state": "done", "output": {"file": "chunk-00000.flac", "sha256": "..."}},
+      {"index": 1, "paragraph": 1, "chunk": 0, "text": "...", "text_sha256": "...", "seed": 1234,
+       "state": "planned", "output": null}
+    ]
+  },
+  "sha256": "the SHA-256 of the manifest object's compact JSON"
+}
+```
+
+It is written to a temporary file, flushed to disk and renamed over the old one, so a reader never sees half a file.
+Each chunk's output is written the same way, and the manifest is saved after every chunk, so a run killed at any point
+resumes at the first chunk not recorded as done.
+
+A manifest is trusted only when it parses, its checksum matches, its format is known, and its book, chapter, seed
+root, profile, ceiling and every chunk's text, hash and seed match the plan about to run. Otherwise it is refused, with
+the reason (`NotJson`, `Checksum`, `Format`, `Mismatch` naming the field, `PlanChanged` naming the chunk), and the
+chapter starts again from its plan: a wrong resume would splice another book's or another seed root's audio into this
+one. A chunk recorded as done whose output file is missing, or no longer has its recorded SHA-256, is rendered again;
+no other finished chunk is.
+
 ## Tests
 
 `cargo test -p ggtts-book`. The fixture books are built in memory by the tests from text written for them, so no
 book (and no binary file) is stored in the repository. They cover a nested table of contents, a chapter split across
 two files, chapters that start at fragments, an NCX-only EPUB 2 book with a percent-escaped href, a spine-only book,
-and one rejection per refusal above, each planted into an otherwise working book.
+and one rejection per refusal above, each planted into an otherwise working book. `tests/plan.rs` and
+`tests/manifest.rs` cover the plan, the committed seeds, every manifest refusal and resume, with a renderer that
+records which chunks it was asked for.
 
 ## Dependencies
 

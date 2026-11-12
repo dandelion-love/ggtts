@@ -7,7 +7,10 @@ package ggtts.demo
 data class EngineCost(
     /** The model files together. */
     val downloadGb: Double,
-    /** Peak resident memory while rendering (it counts the mapped model files, which Android can reclaim). */
+    /**
+     * Peak resident memory, in GB of 10^9 bytes (`VmHWM` is KiB). For Kitten-TTS 2 the peak is a load-time spike; a
+     * render holds about 2.9 GB (docs/android/knowledge/research/kitten-memory-and-tq1.md).
+     */
     val peakGb: Double,
     /** Seconds of rendering per second of audio. */
     val rtf: String,
@@ -22,8 +25,8 @@ object EngineCosts {
     const val MEASURED_ON = "a Galaxy Z Fold5 (Snapdragon 8 Gen 2), 4 threads"
 
     val BY_ENGINE = mapOf(
-        "qwen3-tts" to EngineCost(downloadGb = 2.33, peakGb = 2.93, rtf = "about 7", firstAudioS = "30 to 50"),
-        "kitten-tts-2" to EngineCost(downloadGb = 2.54, peakGb = 3.70, rtf = "about 12", firstAudioS = "45 to 60"),
+        "qwen3-tts" to EngineCost(downloadGb = 2.33, peakGb = 3.00, rtf = "about 7", firstAudioS = "30 to 50"),
+        "kitten-tts-2" to EngineCost(downloadGb = 2.54, peakGb = 3.78, rtf = "about 12", firstAudioS = "45 to 60"),
     )
 
     /** The line the screen shows for [engine]: what it needs and how long it takes, and what it is not for. */
@@ -36,8 +39,8 @@ object EngineCosts {
 
     /**
      * A warning when [availableBytes] is below what [engine] peaked at, or when the system says memory is low; null
-     * when there is room. The peak counts mapped model files, which the system can drop, so this warns, it does not
-     * forbid: the controller loads anyway on a second press.
+     * when there is room. The peak is a few seconds of load (the model files are read whole and copied); a render holds
+     * less, so this warns, it does not forbid: the controller loads anyway on a second press.
      */
     fun memoryWarning(engine: String, availableBytes: Long, lowMemory: Boolean): String? {
         val c = BY_ENGINE[engine] ?: return null

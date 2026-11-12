@@ -4,7 +4,7 @@ title: On-device parity and resource budget
 description: On a Galaxy Z Fold5, ggtts gives different draws from desktop CPU for the same request, and the Kitten-TTS 2 budget fails on memory, speed and first audio.
 tags: [android, parity, performance]
 status: draft
-generated: { by: claude-code/opus-5.5, at: 2026-11-12T07:40:00-07:00 }
+generated: { by: claude-code/opus-5.5, at: 2026-11-12T11:45:00-07:00 }
 sources:
   - { id: record, resource: "https://github.com/dandelion-love/ggtts/blob/track/android/docs/android/on-device-2026-11-12.md", title: "On a phone, parity and a resource budget (2026-11-12)" }
 ---
@@ -21,7 +21,7 @@ The full record, with method and per-run tables, is `docs/android/on-device-2026
 
 | Line | Budget | Measured | Result |
 |---|---|---|---|
-| Peak RSS | 3.0 GB | 3.69 GB | fail |
+| Peak RSS | 3.0 GB | 3.78 GB | fail |
 | Real-time factor | 1.0 | 11.8 | fail |
 | First audio | 2.0 s | 103.9 s | fail |
 | Thermal status | at most 1 | 0 | pass |

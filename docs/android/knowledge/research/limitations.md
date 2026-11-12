@@ -4,7 +4,7 @@ title: Our limitations
 description: Where ggtts on an Android phone stands against the engines people use, measured on one phone and stated plainly.
 tags: [android, limitations]
 status: draft
-generated: { by: claude-code/opus-5.5, at: 2026-11-12T10:24:00-07:00 }
+generated: { by: claude-code/opus-5.5, at: 2026-11-12T11:45:00-07:00 }
 stale_after: 2027-05-12T00:00:00-07:00
 sources:
   - { id: record, resource: "https://github.com/dandelion-love/ggtts/blob/track/android/docs/android/on-device-2026-11-12.md", title: "On a phone, parity and a resource budget (2026-11-12)" }
@@ -24,7 +24,7 @@ The comparison figures are in [other on-device TTS](/research/android-tts-landsc
 |---|---|---|---|
 | Real-time factor, 4 threads | 11.8 to 13.6 | 6.7 to 7.2 | 0.06 to 0.14 (the device's system TTS, Piper, Matcha); 1.1 to 2.4 (Kokoro); all on a Galaxy S10[^voiceping] |
 | First chunk ready, 4 threads | 47.4 s;[^record] 104 s on `--stream`'s default 5 s level window | 32.2 s[^threads] | no time to first audio published; a whole utterance in 440 ms (system TTS) or 8.2 to 15.3 s (Kokoro), median[^voiceping] |
-| Peak memory | 3.69 GB | 2.90 to 2.95 GB | not published; models of 40 to 350 MB |
+| Peak memory | 3.78 GB (3.59 GB with the released TQ1_0 LM) | 2.97 to 3.02 GB | not published; models of 40 to 350 MB |
 | Download | 2.54 GB | 2.33 GB | 9 MB to 350 MB per voice |
 | Heat over a 5-minute read | thermal status 0; battery +3.6 °C | not measured | not published |
 

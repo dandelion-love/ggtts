@@ -2,10 +2,10 @@
 //!
 //! The parts every engine shares: the engine interface ([`engine`]), the long-text story path ([`text`] for
 //! reading and chunking, [`seed`] for the seed per chunk, [`audio`] for the judge and the trim, [`pipeline`] for
-//! the redraw, the joins and the level), FLAC output ([`flac`]), and the instrument events with the trace format,
-//! replay and the trace-identity check ([`trace`]), streaming output ([`stream`], fed by
-//! [`pipeline::render_story_streamed`]), and the instruments' report envelope with its merger ([`report`]). The
-//! provenance manifest comes next.
+//! the redraw, the joins and the level), FLAC output ([`flac`]), in-process tensor hooks ([`hooks`]), and the
+//! instrument events with the trace format, replay and the trace-identity check ([`trace`]), streaming output
+//! ([`stream`], fed by [`pipeline::render_story_streamed`]), and the instruments' report envelope with its merger
+//! ([`report`]). The provenance manifest comes next.
 //!
 //! The core holds the rules and no protocol number: the ceilings, the pause table, the judge bars and the level
 //! target come from the [`profile::Profile`] the engine declares.
@@ -16,6 +16,8 @@
 pub mod audio;
 pub mod engine;
 pub mod flac;
+pub mod hooks;
+pub mod logging;
 pub mod numeric;
 pub mod pipeline;
 pub mod profile;
@@ -25,8 +27,18 @@ pub mod stream;
 pub mod text;
 pub mod trace;
 
-/// The ggtts version, from the workspace manifest.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The release tag embedded at build time, or the workspace version for ordinary local builds.
+pub const VERSION: &str = match option_env!("GGTTS_RELEASE_VERSION") {
+    Some(version) if !version.is_empty() => version,
+    _ => env!("CARGO_PKG_VERSION"),
+};
+
+/// The ggtts commit this build is made from: `GITHUB_SHA` in a GitHub Actions build (the value BUILDINFO.json's
+/// `ggtts_commit` records), else the checkout's `HEAD`, else `unknown` (see `build.rs`).
+pub const SOURCE_COMMIT: &str = env!("GGTTS_COMMIT");
+
+/// The ggtts repository, as `--version` prints it.
+pub const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 
 /// The ggml source this build is pinned to.
 ///
@@ -47,10 +59,11 @@ pub mod ggml {
     }
 }
 
-/// One line per fact, as `--version` prints them.
-pub fn version_lines(binary: &str) -> [String; 2] {
+/// One line per fact, as `--version` prints them: the binary and its release tag, the ggtts commit, the ggml pin.
+pub fn version_lines(binary: &str) -> [String; 3] {
     [
         format!("{binary} {VERSION}"),
+        format!("ggtts {SOURCE_COMMIT} ({REPOSITORY})"),
         format!("ggml {} ({}, {})", ggml::COMMIT, ggml::DESCRIBE, ggml::REPOSITORY),
     ]
 }
@@ -69,10 +82,26 @@ mod tests {
     }
 
     #[test]
-    fn version_names_binary_and_pin() {
-        let [first, second] = version_lines("ggtts-render");
+    fn version_names_binary_commit_and_pin() {
+        let [first, second, third] = version_lines("ggtts-render");
         assert_eq!(first, format!("ggtts-render {VERSION}"));
-        assert!(second.contains(ggml::COMMIT));
-        assert!(second.contains(ggml::DESCRIBE));
+        assert_eq!(second, format!("ggtts {SOURCE_COMMIT} ({REPOSITORY})"));
+        assert!(third.contains(ggml::COMMIT));
+        assert!(third.contains(ggml::DESCRIBE));
+    }
+
+    #[test]
+    fn ggtts_commit_is_a_full_sha_or_unknown() {
+        // build.rs writes `unknown` for a build with neither GITHUB_SHA nor git (a source tarball); a release build
+        // refuses that, and the release smoke compares the printed commit with BUILDINFO's.
+        assert!(
+            SOURCE_COMMIT == "unknown"
+                || (SOURCE_COMMIT.len() == 40
+                    && SOURCE_COMMIT
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())),
+            "GGTTS_COMMIT is {SOURCE_COMMIT:?}"
+        );
+        assert!(REPOSITORY.starts_with("https://"), "{REPOSITORY}");
     }
 }

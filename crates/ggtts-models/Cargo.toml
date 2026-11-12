@@ -1,0 +1,20 @@
+[package]
+name = "ggtts-models"
+description = "The default model files each ggtts engine can fetch: a pinned table, a per-user cache and a verified download"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde_json.workspace = true
+sha2 = "0.10"
+# HTTPS with rustls and its bundled roots: no OpenSSL or other system TLS library, so a release binary stays portable.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+# The lock that keeps a live download from being removed by another process (`flock`). Already linked into the
+# shipped binary through other crates, so it adds nothing.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

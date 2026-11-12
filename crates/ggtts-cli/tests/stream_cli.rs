@@ -42,7 +42,7 @@ fn reference(path: &Path) -> (Vec<f32>, Vec<f32>, u32, Option<f64>) {
     let (title, paragraphs) = read_text(&std::fs::read_to_string(path).unwrap());
     let mut engine = FakeEngine::default();
     let profile = *engine.profile();
-    let chunks = plan_story(&profile, &paragraphs);
+    let chunks = plan_story(&profile, &paragraphs).unwrap();
     let mut pieces = Vec::new();
     let read = render_story_streamed(
         &mut engine,
@@ -100,6 +100,7 @@ fn a_wav_stream_on_stdout_and_the_flac_beside_it() {
         flac.to_str().unwrap(),
         "--stream",
         "-",
+        "--stream-raw",
     ]);
     let (pieces, batch, rate, gain) = reference(&story);
 
@@ -139,6 +140,7 @@ fn a_raw_stream_to_a_file_without_a_flac() {
         raw.to_str().unwrap(),
         "--stream-format",
         "s16le",
+        "--stream-raw",
     ]);
     assert!(out.is_empty(), "nothing on stdout when the stream goes to a file");
     let (pieces, _, rate, _) = reference(&story);
@@ -196,8 +198,237 @@ fn stream_flags_are_checked() {
             "x.flac",
         ],
         vec!["--engine", "fake", "--text", "一二三四"],
+        vec![
+            "--engine",
+            "fake",
+            "--text",
+            "一二三四",
+            "--stream-raw",
+            "--out",
+            "x.flac",
+        ],
     ] {
         let o = Command::new(BIN).args(&args).output().unwrap();
         assert!(!o.status.success(), "{args:?} should be refused");
+    }
+}
+
+#[test]
+fn the_default_stream_is_levelled_for_a_listener() {
+    let dir = scratch("levelled");
+    let story = story(&dir);
+    let (out, err) = run(&["--engine", "fake", "--story", story.to_str().unwrap(), "--stream", "-"]);
+    let (pieces, _, _, _) = reference(&story);
+    // The same pieces, levelled as the binary must have levelled them: one gain, from the default hold.
+    let (title, paragraphs) = read_text(&std::fs::read_to_string(&story).unwrap());
+    let mut engine = FakeEngine::default();
+    let profile = *engine.profile();
+    let chunks = plan_story(&profile, &paragraphs).unwrap();
+    let mut lv = ggtts_core::stream::StreamLevel::new(&profile, ggtts_core::stream::DEFAULT_HOLD_S);
+    let mut want = Vec::new();
+    render_story_streamed(
+        &mut engine,
+        &title,
+        &chunks,
+        &RenderOptions::for_profile(&profile),
+        &mut NullEvents,
+        &mut |p| {
+            for piece in lv.push(p.samples, p.sample_rate) {
+                want.extend(piece.into_iter().map(to_i16));
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+    for piece in lv.finish() {
+        want.extend(piece.into_iter().map(to_i16));
+    }
+    let got = pcm(&out[44..]);
+    assert_eq!(got.len(), pieces.len());
+    assert!(got == want, "the default stream is the levelled pieces");
+    let raw: Vec<i16> = pieces.iter().map(|&x| to_i16(x)).collect();
+    assert!(got != raw, "and not the raw ones");
+    assert!(
+        err.contains("levelled by the gain of its first"),
+        "stderr says which stream: {err}"
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn stream_level_seconds_is_checked_and_0_is_the_first_chunk() {
+    for args in [
+        vec![
+            "--engine",
+            "fake",
+            "--text",
+            "一二三四",
+            "--stream-level-seconds",
+            "5",
+            "--out",
+            "x.flac",
+        ],
+        vec![
+            "--engine",
+            "fake",
+            "--text",
+            "一二三四",
+            "--stream",
+            "-",
+            "--stream-raw",
+            "--stream-level-seconds",
+            "5",
+        ],
+        vec![
+            "--engine",
+            "fake",
+            "--text",
+            "一二三四",
+            "--stream",
+            "-",
+            "--stream-level-seconds",
+            "-1",
+        ],
+    ] {
+        let o = Command::new(BIN).args(&args).output().unwrap();
+        assert!(!o.status.success(), "{args:?} should be refused");
+    }
+    let dir = scratch("level0");
+    let story = story(&dir);
+    let (out, _) = run(&[
+        "--engine",
+        "fake",
+        "--story",
+        story.to_str().unwrap(),
+        "--stream",
+        "-",
+        "--stream-level-seconds",
+        "0",
+    ]);
+    let (title, paragraphs) = read_text(&std::fs::read_to_string(&story).unwrap());
+    let mut engine = FakeEngine::default();
+    let profile = *engine.profile();
+    let chunks = plan_story(&profile, &paragraphs).unwrap();
+    let mut lv = ggtts_core::stream::FirstChunkLevel::new(&profile);
+    let mut want = Vec::new();
+    render_story_streamed(
+        &mut engine,
+        &title,
+        &chunks,
+        &RenderOptions::for_profile(&profile),
+        &mut NullEvents,
+        &mut |p| {
+            want.extend(lv.apply(p.samples).into_iter().map(to_i16));
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert!(
+        pcm(&out[44..]) == want,
+        "--stream-level-seconds 0 is the first-chunk gain"
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn invalid_input_does_not_truncate_stream_or_load_model() {
+    let dir = scratch("invalid-input");
+    let output = dir.join("sentinel.wav");
+    for text in ["   ", "？！"] {
+        std::fs::write(&output, b"sentinel").unwrap();
+        let r = Command::new(BIN)
+            .args([
+                "--engine",
+                "qwen3-tts",
+                "--model",
+                "missing-model.gguf",
+                "--text",
+                text,
+                "--stream",
+                output.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!r.status.success());
+        let error = String::from_utf8_lossy(&r.stderr);
+        assert!(
+            error.contains(if text.trim().is_empty() {
+                "empty"
+            } else {
+                "punctuation-only"
+            }),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&output).unwrap(), b"sentinel");
+    }
+    for text in ["   ", "？！"] {
+        std::fs::write(&output, b"sentinel").unwrap();
+        let r = Command::new(BIN)
+            .args([
+                "--engine",
+                "auto",
+                "--model",
+                "missing-model.gguf",
+                "--text",
+                text,
+                "--stream",
+                output.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!r.status.success());
+        let error = String::from_utf8_lossy(&r.stderr);
+        assert!(
+            error.contains(if text.trim().is_empty() {
+                "empty"
+            } else {
+                "punctuation-only"
+            }),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&output).unwrap(), b"sentinel");
+    }
+    let auto_story = dir.join("auto-invalid-story.txt");
+    std::fs::write(&auto_story, "標題\n好。\n？！\n").unwrap();
+    std::fs::write(&output, b"sentinel").unwrap();
+    let r = Command::new(BIN)
+        .args([
+            "--engine",
+            "auto",
+            "--model",
+            "missing-model.gguf",
+            "--story",
+            auto_story.to_str().unwrap(),
+            "--stream",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!r.status.success());
+    assert!(String::from_utf8_lossy(&r.stderr).contains("punctuation-only"));
+    assert_eq!(std::fs::read(&output).unwrap(), b"sentinel");
+    let story = dir.join("invalid-story.txt");
+    for text in [
+        "標題\n好。\n？！\n".to_string(),
+        format!("標題\n{}好\n", "！".repeat(46)),
+    ] {
+        std::fs::write(&story, text).unwrap();
+        std::fs::write(&output, b"sentinel").unwrap();
+        let r = Command::new(BIN)
+            .args([
+                "--engine",
+                "qwen3-tts",
+                "--model",
+                "missing-model.gguf",
+                "--story",
+                story.to_str().unwrap(),
+                "--stream",
+                output.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!r.status.success());
+        assert!(String::from_utf8_lossy(&r.stderr).contains("punctuation-only"));
+        assert_eq!(std::fs::read(&output).unwrap(), b"sentinel");
     }
 }

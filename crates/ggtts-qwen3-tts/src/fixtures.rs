@@ -12,6 +12,8 @@ use serde_json::Value;
 pub struct Golden {
     pub name: String,
     pub text: String,
+    /// The style instruction the reference was given (`--instruction`), when it was given one.
+    pub instruction: Option<String>,
     pub speaker: String,
     pub language: String,
     pub seed: u64,
@@ -59,6 +61,10 @@ impl Golden {
         Ok(Self {
             name: s("/name")?,
             text: s("/text")?,
+            instruction: v
+                .pointer("/request/instruction")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             speaker: s("/request/speaker")?,
             language: s("/request/language")?,
             seed: n("/request/seed")?,
@@ -141,6 +147,18 @@ mod tests {
     fn reads_the_dump_format() {
         let t = "{\n  \"frames\": 2,\n  \"codebooks\": 2,\n  \"codes\": [\n    1,2,\n    3,4\n  ]\n}\n";
         assert_eq!(read_codes_json(t).unwrap(), (2, vec![1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn a_fixture_carries_its_instruction_when_it_has_one() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        let plain = Golden::load_all(&dir.join("cpu")).unwrap();
+        assert!(!plain.is_empty() && plain.iter().all(|g| g.instruction.is_none()));
+        let instructed = Golden::load_all(&dir.join("instruct")).unwrap();
+        assert!(!instructed.is_empty());
+        assert!(instructed
+            .iter()
+            .all(|g| g.instruction.as_deref().is_some_and(|i| !i.is_empty())));
     }
 
     #[test]

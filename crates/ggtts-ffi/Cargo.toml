@@ -1,0 +1,29 @@
+[package]
+name = "ggtts-ffi"
+description = "ggtts behind a C-ABI (integer handles, errors as codes, panics caught), and the JNI glue for the Kotlin binding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "ggtts_ffi"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ggtts-core.workspace = true
+ggtts-fake.workspace = true
+ggtts-qwen3-tts.workspace = true
+ggtts-kitten = { path = "../ggtts-kitten" }
+jni = { version = "0.21", optional = true, default-features = false }
+
+[features]
+default = []
+# The engines over ggml; without it only the fake engine loads, and the others report that the build has none.
+ggml = ["ggtts-qwen3-tts/ggml", "ggtts-kitten/ggml"]
+# The JNI entry points the Kotlin class calls (`Java_ggtts_Native_*`).
+jni = ["dep:jni"]
+# Test-only: an engine named `panic` whose generate panics, for the planted boundary test.
+plant = []

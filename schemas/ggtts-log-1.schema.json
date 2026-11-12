@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ggtts:schema:ggtts-log:1",
+  "title": "ggtts-log/1: one structured log record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "time_unix_ms", "level", "component", "event", "message", "fields"],
+  "properties": {
+    "format": {"const": "ggtts-log/1"},
+    "time_unix_ms": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+    "level": {"enum": ["error", "warn", "info", "debug", "trace"]},
+    "component": {"type": "string", "minLength": 1},
+    "event": {"type": "string", "minLength": 1},
+    "message": {"type": "string"},
+    "fields": {"type": ["object", "null"]}
+  }
+}

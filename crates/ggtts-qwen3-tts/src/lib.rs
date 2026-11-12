@@ -20,6 +20,9 @@ pub mod engine;
 pub mod fixtures;
 #[cfg(feature = "ggml")]
 pub mod gguf;
+pub mod instruct;
+#[cfg(feature = "ggml")]
+pub mod native_logging;
 #[cfg(feature = "ggml")]
 pub mod stream;
 #[cfg(feature = "ggml")]
@@ -68,7 +71,7 @@ mod tests {
 
     #[test]
     fn merge_keeps_the_first_clause_mark() {
-        let got = chunk(&PROFILE, "今日好熱。我哋去游水！", PROFILE.story_ceiling);
+        let got = chunk(&PROFILE, "今日好熱。我哋去游水！", PROFILE.story_ceiling).unwrap();
         assert_eq!(got, vec![("今日好熱。我哋去游水".to_string(), "！".to_string())]);
     }
 

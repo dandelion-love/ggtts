@@ -28,7 +28,7 @@ impl Case {
         FakeEngine::new(self.script.clone(), self.shape.clone())
     }
     pub fn chunks(&self, engine: &FakeEngine) -> Vec<PlannedChunk> {
-        plan_story(engine.profile(), &self.paragraphs)
+        plan_story(engine.profile(), &self.paragraphs).unwrap()
     }
     pub fn opts(&self, engine: &FakeEngine) -> RenderOptions {
         RenderOptions {

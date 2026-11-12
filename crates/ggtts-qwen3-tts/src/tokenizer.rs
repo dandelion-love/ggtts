@@ -828,6 +828,19 @@ mod tests {
         assert_eq!(t.decode(&[5, 6, 7]), b"abc \n");
     }
 
+    /// A style instruction is a user turn, `<|im_start|>user\n{instruct}<|im_end|>\n`, and an empty one is nothing.
+    #[test]
+    fn an_instruction_is_wrapped_as_a_user_turn() {
+        let t = toy();
+        // <|im_start|> user \n ab <|im_end|> \n
+        assert_eq!(t.encode_instruct(b"ab").unwrap(), [10, 9, 7, 3, 11, 7]);
+        assert_eq!(
+            t.decode(&t.encode_instruct(b"ab c").unwrap()),
+            b"<|im_start|>user\nab c<|im_end|>\n"
+        );
+        assert_eq!(t.encode_instruct(b"").unwrap(), Vec::<i32>::new());
+    }
+
     /// Re-derives [`CLASS_RUNS`] from the reference's `src/tokenizer_unicode_data.cpp`, simulating
     /// `unicode_cpt_flags_array` (`src/tokenizer_unicode.cpp:116-146`), and compares every codepoint. Runs when
     /// `QWEN3_TTS_CPP` names a qwen3-tts.cpp checkout; otherwise it has nothing to compare against and passes.

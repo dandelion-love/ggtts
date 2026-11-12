@@ -17,6 +17,7 @@
 //! the host as the same f32 bits. Its replay graphs and dedicated schedulers are execution strategies over the same
 //! graphs and are not reproduced.
 
+use ggtts_core::hooks::Wants;
 use std::collections::HashMap;
 use std::path::Path;
 use std::ptr;
@@ -26,6 +27,7 @@ use ggtts_ggml_sys as g;
 
 use crate::cpu::{Cpu, Device, Meta};
 use crate::gguf::{set_name, Gguf, Weights};
+use crate::instruct;
 use crate::tokenizer::Tokenizer;
 
 type T = *mut g::ggml_tensor;
@@ -35,6 +37,31 @@ const MAX_NODES: usize = 16384;
 const CODE_PRED_MAX_NODES: usize = 4096;
 /// The code predictor's KV cache length (`init_code_pred_kv_cache(16)`).
 const CODE_PRED_CTX: i64 = 16;
+
+fn speaker_names(speakers: &HashMap<String, i32>) -> Vec<String> {
+    let mut names: Vec<String> = speakers.keys().cloned().collect();
+    names.sort();
+    names
+}
+
+/// Looks a speaker up by name, ignoring case. An unknown name is an error that lists every speaker the model has,
+/// in alphabetical order, and names the flag that chooses one; a model with no named speakers gets neither.
+fn find_speaker(speakers: &HashMap<String, i32>, name: &str) -> Result<i32, EngineError> {
+    if let Some(id) = speakers.get(&name.to_lowercase()) {
+        return Ok(*id);
+    }
+    let names = speaker_names(speakers);
+    if names.is_empty() {
+        // Nothing to choose from, so --speaker is not offered.
+        return Err(err(format!(
+            "the talker has no speaker {name}: this model has no named speakers"
+        )));
+    }
+    Err(err(format!(
+        "the talker has no speaker {name}; this model's speakers are: {}. Choose one with --speaker",
+        names.join(", ")
+    )))
+}
 
 fn err(msg: impl Into<String>) -> EngineError {
     EngineError(msg.into())
@@ -98,6 +125,12 @@ mod planted {
         /// sampler's stream after each frame, so every later token moves. It fires only when a hook is passed: it
         /// exists to show that the hook's identity check can see a hook that is not quiet.
         FrameHookDraw,
+        /// Simulate hook-triggered corruption of sampler logits after copying them for an observer.
+        /// The test-only feature removes this branch entirely from production builds.
+        HookLogitMutation,
+        /// The style instruction's rows placed after the role rows instead of before them. Changes nothing for a
+        /// request with no instruction.
+        InstructionAfterRole,
     }
 
     #[cfg(feature = "plant")]
@@ -109,6 +142,7 @@ mod planted {
                 "rope-normal" => Self::RopeNormal,
                 "sampler-off-by-one" => Self::SamplerOffByOne,
                 "frame-hook-draw" => Self::FrameHookDraw,
+                "instruction-after-role" => Self::InstructionAfterRole,
                 _ => return None,
             })
         }
@@ -164,6 +198,11 @@ pub struct Config {
     pub codec_think_eos_id: i32,
     /// `None` when the GGUF has no M-RoPE sections; then the talker uses NEOX rope.
     pub mrope_section: Option<[i32; 3]>,
+    /// The checkpoint type, `base`, `custom_voice` or `voice_design`, as the reference reads and infers it
+    /// ([`instruct::model_type`]).
+    pub model_type: String,
+    /// Whether the checkpoint takes a style instruction ([`instruct::supports_instruction`]).
+    pub supports_instruction: bool,
 }
 
 struct Layer {
@@ -216,51 +255,20 @@ pub struct Generation {
     pub stop: Stop,
 }
 
-/// One talker step as the instrument sees it: the frame, the token drawn for codebook 0, and the probability the
-/// sampler gave the end-of-speech token at that step.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FrameStop {
-    pub frame: i32,
-    pub token: i32,
-    pub p_stop: f64,
-}
+/// Called once per talker step, after the codebook-0 token is drawn: the frame, the token, and what the caller's
+/// [`Wants`] asked for: the end-of-speech probability under the sampler's distribution, and the logits as the sampler
+/// saw them (after suppression and the repetition penalty, before temperature). Nothing unasked is computed.
+pub type StepHook<'a> = dyn FnMut(i32, i32, Option<f64>, Option<&[f32]>) + 'a;
 
-/// The end-of-speech probability under the distribution the sampler draws from: the logits after suppression and
-/// repetition penalty, scaled by the temperature, cut to the top k (and top p), softmaxed. Computed in f64 on a copy,
-/// so it changes nothing the sampler sees and draws nothing from its stream.
+/// Normalized EOS weight after the sampler's actual filtering, computed on a copy without using its random stream.
 fn stop_probability(logits: &[f32], eos: i32, s: Sampling) -> f64 {
     if s.temperature <= 0.0 {
         return if argmax(logits) == eos { 1.0 } else { 0.0 };
     }
-    let mut l: Vec<f32> = logits.iter().map(|&x| x * (1.0f32 / s.temperature)).collect();
-    if s.top_k > 0 && (s.top_k as usize) < l.len() {
-        let mut sorted = l.clone();
-        sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-        let threshold = sorted[s.top_k as usize - 1];
-        for x in l.iter_mut() {
-            if *x < threshold {
-                *x = f32::NEG_INFINITY;
-            }
-        }
-    }
-    let max = l.iter().fold(f32::NEG_INFINITY, |m, &x| if x > m { x } else { m });
-    let mut p: Vec<f64> = l.iter().map(|&x| f64::from(x - max).exp()).collect();
-    if s.top_p > 0.0 && s.top_p < 1.0 {
-        let total: f64 = p.iter().sum();
-        let mut order: Vec<usize> = (0..p.len()).collect();
-        order.sort_by(|&a, &b| p[b].partial_cmp(&p[a]).unwrap_or(std::cmp::Ordering::Equal));
-        let mut cum = 0.0;
-        for (j, &i) in order.iter().enumerate() {
-            if j > 0 && cum >= f64::from(s.top_p) {
-                p[i] = 0.0;
-            } else {
-                cum += p[i] / total;
-            }
-        }
-    }
-    let total: f64 = p.iter().sum();
+    let mut weights = logits.to_vec();
+    let total = sampler_weights(&mut weights, s);
     if total > 0.0 {
-        p[eos as usize] / total
+        f64::from(weights[eos as usize] / total)
     } else {
         0.0
     }
@@ -510,6 +518,8 @@ impl Talker {
                 2157,
             ),
             mrope_section,
+            model_type: String::new(),
+            supports_instruction: false,
         };
 
         // Speakers: `qwen3-tts.codec.speaker_names` and `speaker_ids`, names lower-cased
@@ -525,6 +535,18 @@ impl Talker {
                 }
             }
         }
+        // The checkpoint type and whether it takes a style instruction ([`crate::instruct`]).
+        let mut config = config;
+        let declared = instruct::MODEL_TYPE_KEYS
+            .iter()
+            .find_map(|k| gguf.string(k).filter(|s| !s.is_empty()));
+        let file_name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+        config.model_type = instruct::model_type(declared.as_deref(), &file_name, !speakers.is_empty());
+        config.supports_instruction = instruct::supports_instruction(
+            &config.model_type,
+            config.hidden_size,
+            instruct::SUPPORTS_KEYS.iter().find_map(|k| gguf.flag(k)),
+        );
         let tokenizer = Tokenizer::load(&gguf)?;
 
         // Every talker.* and code_pred.* tensor, at its file type and shape.
@@ -677,53 +699,88 @@ impl Talker {
         self.speakers.get(&name.to_lowercase()).copied()
     }
 
+    /// The speaker's id, or the error a user sees for a name the model does not have ([`find_speaker`]).
+    pub fn speaker(&self, name: &str) -> Result<i32, EngineError> {
+        find_speaker(&self.speakers, name)
+    }
+
+    /// The model's speaker names, lower-cased as they are matched, in alphabetical order.
+    pub fn speaker_names(&self) -> Vec<String> {
+        speaker_names(&self.speakers)
+    }
+
     /// Text to codec tokens, as the reference CLI renders `-t <text> --speaker <speaker> -l <lang> --seed <seed>
     /// --max-tokens <max_len>`: `Qwen3TTS::synthesize` then `TTSTransformer::generate`.
+    ///
+    /// `instruction` is the CLI's `--instruction`: `None` or an empty string is no instruction and takes exactly the
+    /// path without one; a non-empty one is refused on a checkpoint that takes none ([`instruct::check`]).
+    #[allow(clippy::too_many_arguments)]
     pub fn generate(
         &mut self,
         text: &str,
+        instruction: Option<&str>,
         speaker: &str,
         language_id: i32,
         seed: u64,
         max_len: i32,
         sampling: Sampling,
     ) -> Result<Generation, EngineError> {
-        self.generate_traced(text, speaker, language_id, seed, max_len, sampling, None)
+        self.generate_streamed(
+            text,
+            instruction,
+            speaker,
+            language_id,
+            seed,
+            max_len,
+            sampling,
+            None,
+            None,
+        )
     }
 
-    /// [`generate`](Self::generate), and with `trace` one [`FrameStop`] per talker step, the step that drew
-    /// end-of-speech included. The trace reads values the loop already has; the output is the same with or without
-    /// it.
-    #[allow(clippy::too_many_arguments)]
-    pub fn generate_traced(
-        &mut self,
-        text: &str,
-        speaker: &str,
-        language_id: i32,
-        seed: u64,
-        max_len: i32,
-        sampling: Sampling,
-        trace: Option<&mut Vec<FrameStop>>,
-    ) -> Result<Generation, EngineError> {
-        self.generate_streamed(text, speaker, language_id, seed, max_len, sampling, trace, None)
+    /// The checkpoint type ([`Config::model_type`]).
+    pub fn model_type(&self) -> &str {
+        &self.config.model_type
     }
 
-    /// [`generate_traced`](Self::generate_traced), and with `on_frame` a call per kept frame, with its 16 codes, as
-    /// soon as they are final and before the next talker step: the frames the returned codes hold, in order. Like
-    /// the trace, the hook only reads; the tokens are the same with or without it.
+    /// Whether the checkpoint takes a style instruction ([`Config::supports_instruction`]).
+    pub fn supports_instruction(&self) -> bool {
+        self.config.supports_instruction
+    }
+
+    /// `Ok` for no instruction or a checkpoint that takes one; the error a user sees otherwise.
+    pub fn check_instruction(&self, instruction: Option<&str>) -> Result<(), EngineError> {
+        instruct::check(
+            instruction,
+            &self.config.model_type,
+            self.config.hidden_size,
+            self.config.supports_instruction,
+        )
+    }
+
+    /// [`generate`](Self::generate), with two read-only callbacks.
+    /// - `on_step`, with its [`Wants`], is called once per talker step, the step that drew end-of-speech included
+    ///   ([`StepHook`]).
+    /// - `on_frame` is called once per kept frame, with its 16 codes, as soon as they are final and before the next
+    ///   talker step: the frames the returned codes hold, in order.
+    ///
+    /// Both read values the loop already has, plus what `on_step` asked for, computed on copies; the tokens are the
+    /// same with or without them.
     #[allow(clippy::too_many_arguments)]
     pub fn generate_streamed(
         &mut self,
         text: &str,
+        instruction: Option<&str>,
         speaker: &str,
         language_id: i32,
         seed: u64,
         max_len: i32,
         sampling: Sampling,
-        mut trace: Option<&mut Vec<FrameStop>>,
+        mut on_step: Option<(Wants, &mut StepHook<'_>)>,
         mut on_frame: Option<&mut FrameHook<'_>>,
     ) -> Result<Generation, EngineError> {
         sampling.check()?;
+        self.check_instruction(instruction)?;
         let c = self.config.clone();
         let h = c.hidden_size as usize;
         let spk = self
@@ -746,6 +803,17 @@ impl Talker {
         let tts_bos = special[0..h].to_vec();
         let tts_eos = special[h..2 * h].to_vec();
         let tts_pad = special[2 * h..3 * h].to_vec();
+        // The instruction's rows: `encode_instruct` (`pipeline_synthesize.cpp:1321-1324`), then the text projection
+        // (`transformer_embeddings.cpp:301-314`). Nothing for no instruction or an empty one.
+        let instruct_tokens = match instruction {
+            Some(i) if !i.is_empty() => self.tokenizer.encode_instruct(i.as_bytes())?,
+            _ => Vec::new(),
+        };
+        let instruct = if instruct_tokens.is_empty() {
+            Vec::new()
+        } else {
+            self.project_text(&instruct_tokens)?
+        };
         let role = self.project_text(&text_tokens[..3])?;
         let codec_prefill: Vec<i32> = if language_id < 0 {
             vec![c.codec_nothink_id, c.codec_think_bos_id, c.codec_think_eos_id]
@@ -777,7 +845,14 @@ impl Talker {
         }
         let body = self.project_text(&text_tokens[3..3 + body_count as usize])?;
         let codec_bos = &codec_tail_embed[h..2 * h];
-        let mut prefill = role;
+        // The instruction rows first, then the role rows (`transformer_embeddings.cpp:656-668`).
+        let (first, second) = if self.plant == Plant::InstructionAfterRole {
+            (role, instruct)
+        } else {
+            (instruct, role)
+        };
+        let mut prefill = first;
+        prefill.extend_from_slice(&second);
         prefill.extend_from_slice(&codec_plus_overlay);
         prefill.extend((0..h).map(|j| body[j] + codec_bos[j]));
         let prefill_len = (prefill.len() / h) as i64;
@@ -828,20 +903,23 @@ impl Talker {
                 }
             }
             repetition_penalty(&mut logits, &history, sampling.repetition_penalty);
-            let p_stop = trace
-                .as_ref()
-                .map(|_| stop_probability(&logits, c.codec_eos_id, sampling));
+            let wants = on_step.as_ref().map_or(Wants::NONE, |(w, _)| *w);
+            let p_stop = wants
+                .p_stop
+                .then(|| stop_probability(&logits, c.codec_eos_id, sampling));
+            let seen = wants.logits.then(|| logits.clone());
+            #[cfg(feature = "plant")]
+            if self.plant == Plant::HookLogitMutation && wants.logits && frame == 0 {
+                logits.fill(-1.0e9);
+                logits[0] = 1.0e9;
+            }
             let next = if sampling.temperature <= 0.0 {
                 argmax(&logits)
             } else {
                 sample_top_k_p(&mut logits, sampling, &mut rng)
             };
-            if let (Some(t), Some(p_stop)) = (trace.as_mut(), p_stop) {
-                t.push(FrameStop {
-                    frame,
-                    token: next,
-                    p_stop,
-                });
+            if let Some((_, f)) = on_step.as_mut() {
+                f(frame, next, p_stop, seen.as_deref());
             }
             if next == c.codec_eos_id {
                 stop = Stop::Eos;
@@ -1622,6 +1700,21 @@ fn sample_top_k_p(logits: &mut [f32], s: Sampling, rng: &mut Philox) -> i32 {
     if s.temperature <= 0.0 {
         return argmax(logits);
     }
+    let sum = sampler_weights(logits, s);
+    let target = rng.next_uniform() * sum;
+    let mut acc = 0f32;
+    for (i, &x) in logits.iter().enumerate() {
+        acc += x;
+        if acc >= target {
+            return i as i32;
+        }
+    }
+    n as i32 - 1
+}
+
+/// Mutate a copy or the sampler's logits into the exact unnormalized f32 weights used for its draw.
+fn sampler_weights(logits: &mut [f32], s: Sampling) -> f32 {
+    let n = logits.len();
     let inv = 1.0f32 / s.temperature;
     for x in logits.iter_mut() {
         *x *= inv;
@@ -1669,20 +1762,219 @@ fn sample_top_k_p(logits: &mut [f32], s: Sampling, rng: &mut Philox) -> i32 {
         *x = (*x - max).exp();
         sum += *x;
     }
-    let target = rng.next_uniform() * sum;
-    let mut acc = 0f32;
-    for (i, &x) in logits.iter().enumerate() {
-        acc += x;
-        if acc >= target {
-            return i as i32;
-        }
-    }
-    n as i32 - 1
+    sum
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn speakers(names: &[&str]) -> HashMap<String, i32> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.to_string(), 3000 + i as i32))
+            .collect()
+    }
+
+    #[test]
+    fn a_known_speaker_is_found_whatever_its_case() {
+        let s = speakers(&["hk_voice_777", "hk_voice_343"]);
+        assert_eq!(find_speaker(&s, "hk_voice_343").unwrap(), 3001);
+        assert_eq!(find_speaker(&s, "HK_Voice_777").unwrap(), 3000);
+    }
+
+    #[test]
+    fn an_unknown_speaker_error_lists_the_models_speakers_and_the_flag() {
+        let s = speakers(&["hk_voice_777", "hk_voice_343"]);
+        let e = find_speaker(&s, "hk_cantonese_speaker").unwrap_err().0;
+        assert_eq!(
+            e,
+            "the talker has no speaker hk_cantonese_speaker; this model's speakers are: hk_voice_343, hk_voice_777. \
+             Choose one with --speaker"
+        );
+        assert_eq!(speaker_names(&s), ["hk_voice_343", "hk_voice_777"]);
+    }
+
+    #[test]
+    fn an_unknown_speaker_error_says_so_when_the_model_names_none() {
+        let e = find_speaker(&HashMap::new(), "anyone").unwrap_err().0;
+        assert_eq!(e, "the talker has no speaker anyone: this model has no named speakers");
+        assert!(!e.contains("--speaker"), "{e}");
+    }
+
+    // Frozen pre-refactor sampler control. It must stay independent of sampler_weights.
+    fn previous_sample(logits: &mut [f32], s: Sampling, rng: &mut Philox) -> i32 {
+        let n = logits.len();
+        if s.temperature <= 0.0 {
+            return argmax(logits);
+        }
+        let inv = 1.0f32 / s.temperature;
+        for x in logits.iter_mut() {
+            *x *= inv;
+        }
+        if s.top_k > 0 && (s.top_k as usize) < n {
+            let mut sorted = logits.to_vec();
+            sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+            let threshold = sorted[s.top_k as usize - 1];
+            for x in logits.iter_mut() {
+                if *x < threshold {
+                    *x = f32::NEG_INFINITY;
+                }
+            }
+        }
+        if s.top_p > 0.0 && s.top_p < 1.0 {
+            let max = logits.iter().fold(f32::NEG_INFINITY, |m, &x| if x > m { x } else { m });
+            let mut sum_exp = 0f32;
+            for &x in logits.iter() {
+                sum_exp += (x - max).exp();
+            }
+            let inv_sum = 1.0f32 / sum_exp;
+            let cutoff = max - 16.0;
+            let mut probs = Vec::new();
+            for (i, x) in logits.iter_mut().enumerate() {
+                if *x >= cutoff {
+                    probs.push((i, (*x - max).exp() * inv_sum));
+                } else {
+                    *x = f32::NEG_INFINITY;
+                }
+            }
+            probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let mut cum = 0f32;
+            for (j, &(i, p)) in probs.iter().enumerate() {
+                if j > 0 && cum >= s.top_p {
+                    logits[i] = f32::NEG_INFINITY;
+                }
+                cum += p;
+            }
+        }
+        let max = logits.iter().fold(f32::NEG_INFINITY, |m, &x| if x > m { x } else { m });
+        let mut sum = 0f32;
+        for x in logits.iter_mut() {
+            *x = (*x - max).exp();
+            sum += *x;
+        }
+        let target = rng.next_uniform() * sum;
+        let mut acc = 0f32;
+        for (i, &x) in logits.iter().enumerate() {
+            acc += x;
+            if acc >= target {
+                return i as i32;
+            }
+        }
+        n as i32 - 1
+    }
+
+    #[test]
+    fn sampler_refactor_preserves_previous_draws_weights_and_rng() {
+        let settings = [
+            Sampling {
+                temperature: 0.0,
+                top_k: 0,
+                top_p: 1.0,
+                ..Sampling::default()
+            },
+            Sampling {
+                temperature: 0.7,
+                top_k: 0,
+                top_p: 1.0,
+                ..Sampling::default()
+            },
+            Sampling {
+                temperature: 1.2,
+                top_k: 3,
+                top_p: 0.75,
+                ..Sampling::default()
+            },
+            Sampling {
+                temperature: 1.0,
+                top_k: 0,
+                top_p: 0.999_999_94,
+                ..Sampling::default()
+            },
+        ];
+        for setting in settings {
+            for seed in 0..100 {
+                let logits = vec![0.0, -17.0, -17.0, 0.0, -1.0, 2.0, -20.0];
+                let mut old = logits.clone();
+                let mut new = logits;
+                let mut a = Philox { seed, subseq: 0 };
+                let mut b = Philox { seed, subseq: 0 };
+                assert_eq!(
+                    previous_sample(&mut old, setting, &mut a),
+                    sample_top_k_p(&mut new, setting, &mut b)
+                );
+                assert_eq!(old, new, "sampler weights changed");
+                assert_eq!(
+                    a.next_uniform().to_bits(),
+                    b.next_uniform().to_bits(),
+                    "RNG state changed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stop_probability_follows_sampler_cutoff() {
+        let settings = Sampling {
+            temperature: 1.0,
+            top_k: 0,
+            top_p: 0.999_999_94,
+            ..Sampling::default()
+        };
+        let mut logits = vec![-17.0; 11];
+        logits[0] = 0.0;
+        let probability = stop_probability(&logits, 1, settings);
+        let mut rng = Philox { seed: 0, subseq: 0 };
+        sample_top_k_p(&mut logits, settings, &mut rng);
+        assert_eq!(logits[1], 0.0, "sampler's max-minus-16 cutoff removes EOS");
+        assert_eq!(probability, 0.0, "EOS mass must use the same cutoff");
+    }
+
+    #[test]
+    fn stop_probability_uses_the_sampler_weights_for_filter_and_tie_cases() {
+        let inputs = [vec![3.0, 1.0, -2.0], vec![0.0, 0.0, -1.0], vec![0.0, -17.0, -17.0]];
+        let settings = [
+            Sampling {
+                temperature: 0.7,
+                top_k: 0,
+                top_p: 1.0,
+                ..Sampling::default()
+            },
+            Sampling {
+                temperature: 1.2,
+                top_k: 1,
+                top_p: 1.0,
+                ..Sampling::default()
+            },
+            Sampling {
+                temperature: 1.0,
+                top_k: 0,
+                top_p: 0.75,
+                ..Sampling::default()
+            },
+        ];
+        for logits in inputs {
+            for setting in settings {
+                let mut observed = logits.clone();
+                let mut rng = Philox { seed: 3, subseq: 0 };
+                sample_top_k_p(&mut observed, setting, &mut rng);
+                let total: f32 = observed.iter().sum();
+                for (eos, &weight) in observed.iter().enumerate() {
+                    assert_eq!(
+                        stop_probability(&logits, eos as i32, setting),
+                        f64::from(weight / total)
+                    );
+                }
+            }
+        }
+        let greedy = Sampling {
+            temperature: 0.0,
+            ..Sampling::default()
+        };
+        assert_eq!(stop_probability(&[0.0, 1.0, 1.0], 1, greedy), 1.0);
+        assert_eq!(stop_probability(&[0.0, 1.0, 1.0], 2, greedy), 0.0);
+    }
 
     #[test]
     fn philox_is_deterministic_and_in_range() {

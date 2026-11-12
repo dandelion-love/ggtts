@@ -10,7 +10,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm, Stop};
+use ggtts_core::engine::{
+    refuse_instruction, ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm, Stop,
+};
 use ggtts_core::profile::Profile;
 
 use crate::backend::{Backend, Device};
@@ -57,25 +59,30 @@ pub struct Reference {
     pub s3: Option<FlowRef>,
 }
 
+/// How a reference voice is made, for every refusal of one.
+pub const PREPARE_HINT: &str = "make a reference voice with ggtts-kitten, which ships beside ggtts-render: `ggtts-kitten prepare --s3gguf kitten-s3gen.gguf --wav CLIP.flac --transcript TEXT --out voice.json`";
+
 impl Reference {
     pub fn open(path: &Path) -> Result<Self, String> {
-        let s = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let j: serde_json::Value = serde_json::from_str(&s).map_err(|e| e.to_string())?;
+        let bad = |why: String| format!("{}: {why}; {PREPARE_HINT}", path.display());
+        let s = std::fs::read(path).map_err(|e| bad(e.to_string()))?;
+        let j: serde_json::Value =
+            serde_json::from_slice(&s).map_err(|e| bad(format!("not a reference voice JSON ({e})")))?;
         Ok(Reference {
             transcript: j["transcript"]
                 .as_str()
-                .ok_or("reference: transcript")?
+                .ok_or_else(|| bad("the reference has no transcript".into()))?
                 .trim()
                 .to_string(),
             tokens: j["reference_tokens"]
                 .as_array()
-                .ok_or("reference: reference_tokens")?
+                .ok_or_else(|| bad("the reference has no reference_tokens".into()))?
                 .iter()
                 .map(|v| v.as_u64().unwrap_or(0) as u32)
                 .collect(),
             embedding: j["embedding"]
                 .as_array()
-                .ok_or("reference: embedding")?
+                .ok_or_else(|| bad("the reference has no embedding".into()))?
                 .iter()
                 .map(|v| v.as_f64().unwrap_or(0.0) as f32)
                 .collect(),
@@ -247,25 +254,43 @@ impl PyDecoder {
     }
 }
 
+/// The refusal for a language model GGUF converted before the tokenizer was embedded. It names the tool that ships
+/// beside ggtts-render and the files it reads, so the fix needs nothing outside the release archive and the model.
+pub const NO_TOKENIZER: &str = "this GGUF has no embedded tokenizer (it was converted before ggtts embedded one): re-convert it with ggtts-kitten-convert, which ships beside ggtts-render: `ggtts-kitten-convert --repo DIR --out kitten-lm.gguf`, where DIR is a download of KittenML/kitten-tts-2 (config.json, lm/config.json, lm/model.safetensors, lm/tokenizer.json)";
+
 impl KittenEngine {
     /// Everything from files, for `ggtts-render`: the LM GGUF (with its tokenizer embedded by the converter), the
     /// S3Gen GGUF, and a reference JSON (`ggtts-kitten prepare`). Ternary weights, the ggml decoder.
     pub fn open(lm: &Path, s3gen: &Path, reference: &Path, threads: usize, device: Device) -> Result<Self, String> {
         let be = Backend::new(device, threads)?;
-        let g = crate::gguf::Gguf::open(lm)?;
+        let g = crate::gguf::Gguf::open(lm).map_err(|e| format!("{} (--model): {e}", lm.display()))?;
+        if g.str("general.architecture").ok() != Some(crate::convert::ARCH) {
+            return Err(format!(
+                "{}: not a Kitten-TTS 2 language model GGUF (--model); ggtts-kitten-convert --repo writes one",
+                lm.display()
+            ));
+        }
         let json =
             g.kv.get("kitten.tokenizer.json")
                 .and_then(Value::as_str)
-                .ok_or("this GGUF has no embedded tokenizer: re-convert it with ggtts-kitten-convert")?;
+                .ok_or(NO_TOKENIZER)?;
         let tok = Tokenizer::from_json(json)?;
+        // Every input is checked for what it is before the slow loads, so a wrong file is named at once. The decoder
+        // GGUF is read twice rather than held beside the language model's while that loads.
+        let open_s3 = || {
+            let s3 = crate::gguf::Gguf::open(s3gen).map_err(|e| format!("{} (--codec): {e}", s3gen.display()))?;
+            crate::s3convert::require(&s3, s3gen, "--codec", false)?;
+            Ok::<_, String>(s3)
+        };
+        drop(open_s3()?);
+        let reference = Reference::open(reference)?;
         let model = Model::load(&g, crate::model::Weights::Ternary, be.clone())?;
         drop(g);
-        let s3 = crate::gguf::Gguf::open(s3gen)?;
+        let s3 = open_s3()?;
         let decoder = Decoder::Ggml(Box::new(GgmlDecoder {
             flow: Flow::load(&s3, be.clone())?,
             hift: Hift::load(&s3, be.clone())?,
         }));
-        let reference = Reference::open(reference)?;
         KittenEngine::new(model, tok, reference, decoder, threads)
     }
 }
@@ -328,9 +353,10 @@ impl KittenEngine {
         };
         if let Decoder::Ggml(_) = decoder {
             if reference.s3.is_none() {
-                return Err(
-                    "the ggml decoder needs the reference's S3Gen conditioning (re-run kitten_ref.py reference)".into(),
-                );
+                return Err(format!(
+                    "{}: the reference has no S3Gen conditioning, which the ggml decoder needs; {PREPARE_HINT}",
+                    reference.path.display()
+                ));
             }
         }
         let dev = match model.be.device {
@@ -436,6 +462,7 @@ impl Engine for KittenEngine {
     }
 
     fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
+        refuse_instruction(req, &self.info.family)?;
         let (ids, stop) = self.generate_ids(req.text, req.seed).map_err(EngineError)?;
         let (lo, hi) = (self.tm.audio_base, self.tm.audio_base + self.tm.audio_count);
         let frames = ids

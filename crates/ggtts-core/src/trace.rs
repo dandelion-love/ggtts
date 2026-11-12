@@ -1,4 +1,4 @@
-//! The instrument interface: per-step events, the trace format `ggtts-trace/1`, replay and the trace-identity check.
+//! The instrument interface: per-step events, the trace format `ggtts-trace/2`, replay and the trace-identity check.
 //!
 //! Instruments are opt-in. With tracing off the sink is [`NullEvents`], whose [`level`](Events::level) is 0, and
 //! neither the pipeline nor an engine computes an instrument value. With it on the output must not change: an
@@ -12,7 +12,7 @@
 //! | Field | Meaning |
 //! |---|---|
 //! | `token` | The sampled codebook-0 token at this frame. |
-//! | `p_stop` | Probability of the end-of-speech token at temperature 1, before any filtering. |
+//! | `p_stop` | Engine-reported stop value; inspect `flags.p_stop_semantics`, or treat it as unknown if absent. |
 //! | `entropy` | Entropy in nats of the main sampler's distribution after temperature, before top-k and top-p. |
 //! | `top1_p`, `rank` | The most likely token's probability, and the rank of the token actually drawn. |
 //! | `cb`, `cb_p` | Level 2: the depth model's tokens (codebooks 1 onward) and each one's probability. |
@@ -23,6 +23,9 @@
 //!
 //! The schema is what an engine must emit. It is not a claim that any field measures what its name says: an
 //! instrument is trusted only once it has been shown to detect a planted defect and to read a no-op as no change.
+//!
+//! The hook catalogue, the event order and the two instrument tiers are in `docs/instruments/hooks.md`; the JSON
+//! schema every line validates against is `schemas/ggtts-trace-2.schema.json`.
 
 use std::io::{self, Write};
 use std::time::Instant;
@@ -33,7 +36,12 @@ use crate::audio::{judge_f32, trim_edges_f32};
 use crate::engine::{ChunkRequest, Codes, Engine, EngineError, Pcm, Stop};
 
 /// The trace format this module writes and reads.
-pub const FORMAT: &str = "ggtts-trace/1";
+pub const FORMAT: &str = "ggtts-trace/2";
+
+/// The formats [`parse`] accepts: the current one first, then at most the one before it. Readers accept the
+/// previous version for one version, so a trace written by the last release still reads. Writers write only
+/// [`FORMAT`].
+pub const READS: &[&str] = &[FORMAT, "ggtts-trace/1"];
 
 /// The fields replay ignores: wall-clock only.
 pub const CLOCK_FIELDS: [&str; 2] = ["t_ms", "ms"];
@@ -71,14 +79,18 @@ pub struct Header {
     /// The model's sha256, when the engine has a model.
     pub model_sha256: Option<String>,
     pub codec_sha256: Option<String>,
-    /// The non-default flags. A secret flag is written as `{"set": true, "source": ...}` by its caller, never as
-    /// its value.
+    /// Non-default flags and versioned producer semantics. Secret values must never be written here.
     pub flags: Map<String, Value>,
     pub trace_level: u8,
+    /// Every model file the render uses (role, path, sha256, source, url), as the CLI's reports list them. Absent
+    /// from the line when empty.
+    pub models: Vec<Value>,
+    /// The render's style instruction, when it has a non-empty one. Absent from the line otherwise.
+    pub instruction: Option<String>,
 }
 
 impl Header {
-    /// A header for `engine` at `trace_level`, with no flags.
+    /// A header for `engine` at `trace_level`, including declared measurement semantics.
     pub fn for_engine(engine: &dyn Engine, trace_level: u8) -> Self {
         let info = engine.info();
         Self {
@@ -90,8 +102,12 @@ impl Header {
             protocol: engine.profile().protocol.to_string(),
             model_sha256: None,
             codec_sha256: None,
-            flags: Map::new(),
+            flags: engine.p_stop_semantics().map_or_else(Map::new, |semantics| {
+                Map::from_iter([("p_stop_semantics".into(), semantics.into())])
+            }),
             trace_level,
+            models: Vec::new(),
+            instruction: None,
         }
     }
 }
@@ -106,6 +122,8 @@ pub enum Event<'a> {
         text: &'a str,
         seed: u64,
         n_text_tokens: Option<u32>,
+        /// The request's style instruction; absent when it has none (an empty instruction is none).
+        instruction: Option<&'a str>,
     },
     Step {
         chunk: u32,
@@ -142,6 +160,13 @@ pub enum Event<'a> {
         start: usize,
         samples: usize,
     },
+    /// A measured duration. Values are wall-clock and excluded from trace identity comparisons.
+    Timing {
+        stage: &'static str,
+        chunk: Option<u32>,
+        draw: Option<u32>,
+        ms: u64,
+    },
     Join {
         chunks: u32,
         samples: usize,
@@ -177,6 +202,10 @@ impl Event<'_> {
                 m.insert("protocol".into(), h.protocol.clone().into());
                 m.insert("flags".into(), Value::Object(h.flags.clone()));
                 m.insert("trace_level".into(), h.trace_level.into());
+                if !h.models.is_empty() {
+                    m.insert("models".into(), Value::Array(h.models.clone()));
+                }
+                put(&mut m, "instruction", h.instruction.clone());
             }
             Event::ChunkBegin {
                 chunk,
@@ -184,6 +213,7 @@ impl Event<'_> {
                 text,
                 seed,
                 n_text_tokens,
+                instruction,
             } => {
                 m.insert("ev".into(), "chunk_begin".into());
                 m.insert("chunk".into(), (*chunk).into());
@@ -191,6 +221,7 @@ impl Event<'_> {
                 m.insert("text".into(), (*text).into());
                 m.insert("seed".into(), (*seed).into());
                 put(&mut m, "n_text_tokens", *n_text_tokens);
+                put(&mut m, "instruction", *instruction);
             }
             Event::Step {
                 chunk,
@@ -252,6 +283,13 @@ impl Event<'_> {
                 m.insert("chunk".into(), (*chunk).into());
                 m.insert("start".into(), (*start).into());
                 m.insert("samples".into(), (*samples).into());
+            }
+            Event::Timing { stage, chunk, draw, ms } => {
+                m.insert("ev".into(), "timing".into());
+                m.insert("stage".into(), (*stage).into());
+                put(&mut m, "chunk", *chunk);
+                put(&mut m, "draw", *draw);
+                m.insert("ms".into(), (*ms).into());
             }
             Event::Join {
                 chunks,
@@ -320,6 +358,16 @@ pub struct JsonlEvents<W: Write> {
     start: Instant,
     w: W,
     error: Option<io::Error>,
+    sink_ns: u128,
+    events_written: u64,
+}
+
+/// Time spent serializing and writing events inside the sink. It excludes event preparation by callers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TraceSinkStats {
+    pub events_written: u64,
+    pub sink_ns: u128,
+    pub flush_ns: u128,
 }
 
 impl<W: Write> JsonlEvents<W> {
@@ -329,16 +377,29 @@ impl<W: Write> JsonlEvents<W> {
             start: Instant::now(),
             w,
             error: None,
+            sink_ns: 0,
+            events_written: 0,
         }
     }
 
     /// Flush, and return the first write error if there was one.
-    pub fn finish(mut self) -> io::Result<W> {
+    pub fn finish(self) -> io::Result<W> {
+        self.finish_with_stats().map(|(writer, _)| writer)
+    }
+
+    /// Flush and return sink timings separately from inference and stream handoffs.
+    pub fn finish_with_stats(mut self) -> io::Result<(W, TraceSinkStats)> {
         if let Some(e) = self.error.take() {
             return Err(e);
         }
+        let start = Instant::now();
         self.w.flush()?;
-        Ok(self.w)
+        let stats = TraceSinkStats {
+            events_written: self.events_written,
+            sink_ns: self.sink_ns,
+            flush_ns: start.elapsed().as_nanos(),
+        };
+        Ok((self.w, stats))
     }
 }
 
@@ -350,11 +411,15 @@ impl<W: Write> Events for JsonlEvents<W> {
         if self.error.is_some() {
             return;
         }
+        let start = Instant::now();
         let mut m = e.to_json();
         m.insert("t_ms".into(), (self.start.elapsed().as_millis() as u64).into());
         if let Err(err) = writeln!(self.w, "{}", Value::Object(m)) {
             self.error = Some(err);
+        } else {
+            self.events_written += 1;
         }
+        self.sink_ns += start.elapsed().as_nanos();
     }
 }
 
@@ -392,8 +457,16 @@ pub fn parse(text: &str) -> Result<Vec<Map<String, Value>>, TraceError> {
     if head["ev"] != "trace" {
         return Err(TraceError("the first line is not the header".into()));
     }
-    if head.get("format").and_then(Value::as_str) != Some(FORMAT) {
-        return Err(TraceError(format!("not a {FORMAT} trace: {:?}", head.get("format"))));
+    if !head
+        .get("format")
+        .and_then(Value::as_str)
+        .is_some_and(|f| READS.contains(&f))
+    {
+        return Err(TraceError(format!(
+            "not a trace this reads ({}): {:?}",
+            READS.join(", "),
+            head.get("format")
+        )));
     }
     Ok(lines)
 }
@@ -534,7 +607,7 @@ fn u32_of(m: &Map<String, Value>, k: &str) -> Result<u32, TraceError> {
         .ok_or_else(|| TraceError(format!("`{k}` missing or not a u32 in {}", Value::Object(m.clone()))))
 }
 
-/// Replay a recorded trace on `engine`: each `chunk_begin`'s request (text, seed, chunk, draw) is generated again,
+/// Replay a recorded trace on `engine`: each `chunk_begin`'s request (text, seed, chunk, draw, instruction) is generated again,
 /// in the recorded order, at the header's trace level, then decoded and judged; where the trace records a chunk's
 /// `trim`, the last regenerated draw of that chunk is trimmed again. The regenerated events are compared with the
 /// recorded ones field for field, ignoring the clock, so a decoder change is red as well as a generator change.
@@ -601,6 +674,7 @@ pub fn replay(engine: &mut dyn Engine, lines: &[Map<String, Value>]) -> Result<R
             seed,
             chunk: u32_of(m, "chunk")?,
             draw: u32_of(m, "draw")?,
+            instruction: m.get("instruction").and_then(Value::as_str),
         };
         let pcm = generate_chunk(engine, &req, &mut rec).map_err(|e| TraceError(format!("engine: {e}")))?;
         last = Some((req.chunk, pcm));
@@ -629,6 +703,7 @@ fn generate_chunk(
             text: req.text,
             seed: req.seed,
             n_text_tokens: None,
+            instruction: req.instruction(),
         });
     }
     let t0 = Instant::now();
@@ -715,6 +790,25 @@ pub fn emit_header(events: &mut dyn Events, header: &Header) {
 
 #[cfg(test)]
 mod tests {
+    /// A chunk_begin carries the request's instruction when it has one, and leaves the field out otherwise, as
+    /// `n_text_tokens` is left out: absent, never empty.
+    #[test]
+    fn chunk_begin_records_the_instruction_only_when_there_is_one() {
+        let begin = |instruction| {
+            super::Event::ChunkBegin {
+                chunk: 0,
+                draw: 0,
+                text: "好。",
+                seed: 1,
+                n_text_tokens: None,
+                instruction,
+            }
+            .to_json()
+        };
+        assert_eq!(begin(Some("Speak slowly."))["instruction"], "Speak slowly.");
+        assert!(!begin(None).contains_key("instruction"));
+    }
+
     use super::*;
     use serde_json::json;
 
@@ -782,6 +876,38 @@ mod tests {
             .unwrap()
             .clone()];
         assert_eq!(compare(&a, &b).unwrap().field, "cb[2]");
+    }
+
+    /// `name/N` for a format string, so the rule can be checked without knowing the version.
+    fn version(f: &str) -> (&str, u32) {
+        let (name, n) = f.rsplit_once('/').expect("name/N");
+        (name, n.parse().expect("a number"))
+    }
+
+    #[test]
+    fn reads_the_current_format_and_at_most_the_previous_one() {
+        assert_eq!(READS[0], FORMAT, "writers write the first format readers accept");
+        assert!(
+            READS.len() <= 2,
+            "a reader keeps one previous version, no more: {READS:?}"
+        );
+        if let [cur, prev] = READS {
+            let ((a, n), (b, m)) = (version(cur), version(prev));
+            assert!(
+                a == b && m + 1 == n,
+                "the second format must be the one before the first: {READS:?}"
+            );
+        }
+        for f in READS {
+            let head = format!("{{\"ev\":\"trace\",\"format\":\"{f}\",\"t_ms\":0}}\n");
+            assert!(parse(&head).is_ok(), "{f} is listed but not read");
+        }
+        let (name, n) = version(FORMAT);
+        let next = format!("{{\"ev\":\"trace\",\"format\":\"{name}/{}\",\"t_ms\":0}}\n", n + 1);
+        assert!(
+            parse(&next).is_err(),
+            "a reader never accepts a version it does not know"
+        );
     }
 
     #[test]

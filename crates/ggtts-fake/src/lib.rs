@@ -27,9 +27,12 @@
 //! makes one that does: traced, it draws once from the stream at a chosen chunk and frame, which shifts every
 //! later token. It exists to show the trace-identity check goes red.
 
+use ggtts_core::hooks::{Hooks, Step as HookStep, Wants};
 use std::collections::HashMap;
 
-use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm, Stop};
+use ggtts_core::engine::{
+    refuse_instruction, ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm, Stop,
+};
 use ggtts_core::profile::Profile;
 use ggtts_core::text::cjk_len;
 use ggtts_core::trace::{Event, Events, NullEvents};
@@ -92,6 +95,25 @@ pub struct FakeEngine {
     /// A planted defect: when traced, draw once from the stream at `(chunk, frame)`. Test builds only.
     #[cfg(feature = "plant")]
     pub plant_stream_draw: Option<(u32, u32)>,
+    /// A planted defect: whenever a tensor hook wants anything, the export draws once from the stream before the
+    /// first frame, as a hook path with a side effect would. Test builds only.
+    #[cfg(feature = "plant")]
+    pub plant_hook_export_draw: bool,
+    /// How many `p_stop` values and logit vectors were computed for tensor hooks: zero when no hook asks.
+    pub exported: Exported,
+}
+
+/// What the fake engine computed for tensor hooks, so a test can see that nothing is computed unasked.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Exported {
+    pub p_stop: u64,
+    pub logits: u64,
+}
+
+/// The fake's codebook-0 logits at frame `f`: eight values from the seed, never from the stream the tokens are drawn
+/// from, so exporting them changes nothing.
+pub fn fake_logits(seed: u64, f: u64) -> [f32; 8] {
+    std::array::from_fn(|i| f32::from(fake_token(seed, f, 64 + i as u64) % 1000) / 100.0 - 5.0)
 }
 
 impl Default for FakeEngine {
@@ -124,6 +146,9 @@ impl FakeEngine {
             kept: HashMap::new(),
             #[cfg(feature = "plant")]
             plant_stream_draw: None,
+            #[cfg(feature = "plant")]
+            plant_hook_export_draw: false,
+            exported: Exported::default(),
         }
     }
 
@@ -151,7 +176,11 @@ pub fn fake_p_stop(f: u64, n: u64) -> f64 {
 impl FakeEngine {
     /// The frame from which the planted instrument shifts the stream, when it fires for this request.
     #[allow(unused_variables)]
-    fn planted_frame(&self, req: &ChunkRequest<'_>, events: &dyn Events) -> Option<u64> {
+    fn planted_frame(&self, req: &ChunkRequest<'_>, events: &dyn Events, wants: Wants) -> Option<u64> {
+        #[cfg(feature = "plant")]
+        if self.plant_hook_export_draw && wants.any() {
+            return Some(0);
+        }
         #[cfg(feature = "plant")]
         if events.level() > 0 {
             if let Some((chunk, frame)) = self.plant_stream_draw {
@@ -165,6 +194,9 @@ impl FakeEngine {
 }
 
 impl Engine for FakeEngine {
+    fn p_stop_semantics(&self) -> Option<&'static str> {
+        Some("fake-synthetic/1")
+    }
     fn info(&self) -> &EngineInfo {
         &self.info
     }
@@ -178,6 +210,17 @@ impl Engine for FakeEngine {
     }
 
     fn generate_traced(&mut self, req: &ChunkRequest<'_>, events: &mut dyn Events) -> Result<Generated, EngineError> {
+        self.generate_hooked(req, events, &mut Hooks::new())
+    }
+
+    fn generate_hooked(
+        &mut self,
+        req: &ChunkRequest<'_>,
+        events: &mut dyn Events,
+        hooks: &mut Hooks,
+    ) -> Result<Generated, EngineError> {
+        refuse_instruction(req, &self.info.family)?;
+        let wants = hooks.wants();
         let text = req.text.to_string();
         let k = *self.draws.get(&text).unwrap_or(&0);
         self.draws.insert(text.clone(), k + 1);
@@ -197,7 +240,7 @@ impl Engine for FakeEngine {
             amplitude_scale: amplitude,
         });
         let n_frames = (speech_s * FRAME_RATE).ceil() as u64;
-        let planted = self.planted_frame(req, events);
+        let planted = self.planted_frame(req, events, wants);
         // The stream: one extra draw from the planted frame on moves every later token.
         let stream = |f: u64| {
             if planted.is_some_and(|p| f >= p) {
@@ -227,6 +270,24 @@ impl Engine for FakeEngine {
                     rank: Some(u32::from(fake_token(req.seed, f, cbs + 1) % 4)),
                     cb: (level >= 2).then_some(&row[1..]),
                     cb_p: (level >= 2).then_some(&cb_p[..]),
+                });
+            }
+        }
+        if wants.any() {
+            for f in 0..n_frames {
+                let p_stop = wants.p_stop.then(|| fake_p_stop(f, n_frames));
+                let logits = wants.logits.then(|| fake_logits(req.seed, f));
+                self.exported.p_stop += u64::from(p_stop.is_some());
+                self.exported.logits += u64::from(logits.is_some());
+                hooks.step(&HookStep {
+                    chunk: req.chunk,
+                    draw: req.draw,
+                    seed: req.seed,
+                    frame: f as u32,
+                    token: u32::from(frames[(f * cbs) as usize]),
+                    p_stop,
+                    p_stop_semantics: p_stop.map(|_| "fake-synthetic/1"),
+                    logits: logits.as_ref().map(|l| &l[..]),
                 });
             }
         }
@@ -266,5 +327,59 @@ impl Engine for FakeEngine {
             samples: y,
             sample_rate: p.sample_rate,
         })
+    }
+}
+
+#[cfg(test)]
+mod instruction_tests {
+    use super::*;
+
+    fn req(instruction: Option<&str>) -> ChunkRequest<'_> {
+        ChunkRequest {
+            text: "今日天氣好好。",
+            seed: 7,
+            chunk: 0,
+            draw: 0,
+            instruction,
+        }
+    }
+
+    /// The fake engine takes no instruction: a non-empty one is an error on every path, never ignored, and an empty
+    /// one renders as none.
+    #[test]
+    fn the_fake_engine_refuses_an_instruction() {
+        let plain = FakeEngine::default().generate(&req(None)).unwrap();
+        assert_eq!(FakeEngine::default().generate(&req(Some(""))).unwrap(), plain);
+        let mut e = FakeEngine::default();
+        let err = e.generate(&req(Some("speak slowly"))).unwrap_err();
+        assert!(
+            err.0.contains("fake") && err.0.contains("no style instruction"),
+            "{err}"
+        );
+        assert!(e.generate_traced(&req(Some("speak slowly")), &mut NullEvents).is_err());
+    }
+}
+
+#[cfg(test)]
+mod story_instruction_tests {
+    use super::*;
+    use ggtts_core::pipeline::{plan_story, render_story, RenderOptions};
+
+    /// The story path hands its instruction to every chunk's request: an empty one renders as none, sample for
+    /// sample, and a non-empty one reaches the engine, which refuses it.
+    #[test]
+    fn the_story_instruction_reaches_every_chunk() {
+        let engine = FakeEngine::default();
+        let chunks = plan_story(engine.profile(), &["今日天氣好好，我哋去公園行下。".to_string()]).unwrap();
+        let render = |instruction: Option<&str>| {
+            let mut e = FakeEngine::default();
+            let mut opts = RenderOptions::for_profile(e.profile());
+            opts.instruction = instruction.map(str::to_string);
+            render_story(&mut e, "instruction", &chunks, &opts)
+        };
+        let plain = render(None).unwrap();
+        assert_eq!(render(Some("")).unwrap().samples, plain.samples);
+        let err = render(Some("Speak slowly.")).unwrap_err().to_string();
+        assert!(err.contains("no style instruction"), "{err}");
     }
 }

@@ -10,6 +10,11 @@
 //! * `GGML_LIB_DIR`: link prebuilt static archives (`libggml.a`, `libggml-cpu.a`, `libggml-base.a`) from this
 //!   directory instead of building. A parity check sets it to the reference's own ggml build, so both sides link
 //!   the same compiled kernels.
+//! * `GGML_CPU_ARM_ARCH`: passed to ggml's CMake as is, for an ARM build's `-march` (unset: ggml's default). The
+//!   Android build's planted check sets `armv8-a+nosimd` to show its NEON check goes red.
+//!
+//! Android (`*-linux-android`, built with cargo-ndk): ggml links the NDK's libc++ (`c++_shared`), not libstdc++,
+//! and is built without OpenMP, which the NDK does not ship as `gomp`; ggml then uses its own thread pool.
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -63,7 +68,24 @@ mod with_ggml {
     }
 
     fn build_ggml(src: &Path) {
-        let dst = cmake::Config::new(src)
+        let target = env::var("TARGET").unwrap();
+        println!("cargo:rerun-if-env-changed=GGML_CPU_ARM_ARCH");
+        println!("cargo:rerun-if-env-changed=GGML_PORTABLE");
+        println!("cargo:rerun-if-env-changed=GGML_CUDA_ARCH");
+        let mut cfg = cmake::Config::new(src);
+        if env::var_os("GGML_PORTABLE").is_some() {
+            cfg.define("GGML_NATIVE", "OFF");
+            // The release does not ship or link NCCL. Do not let a build host's
+            // installed NCCL silently add unresolved multi-GPU symbols.
+            cfg.define("GGML_CUDA_NCCL", "OFF");
+        }
+        if target.contains("android") {
+            cfg.define("GGML_OPENMP", "OFF");
+        }
+        if let Ok(arch) = env::var("GGML_CPU_ARM_ARCH") {
+            cfg.define("GGML_CPU_ARM_ARCH", arch);
+        }
+        let dst = cfg
             .profile("Release")
             // Leave out the cc crate's flags (-O level, -fPIC, sections), so ggml compiles with exactly the flags
             // its own CMake gives it, as the reference does.
@@ -91,12 +113,19 @@ mod with_ggml {
         {
             // CUDA_HOME (default /usr/local/cuda) for the runtime and cuBLAS; /usr/lib/wsl/lib holds libcuda under
             // WSL.
-            let cuda = env::var("CUDA_HOME").unwrap_or_else(|_| "/usr/local/cuda".into());
+            let cuda = env::var("CUDA_HOME")
+                .or_else(|_| env::var("CUDA_PATH"))
+                .unwrap_or_else(|_| "/usr/local/cuda".into());
             println!("cargo:rerun-if-env-changed=CUDA_HOME");
+            println!("cargo:rerun-if-env-changed=CUDA_PATH");
             println!("cargo:rustc-link-lib=static=ggml-cuda");
-            println!("cargo:rustc-link-search=native={cuda}/lib64");
-            println!("cargo:rustc-link-search=native={cuda}/lib64/stubs");
-            println!("cargo:rustc-link-search=native=/usr/lib/wsl/lib");
+            if env::var("TARGET").unwrap().contains("windows") {
+                println!("cargo:rustc-link-search=native={cuda}/lib/x64");
+            } else {
+                println!("cargo:rustc-link-search=native={cuda}/lib64");
+                println!("cargo:rustc-link-search=native={cuda}/lib64/stubs");
+                println!("cargo:rustc-link-search=native=/usr/lib/wsl/lib");
+            }
             for lib in ["cudart", "cublas", "cublasLt", "cuda"] {
                 println!("cargo:rustc-link-lib=dylib={lib}");
             }
@@ -104,7 +133,11 @@ mod with_ggml {
         println!("cargo:rustc-link-lib=static=ggml-cpu");
         println!("cargo:rustc-link-lib=static=ggml-base");
         let target = env::var("TARGET").unwrap();
-        if target.contains("linux") {
+        if target.contains("android") {
+            // The NDK's C++ runtime; an app ships libc++_shared.so beside this library.
+            println!("cargo:rustc-link-lib=dylib=c++_shared");
+            println!("cargo:rustc-link-lib=dylib=m");
+        } else if target.contains("linux") {
             println!("cargo:rustc-link-lib=dylib=stdc++");
             println!("cargo:rustc-link-lib=dylib=gomp");
             println!("cargo:rustc-link-lib=dylib=m");

@@ -5,6 +5,7 @@
 
 use crate::audio::{judge_f32, trim_edges_f32, Verdict};
 use crate::engine::{ChunkRequest, Engine, EngineError};
+use crate::hooks::Hooks;
 use crate::numeric::{log10, mean_f32, pow};
 use crate::profile::Profile;
 use crate::seed::seed_of;
@@ -12,7 +13,7 @@ use crate::text::{plan, PlannedChunk};
 use crate::trace::{Event, Events, NullEvents};
 
 /// Chunk a story's paragraphs at the profile's [`story_ceiling`](Profile::story_ceiling).
-pub fn plan_story(profile: &Profile, paragraphs: &[String]) -> Vec<PlannedChunk> {
+pub fn plan_story(profile: &Profile, paragraphs: &[String]) -> Result<Vec<PlannedChunk>, &'static str> {
     plan(profile, paragraphs, profile.story_ceiling)
 }
 
@@ -32,15 +33,22 @@ pub struct RenderOptions {
     pub seed_salt: String,
     /// Silence kept at each edge of a chunk.
     pub edge_s: f64,
+    /// Collect wall-clock stage durations even when tracing is off. Includes observer work inside generation.
+    pub measure_timings: bool,
+    /// The style instruction every chunk is rendered with ([`ChunkRequest::instruction`]); `None` for none.
+    pub instruction: Option<String>,
 }
 
 impl RenderOptions {
-    /// The profile's defaults: its [`redraw`](Profile::redraw) and [`edge_s`](Profile::edge_s), and no salt.
+    /// The profile's defaults: its [`redraw`](Profile::redraw) and [`edge_s`](Profile::edge_s), no salt and no
+    /// instruction.
     pub fn for_profile(profile: &Profile) -> Self {
         Self {
             redraw: profile.redraw,
             seed_salt: String::new(),
             edge_s: profile.edge_s,
+            measure_timings: false,
+            instruction: None,
         }
     }
 }
@@ -54,6 +62,10 @@ pub struct ChunkRecord {
     pub seed: u32,
     /// Redraws taken: the kept draw's index.
     pub redraws: u32,
+    /// The kept draw only, decoded before edge trimming. Rejected draws are excluded.
+    pub decoded_samples: usize,
+    /// Decoder-reported rate for this chunk (which may differ from the output rate).
+    pub decoded_sample_rate: u32,
     pub first_draw_defect: Option<Verdict>,
     pub final_defect: Option<Verdict>,
     /// The kept draw's seconds of speech per character, unrounded.
@@ -72,6 +84,17 @@ pub struct Read {
     pub sample_rate: u32,
     /// The linear gain the level step applied, or `None` when no sample was above the floor.
     pub gain: Option<f64>,
+    /// Generated codec frames across all draws, including redraws.
+    pub frames_generated: u64,
+    /// Optional wall-clock stage totals. `None` means timing collection was not requested.
+    pub timings: Option<StageTimings>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StageTimings {
+    pub generate_ns: u128,
+    pub decode_ns: u128,
+    pub judge_ns: u128,
 }
 
 impl Read {
@@ -137,7 +160,21 @@ pub fn render_story_traced(
     opts: &RenderOptions,
     events: &mut dyn Events,
 ) -> Result<Read, RenderError> {
-    render_story_streamed(engine, story_id, chunks, opts, events, &mut |_| Ok(()))
+    render_story_hooked(engine, story_id, chunks, opts, events, &mut Hooks::new())
+}
+
+/// [`render_story_traced`], handing every generated frame to `hooks` as well (see [`crate::hooks`]). The read is
+/// the same with or without hooks. The caller calls [`Hooks::finish`] and reads [`Hooks::failures`] when the run is
+/// done.
+pub fn render_story_hooked(
+    engine: &mut dyn Engine,
+    story_id: &str,
+    chunks: &[PlannedChunk],
+    opts: &RenderOptions,
+    events: &mut dyn Events,
+    hooks: &mut Hooks,
+) -> Result<Read, RenderError> {
+    render(engine, story_id, chunks, opts, events, &mut |_| Ok(()), hooks)
 }
 
 /// One piece of a streamed read: a kept chunk, trimmed, followed by the gap after it (none after the last).
@@ -168,8 +205,22 @@ pub fn render_story_streamed(
     events: &mut dyn Events,
     sink: &mut dyn FnMut(StreamPiece<'_>) -> Result<(), String>,
 ) -> Result<Read, RenderError> {
+    render(engine, story_id, chunks, opts, events, sink, &mut Hooks::new())
+}
+
+/// The story path every public render shares: events, a sink, and tensor hooks.
+fn render(
+    engine: &mut dyn Engine,
+    story_id: &str,
+    chunks: &[PlannedChunk],
+    opts: &RenderOptions,
+    events: &mut dyn Events,
+    sink: &mut dyn FnMut(StreamPiece<'_>) -> Result<(), String>,
+    hooks: &mut Hooks,
+) -> Result<Read, RenderError> {
     let tracing = events.level() > 0;
     let mut total_frames: u64 = 0;
+    let mut timings = opts.measure_timings.then(StageTimings::default);
     if chunks.is_empty() {
         return Err(RenderError::Empty);
     }
@@ -188,6 +239,7 @@ pub fn render_story_streamed(
                 seed: u64::from(seed),
                 chunk: i as u32,
                 draw: k,
+                instruction: opts.instruction.as_deref(),
             };
             let t0 = tracing.then(std::time::Instant::now);
             if tracing {
@@ -197,11 +249,57 @@ pub fn render_story_streamed(
                     text: &c.text,
                     seed: req.seed,
                     n_text_tokens: None,
+                    instruction: req.instruction(),
                 });
             }
-            let generated = engine.generate_traced(&req, events)?;
+            let stage_start = (tracing || timings.is_some()).then(std::time::Instant::now);
+            let generated = engine.generate_hooked(&req, events, hooks)?;
+            if let Some(start) = stage_start {
+                let elapsed = start.elapsed();
+                if let Some(t) = timings.as_mut() {
+                    t.generate_ns += elapsed.as_nanos();
+                }
+                if tracing {
+                    events.emit(Event::Timing {
+                        stage: "generate",
+                        chunk: Some(req.chunk),
+                        draw: Some(k),
+                        ms: elapsed.as_millis() as u64,
+                    });
+                }
+            }
+            let stage_start = (tracing || timings.is_some()).then(std::time::Instant::now);
             let pcm = engine.decode(&generated.codes)?;
+            if let Some(start) = stage_start {
+                let elapsed = start.elapsed();
+                if let Some(t) = timings.as_mut() {
+                    t.decode_ns += elapsed.as_nanos();
+                }
+                if tracing {
+                    events.emit(Event::Timing {
+                        stage: "decode",
+                        chunk: Some(req.chunk),
+                        draw: Some(k),
+                        ms: elapsed.as_millis() as u64,
+                    });
+                }
+            }
+            let stage_start = (tracing || timings.is_some()).then(std::time::Instant::now);
             let j = judge_f32(&profile, &pcm.samples, pcm.sample_rate, &c.text);
+            if let Some(start) = stage_start {
+                let elapsed = start.elapsed();
+                if let Some(t) = timings.as_mut() {
+                    t.judge_ns += elapsed.as_nanos();
+                }
+                if tracing {
+                    events.emit(Event::Timing {
+                        stage: "judge",
+                        chunk: Some(req.chunk),
+                        draw: Some(k),
+                        ms: elapsed.as_millis() as u64,
+                    });
+                }
+            }
             let frames = generated.codes.n_frames();
             total_frames += frames as u64;
             if let Some(t0) = t0 {
@@ -266,6 +364,8 @@ pub fn render_story_streamed(
             text: c.text.clone(),
             seed,
             redraws: k,
+            decoded_samples: pcm.samples.len(),
+            decoded_sample_rate: pcm.sample_rate,
             first_draw_defect: first.verdict,
             final_defect: j.verdict,
             s_per_char: j.s_per_char,
@@ -291,6 +391,8 @@ pub fn render_story_streamed(
         samples,
         sample_rate,
         gain,
+        frames_generated: total_frames,
+        timings,
     })
 }
 
@@ -298,16 +400,27 @@ pub fn render_story_streamed(
 /// above its [`level_floor`](Profile::level_floor), then a clip to ±[`clip`](Profile::clip), rounded to float32.
 /// Returns the gain, or `None` (and leaves the read alone) when no sample is above the floor.
 pub fn level(profile: &Profile, read: &mut [f32]) -> Option<f64> {
+    let gain = level_gain(profile, read)?;
+    apply_gain(profile, read, gain);
+    Some(gain)
+}
+
+/// The gain [`level`] applies to `read`: to the profile's [`target_rms_db`](Profile::target_rms_db) over the samples
+/// above its [`level_floor`](Profile::level_floor). `None` when no sample is above the floor.
+pub fn level_gain(profile: &Profile, read: &[f32]) -> Option<f64> {
     let floor = profile.level_floor;
     let squares: Vec<f32> = read.iter().filter(|x| x.abs() > floor).map(|x| x * x).collect();
     if squares.is_empty() {
         return None;
     }
     let rms = f64::from(mean_f32(&squares).sqrt());
-    let gain = pow(10.0, (profile.target_rms_db - 20.0 * log10(rms + 1e-9)) / 20.0);
+    Some(pow(10.0, (profile.target_rms_db - 20.0 * log10(rms + 1e-9)) / 20.0))
+}
+
+/// Multiply by `gain`, clip to ±[`clip`](Profile::clip), and round to float32: [`level`]'s arithmetic, per sample.
+pub fn apply_gain(profile: &Profile, read: &mut [f32], gain: f64) {
     let clip = profile.clip;
     for x in read.iter_mut() {
         *x = (f64::from(*x) * gain).clamp(-clip, clip) as f32;
     }
-    Some(gain)
 }

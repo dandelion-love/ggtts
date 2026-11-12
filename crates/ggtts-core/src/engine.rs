@@ -7,6 +7,7 @@
 //!
 //! An engine also declares its [`Profile`]: the protocol numbers the story path renders its output with.
 
+use crate::hooks::Hooks;
 use crate::profile::Profile;
 use crate::trace::Events;
 
@@ -33,6 +34,29 @@ pub struct ChunkRequest<'a> {
     pub chunk: u32,
     /// The draw index. For events only; never part of the computation.
     pub draw: u32,
+    /// A natural-language style instruction ("speak slowly"), for an engine whose model takes one. `None` and
+    /// `Some("")` are the same request: no instruction, rendered exactly as without the field. An engine that cannot
+    /// use an instruction refuses a non-empty one ([`refuse_instruction`]) rather than ignoring it.
+    pub instruction: Option<&'a str>,
+}
+
+impl<'a> ChunkRequest<'a> {
+    /// The instruction, when there is one: `None` for no instruction and for an empty one.
+    pub fn instruction(&self) -> Option<&'a str> {
+        self.instruction.filter(|i| !i.is_empty())
+    }
+}
+
+/// The error an engine that takes no style instruction returns for a request that carries one. An empty instruction
+/// is no instruction, and passes.
+pub fn refuse_instruction(req: &ChunkRequest<'_>, family: &str) -> Result<(), EngineError> {
+    match req.instruction() {
+        None => Ok(()),
+        Some(_) => Err(EngineError(format!(
+            "the {family} engine takes no style instruction; only qwen3-tts custom_voice (1.7B) and voice_design \
+             checkpoints do"
+        ))),
+    }
 }
 
 /// Codec tokens, frame-major: `frames[f * codebooks + c]`.
@@ -102,6 +126,10 @@ impl std::error::Error for EngineError {}
 /// One model family.
 pub trait Engine {
     fn info(&self) -> &EngineInfo;
+    /// Meaning of `p_stop` emitted by this engine, when known. Absence means unspecified, not zero.
+    fn p_stop_semantics(&self) -> Option<&'static str> {
+        None
+    }
     /// The protocol numbers this engine's output is rendered with: ceilings, pauses, judge bars and level.
     fn profile(&self) -> &Profile;
     /// Text to codec tokens for one chunk.
@@ -114,6 +142,58 @@ pub trait Engine {
         let _ = events;
         self.generate(req)
     }
+    /// [`generate_traced`](Engine::generate_traced), handing each generated frame to `hooks` with the values they
+    /// ask for ([`Hooks::wants`]) and nothing else. The tokens must be identical with and without hooks.
+    ///
+    /// The default exports nothing: with no hook that wants anything it is `generate_traced`, and otherwise it
+    /// refuses, so a hook is never silently given nothing.
+    fn generate_hooked(
+        &mut self,
+        req: &ChunkRequest<'_>,
+        events: &mut dyn Events,
+        hooks: &mut Hooks,
+    ) -> Result<Generated, EngineError> {
+        if hooks.wants().any() {
+            return Err(EngineError(format!(
+                "the {} engine exports nothing to tensor hooks",
+                self.info().family
+            )));
+        }
+        self.generate_traced(req, events)
+    }
     /// Codec tokens to PCM.
     fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req(instruction: Option<&str>) -> ChunkRequest<'_> {
+        ChunkRequest {
+            text: "好。",
+            seed: 1,
+            chunk: 0,
+            draw: 0,
+            instruction,
+        }
+    }
+
+    #[test]
+    fn an_empty_instruction_is_no_instruction() {
+        assert_eq!(req(None).instruction(), None);
+        assert_eq!(req(Some("")).instruction(), None);
+        assert_eq!(req(Some("speak slowly")).instruction(), Some("speak slowly"));
+    }
+
+    #[test]
+    fn an_engine_without_instructions_refuses_one_and_names_itself() {
+        assert!(refuse_instruction(&req(None), "fake").is_ok());
+        assert!(refuse_instruction(&req(Some("")), "fake").is_ok());
+        let e = refuse_instruction(&req(Some("speak slowly")), "kitten-tts-2").unwrap_err();
+        assert!(
+            e.0.contains("kitten-tts-2") && e.0.contains("no style instruction"),
+            "{e}"
+        );
+    }
 }

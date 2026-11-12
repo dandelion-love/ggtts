@@ -17,6 +17,9 @@
 use std::path::{Path, PathBuf};
 
 use ggtts_core::engine::{ChunkRequest, Engine};
+#[cfg(feature = "plant")]
+use ggtts_core::hooks::Wants;
+use ggtts_core::hooks::{Hooks, StopTrace};
 use ggtts_core::stream::first_sample_diff;
 use ggtts_qwen3_tts::codec::Decoder;
 use ggtts_qwen3_tts::engine::{Qwen3Tts, Voice};
@@ -35,6 +38,168 @@ fn goldens() -> Vec<Golden> {
     g
 }
 
+#[test]
+#[ignore = "needs GGTTS_TALKER and GGTTS_CODEC, the published GGUFs"]
+fn event_trace_emits_steps_without_changing_tokens_or_audio() {
+    let (talker, codec) = (env_path("GGTTS_TALKER"), env_path("GGTTS_CODEC"));
+    let gold = goldens().remove(0);
+    let voice = Voice {
+        speaker: gold.speaker.clone(),
+        language: gold.language.clone(),
+        max_frames: gold.max_tokens as i32,
+        ..Default::default()
+    };
+    let req = ChunkRequest {
+        text: &gold.text,
+        seed: gold.seed,
+        chunk: 0,
+        draw: 0,
+        instruction: None,
+    };
+    let mut engine = Qwen3Tts::load(&talker, &codec, 4, voice).unwrap();
+    let plain = engine.generate(&req).unwrap();
+    let mut events = ggtts_core::trace::Recorder::new(1);
+    let traced = engine.generate_traced(&req, &mut events).unwrap();
+    assert!(plain.codes.frames == traced.codes.frames, "trace changed tokens");
+    let a = engine.decode(&plain.codes).unwrap();
+    let b = engine.decode(&traced.codes).unwrap();
+    assert!(a.samples == b.samples, "trace changed audio");
+    // The talker also reports the EOS step and any non-audio thinking steps.
+    assert!(events.lines.len() >= traced.codes.n_frames());
+    assert!(events
+        .lines
+        .iter()
+        .all(|line| line["ev"] == "step" && line["p_stop"].is_number()));
+}
+
+#[test]
+#[ignore = "needs pinned GGTTS_TALKER and GGTTS_CODEC; GGTTS_DEVICE selects cpu or cuda"]
+fn stop_trace_tensor_hook_preserves_real_tokens_and_samples() {
+    let (talker, codec) = (env_path("GGTTS_TALKER"), env_path("GGTTS_CODEC"));
+    let backend = std::env::var("GGTTS_DEVICE").unwrap_or_else(|_| "cpu".into());
+    let device = ggtts_qwen3_tts::cpu::Device::parse(&backend).expect("GGTTS_DEVICE must be cpu or cuda");
+    let gold = goldens().remove(0);
+    let voice = Voice {
+        speaker: gold.speaker.clone(),
+        language: gold.language.clone(),
+        max_frames: gold.max_tokens as i32,
+        device,
+        ..Default::default()
+    };
+    let req = ChunkRequest {
+        text: &gold.text,
+        seed: gold.seed,
+        chunk: 0,
+        draw: 0,
+        instruction: None,
+    };
+    let mut engine = Qwen3Tts::load(&talker, &codec, 4, voice).unwrap();
+    let plain = engine.generate(&req).unwrap();
+    let plain_audio = engine.decode(&plain.codes).unwrap();
+
+    let path = std::env::temp_dir().join(format!("ggtts-real-stop-hook-{}-{backend}.jsonl", std::process::id()));
+    let file = std::fs::File::create(&path).unwrap();
+    let mut hooks = Hooks::new();
+    hooks.add(Box::new(StopTrace::new(file)));
+    let mut events = ggtts_core::trace::Recorder::new(1);
+    let observed = engine.generate_hooked(&req, &mut events, &mut hooks).unwrap();
+    hooks.finish();
+    assert!(hooks.failures().is_empty(), "{:?}", hooks.failures());
+    let observed_audio = engine.decode(&observed.codes).unwrap();
+    assert!(!plain.codes.frames.is_empty(), "an empty generation proves nothing");
+    assert_eq!(
+        plain.codes, observed.codes,
+        "event tracing or stop-trace hook changed codec tokens"
+    );
+    assert_eq!(
+        plain_audio.samples, observed_audio.samples,
+        "tracing or stop-trace hook changed audio"
+    );
+    assert_eq!(plain_audio.sample_rate, observed_audio.sample_rate);
+    let hex = |bytes: &[u8]| {
+        ggtts_core::seed::sha256(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    let token_bytes: Vec<u8> = plain.codes.frames.iter().flat_map(|x| x.to_le_bytes()).collect();
+    let sample_bytes: Vec<u8> = plain_audio
+        .samples
+        .iter()
+        .flat_map(|x| x.to_bits().to_le_bytes())
+        .collect();
+    let lines = std::fs::read_to_string(&path).unwrap();
+    assert!(!lines.trim().is_empty(), "the hook produced no samples");
+    assert!(!events.lines.is_empty(), "the event trace was empty");
+    let _ = std::fs::remove_file(path);
+    println!(
+        "backend={backend}; seed={}; frames={}; samples={}; tokens_sha256={}; samples_sha256={}; \
+              full tokens and samples identical; \
+              limits: one fixture, no timing or external-artifact identity",
+        gold.seed,
+        plain.codes.n_frames(),
+        plain_audio.samples.len(),
+        hex(&token_bytes),
+        hex(&sample_bytes)
+    );
+}
+
+#[test]
+#[cfg(feature = "plant")]
+#[ignore = "needs pinned GGTTS_TALKER; GGTTS_DEVICE selects cpu or cuda"]
+fn a_hook_boundary_logit_mutation_is_detected_on_real_qwen() {
+    let talker = env_path("GGTTS_TALKER");
+    let backend = std::env::var("GGTTS_DEVICE").unwrap_or_else(|_| "cpu".into());
+    let device = ggtts_qwen3_tts::cpu::Device::parse(&backend).expect("GGTTS_DEVICE must be cpu or cuda");
+    let gold = goldens().remove(0);
+    let run = |talker: &mut Talker, observe: bool| {
+        let mut seen = 0usize;
+        let mut callback = |_: i32, _: i32, _: Option<f64>, logits: Option<&[f32]>| {
+            assert!(logits.is_some());
+            seen += 1;
+        };
+        let wants = Wants {
+            logits: true,
+            p_stop: false,
+        };
+        let result = talker
+            .generate_streamed(
+                &gold.text,
+                None,
+                &gold.speaker,
+                language_id(&gold.language).unwrap(),
+                gold.seed,
+                gold.max_tokens as i32,
+                Sampling::default(),
+                if observe { Some((wants, &mut callback)) } else { None },
+                None,
+            )
+            .unwrap();
+        (result.codes, seen)
+    };
+    let mut normal = Talker::load_on(&talker, 4, device).unwrap();
+    let (base, _) = run(&mut normal, false);
+    let (observed, seen) = run(&mut normal, true);
+    assert!(!base.is_empty() && seen > 0);
+    assert_eq!(base, observed, "a read-only logit observer changed tokens");
+    drop(normal);
+    let mut planted = Talker::load_planted(&talker, 4, device, Plant::HookLogitMutation).unwrap();
+    let (plant_off, _) = run(&mut planted, false);
+    let (plant_on, plant_seen) = run(&mut planted, true);
+    assert_eq!(base, plant_off, "the plant fired without an observer");
+    assert!(plant_seen > 0);
+    assert_ne!(
+        base, plant_on,
+        "the identity comparison missed a hook-boundary logit mutation"
+    );
+    println!(
+        "backend={backend}; seed={}; observer_steps={seen}; quiet=identical; \
+              logit_mutation=detected; plant_without_observer=identical; \
+              limit: simulated corruption at the hook boundary, not safe Rust mutating its immutable view",
+        gold.seed
+    );
+}
+
 /// Generate a fixture with a hook (or none); the returned codes and the frames the hook saw.
 #[cfg(feature = "plant")]
 fn run(talker: &mut Talker, gold: &Golden, hook: bool) -> (Vec<i32>, Vec<i32>) {
@@ -44,6 +209,7 @@ fn run(talker: &mut Talker, gold: &Golden, hook: bool) -> (Vec<i32>, Vec<i32>) {
     let g = talker
         .generate_streamed(
             &gold.text,
+            None,
             &gold.speaker,
             lang,
             gold.seed,
@@ -110,6 +276,7 @@ fn frame_level_streaming_end_to_end_is_the_batch_decode() {
             seed: gold.seed,
             chunk: 0,
             draw: 0,
+            instruction: None,
         };
         let mut stream = Vec::new();
         let mut first_at = None;

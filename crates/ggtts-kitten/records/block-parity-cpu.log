@@ -1,0 +1,36 @@
+# ggtts-kitten block-parity --s3gguf s3gen.gguf --ref <recorded S3Gen case> --threads 4 --lookahead {3,25,50}; then --blocks 25 --contexts all --lookahead 50 --plant seam-shift
+# CPU, 4 threads, WSL Ubuntu on x86-64, 2026-11-06. "context 0" runs with 1 token of left context (the frame S3Gen reads as prompt).
+== lookahead 3
+   103      all      1      0.000e0        0.000e0       inf        2.49       2.49    0.85  NO-OP IDENTICAL
+    25        0      5     6.031e-2       3.841e-1      -0.8        1.70       8.31    2.27  FAIL
+    25       25      5     3.293e-2       2.552e-1       2.1        1.66       9.16    2.47  FAIL
+    25       50      5     3.183e-2       1.539e-1       1.2        1.65       9.71    2.61  FAIL
+    25      all      5     2.812e-2       1.539e-1       2.4        1.72      10.70    2.85  FAIL
+    50        0      3     4.277e-2       2.691e-1       0.1        1.92       5.36    1.55  FAIL
+    50       25      3     2.365e-2       8.086e-2       1.3        1.95       5.69    1.63  FAIL
+    50       50      3     1.654e-2       8.086e-2       3.4        1.99       6.59    1.85  FAIL
+    50      all      3     1.634e-2       8.086e-2       3.4        2.17       7.70    2.12  FAIL
+== lookahead 25
+   103      all      1      0.000e0        0.000e0       inf        2.75       2.75    0.98  NO-OP IDENTICAL
+    25        0      5     5.261e-2       3.841e-1      -0.4        2.13       9.97    2.74  FAIL
+    25       25      5     2.376e-2       2.552e-1       2.8        2.10      10.35    2.83  FAIL
+    25       50      5     1.950e-2       7.746e-2       3.0        2.20      11.62    3.14  FAIL
+    25      all      5     1.258e-2       5.380e-2       5.1        2.02      12.52    3.36  FAIL
+    50        0      3     4.086e-2       2.691e-1       1.2        2.62       6.79    1.96  FAIL
+    50       25      3     2.000e-2       7.746e-2       2.9        2.61       7.39    2.11  FAIL
+    50       50      3     1.068e-2       5.380e-2       6.3        2.59       8.14    2.29  FAIL
+    50      all      3     1.037e-2       5.380e-2       6.3        2.60       8.74    2.44  FAIL
+== lookahead 50
+   103      all      1      0.000e0        0.000e0       inf        3.02       3.02    1.05  NO-OP IDENTICAL
+    25        0      5     5.070e-2       3.841e-1       0.2        2.77      12.07    3.26  FAIL
+    25       25      5     2.303e-2       2.552e-1       3.8        2.75      12.28    3.31  FAIL
+    25       50      5     1.766e-2       7.746e-2       4.3        2.65      13.69    3.65  FAIL
+    25      all      5     9.489e-3       3.756e-2       7.4        2.70      14.61    3.88  FAIL
+    50        0      3     4.064e-2       2.691e-1       1.6        2.90       7.03    2.03  FAIL
+    50       25      3     1.954e-2       7.746e-2       3.5        2.87       7.97    2.26  FAIL
+    50       50      3     9.792e-3       4.079e-2       7.8        3.17       8.90    2.48  FAIL
+    50      all      3     9.459e-3       4.079e-2       7.8        3.11       8.74    2.45  FAIL
+== planted seam
+ block  context blocks   mel rel L2    worst frame    SNR dB   1st blk s     flow s     RTF  verdict
+   103      all      1      0.000e0        0.000e0       inf        3.14       3.14    1.08  NO-OP IDENTICAL
+    25      all      5     2.006e-1       5.232e-1      -2.9        2.58      14.73    3.91  planted seam seen

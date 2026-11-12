@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ggtts:schema:ggtts-trace:1",
+  "title": "ggtts-trace/1: one line of a ggtts event stream",
+  "description": "Each line of a trace is one JSON object and validates against this schema. The first line is the header (ev = trace), whose format field is the stream's version. A field an engine cannot supply is absent, never zero. See docs/instruments/hooks.md.",
+  "type": "object",
+  "required": ["ev"],
+  "properties": {
+    "ev": { "enum": ["trace", "chunk_begin", "step", "chunk_end", "trim", "emit", "join", "end"] }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/trace" },
+    { "$ref": "#/$defs/chunk_begin" },
+    { "$ref": "#/$defs/step" },
+    { "$ref": "#/$defs/chunk_end" },
+    { "$ref": "#/$defs/trim" },
+    { "$ref": "#/$defs/emit" },
+    { "$ref": "#/$defs/join" },
+    { "$ref": "#/$defs/end" }
+  ],
+  "$defs": {
+    "u32": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    "u64": { "type": "integer", "minimum": 0 },
+    "token": { "type": "integer", "minimum": 0, "maximum": 65535 },
+    "probability": { "type": "number", "minimum": 0, "maximum": 1 },
+    "seconds": { "type": "number", "minimum": 0 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "t_ms": {
+      "description": "Milliseconds since the trace began. Wall-clock: may differ between two runs of the same render.",
+      "$ref": "#/$defs/u64"
+    },
+    "trace": {
+      "description": "The header: first line, once.",
+      "type": "object",
+      "required": ["ev", "t_ms", "format", "ggtts", "ggml", "engine", "backend", "parity", "protocol", "flags", "trace_level"],
+      "additionalProperties": false,
+      "properties": {
+        "ev": { "const": "trace" },
+        "t_ms": { "$ref": "#/$defs/t_ms" },
+        "format": { "const": "ggtts-trace/1" },
+        "ggtts": { "type": "string", "minLength": 1 },
+        "ggml": { "type": "string", "minLength": 1 },
+        "engine": { "type": "string", "minLength": 1 },
+        "backend": { "type": "string", "minLength": 1 },
+        "parity": { "type": "string", "minLength": 1 },
+        "protocol": { "type": "string", "minLength": 1 },
+        "model_sha256": { "$ref": "#/$defs/sha256" },
+        "codec_sha256": { "$ref": "#/$defs/sha256" },
+        "flags": {
+          "description": "Non-default flags and versioned producer semantics. Secret values must never be written here.",
+          "type": "object"
+        },
+        "trace_level": { "type": "integer", "minimum": 1, "maximum": 2 }
+      }
+    },
+    "chunk_begin": {
+      "description": "One draw of one chunk begins.",
+      "type": "object",
+      "required": ["ev", "t_ms", "chunk", "draw", "text", "seed"],
+      "additionalProperties": false,
+      "properties": {
+        "ev": { "const": "chunk_begin" },
+        "t_ms": { "$ref": "#/$defs/t_ms" },
+        "chunk": { "$ref": "#/$defs/u32" },
+        "draw": { "$ref": "#/$defs/u32" },
+        "text": { "type": "string" },
+        "seed": { "$ref": "#/$defs/u64" },
+        "n_text_tokens": { "$ref": "#/$defs/u32" }
+      }
+    },
+    "step": {
+      "description": "One frame of one draw, after its token is sampled. cb and cb_p only at trace level 2.",
+      "type": "object",
+      "required": ["ev", "t_ms", "chunk", "frame", "token"],
+      "additionalProperties": false,
+      "properties": {
+        "ev": { "const": "step" },
+        "t_ms": { "$ref": "#/$defs/t_ms" },
+        "chunk": { "$ref": "#/$defs/u32" },
+        "frame": { "$ref": "#/$defs/u32" },
+        "token": { "$ref": "#/$defs/token" },
+        "p_stop": { "$ref": "#/$defs/probability" },
+        "entropy": { "type": "number", "minimum": 0 },
+        "top1_p": { "$ref": "#/$defs/probability" },
+        "rank": { "$ref": "#/$defs/u32" },
+        "cb": { "type": "array", "items": { "$ref": "#/$defs/token" } },
+        "cb_p": { "type": "array", "items": { "$ref": "#/$defs/probability" } }
+      },
+      "dependentRequired": { "cb": ["cb_p"], "cb_p": ["cb"] }
+    },
+    "chunk_end": {
+      "description": "One draw of one chunk ends: generated, decoded and judged.",
+      "type": "object",
+      "required": ["ev", "t_ms", "chunk", "draw", "frames", "stop", "verdict", "ms"],
+      "additionalProperties": false,
+      "properties": {
+        "ev": { "const": "chunk_end" },
+        "t_ms": { "$ref": "#/$defs/t_ms" },
+        "chunk": { "$ref": "#/$defs/u32" },
+        "draw": { "$ref": "#/$defs/u32" },
+        "frames": { "$ref": "#/$defs/u32" },
+        "stop": { "enum": ["eos", "cap", "abort"] },
+        "spc": { "type": "number", "minimum": 0 },
+        "verdict": { "enum": [null, "runaway", "silent"] },
+        "ms": {
+          "description": "Wall-clock of the whole draw: generate, decode and judge. May differ between runs.",
+          "$ref": "#/$defs/u64"
+        }
+      }
+    },
+    "trim": {
+      "description": "The kept draw of a chunk, trimmed. After that chunk's last chunk_end.",
+      "type": "object",
+      "required": ["ev", "t_ms", "chunk", "lead_s", "tail_s", "start", "end"],
+      "additionalProperties": false,
+      "properties": {
+        "ev": { "const": "trim" },
+        "t_ms": { "$ref": "#/$defs/t_ms" },
+        "chunk": { "$ref": "#/$defs/u32" },
+        "lead_s": { "$ref": "#/$defs/seconds" },
+        "tail_s": { "$ref": "#/$defs/seconds" },
+        "start": { "$ref": "#/$defs/u64" },
+        "end": { "$ref": "#/$defs/u64" }
+      }
+    },
+    "emit": {
+      "description": "A chunk's piece of the read handed to the stream, before the level step. Once per chunk, after its trim and before the next chunk_begin. Its t_ms is the hand-off time, which streaming's time to first audio uses.",
+      "type": "object",
+      "required": ["ev", "t_ms", "chunk", "start", "samples"],
+      "additionalProperties": false,
+      "properties": {
+        "ev": { "const": "emit" },
+        "t_ms": { "$ref": "#/$defs/t_ms" },
+        "chunk": { "$ref": "#/$defs/u32" },
+        "start": {
+          "description": "The piece's first sample in the read.",
+          "$ref": "#/$defs/u64"
+        },
+        "samples": {
+          "description": "The piece's length in samples: the chunk's kept audio and, unless it is the last chunk, the gap after it.",
+          "$ref": "#/$defs/u64"
+        }
+      }
+    },
+    "join": {
+      "description": "Every chunk joined into the read. Once, after the last emit.",
+      "type": "object",
+      "required": ["ev", "t_ms", "chunks", "samples"],
+      "additionalProperties": false,
+      "properties": {
+        "ev": { "const": "join" },
+        "t_ms": { "$ref": "#/$defs/t_ms" },
+        "chunks": { "$ref": "#/$defs/u32" },
+        "samples": { "$ref": "#/$defs/u64" },
+        "gain_db": { "type": "number" }
+      }
+    },
+    "end": {
+      "description": "The render is done. Last line, once.",
+      "type": "object",
+      "required": ["ev", "t_ms", "frames", "seconds"],
+      "additionalProperties": false,
+      "properties": {
+        "ev": { "const": "end" },
+        "t_ms": { "$ref": "#/$defs/t_ms" },
+        "frames": { "$ref": "#/$defs/u64" },
+        "seconds": { "$ref": "#/$defs/seconds" }
+      }
+    }
+  }
+}

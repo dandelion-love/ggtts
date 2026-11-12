@@ -1,12 +1,36 @@
 //! Text in: the story file, clause chunking at a ceiling, and the chunk plan (render spec sections 1 and 2).
 //!
-//! The rules are reproduced as they are, oddities included, so that parity holds: a mark on an empty clause is
-//! lost, a hard cut carries no mark, and a chunk under the profile's minimum is dropped. A fix is a new protocol
-//! version.
+//! The corrected story path preserves short tails and consecutive punctuation; punctuation-only input is refused.
 //!
 //! The split marks, the joiner, the minimum length and the ceilings come from the [`Profile`].
 
 use crate::profile::Profile;
+use unicode_general_category::{get_general_category, GeneralCategory};
+
+/// True when a character has Unicode punctuation category (P*).
+fn punctuation(ch: char) -> bool {
+    matches!(
+        get_general_category(ch),
+        GeneralCategory::ConnectorPunctuation
+            | GeneralCategory::DashPunctuation
+            | GeneralCategory::OpenPunctuation
+            | GeneralCategory::ClosePunctuation
+            | GeneralCategory::InitialPunctuation
+            | GeneralCategory::FinalPunctuation
+            | GeneralCategory::OtherPunctuation
+    )
+}
+
+/// Punctuation without spoken content is not a model request.
+pub fn validate_speech(text: &str) -> Result<(), &'static str> {
+    let mut chars = text.chars().filter(|c| !is_strip_space(*c));
+    if let Some(first) = chars.next() {
+        if punctuation(first) && chars.all(punctuation) {
+            return Err("punctuation-only input cannot be rendered as speech");
+        }
+    }
+    Ok(())
+}
 
 /// Whitespace as the reference strips it: Unicode `White_Space`, plus the four ASCII separators U+001C..U+001F.
 pub fn is_strip_space(c: char) -> bool {
@@ -33,12 +57,12 @@ pub fn read_text(contents: &str) -> (String, Vec<String>) {
 /// Clauses end at one of the profile's [`split_marks`](Profile::split_marks). Neighbouring clauses merge while the
 /// merge, counting a one-character joiner, fits the ceiling; the first clause keeps its own mark as the joiner (or
 /// the profile's [`unmarked_joiner`](Profile::unmarked_joiner) if it has none). A clause longer than the ceiling is
-/// hard-cut, and the cut pieces carry no mark. Chunks under [`min_chunk_chars`](Profile::min_chunk_chars) are
-/// dropped.
+/// hard-cut, and the cut pieces carry no mark. Short tails are retained.
 ///
 /// # Panics
 /// If `ceiling` is zero.
-pub fn chunk(profile: &Profile, text: &str, ceiling: usize) -> Vec<(String, String)> {
+pub fn chunk(profile: &Profile, text: &str, ceiling: usize) -> Result<Vec<(String, String)>, &'static str> {
+    validate_speech(text)?;
     assert!(ceiling > 0, "the chunk ceiling must be at least 1");
     let mut parts: Vec<(String, String)> = Vec::new();
     let mut buf = String::new();
@@ -55,18 +79,36 @@ pub fn chunk(profile: &Profile, text: &str, ceiling: usize) -> Vec<(String, Stri
         parts.push((tail.to_string(), String::new()));
     }
 
+    let mut combined: Vec<(String, String)> = Vec::new();
+    let mut leading = String::new();
+    for (body, mark) in parts {
+        if body.is_empty() {
+            if let Some((_, previous_mark)) = combined.last_mut() {
+                previous_mark.push_str(&mark);
+            } else {
+                leading.push_str(&mark);
+            }
+        } else {
+            combined.push((format!("{leading}{body}"), mark));
+            leading.clear();
+        }
+    }
+    if !leading.is_empty() {
+        combined.push((String::new(), leading));
+    }
     let mut out: Vec<(String, String)> = Vec::new();
     let mut cur: Vec<char> = Vec::new();
     let mut cur_mark = String::new();
-    for (part, mark) in parts {
+    for (part, mark) in combined {
         if part.is_empty() {
+            out.push((part, mark));
             continue;
         }
         let part: Vec<char> = part.chars().collect();
         if cur.is_empty() {
             cur = part;
             cur_mark = mark;
-        } else if cur.len() + part.len() < ceiling {
+        } else if cur.len() + part.len() + cur_mark.chars().count().max(1) <= ceiling {
             if cur_mark.is_empty() {
                 cur.push(profile.unmarked_joiner);
             } else {
@@ -87,9 +129,20 @@ pub fn chunk(profile: &Profile, text: &str, ceiling: usize) -> Vec<(String, Stri
     if !cur.is_empty() {
         out.push((cur.iter().collect(), cur_mark));
     }
-    out.into_iter()
-        .filter(|(c, _)| c.chars().count() >= profile.min_chunk_chars)
-        .collect()
+    let mut speech: Vec<(String, String)> = Vec::new();
+    for (body, mark) in out {
+        if validate_speech(&format!("{body}{mark}")).is_err() {
+            if let Some((_, prior_mark)) = speech.last_mut() {
+                prior_mark.push_str(&body);
+                prior_mark.push_str(&mark);
+            } else {
+                return Err("punctuation-only chunk cannot be rendered as speech");
+            }
+        } else {
+            speech.push((body, mark));
+        }
+    }
+    Ok(speech)
 }
 
 /// One chunk of a story, in reading order.
@@ -106,10 +159,10 @@ pub struct PlannedChunk {
 }
 
 /// Chunk every paragraph at `ceiling`, by the profile's rules, and list the chunks in reading order.
-pub fn plan(profile: &Profile, paragraphs: &[String], ceiling: usize) -> Vec<PlannedChunk> {
+pub fn plan(profile: &Profile, paragraphs: &[String], ceiling: usize) -> Result<Vec<PlannedChunk>, &'static str> {
     let mut out = Vec::new();
     for (para, text) in paragraphs.iter().enumerate() {
-        let chunks = chunk(profile, text, ceiling);
+        let chunks = chunk(profile, text, ceiling)?;
         let n = chunks.len();
         for (ci, (body, punct)) in chunks.into_iter().enumerate() {
             out.push(PlannedChunk {
@@ -120,7 +173,7 @@ pub fn plan(profile: &Profile, paragraphs: &[String], ceiling: usize) -> Vec<Pla
             });
         }
     }
-    out
+    Ok(out)
 }
 
 /// Whether a code point counts as one CJK character: U+3400..U+9FFF or U+20000..U+2FFFF, inclusive.

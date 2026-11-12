@@ -11,7 +11,93 @@ Several channels are averaged to one.
 """
 
 import hashlib
+import os
 import struct
+import sys
+from contextvars import ContextVar
+
+_DECODERS = ContextVar("ggtts_audio_decoders", default=None)
+
+
+def _start_decoder_capture():
+    records = []
+    return records, _DECODERS.set(records)
+
+
+def _stop_decoder_capture(token):
+    _DECODERS.reset(token)
+
+
+def _loaded_sndfile_paths(audio_path):
+    """Resolve the modules backing the open/read/close functions soundfile uses.
+
+    A mapped library with a matching filename alone is insufficient: another
+    library might be bound. Resolve the address actually bound by soundfile.
+    """
+    import soundfile
+    paths = []
+    path = os.fspath(audio_path)
+    opener = "sf_wchar_open" if sys.platform == "win32" and isinstance(path, str) else "sf_open"
+    for symbol in (opener, "sf_readf_float", "sf_close"):
+        address = int(soundfile._ffi.cast("uintptr_t", getattr(soundfile._snd, symbol)))
+        path = _bound_module_path(address)
+        if not path:
+            return []
+        paths.append(path)
+    return [paths[0]] if len({os.path.normcase(os.path.realpath(p)) for p in paths}) == 1 else []
+
+
+def _bound_module_path(address):
+    import ctypes
+    if not address:
+        return None
+    if sys.platform.startswith("linux"):
+        class DlInfo(ctypes.Structure):
+            _fields_ = [("filename", ctypes.c_char_p), ("base", ctypes.c_void_p),
+                        ("symbol", ctypes.c_char_p), ("symbol_address", ctypes.c_void_p)]
+        dladdr = ctypes.CDLL(None).dladdr
+        dladdr.argtypes = [ctypes.c_void_p, ctypes.POINTER(DlInfo)]
+        dladdr.restype = ctypes.c_int
+        info = DlInfo()
+        if dladdr(ctypes.c_void_p(address), ctypes.byref(info)) and info.filename:
+            path = os.fsdecode(info.filename)
+            return path if os.path.isabs(path) else None
+        return None
+    if sys.platform == "win32":
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = wintypes.HMODULE()
+        get_handle = kernel.GetModuleHandleExW
+        get_handle.argtypes = [wintypes.DWORD, ctypes.c_void_p, ctypes.POINTER(wintypes.HMODULE)]
+        get_handle.restype = wintypes.BOOL
+        if not get_handle(0x4 | 0x2, ctypes.c_void_p(address), ctypes.byref(handle)):
+            return None
+        name = kernel.GetModuleFileNameW
+        name.argtypes = [wintypes.HMODULE, wintypes.LPWSTR, wintypes.DWORD]
+        name.restype = wintypes.DWORD
+        buf = ctypes.create_unicode_buffer(32768)
+        n = name(handle, buf, len(buf))
+        return buf.value if n and n < len(buf) - 1 and os.path.isabs(buf.value) else None
+    return None
+
+
+def _decoder(kind, audio_path=None):
+    """Identify decoder code without exposing local paths; never guess on ambiguity."""
+    digest = None
+    try:
+        if kind == "libsndfile":
+            paths = _loaded_sndfile_paths(audio_path)
+            if len(paths) == 1:
+                digest = sha256_of(paths[0])
+        else:
+            digest = sha256_of(__file__)
+    except (OSError, ValueError, AttributeError, TypeError, ImportError, OverflowError):
+        pass
+    record = {"kind": kind, "sha256": digest}
+    records = _DECODERS.get()
+    if records is not None:
+        records.append(record)
+    return record
 
 
 class AudioError(ValueError):
@@ -19,11 +105,12 @@ class AudioError(ValueError):
 
 
 class Audio:
-    def __init__(self, samples, rate, path, sha256):
+    def __init__(self, samples, rate, path, sha256, decoder=None):
         self.samples = samples
         self.rate = rate
         self.path = path
         self.sha256 = sha256
+        self.decoder = decoder
 
     @property
     def seconds(self):
@@ -205,9 +292,11 @@ def read_audio(path, prefer_soundfile=True):
         data = f.read()
     if data[:4] == b"RIFF":
         samples, rate = _read_wav(data)
+        decoder = _decoder("ggtts-python-wav")
     elif data[:4] == b"fLaC":
         got = _soundfile(path) if prefer_soundfile else None
         samples, rate = got if got is not None else _read_flac(data)
+        decoder = _decoder("libsndfile" if got is not None else "ggtts-python-flac", path)
     else:
         raise AudioError("%s is neither WAV nor FLAC" % path)
-    return Audio(samples, rate, str(path), sha256_of(path))
+    return Audio(samples, rate, str(path), sha256_of(path), decoder)

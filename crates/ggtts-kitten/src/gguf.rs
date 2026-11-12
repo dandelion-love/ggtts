@@ -15,6 +15,7 @@ pub enum GgmlType {
     F32 = 0,
     F16 = 1,
     Q4_0 = 2,
+    TQ1_0 = 34,
     TQ2_0 = 35,
     BF16 = 30,
 }
@@ -26,20 +27,39 @@ impl GgmlType {
             1 => Some(GgmlType::F16),
             2 => Some(GgmlType::Q4_0),
             30 => Some(GgmlType::BF16),
+            34 => Some(GgmlType::TQ1_0),
             35 => Some(GgmlType::TQ2_0),
             _ => None,
         }
     }
 
     /// Bytes for `n` elements of one row.
-    pub fn row_bytes(self, n: usize) -> usize {
-        match self {
-            GgmlType::F32 => 4 * n,
-            GgmlType::F16 | GgmlType::BF16 => 2 * n,
-            GgmlType::TQ2_0 => n / 256 * crate::ternary::TQ2_0_BLOCK_BYTES,
-            GgmlType::Q4_0 => n / 32 * crate::ternary::Q4_0_BLOCK_BYTES,
+    pub fn row_bytes(self, n: usize) -> Result<usize, String> {
+        let (block, bytes) = match self {
+            GgmlType::F32 => (1, 4),
+            GgmlType::F16 | GgmlType::BF16 => (1, 2),
+            GgmlType::TQ1_0 => (256, crate::ternary::TQ1_0_BLOCK_BYTES),
+            GgmlType::TQ2_0 => (256, crate::ternary::TQ2_0_BLOCK_BYTES),
+            GgmlType::Q4_0 => (32, crate::ternary::Q4_0_BLOCK_BYTES),
+        };
+        if n == 0 || n % block != 0 {
+            return Err(format!("invalid {self:?} row dimension {n}"));
         }
+        (n / block).checked_mul(bytes).ok_or_else(|| "row size overflow".into())
     }
+}
+
+fn tensor_bytes(dims: &[u64], ty: GgmlType) -> Result<usize, String> {
+    if dims.is_empty() || dims.len() > 4 || dims.iter().any(|&d| d == 0 || d > i64::MAX as u64) {
+        return Err("invalid tensor dimensions".into());
+    }
+    let cols = usize::try_from(dims[0]).map_err(|_| "tensor dimension overflow")?;
+    let mut size = ty.row_bytes(cols)?;
+    for &d in &dims[1..] {
+        let d = usize::try_from(d).map_err(|_| "tensor dimension overflow")?;
+        size = size.checked_mul(d).ok_or("tensor size overflow")?;
+    }
+    Ok(size)
 }
 
 /// A metadata value.
@@ -141,8 +161,7 @@ pub fn write(path: &Path, kv: &BTreeMap<String, Value>, tensors: &[TensorOut]) -
     }
     let mut offset = 0usize;
     for t in tensors {
-        let rows: u64 = t.dims[1..].iter().product();
-        let expect = t.ty.row_bytes(t.dims[0] as usize) * rows as usize;
+        let expect = tensor_bytes(&t.dims, t.ty).map_err(io::Error::other)?;
         if expect != t.data.len() {
             return Err(io::Error::other(format!(
                 "{}: {} bytes for dims {:?}",
@@ -197,8 +216,9 @@ struct Rd<'a> {
 
 impl Rd<'_> {
     fn take(&mut self, n: usize) -> Result<&[u8], String> {
-        let s = self.b.get(self.p..self.p + n).ok_or("truncated GGUF")?;
-        self.p += n;
+        let end = self.p.checked_add(n).ok_or("GGUF offset overflow")?;
+        let s = self.b.get(self.p..end).ok_or("truncated GGUF")?;
+        self.p = end;
         Ok(s)
     }
     fn u32(&mut self) -> Result<u32, String> {
@@ -208,7 +228,7 @@ impl Rd<'_> {
         Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
     }
     fn str(&mut self) -> Result<String, String> {
-        let n = self.u64()? as usize;
+        let n = usize::try_from(self.u64()?).map_err(|_| "GGUF string length overflow")?;
         String::from_utf8(self.take(n)?.to_vec()).map_err(|e| e.to_string())
     }
     fn scalar_size(ty: u32) -> Result<usize, String> {
@@ -229,20 +249,30 @@ impl Rd<'_> {
             8 => Some(Value::Str(self.str()?)),
             9 => {
                 let et = self.u32()?;
-                let n = self.u64()? as usize;
+                let n = usize::try_from(self.u64()?).map_err(|_| "GGUF array length overflow")?;
                 if et == 5 {
+                    let len = n.checked_mul(4).ok_or("GGUF array size overflow")?;
+                    if len > self.b.len().saturating_sub(self.p) {
+                        return Err("truncated GGUF array".into());
+                    }
                     let mut a = Vec::with_capacity(n);
                     for _ in 0..n {
                         a.push(self.u32()? as i32);
                     }
                     Some(Value::ArrI32(a))
                 } else if et == 8 {
+                    if n > self.b.len().saturating_sub(self.p) / 8 {
+                        return Err("truncated GGUF string array".into());
+                    }
                     for _ in 0..n {
                         self.str()?;
                     }
                     None
                 } else {
-                    self.take(n * Self::scalar_size(et)?)?;
+                    self.take(
+                        n.checked_mul(Self::scalar_size(et)?)
+                            .ok_or("GGUF array size overflow")?,
+                    )?;
                     None
                 }
             }
@@ -273,8 +303,11 @@ impl Gguf {
             if version != 3 {
                 return Err(format!("GGUF version {version}, expected 3"));
             }
-            let nt = r.u64()? as usize;
-            let nkv = r.u64()? as usize;
+            let nt = usize::try_from(r.u64()?).map_err(|_| "tensor count overflow")?;
+            let nkv = usize::try_from(r.u64()?).map_err(|_| "metadata count overflow")?;
+            if nt > bytes.len() / 24 || nkv > bytes.len() / 12 {
+                return Err("GGUF counts exceed file size".into());
+            }
             for _ in 0..nkv {
                 let k = r.str()?;
                 let ty = r.u32()?;
@@ -285,25 +318,50 @@ impl Gguf {
             for _ in 0..nt {
                 let name = r.str()?;
                 let nd = r.u32()? as usize;
+                if !(1..=4).contains(&nd) {
+                    return Err(format!("{name}: invalid dimension count {nd}"));
+                }
                 let mut dims = Vec::with_capacity(nd);
                 for _ in 0..nd {
                     dims.push(r.u64()?);
                 }
                 let tyv = r.u32()?;
                 let ty = GgmlType::from_u32(tyv).ok_or_else(|| format!("{name}: ggml type {tyv} not supported"))?;
-                let off = r.u64()? as usize;
+                let off = usize::try_from(r.u64()?).map_err(|_| "tensor offset overflow")?;
                 infos.push((name, dims, ty, off));
             }
-            data_start = pad(r.p);
+            data_start = r.p.checked_add(ALIGNMENT - 1).ok_or("GGUF alignment overflow")? / ALIGNMENT * ALIGNMENT;
         }
         let mut tensors = BTreeMap::new();
         let mut order = Vec::new();
+        if let Some(alignment) = kv.get("general.alignment") {
+            if alignment.as_u32() != Some(ALIGNMENT as u32) {
+                return Err("unsupported GGUF alignment".into());
+            }
+        }
         for (name, dims, ty, off) in infos {
-            let rows: u64 = dims[1..].iter().product();
-            let len = ty.row_bytes(dims[0] as usize) * rows as usize;
-            let start = data_start + off;
-            if start + len > bytes.len() {
+            if off % ALIGNMENT != 0 {
+                return Err(format!("{name}: unaligned tensor offset"));
+            }
+            let len = tensor_bytes(&dims, ty).map_err(|e| format!("{name}: {e}"))?;
+            let start = data_start.checked_add(off).ok_or("tensor offset overflow")?;
+            let end = start.checked_add(len).ok_or("tensor length overflow")?;
+            if end > bytes.len() {
                 return Err(format!("{name}: data overruns the file"));
+            }
+            if ty == GgmlType::TQ1_0 {
+                if kv.get("kitten.ternary.layout").and_then(Value::as_str) != Some("tq1_0-256-experimental") {
+                    return Err(format!("{name}: unsupported TQ1 layout"));
+                }
+                for block in bytes[start..end].chunks_exact(crate::ternary::TQ1_0_BLOCK_BYTES) {
+                    let scale = crate::safetensors::f16_to_f32(u16::from_le_bytes([block[52], block[53]]));
+                    if !scale.is_finite() || scale < 0.0 {
+                        return Err(format!("{name}: invalid TQ1 scale"));
+                    }
+                }
+            }
+            if tensors.contains_key(&name) {
+                return Err(format!("{name}: duplicate tensor"));
             }
             order.push(name.clone());
             tensors.insert(name, TensorIn { dims, ty, start, len });
@@ -349,6 +407,46 @@ impl Gguf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tq1_file(dims: &[u64], ty: u32, layout: &str, data: &[u8], offset: u64) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"GGUF");
+        b.extend_from_slice(&3u32.to_le_bytes());
+        b.extend_from_slice(&1u64.to_le_bytes());
+        b.extend_from_slice(&1u64.to_le_bytes());
+        put_str(&mut b, "kitten.ternary.layout").unwrap();
+        put_value(&mut b, &Value::Str(layout.into())).unwrap();
+        put_str(&mut b, "w").unwrap();
+        b.extend_from_slice(&(dims.len() as u32).to_le_bytes());
+        for d in dims {
+            b.extend_from_slice(&d.to_le_bytes());
+        }
+        b.extend_from_slice(&ty.to_le_bytes());
+        b.extend_from_slice(&offset.to_le_bytes());
+        b.resize(pad(b.len()), 0);
+        b.extend_from_slice(data);
+        b
+    }
+
+    #[test]
+    fn tq1_parser_rejects_invalid_layout_shapes_scales_and_truncation() {
+        let layout = "tq1_0-256-experimental";
+        let mut block = [0u8; crate::ternary::TQ1_0_BLOCK_BYTES];
+        block[52..54].copy_from_slice(&0x3c00u16.to_le_bytes());
+        assert!(Gguf::parse(tq1_file(&[256, 1], 34, layout, &block, 0)).is_ok());
+        assert!(Gguf::parse(tq1_file(&[255, 1], 34, layout, &block, 0)).is_err());
+        assert!(Gguf::parse(tq1_file(&[], 34, layout, &block, 0)).is_err());
+        assert!(Gguf::parse(tq1_file(&[256, i64::MAX as u64], 34, layout, &block, 0)).is_err());
+        assert!(Gguf::parse(tq1_file(&[256, 1], 999, layout, &block, 0)).is_err());
+        assert!(Gguf::parse(tq1_file(&[256, 1], 34, "unknown", &block, 0)).is_err());
+        assert!(Gguf::parse(tq1_file(&[256, 1], 34, layout, &block[..53], 0)).is_err());
+        assert!(Gguf::parse(tq1_file(&[256, 1], 34, layout, &block, u64::MAX - 31)).is_err());
+        assert!(Gguf::parse(tq1_file(&[256, 1], 34, layout, &block, 1)).is_err());
+        for scale in [0x7c00u16, 0x7e00, 0xbc00] {
+            block[52..54].copy_from_slice(&scale.to_le_bytes());
+            assert!(Gguf::parse(tq1_file(&[256, 1], 34, layout, &block, 0)).is_err());
+        }
+    }
 
     #[test]
     fn write_then_read() {

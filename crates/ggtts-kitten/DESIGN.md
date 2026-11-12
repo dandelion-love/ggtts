@@ -105,6 +105,36 @@ the ggml pin with its upstreaming plan, recorded as a change to "depending only 
 The GGUF also records `kitten.ternary.group_size` = 128 and `kitten.ternary.layout` = `tq2_0-pad128`; the loader
 refuses a file whose layout it does not know.
 
+**`TQ1_0` on zero-padded groups (`--layout tq1_0`, layout `tq1_0-pad128`).** The same arrangement in ggml's other
+ternary type. `TQ1_0` packs five trits a byte (54 bytes per 256 weights, `ggml/src/ggml-common.h:276-281`), and its
+first 32 code bytes hold weights `m + 32n` for `n` in 0..5 (`ggml/src/ggml-quants.c`, `quantize_row_tq1_0_ref`), so a
+group of 128 lies in the first half of a block and the second half is 128 zero trits. The block's scale is the
+group's. The converter writes each matrix of `in` columns as a `TQ1_0` matrix of `2*in` columns, and the graph pads
+the activations exactly as for `TQ2_0`.
+
+Stored without padding, `TQ1_0` cannot hold Kitten's weights: a 256-weight block has one scale and two groups.
+Measured on a 1.7B QAT export in Kitten's key layout (196 matrices, 11,010,048 groups of 128, every value on its
+group's `trit * absmax` grid): of the 5,505,024 pairs of adjacent groups a 256-weight block would join, 103,112
+(1.87%) have equal scales; the larger scale over the smaller has median 1.076, p99 1.505 and maximum 10.59; no row
+and no matrix has a single scale. A 256-weight `TQ1_0` file of that export made outside ggtts differed from it in
+496,172,378 of its 1,409,286,144 ternary values. The engine still reads such files (`tq1_0-256-experimental`,
+[docs/tq1-cpu.md](../../docs/tq1-cpu.md)); the converter does not write them.
+
+| Layout | `--layout` | Exact | Bits per ternary weight | The 1.41B ternary weights |
+|---|---|---|---|---|
+| `Q4_0` (the default) | `q4_0` | yes | 4.5 | 793 MB |
+| padded `TQ2_0` | `tq2_0` | yes | 4.125 | 727 MB |
+| padded `TQ1_0` | `tq1_0` | yes | 3.375 | 595 MB |
+| `TQ1_0`, 256 weights a scale | not written | no (two groups share a scale) | 1.6875 | 297 MB |
+
+On the CPU, padded `TQ1_0` and padded `TQ2_0` hold the same trits and scales and both take `Q8_K` activations, and
+their products are bit-identical (`tests/tq1_padded.rs`, `tests/tq1_load.rs`). So padded `TQ1_0` inherits padded
+`TQ2_0`'s ternary-arm result below: it misses the cosine bar that `Q4_0` passes, which is why `Q4_0` stays the
+default. That result is inferred from the bit-identity on synthetic matrices; no parity run of padded `TQ1_0` on the
+real weights has been made. On CUDA every layout is held as the same exact f16 matrices. The readback check covers padded `TQ1_0` as
+it does the others: canonical code bytes, zero padding trits, every trit equal to the source's, every scale equal
+bit for bit, every value equal through the runtime's decoder.
+
 ## Generate and decode stay separate
 
 `Engine::generate` takes text and a seed and returns `Codes` (one codebook, frame-major, ids 0..6560) and why it

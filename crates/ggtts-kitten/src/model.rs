@@ -6,8 +6,9 @@
 //! head is the tied bf16 embedding.
 //!
 //! For padded `TQ2_0` (see [`crate::ternary`]), every activation entering a ternary matrix is padded the same way:
-//! `[n, T]` viewed as `[128, n / 128, T]`, padded to `[256, n / 128, T]` with zeros. `TQ1_0` uses unpadded groups
-//! of 256 weights and is experimental: packed on the CPU, expanded to checked f16 on CUDA (see [`held`]). With
+//! `[n, T]` viewed as `[128, n / 128, T]`, padded to `[256, n / 128, T]` with zeros; padded `TQ1_0` is padded the
+//! same way. The older `TQ1_0` layout uses unpadded groups of 256 weights and is experimental. Both TQ1 layouts are
+//! packed on the CPU and expanded to checked f16 on CUDA (see [`held`]). With
 //! [`Weights::F32`] the matrices are dequantized to f32 at load instead, which isolates the graph from the
 //! arithmetic for the parity check.
 //!
@@ -290,12 +291,12 @@ pub fn held(ty: GgmlType, weights: Weights, device: Device) -> Result<Held, Stri
     })
 }
 
-/// `[cols, rows]` of the run-time tensor for a stored matrix of `dims`: the stored dimensions when it is kept as
-/// stored, and the weights' own otherwise (padded `TQ2_0` stores each row at twice its length).
-pub fn held_dims(ty: GgmlType, held: Held, dims: [u64; 2]) -> [usize; 2] {
+/// `[cols, rows]` of the run-time tensor for a stored ternary matrix of `dims`: the stored dimensions when it is
+/// kept as stored, and the weights' own otherwise (a padded layout stores each row at twice its length).
+pub fn held_dims(layout: Layout, held: Held, dims: [u64; 2]) -> [usize; 2] {
     let stored = [dims[0] as usize, dims[1] as usize];
-    match (ty, held) {
-        (GgmlType::TQ2_0, Held::ExactF16 | Held::F32) => [stored[0] / 2, stored[1]],
+    match held {
+        Held::ExactF16 | Held::F32 if layout.padded() => [stored[0] / 2, stored[1]],
         _ => stored,
     }
 }
@@ -407,7 +408,7 @@ impl Model {
                 let out = match (t.ty, weights) {
                     // On CUDA the ternary matrices are held as f16 (see `ternary_f16` and `ternary_as_f16`).
                     (GgmlType::TQ1_0 | GgmlType::TQ2_0 | GgmlType::Q4_0, _) if how == Held::ExactF16 => {
-                        let [cols, rows] = held_dims(t.ty, how, [t.dims[0], t.dims[1]]);
+                        let [cols, rows] = held_dims(layout, how, [t.dims[0], t.dims[1]]);
                         let x = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_F16, cols as i64, rows as i64);
                         pending
                             .borrow_mut()
@@ -430,7 +431,7 @@ impl Model {
                         x
                     }
                     (GgmlType::TQ1_0 | GgmlType::TQ2_0 | GgmlType::Q4_0, Weights::F32) => {
-                        let [cols, rows] = held_dims(t.ty, how, [t.dims[0], t.dims[1]]);
+                        let [cols, rows] = held_dims(layout, how, [t.dims[0], t.dims[1]]);
                         let x = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_F32, cols as i64, rows as i64);
                         let mut dst = vec![0f32; cols * rows];
                         let rb = layout.row_bytes(cols);
@@ -664,7 +665,7 @@ impl<'m> Session<'m> {
         let n_kv = pos0 + t;
         let (hd, nh, nkv) = (hp.head_dim as i64, hp.n_head as i64, hp.n_head_kv as i64);
         let ti = t as i64;
-        let padded = m.weights != Weights::F32 && m.layout == Layout::Tq2Pad && !m.ternary_f16;
+        let padded = m.weights != Weights::F32 && m.layout.padded() && !m.ternary_f16;
         let f32_prec = m.ternary_f16;
         unsafe {
             let size = g::ggml_tensor_overhead() * GRAPH_SIZE + g::ggml_graph_overhead_custom(GRAPH_SIZE, false);
@@ -980,20 +981,22 @@ mod held_tests {
 
     #[test]
     fn held_dimensions_follow_the_representation() {
-        // TQ1 and Q4 store a row at its own length; padded TQ2 stores it at twice that.
+        // The 256-weight TQ1 and Q4 store a row at its own length; padded TQ2 and padded TQ1 store it at twice that.
         for h in [Held::Stored, Held::ExactF16, Held::F32] {
-            assert_eq!(held_dims(GgmlType::TQ1_0, h, [512, 32]), [512, 32]);
-            assert_eq!(held_dims(GgmlType::Q4_0, h, [512, 32]), [512, 32]);
+            assert_eq!(held_dims(Layout::Tq1, h, [512, 32]), [512, 32]);
+            assert_eq!(held_dims(Layout::Q4, h, [512, 32]), [512, 32]);
         }
-        assert_eq!(held_dims(GgmlType::TQ2_0, Held::Stored, [512, 32]), [512, 32]);
-        assert_eq!(held_dims(GgmlType::TQ2_0, Held::ExactF16, [512, 32]), [256, 32]);
-        assert_eq!(held_dims(GgmlType::TQ2_0, Held::F32, [512, 32]), [256, 32]);
+        for l in [Layout::Tq2Pad, Layout::Tq1Pad] {
+            assert_eq!(held_dims(l, Held::Stored, [512, 32]), [512, 32]);
+            assert_eq!(held_dims(l, Held::ExactF16, [512, 32]), [256, 32]);
+            assert_eq!(held_dims(l, Held::F32, [512, 32]), [256, 32]);
+        }
     }
 
     #[test]
     fn a_tq1_matrix_becomes_exact_f16_of_its_own_dimensions() {
         let (packed, reference) = tq1_matrix();
-        let [cols, rows] = held_dims(GgmlType::TQ1_0, Held::ExactF16, [512, 32]);
+        let [cols, rows] = held_dims(Layout::Tq1, Held::ExactF16, [512, 32]);
         let bytes = ternary_as_f16(Layout::Tq1, "m", &packed, cols, rows).unwrap();
         assert_eq!(bytes.len(), cols * rows * 2);
         assert_eq!(reference.len(), cols * rows);

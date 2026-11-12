@@ -340,6 +340,7 @@ fn refuse_settings_for(engine: &str, speaker: Option<&str>, instruction: Option<
         chunk: 0,
         draw: 0,
         instruction,
+        steer: None,
     };
     refuse_instruction(&req, engine).map_err(|e| arg_err(e.0))
 }

@@ -232,6 +232,36 @@ fn a_recorded_trace_replays_exactly() {
     }
 }
 
+/// Replay never renders a steered trace without its steering, or an unsteered one with steering: the header's
+/// record and the steering given must be the same. A plain trace still replays with `replay_steered(.., None)`.
+#[test]
+fn replay_refuses_steering_that_does_not_match_the_header() {
+    use ggtts_core::steer::{write_safetensors, SteerFile};
+    use ggtts_core::trace::replay_steered;
+    let case = &cases()[0];
+    let lines = parse(&jsonl(case, 1)).unwrap();
+    let s = SteerFile::parse(&write_safetensors(&[("talker.layer.2", &[1.0])]))
+        .unwrap()
+        .select(None, 0.5)
+        .unwrap();
+    let err = replay_steered(&mut case.engine(), &lines, Some(&s)).unwrap_err();
+    assert!(err.0.contains("unsteered render"), "{err}");
+    assert!(replay_steered(&mut case.engine(), &lines, None)
+        .unwrap()
+        .mismatch
+        .is_none());
+    let mut steered = lines.clone();
+    steered[0].insert("steer".into(), s.record());
+    let err = replay(&mut case.engine(), &steered).unwrap_err();
+    assert!(err.0.contains("steered render"), "{err}");
+    let other = SteerFile::parse(&write_safetensors(&[("talker.layer.2", &[1.0])]))
+        .unwrap()
+        .select(None, 0.25)
+        .unwrap();
+    let err = replay_steered(&mut case.engine(), &steered, Some(&other)).unwrap_err();
+    assert!(err.0.contains("was steered with"), "{err}");
+}
+
 #[test]
 fn a_slow_trace_sink_is_measured_without_changing_audio_or_tokens() {
     struct SlowOnce {
@@ -434,6 +464,7 @@ fn trace_identity_holds_and_sees_a_planted_draw() {
                 chunk: *chunk,
                 draw: 0,
                 instruction: None,
+                steer: None,
             })
             .collect();
         for level in [1u8, 2] {

@@ -220,6 +220,7 @@ impl Engine for FakeEngine {
         hooks: &mut Hooks,
     ) -> Result<Generated, EngineError> {
         refuse_instruction(req, &self.info.family)?;
+        ggtts_core::steer::refuse_steer(req, &self.info.family)?;
         let wants = hooks.wants();
         let text = req.text.to_string();
         let k = *self.draws.get(&text).unwrap_or(&0);
@@ -341,6 +342,7 @@ mod instruction_tests {
             chunk: 0,
             draw: 0,
             instruction,
+            steer: None,
         }
     }
 
@@ -357,6 +359,36 @@ mod instruction_tests {
             "{err}"
         );
         assert!(e.generate_traced(&req(Some("speak slowly")), &mut NullEvents).is_err());
+    }
+
+    /// The fake engine cannot steer: a steered request is an error on every path, never ignored, and the story path
+    /// hands its steering to the engine, which refuses it.
+    #[test]
+    fn the_fake_engine_refuses_steering() {
+        use ggtts_core::pipeline::{plan_story, render_story, RenderOptions};
+        use ggtts_core::steer::{write_safetensors, SteerFile};
+        let s = SteerFile::parse(&write_safetensors(&[("talker.layer.0", &[1.0])]))
+            .unwrap()
+            .select(None, 1.0)
+            .unwrap();
+        let steered = ChunkRequest {
+            steer: Some(&s),
+            ..req(None)
+        };
+        let mut e = FakeEngine::default();
+        let err = e.generate(&steered).unwrap_err();
+        assert!(
+            err.0.contains("fake") && err.0.contains("cannot apply steering"),
+            "{err}"
+        );
+        assert!(e.generate_traced(&steered, &mut NullEvents).is_err());
+        let chunks = plan_story(e.profile(), &["今日天氣好好，我哋去公園行下。".to_string()]).unwrap();
+        let mut opts = RenderOptions::for_profile(e.profile());
+        opts.steer = Some(s.clone());
+        let err = render_story(&mut FakeEngine::default(), "steer", &chunks, &opts)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cannot apply steering"), "{err}");
     }
 }
 

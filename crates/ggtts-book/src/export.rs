@@ -1,14 +1,17 @@
 //! One chaptered audiobook file from a rendered book's directory.
 //!
-//! `export` reads the chapter FLACs `render` wrote, in order, and streams them into one FLAC with the book's tags and a
-//! chapter mark per chapter: Vorbis comments `CHAPTER001=00:00:00.000` and `CHAPTER001NAME=<title>`, the convention
-//! ffmpeg-based players (mpv, VLC) read as chapters. Chapters are separated by [`CHAPTER_GAP_S`] of silence. The audio
+//! `export` reads the chapter FLACs `render` wrote, in order, and streams them into one file with the book's tags and a
+//! chapter mark per chapter. The container follows the output's extension: `.flac` carries the marks as Vorbis
+//! comments `CHAPTER001=00:00:00.000` and `CHAPTER001NAME=<title>` (read as chapters by ffmpeg-based players such as
+//! mpv and VLC); `.m4b` is ALAC audio with a QuickTime chapter track and a Nero `chpl` list, for audiobook apps
+//! ([`crate::mp4`]). Chapters are separated by [`CHAPTER_GAP_S`] of silence. The audio
 //! stays lossless: the samples are the chapter files' own.
 //!
 //! Nothing is exported from a directory that is not a finished render of one book: a chapter whose manifest has a
 //! chunk not done, a chapter directory with no chapter file, chapters rendered with different seed roots or engines,
 //! or a directory with no `book.json`, is refused, naming the chapter.
 
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
@@ -44,8 +47,114 @@ fn tag(reader: &claxon::FlacReader<std::fs::File>, name: &str) -> Vec<String> {
     reader.get_tag(name).map(String::from).collect()
 }
 
-/// Export the rendered book in `dir` to `out`. Returns a report of the chapters and their marks.
+/// The container an export is written in, chosen by the output's extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// `.flac`: one FLAC with Vorbis-comment chapter marks.
+    Flac,
+    /// `.m4b`: ALAC audio with a chapter track and a `chpl` list ([`crate::mp4`]).
+    M4b,
+}
+
+impl Format {
+    /// The format for `out`'s extension, or a refusal naming the supported ones.
+    pub fn for_path(out: &Path) -> Result<Format, String> {
+        match out
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("flac") => Ok(Format::Flac),
+            Some("m4b") => Ok(Format::M4b),
+            _ => Err(format!(
+                "{}: export writes .flac or .m4b, chosen by the extension",
+                out.display()
+            )),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Format::Flac => "flac",
+            Format::M4b => "m4b",
+        }
+    }
+}
+
+/// The book's samples in order: each chapter file's own, with `gap` samples of silence between chapters, read a
+/// FLAC block at a time.
+struct Source<'a> {
+    chapters: &'a [ChapterFile],
+    gap: u64,
+    next: usize,
+    reader: Option<claxon::FlacReader<std::fs::File>>,
+    queue: std::collections::VecDeque<i16>,
+    silence: u64,
+}
+
+impl<'a> Source<'a> {
+    fn new(chapters: &'a [ChapterFile], gap: u64) -> Self {
+        Source {
+            chapters,
+            gap,
+            next: 0,
+            reader: None,
+            queue: Default::default(),
+            silence: 0,
+        }
+    }
+
+    /// Fill `buf` completely; an error if the chapters run out first.
+    fn fill(&mut self, buf: &mut [i16]) -> io::Result<()> {
+        for slot in buf.iter_mut() {
+            *slot = self
+                .sample()?
+                .ok_or_else(|| io::Error::other("the chapters ended before the declared length"))?;
+        }
+        Ok(())
+    }
+
+    fn sample(&mut self) -> io::Result<Option<i16>> {
+        loop {
+            if let Some(s) = self.queue.pop_front() {
+                return Ok(Some(s));
+            }
+            if self.silence > 0 {
+                self.silence -= 1;
+                return Ok(Some(0));
+            }
+            if let Some(reader) = &mut self.reader {
+                let mut blocks = reader.blocks();
+                match blocks.read_next_or_eof(Vec::new()).map_err(io::Error::other)? {
+                    Some(block) => self.queue.extend(block.channel(0).iter().map(|&s| s as i16)),
+                    None => self.reader = None,
+                }
+                continue;
+            }
+            let Some(c) = self.chapters.get(self.next) else {
+                return Ok(None);
+            };
+            if self.next > 0 {
+                self.silence = self.gap;
+            }
+            self.next += 1;
+            self.reader = Some(claxon::FlacReader::open(&c.file).map_err(io::Error::other)?);
+        }
+    }
+
+    /// Refuse a source with samples left over: the declared length was too short.
+    fn finish(mut self) -> io::Result<()> {
+        match self.sample()? {
+            None => Ok(()),
+            Some(_) => Err(io::Error::other("the chapters hold more samples than declared")),
+        }
+    }
+}
+
+/// Export the rendered book in `dir` to `out` (`.flac` or `.m4b`). Returns a report of the chapters and their marks.
 pub fn export(dir: &Path, out: &Path) -> Result<Value, String> {
+    let format = Format::for_path(out)?;
     let marker = std::fs::read_to_string(dir.join(BOOK_MARKER)).map_err(|_| {
         format!(
             "{} has no {BOOK_MARKER}: not a directory ggtts-book render wrote",
@@ -145,12 +254,14 @@ pub fn export(dir: &Path, out: &Path) -> Result<Value, String> {
     tags.push(("GGTTS_BOOK_ID".to_string(), book_id.clone()));
     tags.push(("GGTTS_SEED_ROOT".to_string(), seed_root.clone().unwrap_or_default()));
     let mut marks = Vec::new();
+    let mut mark_starts = Vec::new();
     let mut at = 0u64;
     for (i, c) in chapters.iter().enumerate() {
         let n = i + 1;
         tags.push((format!("CHAPTER{n:03}"), timestamp(at, rate)));
         tags.push((format!("CHAPTER{n:03}NAME"), c.title.clone()));
         marks.push(json!({"chapter": c.stem, "title": c.title, "start_sample": at, "start": timestamp(at, rate)}));
+        mark_starts.push(at);
         at += c.samples + gap;
     }
 
@@ -160,26 +271,42 @@ pub fn export(dir: &Path, out: &Path) -> Result<Value, String> {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default()
     ));
-    let mut w = StreamWriter::create(&partial, rate, total, &tags).map_err(|e| format!("{}: {e}", out.display()))?;
-    for (i, c) in chapters.iter().enumerate() {
-        if i > 0 {
-            w.push_silence(gap as usize).map_err(|e| e.to_string())?;
-        }
-        let mut reader = claxon::FlacReader::open(&c.file).map_err(|e| format!("{}: {e}", c.file.display()))?;
-        let mut block = Vec::with_capacity(4096);
-        for s in reader.samples() {
-            block.push(s.map_err(|e| format!("{}: {e}", c.file.display()))? as i16);
-            if block.len() == 4096 {
-                w.push(&block).map_err(|e| e.to_string())?;
-                block.clear();
+    let mut source = Source::new(&chapters, gap);
+    let failed = |e: io::Error| format!("{}: {e}", out.display());
+    match format {
+        Format::Flac => {
+            let mut w = StreamWriter::create(&partial, rate, total, &tags).map_err(failed)?;
+            let mut block = vec![0i16; 4096];
+            let mut left = total;
+            while left > 0 {
+                let n = left.min(4096) as usize;
+                source.fill(&mut block[..n]).map_err(failed)?;
+                w.push(&block[..n]).map_err(failed)?;
+                left -= n as u64;
             }
+            w.finish().map_err(failed)?;
         }
-        w.push(&block).map_err(|e| e.to_string())?;
+        Format::M4b => {
+            let mp4_marks: Vec<crate::mp4::Mark> = mark_starts
+                .iter()
+                .zip(&chapters)
+                .map(|(&start, c)| crate::mp4::Mark {
+                    title: c.title.clone(),
+                    start,
+                })
+                .collect();
+            let book = crate::mp4::Book {
+                title: &album,
+                authors: &artists,
+            };
+            crate::mp4::write_m4b(&partial, rate, total, &mp4_marks, &book, |buf| source.fill(buf)).map_err(failed)?;
+        }
     }
-    w.finish().map_err(|e| format!("{}: {e}", out.display()))?;
-    std::fs::rename(&partial, out).map_err(|e| format!("{}: {e}", out.display()))?;
+    source.finish().map_err(failed)?;
+    std::fs::rename(&partial, out).map_err(failed)?;
     Ok(json!({
         "format": "ggtts-book-export/1",
+        "container": format.name(),
         "book_id": book_id,
         "file": out.to_string_lossy(),
         "sample_rate": rate,

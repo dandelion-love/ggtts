@@ -272,7 +272,7 @@ and `GGTTS_SEED_ROOT`, which tie it to its render. Front and back matter is left
 ## Export: one chaptered audiobook file
 
 ```text
-ggtts-book export DIR --out BOOK.flac
+ggtts-book export DIR --out BOOK.flac|BOOK.m4b
 ```
 
 `export` joins a finished render into one FLAC: the chapter files' own samples, in order, with 2 seconds of silence
@@ -284,7 +284,13 @@ report (`ggtts-book-export/1`) with each chapter's start.
 
 `export` refuses, naming the chapter: a directory with no `book.json`; a chapter whose manifest has a chunk not done;
 a chapter directory with no chapter file; chapters rendered with different seed roots or engines; chapters at
-different sample rates. An `.m4b` for audiobook apps (lossless ALAC with a chapter track) is issue 226.
+different sample rates. The container follows the extension of `--out`; anything other than `.flac` or `.m4b` is refused.
+
+**`.m4b`, for audiobook apps.** The same samples as the `.flac` export, as ALAC (lossless) in ALAC's uncompressed
+frame form, with the chapters twice: a QuickTime chapter text track (the form Apple's players read) and a Nero
+`chpl` list (the form FFmpeg-based players read; it holds at most 255 chapters, and a longer book keeps only the
+text track). The book's title and authors are `©nam`, `©alb` and `©ART`. FFmpeg reads the chapters and decodes
+samples identical to the `.flac` export's (`tests/m4b.rs`, opt-in with `-- --ignored`).
 
 ### Not yet
 

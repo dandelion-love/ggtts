@@ -23,6 +23,23 @@ that a merge places under a released heading is caught.
   `ggtts-render` load the new layout on the CPU and on CUDA. Files in the older 256-weight `tq1_0-256-experimental`
   layout still load; that layout gives two 128-weight groups one scale, which is lossy for this model, and the
   converter refuses to write it.
+- **Steering: `ggtts-render --steer FILE` adds vectors to the Qwen3-TTS talker's hidden state.** The file is
+  safetensors with one F32 vector per talker layer, named `talker.layer.<i>`, each of the talker's hidden size.
+  Each vector, times `--steer-scale X` (default 1.0), is added at the output of its layer, after the layer's residual
+  add, at every position of the prompt and of every generated frame: what a PyTorch forward hook on the layer's
+  output does. `--steer-layers 23,24,25` applies only those layers of the file (default: every layer in it). The
+  code predictor is not steered. A render without `--steer` is the same render as before, and its graph has no
+  steering node. A file that is not readable, a tensor with another name or dtype, a tensor named twice, a value that
+  is not finite, a vector of the wrong length, a layer out of range, a layer list naming a layer the file does not
+  hold or naming one twice, a scale that is not finite in f32 or makes a scaled value overflow f32, `--steer-scale` or
+  `--steer-layers` without `--steer`, and `--steer` with any engine but `qwen3-tts`, are each refused before anything
+  is rendered. Steering is a request input, not an instrument: it does not go through
+  the hooks, and the trace-identity check still holds on a steered render. See [docs/steering.md](docs/steering.md).
+- **A steered render says so in every record it writes.** The trace header, the timing and duration reports and the
+  instruments' `report.json` gain an optional `steer` object: the steering file's sha256, the layers applied and the
+  scale. An unsteered render writes none. The field is added within `ggtts-trace/2`, `ggtts-timing/1`,
+  `ggtts-duration/1` and `ggtts-report/2`, as `instruction` and `models` were: a document without it is still valid.
+  Replay refuses a steered trace unless it is given the same steering.
 
 ## v0.1.0-rc.11 (2026-11-12)
 

@@ -37,6 +37,8 @@ pub struct RenderOptions {
     pub measure_timings: bool,
     /// The style instruction every chunk is rendered with ([`ChunkRequest::instruction`]); `None` for none.
     pub instruction: Option<String>,
+    /// The steering every chunk is rendered with ([`ChunkRequest::steer`]); `None` for none.
+    pub steer: Option<crate::steer::Steering>,
 }
 
 impl RenderOptions {
@@ -49,6 +51,7 @@ impl RenderOptions {
             edge_s: profile.edge_s,
             measure_timings: false,
             instruction: None,
+            steer: None,
         }
     }
 }
@@ -240,6 +243,7 @@ fn render(
                 chunk: i as u32,
                 draw: k,
                 instruction: opts.instruction.as_deref(),
+                steer: opts.steer.as_ref(),
             };
             let t0 = tracing.then(std::time::Instant::now);
             if tracing {

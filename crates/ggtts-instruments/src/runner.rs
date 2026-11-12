@@ -91,6 +91,9 @@ pub struct Inputs {
     pub models: Option<Vec<serde_json::Value>>,
     /// The render's style instruction, for `report.json` and `run.log`, when it had a non-empty one.
     pub instruction: Option<String>,
+    /// The render's steering record (`ggtts_core::steer::Steering::record`), for `report.json` and `run.log`, when
+    /// it was steered.
+    pub steer: Option<serde_json::Value>,
 }
 
 /// What the instrument phase cost, after the render.
@@ -361,6 +364,10 @@ pub fn run_with_logging(config: &Config, inputs: &Inputs, log: LogSettings) -> R
     merged.instruction = inputs.instruction.clone().filter(|i| !i.is_empty());
     if let Some(i) = &merged.instruction {
         record!(LogLevel::Info, "instruction", "instruction {i:?}");
+    }
+    merged.steer = inputs.steer.clone();
+    if let Some(s) = &merged.steer {
+        record!(LogLevel::Info, "steer", "steer {s}");
     }
     for m in inputs.models.iter().flatten() {
         let text = |k: &str| {

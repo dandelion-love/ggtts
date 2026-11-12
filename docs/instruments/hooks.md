@@ -114,7 +114,10 @@ against it, and a test checks that on every recorded fake-engine render (`crates
 - **Adding a field or an event is a new version.** The schema refuses fields and events it does not name, so one
   added without a schema change fails that test, and every new event kind lands with its schema entry and its
   row in this catalogue in the same change. `emit` is part of `ggtts-trace/1` as first published: streaming added
-  it before this schema existed, and the schema test caught it.
+  it before this schema existed, and the schema test caught it. Three optional header fields were added within
+  `ggtts-trace/2` instead, each with its schema entry in the same change: `models`, `instruction` and `steer` (a
+  steered render's file sha256, layers and scale, [steering](../steering.md)). A trace without them is still valid,
+  and an unsteered trace is unchanged.
 - **Readers accept the current version and the one before it.** `trace::READS` lists the formats `trace::parse`
   accepts. `READS` is `["ggtts-trace/2", "ggtts-trace/1"]`, and
   `ggtts-trace/1` is dropped only at `/3`. A test holds `READS` to that shape.

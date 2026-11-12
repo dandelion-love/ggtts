@@ -126,12 +126,15 @@ For a scripted check, a **debug build** of the activity takes its settings as ex
 name is looked up in the models directory, an absolute path is used as it is. The activity is exported (it is the
 launcher), so any app on the phone could send it these extras; a release build ignores them.
 
+Pass `--activity-single-top`. Without it, when the app is in the background, Android may only bring its task to the
+front ("its current task has been brought to the front") and drop the extras.
+
 ```sh
 adb install -r dist/android-arm64/ggtts-demo-debug.apk
-adb shell am start -n ggtts.demo/.MainActivity --es engine qwen3-tts \
+adb shell am start --activity-single-top -n ggtts.demo/.MainActivity --es engine qwen3-tts \
     --es model qwen-talker-hk-cantonese-cc0-v0.0.5-q8_0.gguf --es codec qwen-tokenizer-12hz-q8_0.gguf \
     --es speaker hk_voice_343 --ei threads 4 --ez speak true
-adb shell am start -n ggtts.demo/.MainActivity --ez stop true          # presses Stop
+adb shell am start --activity-single-top -n ggtts.demo/.MainActivity --ez stop true   # presses Stop
 adb logcat -s ggtts-demo
 adb pull /sdcard/Android/data/ggtts.demo/files/out/qwen3-tts.wav
 ```

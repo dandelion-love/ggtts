@@ -212,6 +212,96 @@ jobs:
           grep -F 'FAILED render/arm-join-every-mark' out.txt
           echo "red as required: the planted ceiling is seen"
 
+  tiny-model:
+    needs: specialized-selection
+    # The no-change check on a real Qwen3-TTS engine, on CPU: the published v0.0.1 talker cut to one talker layer and
+    # one code-predictor layer (crates/ggtts-qwen3-tts/fixtures/tiny) with the published codec. Fetched at a pinned
+    # revision, every file checked by sha256, cut by script, and cached by the pins. Identity only: a one-layer model
+    # cannot speak. It runs the three cases the promotion gate's CPU instrument proof runs on the full model, and the
+    # tiny model's own, and a planted engine change must turn it red. Selected by tiny_decision in the selector.
+    if: needs.specialized-selection.outputs.tiny == 'true'
+    name: tiny-model (the no-change check on a real engine cut to one layer, CPU; a planted engine change is red)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GGTTS_TINY_CACHE: ${{ github.workspace }}/ggtts-tiny-cache
+      GGTTS_DEVICE: cpu
+      # The tiny model never stops, so every request runs to its cap: 120 frames (10 s) keeps the gate's cases, written
+      # for 1200 on the full model, to minutes on a hosted runner. Only those cases read it; the gate leaves it unset.
+      GGTTS_NO_CHANGE_MAX_FRAMES: "120"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The event instruments run under this interpreter (GGTTS_PYTHON unset: python3 on PATH).
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.10"
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Fetch the ggml submodule at its pin
+        run: |
+          set -eu
+          git submodule update --init crates/ggtts-ggml-sys/ggml
+          pin=$(sed -n 's/^pub const GGML_COMMIT: &str = "\([0-9a-f]\{40\}\)";$/\1/p' crates/ggtts-ggml-sys/src/lib.rs)
+          test "$(git -C crates/ggtts-ggml-sys/ggml rev-parse HEAD)" = "$pin"
+      - name: The pinned Python packages the event instruments need (the promotion gate's PYTHON_REQUIREMENTS)
+        run: python -m pip install -r instruments/examples/python/loudness-ends/requirements.txt
+      # The cut and the codec (about 820 MB). The cache only spares the download and the cut: the script checks every
+      # file against SOURCE whether it came from the cache or not, and the tests check them again.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ggtts-tiny-cache
+          key: ggtts-tiny-${{ hashFiles('crates/ggtts-qwen3-tts/fixtures/tiny/SOURCE') }}
+      - name: The fixture (the published files at the pinned revision, checked by sha256, cut by script; a mismatch is red)
+        run: |
+          set -euo pipefail
+          eval "$(scripts/tiny_fixture.sh)"
+          {
+            echo "GGTTS_TINY_TALKER=$GGTTS_TINY_TALKER"
+            echo "GGTTS_TALKER=$GGTTS_TINY_TALKER"
+            echo "GGTTS_CODEC=$GGTTS_CODEC"
+          } >> "$GITHUB_ENV"
+      - name: The tiny model's own checks (the trace and a quiet hook change no token or sample on 8 texts; the planted drawing hook is red)
+        run: cargo test --release --locked -p ggtts-qwen3-tts --features ggml,plant --test tiny_model -- --ignored --nocapture
+      - name: The promotion gate's CPU instrument proof on the tiny model (the stop trace, the hook-boundary logit plant, every event instrument)
+        run: |
+          set -euo pipefail
+          # Cargo exits zero when a filter matches no test, so each case must report that it ran.
+          one() { log=$1; shift; "$@" 2>&1 | tee "$log"; grep -F "test result: ok. 1 passed; 0 failed" "$log"; }
+          cargo build --locked --release -p ggtts-cli -p ggtts-instruments --features ggtts-cli/ggml
+          for case in stop_trace_tensor_hook_preserves_real_tokens_and_samples a_hook_boundary_logit_mutation_is_detected_on_real_qwen; do
+            one "$case.log" cargo test --locked --release -p ggtts-qwen3-tts --features ggml,plant --test frame_hook \
+              "$case" -- --exact --ignored --nocapture
+          done
+          one events.log cargo test --locked --release -p ggtts-cli --features ggml --test no_change_real \
+            each_event_instrument_preserves_real_qwen_tokens_and_samples -- --exact --ignored --nocapture
+          grep -F "model=tiny-fixture" events.log
+      - name: Planted, a talker that is not the pinned cut is refused (the check fails closed)
+        run: |
+          set -u
+          if GGTTS_TINY_TALKER="$GGTTS_CODEC" cargo test --release --locked -p ggtts-qwen3-tts --features ggml,plant \
+              --test tiny_model the_trace_changes_no_token_and_no_sample_on_the_tiny_model -- --exact --ignored > wrong.txt 2>&1; then
+            cat wrong.txt; echo "::error::the tiny no-change check passed on a file that is not the pinned fixture"; exit 1
+          fi
+          cat wrong.txt
+          grep -F "is not the pinned file" wrong.txt
+      - name: Planted, an engine that samples differently when an instrument is attached must turn the check red
+        run: |
+          set -u
+          f=crates/ggtts-qwen3-tts/src/talker.rs
+          test "$(grep -c '^        sampling.check()?;$' "$f")" = 1
+          sed -i 's/^        sampling.check()?;$/&\n        let sampling = if on_step.is_some() { Sampling { temperature: sampling.temperature * 1.5, ..sampling } } else { sampling };/' "$f"
+          grep -n 'temperature \* 1.5' "$f"
+          if cargo test --release --locked -p ggtts-qwen3-tts --features ggml,plant --test tiny_model \
+              the_trace_changes_no_token_and_no_sample_on_the_tiny_model -- --exact --ignored --nocapture > planted.txt 2>&1; then
+            cat planted.txt; echo "::error::the tiny no-change check passed an engine whose output moves when it is traced"; exit 1
+          fi
+          cat planted.txt
+          grep -F "tokens DIFFER" planted.txt
+          grep -F "the trace changed the output on" planted.txt
+          git checkout -- "$f"
+          echo "red as required: the planted engine change is seen"
+
   cuda-compile:
     needs: specialized-selection
     # Never on an ordinary pull request. The selector sets `cuda` only for a pull request into main (the promotion),
@@ -271,6 +361,7 @@ jobs:
       ggml: ${{ steps.select.outputs.ggml }}
       python: ${{ steps.select.outputs.python }}
       cuda: ${{ steps.select.outputs.cuda }}
+      tiny: ${{ steps.select.outputs.tiny }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

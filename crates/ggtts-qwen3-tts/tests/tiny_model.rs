@@ -94,6 +94,7 @@ fn the_trace_changes_no_token_and_no_sample_on_the_tiny_model() {
             seed: SEED,
             chunk: 0,
             draw: 0,
+            instruction: None,
         };
         let a = plain.generate(&req).unwrap();
         let pa = plain.decode(&a.codes).unwrap();
@@ -129,6 +130,7 @@ fn run(talker: &mut Talker, text: &str, hook: bool) -> (Vec<i32>, Vec<i32>) {
     let g = talker
         .generate_streamed(
             text,
+            None,
             "hk_cantonese_speaker",
             language_id("zh").unwrap(),
             SEED,

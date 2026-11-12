@@ -1,7 +1,11 @@
-//! Local real-Qwen no-change proof. Ignored on hosted CI: it needs the published GGUFs and optional CUDA.
+//! Real-Qwen no-change proof. Ignored by default: it needs model files and optional CUDA.
 //! Event instruments run after generation. This compares full generated token vectors and decoded samples with
 //! tracing off/on, then runs configured catalogue instruments against the traced render and checks its audio.
 //! Both optional ASR instruments are excluded because this fixture supplies no ASR models or reference.
+//!
+//! `GGTTS_TALKER` is either the published v0.0.1 talker (the promotion gate's run) or the tiny fixture cut from it
+//! (`crates/ggtts-qwen3-tts/fixtures/tiny/`, the hosted CI job `tiny-model`); any other file is refused. On the tiny
+//! fixture the audio is noise, so this proves identity on a real graph, never anything about the audio itself.
 #![cfg(feature = "ggml")]
 
 use std::path::{Path, PathBuf};
@@ -60,7 +64,20 @@ impl<E: Engine> Engine for Capture<E> {
     }
 }
 
-fn pinned(var: &str, want: &str) -> PathBuf {
+/// The tiny fixture's sha256, from the pins its script and its own test read (`CUT_SHA256` in `SOURCE`).
+fn tiny_talker_sha() -> String {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ggtts-qwen3-tts/fixtures/tiny/SOURCE");
+    std::fs::read_to_string(&source)
+        .unwrap()
+        .lines()
+        .find_map(|l| l.strip_prefix("CUT_SHA256="))
+        .expect("fixtures/tiny/SOURCE has no CUT_SHA256")
+        .trim()
+        .to_string()
+}
+
+/// The file named by `var`, refused unless its sha256 is one of `allowed`; returns the path and the sha256.
+fn pinned(var: &str, allowed: &[&str]) -> (PathBuf, String) {
     let path = PathBuf::from(std::env::var_os(var).unwrap_or_else(|| panic!("set {var}")));
     // Python streams the multi-GB model; using the core's in-memory hash here would duplicate it in RAM.
     let code = "import hashlib,sys; h=hashlib.sha256(); f=open(sys.argv[1],'rb');\nwhile True:\n b=f.read(1048576)\n if not b: break\n h.update(b)\nprint(h.hexdigest())";
@@ -74,12 +91,12 @@ fn pinned(var: &str, want: &str) -> PathBuf {
         "hash {var}: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout).trim(),
-        want,
-        "{var} is not the published v0.0.1 file"
+    let got = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert!(
+        allowed.contains(&got.as_str()),
+        "{var} is not a pinned file (the published v0.0.1 file, or the tiny fixture for the talker): sha256 {got}"
     );
-    path
+    (path, got)
 }
 
 fn render(engine: Qwen3Tts, events: &mut dyn Events) -> (Vec<u8>, Vec<f32>, u32) {
@@ -108,10 +125,27 @@ fn hex(bytes: &[u8]) -> String {
 #[test]
 #[ignore = "requires the pinned Qwen GGUFs and prebuilt selftest; GGTTS_DEVICE=cpu or cuda"]
 fn each_event_instrument_preserves_real_qwen_tokens_and_samples() {
-    let talker = pinned("GGTTS_TALKER", TALKER_SHA);
-    let codec = pinned("GGTTS_CODEC", CODEC_SHA);
+    let tiny = tiny_talker_sha();
+    let (talker, talker_sha) = pinned("GGTTS_TALKER", &[TALKER_SHA, &tiny]);
+    let model = if talker_sha == tiny {
+        "tiny-fixture"
+    } else {
+        "published-v0.0.1"
+    };
+    let (codec, _) = pinned("GGTTS_CODEC", &[CODEC_SHA]);
     let backend = std::env::var("GGTTS_DEVICE").unwrap_or_else(|_| "cpu".into());
     let device = Device::parse(&backend).expect("GGTTS_DEVICE must be cpu or cuda");
+    // The voice's own frame cap unless GGTTS_NO_CHANGE_MAX_FRAMES lowers it: the hosted CI job lowers it on the tiny
+    // fixture, which never stops and so always runs to the cap. The promotion gate leaves it unset.
+    let own = Voice::default().max_frames;
+    let max_frames = match std::env::var("GGTTS_NO_CHANGE_MAX_FRAMES") {
+        Ok(v) => {
+            let cap: i32 = v.parse().expect("GGTTS_NO_CHANGE_MAX_FRAMES must be a whole number");
+            assert!(cap > 0, "GGTTS_NO_CHANGE_MAX_FRAMES must be above zero");
+            cap.min(own)
+        }
+        Err(_) => own,
+    };
     let load = || {
         Qwen3Tts::load(
             &talker,
@@ -119,6 +153,7 @@ fn each_event_instrument_preserves_real_qwen_tokens_and_samples() {
             4,
             Voice {
                 device,
+                max_frames,
                 ..Voice::default()
             },
         )
@@ -205,7 +240,7 @@ fn each_event_instrument_preserves_real_qwen_tokens_and_samples() {
         println!("instrument={} status=ok audio_unchanged=true", item.name);
     }
     println!(
-        "backend={backend}; build={}; story=no-change-fixture; seeds={seeds:?}; tokens_sha256={}; \
+        "backend={backend}; model={model}; max_frames={max_frames}; build={}; story=no-change-fixture; seeds={seeds:?}; tokens_sha256={}; \
               samples_sha256={}; limits: asr-sensevoice and asr-qwen not run; event instruments run after generation; no timing or external-artifact \
               identity; no cross-backend parity",
         env!("CARGO_PKG_VERSION"),

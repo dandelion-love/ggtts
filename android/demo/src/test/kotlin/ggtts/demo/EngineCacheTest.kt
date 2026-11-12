@@ -84,6 +84,7 @@ class EngineCacheTest {
         val queued = mutableListOf<Runnable>()
         val c = DemoController(binding, view, audio, { queued += it }, { it.run() }, cache = cache)
         cache.acquire(qwen)
+        cache.done()
         c.speak(qwen, "Hello.", Ggtts.DEFAULT_SEED)
         c.close()
         assertTrue("a read is running: the engine stays", cache.holds(qwen))

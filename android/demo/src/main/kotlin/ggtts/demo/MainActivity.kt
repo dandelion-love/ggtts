@@ -13,11 +13,13 @@ import android.app.Activity
 import android.app.ActivityManager
 import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -54,6 +56,7 @@ class MainActivity : Activity(), DemoView {
         val THREADS = listOf(2, 4, 6, 8)
         /** The binding's default. See android/README.md for what more threads buy on a phone. */
         const val DEFAULT_THREADS = 4
+        private const val REQUEST_NOTIFICATIONS = 2
     }
 
     private val worker = Executors.newSingleThreadExecutor()
@@ -72,6 +75,7 @@ class MainActivity : Activity(), DemoView {
     private lateinit var stop: Button
     private lateinit var systemSpeak: Button
     private var platformTts: TextToSpeech? = null
+    private var askedForNotifications = false
     private lateinit var importButton: Button
     private lateinit var status: TextView
 
@@ -230,7 +234,10 @@ class MainActivity : Activity(), DemoView {
         col.addView(label("CPU threads")); col.addView(threads)
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         speak = Button(this).apply { text = "Speak" }
-        speak.setOnClickListener { speakNow() }
+        speak.setOnClickListener {
+            askForNotifications()
+            speakNow()
+        }
         stop = Button(this).apply { text = "Stop"; isEnabled = false }
         stop.setOnClickListener { controller.stop() }
         buttons.addView(speak, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -297,6 +304,19 @@ class MainActivity : Activity(), DemoView {
         val name = s.selectedItem as String? ?: return null
         if (name == NONE) return null
         return if (name.startsWith("/")) name else File(modelsDir, name).path
+    }
+
+    /**
+     * Android 13 and later hide the read's notification, and its Stop, until the app may post notifications. Ask once,
+     * at the first Speak pressed on the screen (not one driven by adb extras, which must not wait on a dialog). The
+     * read starts either way; refusing hides only the notification.
+     */
+    private fun askForNotifications() {
+        if (Build.VERSION.SDK_INT < 33 || askedForNotifications) return
+        askedForNotifications = true
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
+        }
     }
 
     private fun speakNow() {

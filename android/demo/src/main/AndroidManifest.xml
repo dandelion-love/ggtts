@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Model files live in the app's own storage, and an imported file comes through the system picker, so no storage
-     permission. The foreground-service permissions keep a read going off screen; POST_NOTIFICATIONS is declared so
-     the user can allow the read's notification in the app's settings, and the app never asks for it itself. -->
+     permission. The foreground-service permissions keep a read going off screen. POST_NOTIFICATIONS shows the read's
+     notification (with Stop) on Android 13 and later; the app asks for it at the first Speak pressed on its screen. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />

@@ -27,6 +27,71 @@ object TrimPolicy {
     const val BACKGROUND = 40 // ComponentCallbacks2.TRIM_MEMORY_BACKGROUND
 
     fun shouldRelease(level: Int, busy: Boolean): Boolean = !busy && (level == RUNNING_CRITICAL || level >= BACKGROUND)
+
+    /**
+     * A memory trim at [level]: release [cache]'s engine if the level asks for it and nothing is reading, neither the
+     * screen ([screenBusy]) nor anyone holding the engine (a system-engine read sets [EngineCache.busy] too). Returns
+     * whether it was released.
+     */
+    fun trim(level: Int, screenBusy: Boolean, cache: EngineCache): Boolean =
+        shouldRelease(level, screenBusy || cache.busy) && cache.release()
+}
+
+/**
+ * When the reading service starts, goes foreground and stops, apart from Android, so the order can be tested. Main
+ * thread only (setBusy and onStartCommand both run there).
+ *
+ * Android requires a service started with startForegroundService to call startForeground, and stopping it before
+ * then crashes the app on Android 9 and later ("did not then call Service.startForeground()"). A read that fails fast
+ * ends before the service's onStartCommand has run, so [readEnded] never stops a service that has not yet gone
+ * foreground: [onCommand] always goes foreground first, then stops at once if the read has already ended.
+ */
+class ForegroundGate(private val startService: () -> Unit, private val stopService: () -> Unit) {
+    private var wanted = false
+    private var pending = false
+    private var foreground = false
+
+    fun readStarted() {
+        wanted = true
+        if (!pending && !foreground) {
+            pending = true
+            startService()
+        }
+    }
+
+    fun readEnded() {
+        wanted = false
+        if (foreground) {
+            foreground = false
+            stopService()
+        }
+    }
+
+    /**
+     * The service's onStartCommand. The notification's Stop arrives as [ACTION_STOP] and ends the read through
+     * [stopRead], the same call as the screen's Stop; any other command is the start, which always goes foreground.
+     */
+    fun onCommand(action: String?, stopRead: () -> Unit, goForeground: () -> Unit) {
+        if (action == ACTION_STOP) {
+            stopRead()
+            return
+        }
+        pending = false
+        goForeground()
+        foreground = true
+        // The read already ended (it failed fast): now that the service is foreground, it may stop.
+        if (!wanted) readEnded()
+    }
+
+    /** The service was destroyed (stopped, or by the system). */
+    fun onDestroy() {
+        pending = false
+        foreground = false
+    }
+
+    companion object {
+        const val ACTION_STOP = "ggtts.demo.STOP"
+    }
 }
 
 /** The process's one reader. Main thread only. */
@@ -52,7 +117,7 @@ object Reader {
     private val relay = object : DemoView {
         override fun setBusy(busy: Boolean) {
             screen?.setBusy(busy)
-            appContext?.let { if (busy) ReadingService.start(it) else ReadingService.finish(it) }
+            appContext?.let { val g = ReadingService.gate(it); if (busy) g.readStarted() else g.readEnded() }
         }
 
         override fun showStatus(text: String) {
@@ -103,36 +168,42 @@ object Reader {
         return SharedEngines.get { EngineCache(GgttsBinding(File(app.filesDir, "ggtts-cache").path)) { Log.i(MainActivity.TAG, it) } }
     }
 
-    /** Android asks for memory back: release the loaded engine if nothing is being read. */
+    /**
+     * Android asks for memory back: release the loaded engine if nothing is being read, by this screen or by the
+     * system engine (the shared engine's own busy flag, which a system read sets too).
+     */
     fun trim(context: Context, level: Int) {
-        if (TrimPolicy.shouldRelease(level, busy)) {
-            Log.i(MainActivity.TAG, "memory trim level $level: releasing the loaded engine")
-            shared(context).release()
+        if (TrimPolicy.trim(level, busy, shared(context))) {
+            Log.i(MainActivity.TAG, "memory trim level $level: released the loaded engine")
         }
     }
 }
 
 /**
  * Foreground while a read runs, so it goes on when the screen is left; its notification shows the read's progress
- * and has Stop. The app does not ask for the notification permission (Android 13 and later): without it the service
- * still runs, and the notification shows once the user allows notifications for the app in its settings.
+ * and has Stop. On Android 13 and later the screen asks for the notification permission at the first Speak; if it is
+ * refused, the service still runs and the read goes on, but the notification (and its Stop) is hidden.
  */
 class ReadingService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            Log.i(MainActivity.TAG, "notification: Stop")
-            Reader.controller(this).stop()
-            return START_NOT_STICKY
-        }
-        val n = notification(this, Reader.lastStatus.ifEmpty { "Starting..." })
-        if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
-        } else {
-            startForeground(ID, n)
-        }
-        Log.i(MainActivity.TAG, "reading service: foreground")
+        gate(this).onCommand(
+            intent?.action,
+            stopRead = {
+                Log.i(MainActivity.TAG, "notification: Stop")
+                Reader.controller(this).stop()
+            },
+            goForeground = {
+                val n = notification(this, Reader.lastStatus.ifEmpty { "Starting..." })
+                if (Build.VERSION.SDK_INT >= 29) {
+                    startForeground(ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+                } else {
+                    startForeground(ID, n)
+                }
+                Log.i(MainActivity.TAG, "reading service: foreground")
+            },
+        )
         return START_NOT_STICKY
     }
 
@@ -143,19 +214,31 @@ class ReadingService : Service() {
 
     override fun onDestroy() {
         Log.i(MainActivity.TAG, "reading service: stopped")
+        gate(this).onDestroy()
         super.onDestroy()
     }
 
     companion object {
         private const val ID = 1
         private const val CHANNEL = "reading"
-        const val ACTION_STOP = "ggtts.demo.STOP"
+        private var gate: ForegroundGate? = null
         private var running = false
 
-        fun start(context: Context) {
-            running = true
-            val i = Intent(context, ReadingService::class.java)
-            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i) else context.startService(i)
+        /** The process's one gate, with the application context. Main thread only. */
+        fun gate(context: Context): ForegroundGate {
+            gate?.let { return it }
+            val app = context.applicationContext
+            val i = Intent(app, ReadingService::class.java)
+            return ForegroundGate(
+                startService = {
+                    running = true
+                    if (Build.VERSION.SDK_INT >= 26) app.startForegroundService(i) else app.startService(i)
+                },
+                stopService = {
+                    running = false
+                    app.stopService(i)
+                },
+            ).also { gate = it }
         }
 
         fun update(context: Context, text: String) {
@@ -164,18 +247,13 @@ class ReadingService : Service() {
             runCatching { nm.notify(ID, notification(context, text)) }
         }
 
-        fun finish(context: Context) {
-            running = false
-            context.stopService(Intent(context, ReadingService::class.java))
-        }
-
         private fun notification(context: Context, text: String): Notification {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CHANNEL) == null) {
                 nm.createNotificationChannel(NotificationChannel(CHANNEL, "Reading", NotificationManager.IMPORTANCE_LOW))
             }
             val stop = PendingIntent.getService(
-                context, 0, Intent(context, ReadingService::class.java).setAction(ACTION_STOP),
+                context, 0, Intent(context, ReadingService::class.java).setAction(ForegroundGate.ACTION_STOP),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
             val open = PendingIntent.getActivity(

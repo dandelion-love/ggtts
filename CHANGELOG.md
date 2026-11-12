@@ -32,6 +32,11 @@ that a merge places under a released heading is caught.
   that other apps can pick in the phone's settings: Hong Kong Cantonese with Qwen3-TTS and US English with Kitten-TTS 2,
   from the model files of the demo's last finished Speak. It streams each chunk to the platform as it is made, and
   declares its voices as very high latency (first audio takes tens of seconds), so it is not meant for screen readers.
+- **An Android read outlives its screen.** Leave the demo during a read and it goes on in a foreground media-playback
+  service, whose notification shows progress and has Stop; the app asks for the notification permission at the first
+  Speak on Android 13 and later. The screen and the system TTS engine share one loaded engine, kept between reads: one
+  of them reads at a time, the other is refused rather than load a second model, and Android's memory trims release it
+  only when neither is reading.
 
 ### Changed
 

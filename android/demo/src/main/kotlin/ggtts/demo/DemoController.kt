@@ -87,12 +87,13 @@ class DemoController(
                 Result.success(run(request, text, seed))
             } catch (e: GgttsException) {
                 audio.stop()
-                drop()
                 log("error ${e.code}: ${e.message}")
                 Result.failure(IllegalStateException("ggtts error ${e.code}: ${e.message}"))
+            } catch (e: EngineInUse) {
+                log("refused: ${e.message}")
+                Result.failure(IllegalStateException("Not started: ${e.message}."))
             } catch (e: RuntimeException) {
                 audio.stop()
-                drop()
                 log("error: $e")
                 Result.failure(IllegalStateException("${e.javaClass.simpleName}: ${e.message}"))
             }
@@ -112,13 +113,23 @@ class DemoController(
         view.showStatus("Stopping after the chunk in progress...")
     }
 
-    /** Release the loaded engine, if any. */
+    /** Release the loaded engine, if any, unless a read (this screen's or the system engine's) is using it. */
     fun close() {
-        if (!busy) drop()
+        if (!busy) cache.release()
     }
 
+    /** One read with the shared engine: it is this read's until the read ends, and a failed read closes it. */
     private fun run(request: LoadRequest, text: String, seed: Long): String {
-        val tts = engineFor(request)
+        val tts = cache.acquire(request)
+        var ok = false
+        try {
+            return read(tts, request, text, seed).also { ok = true }
+        } finally {
+            cache.done(failed = !ok)
+        }
+    }
+
+    private fun read(tts: TtsEngine, request: LoadRequest, text: String, seed: Long): String {
         main(Runnable { view.showStatus("Rendering the first chunk...") })
         val t0 = clock()
         var firstMs = -1L
@@ -165,9 +176,4 @@ class DemoController(
             seconds, renderMs / 1000.0, rtf, firstMs / 1000.0,
         )
     }
-
-    private fun engineFor(request: LoadRequest): TtsEngine = cache.acquire(request)
-
-    /** A failed load or render releases the engine, so the next try loads afresh. */
-    private fun drop() = cache.release()
 }

@@ -4,7 +4,7 @@ title: ggml's ARM dot-product and matrix features on a phone
 description: Building ggml for armv8.6-a with dotprod, i8mm and fp16 makes Kitten-TTS 2's released TQ1_0 LM 1.23x faster on a Galaxy Z Fold5 with byte-identical audio; Q4_0 gains less and changes its draw; the decoder does not change.
 tags: [android, kitten-tts-2, performance, arm, ggml]
 status: draft
-generated: { by: claude-code/opus-5.5, at: 2026-11-12T15:05:00-07:00 }
+generated: { by: claude-code/opus-5.5, at: 2026-11-12T16:30:00-07:00 }
 sources:
   - { id: tq1, resource: "/research/kitten-memory-and-tq1.md", title: "Kitten-TTS 2's memory, and the released TQ1_0 model on a phone" }
   - { id: survey, resource: "https://github.com/dandelion-love/ggtts/issues/251#issuecomment-6836164200", title: "A read-only survey of TQ1_0's speed on the phone (issue 251)" }
@@ -24,7 +24,8 @@ only in `GGML_CPU_ARM_ARCH`, which `ggtts-ggml-sys`'s build already passes to gg
 Galaxy Z Fold5 (Android 16), CPU, 4 threads. Kitten-TTS 2 with the base Q4_0 LM and the released Cantonese TQ1_0 LM,
 with the same S3Gen, voice, two-sentence Cantonese story and seed as the [TQ1_0 measurement](/research/kitten-memory-and-tq1.md),
 and `--stream-raw`.[^tq1] Order per model: base, armv86, armv86, base, a minute apart (`armfeat-measure.sh`). Raw
-files: `docs/android/data/armfeat-2026-11-12/`.
+files: `docs/android/data/armfeat-2026-11-12/`. The raw-stream hashes and thermal status come from the run's stdout
+there (`armfeat-measure.stdout`), the instruction counts from `instructions.txt`.
 
 # Results
 
@@ -50,8 +51,9 @@ Means of each pair of runs:
   byte for byte, from either build. Both armv86 runs are faster than both base runs, the first of which ran earlier
   and cooler, so this is not warming.
 - **Q4_0: a smaller gain, and a different draw.** The armv86 build gives a different raw stream (216 frames against
-  224), the same on both of its runs. Its dot-product kernel adds the per-block products in a different floating-point
-  order, which changes a sampled token, so the read takes another valid path. The 1.12x is within this session's drift:
+  224), the same on both of its runs. The likely cause, not measured here, is that its dot-product kernel adds the
+  per-block products in a different floating-point order, which changes a sampled token, so the read takes another
+  valid path. The 1.12x is within this session's drift:
   the second armv86 run was slower than the first base run.
 - **The decoder does not change** (about 2.5 to 3.3 s per second of audio either way), as expected: its weights are F32.
 - **Peak memory does not change** (3.78 GB with Q4_0, 3.59 GB with TQ1_0).

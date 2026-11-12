@@ -141,6 +141,32 @@ impl Manifest {
         Manifest::parse(&text, plan)
     }
 
+    /// A manifest's body, checked for its checksum and format only: for a reader that has no plan, such as an export.
+    pub fn read_body(dir: &Path) -> Result<Value, ManifestError> {
+        let text = fs::read_to_string(dir.join(MANIFEST_FILE)).map_err(|e| ManifestError::Io(e.to_string()))?;
+        let outer: Value = serde_json::from_str(&text).map_err(|e| ManifestError::NotJson(e.to_string()))?;
+        let body = outer
+            .get("manifest")
+            .cloned()
+            .ok_or_else(|| ManifestError::Format("no \"manifest\"".into()))?;
+        let recorded = outer
+            .get("sha256")
+            .and_then(Value::as_str)
+            .ok_or(ManifestError::Checksum)?;
+        if recorded
+            != hex(&sha256(
+                serde_json::to_string(&body).expect("JSON values serialize").as_bytes(),
+            ))
+        {
+            return Err(ManifestError::Checksum);
+        }
+        let format = body.get("format").and_then(Value::as_str).unwrap_or("");
+        if format != MANIFEST_FORMAT {
+            return Err(ManifestError::Format(format!("it is {format:?}")));
+        }
+        Ok(body)
+    }
+
     /// [`load`](Self::load) from the file's contents.
     pub fn parse(text: &str, plan: &ChapterPlan) -> Result<Manifest, ManifestError> {
         let outer: Value = serde_json::from_str(text).map_err(|e| ManifestError::NotJson(e.to_string()))?;

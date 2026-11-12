@@ -60,48 +60,12 @@ lists the included engines and backends.
 
 ### The C library: `lib/` and `include/ggtts.h`
 
-Every release archive also ships ggtts behind its C ABI, for programs that render without running `ggtts-render`:
-
-| Archive | Library, in `lib/` | Header |
-|---|---|---|
-| Linux CPU and Linux CUDA | `libggtts_ffi.so` | `include/ggtts.h` |
-| Windows | `ggtts_ffi.dll`, and `ggtts_ffi.dll.lib` (the MSVC import library you link against) | `include/ggtts.h` |
-
-The library carries the Qwen3-TTS, Kitten-TTS 2 and fake engines and renders on the CPU backend. That is true in
-the CUDA archive too: the C ABI has no device choice yet, so that archive ships the CPU build of the library, which
-loads without the NVIDIA driver or the CUDA runtime. `BUILDINFO.json` lists the files under `"libraries"`. The
-functions, codes and threading rules are in the header's comments and in
-[docs/android/binding-api.md](docs/android/binding-api.md). The header's `GGTTS_ABI_VERSION` and the library's
-`ggtts_abi_version()` say which functions exist; check one against the other before calling a function newer than
-version 1. The library exports the C ABI only, not the JNI entry points the Kotlin binding calls; build those from
-source with `--features jni` ([scripts/kotlin_binding_test.sh](scripts/kotlin_binding_test.sh) shows how).
-
-On Linux, link against the archive's `lib/` and tell the loader where it is. The library has no soname, so either
-keep the rpath to the archive as below, or copy `libggtts_ffi.so` beside your program and link with
-`-Wl,-rpath,'$ORIGIN'`:
-
-```sh
-GGTTS=/path/to/the/unpacked/archive
-cc -I"$GGTTS/include" app.c -L"$GGTTS/lib" -lggtts_ffi -Wl,-rpath,"$GGTTS/lib" -o app
-```
-
-It needs what the Linux binaries need: glibc 2.35 or newer, libstdc++, libgcc_s and libgomp (install `libgomp1`
-on a minimal system; see [Render and listen](#render-and-listen-qwen-and-kitten)).
-
-On Windows, link the import library and put `ggtts_ffi.dll` beside your `.exe` (or `lib\` on `PATH`) when it runs:
-
-```bat
-cl /I %GGTTS%\include app.c %GGTTS%\lib\ggtts_ffi.dll.lib
-rem or, with LLVM: clang -I %GGTTS%\include app.c %GGTTS%\lib\ggtts_ffi.dll.lib -o app.exe
-```
-
-The DLL, like the archive's `.exe` files, needs the Microsoft Visual C++ Redistributable for x64 (`VCRUNTIME140`,
-`VCRUNTIME140_1`, `MSVCP140`, and `VCOMP140` for OpenMP), which the archive does not include; it depends on no other
-DLL that Windows lacks. MinGW is not tested.
-
-The release smoke builds a small C program ([scripts/ffi_smoke.c](scripts/ffi_smoke.c)) against each archive's
-header and library, checks that `ggtts_abi_version()` equals `GGTTS_ABI_VERSION`, and renders a line on the fake
-engine through it.
+Every release archive after v0.1.0-rc.10 also ships ggtts behind its C ABI, for programs that render without running
+`ggtts-render`: the library in `lib/` (`libggtts_ffi.so` on Linux; `ggtts_ffi.dll` and its import library
+`ggtts_ffi.dll.lib` on Windows) and the header in `include/ggtts.h`. `BUILDINFO.json` lists the library under
+`"libraries"`. How to link it, call it and free what it returns: [ggtts from C](docs/bindings/c.md). The release smoke
+builds a small C program ([scripts/ffi_smoke.c](scripts/ffi_smoke.c)) against each archive's header and library and
+renders a line on the fake engine through it.
 
 ### Streaming: which stream
 
@@ -334,46 +298,12 @@ stream receives that line only after the engine has generated and decoded it. `-
 the story hold at the cost of potentially uneven loudness. The stream formats are WAV and s16le; FLAC is the
 completed-file format. There is no native MP3, AAC or Opus encoder selection in `ggtts-render`.
 
-## Python
+## Bindings: C, Kotlin/Android and Python
 
-`crates/ggtts-py` is the Python binding: `import ggtts`, with the engines and settings of the C-ABI's
-`ggtts_load_with` (Qwen3-TTS with a speaker and a style instruction, Kitten-TTS 2). It is not on PyPI. Each release
-ships its wheels beside the archives, attested like them: one abi3 wheel for Linux x86_64
-(`manylinux_2_35`, the archives' Ubuntu 22.04 floor) and one for Windows x86_64, each for every Python from 3.9.
-Install one with `pip install ggtts-<version>-cp39-abi3-<platform>.whl` (numpy is optional), and verify it first
-with `gh attestation verify <file> -R dandelion-love/ggtts`. Or build the wheel from a checkout (Rust, Python 3.9 or
-later, and for the engines CMake and a C++ compiler):
-
-```sh
-pip install maturin
-cd crates/ggtts-py
-maturin build --release --features python,pyo3/extension-module,ggml   # Windows: bindgen in place of ggml (needs libclang)
-pip install target/wheels/ggtts-*.whl
-```
-
-```python
-import ggtts
-
-with ggtts.load() as tts:                      # Qwen3-TTS and its default model, downloaded once into the cache
-    audio = tts.render("今日天氣好好，我哋去海邊行下。")
-    audio.write_flac("out.flac")               # 16-bit mono FLAC; the suffix is forced to .flac
-    samples, rate = audio.samples, audio.sample_rate   # float32: a numpy array when numpy is installed
-
-    for chunk in tts.stream("第一段。\n第二段。"):    # the chunks in order, as each is ready; break stops it
-        ...
-
-tts = ggtts.load(model="talker.gguf", codec="codec.gguf", speaker="hk_voice_777",
-                 instruction="Speak slowly and softly.", offline=True)
-```
-
-`ggtts.load(engine="qwen3-tts", model=None, codec=None, voice=None, speaker=None, instruction=None, device="cpu",
-threads=None, offline=False, progress=None)`. With no model given, Qwen3-TTS loads its default model files (above)
-from the cache, downloading them first unless `offline=True`; `progress` receives the download messages, which
-otherwise go to stderr. A setting the engine does not take is refused, never ignored. Every error is a
-`ggtts.GgttsError` with `code` (`ggtts.ERR_ARG`, `ERR_ENGINE`, `ERR_HANDLE`, `ERR_BUSY`, `ERR_PANIC`: the C-ABI's
-codes) and `message`; a panic inside ggtts is a `GgttsError` with `ERR_PANIC`, never an unwind into Python. The GIL is
-released while an engine loads and renders, so other threads run. A render at a seed (`seed=`, default 20260905) is
-the C-ABI's render at that seed. Without the `ggml` feature only the `fake` test engine loads.
+ggtts can be called from your own code through three bindings: the C library above, a Kotlin class for Android (and a
+desktop JVM) over JNI, and a Python package, `import ggtts`, whose wheels ship with each release after v0.1.0-rc.10.
+**Start at [docs/bindings](docs/bindings/README.md)**: it compares the three and has a page for each, each beginning
+with a first render that works.
 
 ## How parity is tested
 

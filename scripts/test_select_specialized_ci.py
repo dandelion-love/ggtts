@@ -266,6 +266,20 @@ class SelectionTest(unittest.TestCase):
             job = "python" if path.startswith("crates/ggtts-py/") else "ggml"
             self.assertIn(job, select([path]), path + f" gates on the ggml feature but does not select the {job} job")
 
+    def test_the_binding_docs_select_the_jobs_that_run_their_examples(self):
+        select = lambda paths: decide("pull_request", "rc", "feature", True, paths)
+        self.assertEqual(select(["docs/bindings/examples/c/first_render.c"]), {"package"})
+        self.assertEqual(select(["docs/bindings/examples/kotlin/Stream.kt"]), {"binding"})
+        self.assertEqual(select(["docs/bindings/examples/python/stream.py"]), {"python"})
+        for path in ("docs/bindings/README.md", "docs/bindings/c.md", "docs/bindings/examples/README.md"):
+            self.assertEqual(select([path]), {"package", "binding", "python"}, path)
+        self.assertEqual(select(["scripts/c_examples.sh"]), {"package"})
+        self.assertEqual(select(["scripts/kotlin_binding_test.sh"]), {"binding"})
+        self.assertEqual(select(["crates/ggtts-py/tests/test_doc_examples.py"]), {"python"})
+        # Other docs select nothing; the check job holds every binding page's blocks to their files on every run.
+        self.assertEqual(select(["docs/android/binding-api.md", "docs/bindingsX.md"]), set())
+        self.assertEqual(select(["scripts/check_doc_examples.py"]), set())
+
     def test_the_python_binding_and_what_it_links_select_the_python_job(self):
         select = lambda paths: decide("pull_request", "rc", "feature", True, paths)
         for path in ("crates/ggtts-py/src/core.rs", "crates/ggtts-py/python/ggtts/__init__.py",

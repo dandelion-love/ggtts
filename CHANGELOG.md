@@ -67,6 +67,15 @@ that a merge places under a released heading is caught.
   TQ1_0 loaded on both devices (v0.1.0-rc.8).
 - **Which archive to download**, and that the same seed on the Windows and Linux CPU archives is not byte-identical
   audio, are in the README.
+- **How to use each binding: [docs/bindings](docs/bindings/README.md)**
+  ([#192](https://github.com/dandelion-love/ggtts/issues/192)). One page each for the C library, Kotlin on Android
+  and Python, and a table comparing them (for one, the C and Kotlin bindings download the default model only when
+  asked, while Python downloads it unless `offline=True`). Each page starts with a first render, then covers getting
+  the binding, loading options, streaming and stopping, every error code and what to do about it, threads, freeing,
+  Kitten-TTS 2 and platform notes. Every code example is a file CI compiles and runs on the fake engine. The README's
+  C library and Python sections, `docs/android/binding-api.md` and `crates/ggtts-py/README.md` now point there.
+  There is still no published Android package: the Kotlin page says how to build the class and its library into an
+  app.
 
 ## v0.1.0-rc.10 (2026-11-11)
 

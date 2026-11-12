@@ -81,7 +81,9 @@ rendered, and a refused one writes no handle:
   `cache_dir` moves the cache; NULL is `ggtts-render`'s (`GGTTS_CACHE_DIR`, else the platform's per-user cache
   directory). An Android process has no such directory, so an app passes its own, for example under
   `Context.getFilesDir()`.
-* **Downloading is opt-in, everywhere (version 3).** The binding never downloads unless `allow_download` is 1. With 0
+* **Downloading is opt-in in the C and Kotlin binding (version 3).** They never download unless `allow_download` is 1
+  (Kotlin `allowDownload = true`). The Python binding differs: it downloads a missing default file by default, as
+  `ggtts-render` does, and `offline=True` turns that off. With 0
   (the default, and `GGTTS_SETTINGS_INIT`'s), a default file missing from the cache is `GGTTS_ERR_ENGINE`, and the
   message names the file, where it would be, and its URL, as `ggtts-render --offline` does. With 1, the missing files
   are downloaded over HTTPS inside the call, which blocks until they are verified and reports no progress. The

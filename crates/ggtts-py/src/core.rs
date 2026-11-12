@@ -405,7 +405,8 @@ fn load_inner(
     if !ENGINES.contains(&name) {
         return Err(engine_err(format!("no engine named {name:?}")));
     }
-    // As the C-ABI: refused before any file is read or downloaded, with the same code and message.
+    // As the C-ABI: refused before any file is read or downloaded, with the same code (ERR_ENGINE). The message starts
+    // the same way; the rest names Python's `device` argument where the C-ABI names `settings.device`.
     if req.device == Device::Cuda && !cfg!(feature = "cuda") {
         return Err(engine_err(
             "this build has no CUDA backend (built without the cuda feature): device cuda is not available; use cpu",

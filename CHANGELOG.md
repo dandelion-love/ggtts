@@ -20,7 +20,8 @@ that a merge places under a released heading is caught.
   sha256, with its default speaker `hk_voice_343` when no speaker is given
   ([#164](https://github.com/dandelion-love/ggtts/issues/164)). It downloads a missing file only when
   `allow_download` is 1; otherwise the error (`GGTTS_ERR_ENGINE`) names the file and its URL. `device = "cuda"`
-  renders Qwen3-TTS (and Kitten-TTS 2) on the GPU in a library built with `ggtts-ffi`'s new `cuda` feature; a library
+  renders Qwen3-TTS on the GPU in a library built with `ggtts-ffi`'s new `cuda` feature (Kitten-TTS 2 takes the same
+  setting, but its CUDA path through the C ABI is not yet tested); a library
   without it refuses with `GGTTS_ERR_ENGINE` before reading any file, and an unknown device is `GGTTS_ERR_ARG`
   ([#167](https://github.com/dandelion-love/ggtts/issues/167)). The archives' C library is the CPU build, so it
   refuses `cuda`. In Kotlin, `Ggtts.load` takes `cacheDir` and `allowDownload`; it has no device, because Android has

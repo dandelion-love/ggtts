@@ -104,7 +104,8 @@ impl SteerFile {
     }
 
     /// The steering to apply: the layers named in `layers` (every layer in the file when `None`), at `scale`.
-    /// Refuses a layer the file does not hold, a layer named twice, an empty list and a scale that is not finite.
+    /// Refuses a layer the file does not hold, a layer named twice, an empty list, a scale that is not finite in f32,
+    /// and a scale that makes any scaled value overflow f32 ([`Steering::check_scaled`]).
     pub fn select(&self, layers: Option<&[u32]>, scale: f64) -> Result<Steering, SteerError> {
         if !scale.is_finite() {
             return Err(refuse(format!("the steering scale {scale} is not a finite number")));
@@ -131,11 +132,13 @@ impl SteerFile {
                 seen
             }
         };
-        Ok(Steering {
+        let s = Steering {
             sha256: self.sha256.clone(),
             scale,
             layers: wanted.iter().map(|l| (*l, self.layers[l].clone())).collect(),
-        })
+        };
+        s.check_scaled()?;
+        Ok(s)
     }
 }
 
@@ -164,6 +167,18 @@ pub fn read_f32_tensors(
     let entries = header
         .as_object()
         .ok_or_else(|| refuse("not a safetensors file: the header is not a JSON object"))?;
+    // A JSON object keeps the last of two equal keys, so a tensor named twice would lose one of its two entries
+    // without a word. Count the header's own keys instead.
+    let keys = top_level_keys(head);
+    if keys.len() != entries.len() {
+        let mut seen = std::collections::BTreeSet::new();
+        let twice = keys
+            .iter()
+            .find(|k| !seen.insert(k.as_str()))
+            .cloned()
+            .unwrap_or_default();
+        return Err(refuse(format!("the header names tensor {twice:?} more than once")));
+    }
     let mut out = BTreeMap::new();
     for (name, entry) in entries {
         if name == "__metadata__" {
@@ -210,6 +225,39 @@ pub fn read_f32_tensors(
     Ok(out)
 }
 
+/// The keys of a JSON object's top level, in order, repeats kept. `json` must already have parsed as an object.
+fn top_level_keys(json: &[u8]) -> Vec<String> {
+    let mut keys = Vec::new();
+    let (mut depth, mut i) = (0usize, 0usize);
+    // At depth 1, a string is a key when it follows `{` or `,`.
+    let mut expect_key = false;
+    while i < json.len() {
+        match json[i] {
+            b'"' => {
+                let start = i;
+                i += 1;
+                while json[i] != b'"' {
+                    i += if json[i] == b'\\' { 2 } else { 1 };
+                }
+                if depth == 1 && expect_key {
+                    // Valid JSON, so the string decodes.
+                    keys.push(serde_json::from_slice(&json[start..=i]).unwrap_or_default());
+                    expect_key = false;
+                }
+            }
+            b'{' | b'[' => {
+                depth += 1;
+                expect_key = depth == 1 && json[i] == b'{';
+            }
+            b'}' | b']' => depth -= 1,
+            b',' if depth == 1 => expect_key = true,
+            _ => {}
+        }
+        i += 1;
+    }
+    keys
+}
+
 /// Parses a layer list such as `23,24,25`. Refuses an empty list, an entry that is not a whole number, and a layer
 /// named twice.
 pub fn parse_layers(list: &str) -> Result<Vec<u32>, SteerError> {
@@ -253,9 +301,31 @@ impl Steering {
             .collect()
     }
 
-    /// Refuses steering a model with `n_layers` layers of `hidden_size` cannot take: a layer out of range, or a
-    /// vector of the wrong length.
+    /// Refuses a scale that is not finite in f32 (`1e39` is a finite f64 and infinite in f32), and a scale that makes
+    /// any `scale * x` overflow f32: the engine computes in f32, so either would put an infinity in the hidden state.
+    pub fn check_scaled(&self) -> Result<(), SteerError> {
+        let s = self.scale as f32;
+        if !s.is_finite() {
+            return Err(refuse(format!(
+                "the steering scale {} is not a finite number in f32, the precision the vectors are added in",
+                self.scale
+            )));
+        }
+        for (l, v) in &self.layers {
+            if let Some(i) = v.iter().position(|x| !(s * x).is_finite()) {
+                return Err(refuse(format!(
+                    "the steering scale {} times element {i} of layer {l} ({}) is not a finite number in f32",
+                    self.scale, v[i]
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuses steering a model with `n_layers` layers of `hidden_size` cannot take: a layer out of range, a vector
+    /// of the wrong length, or a scale that overflows f32 ([`check_scaled`](Self::check_scaled)).
     pub fn check(&self, n_layers: usize, hidden_size: usize) -> Result<(), SteerError> {
+        self.check_scaled()?;
         for (l, v) in &self.layers {
             if *l as usize >= n_layers {
                 return Err(refuse(format!(
@@ -369,6 +439,41 @@ mod tests {
         out.extend_from_slice(head.as_bytes());
         out.extend_from_slice(&bytes[8 + n..]);
         out
+    }
+
+    /// A header naming one tensor twice is refused, rather than one of the two vectors being dropped. A nested key
+    /// that repeats a top-level name is not a repeat.
+    #[test]
+    fn a_tensor_named_twice_is_refused() {
+        let twice = with_header(|h| {
+            let entry = h.trim_end().strip_prefix('{').unwrap().strip_suffix('}').unwrap();
+            format!("{{{entry},{}}}", entry.replace("[0,8]", "[0,4]").replace("[2]", "[1]"))
+        });
+        refused(
+            SteerFile::parse(&twice),
+            "names tensor \"talker.layer.1\" more than once",
+        );
+        let nested = with_header(|h| {
+            let body = h.trim_end().strip_suffix('}').unwrap();
+            format!("{body},\"__metadata__\":{{\"talker.layer.1\":\"a note\"}}}}")
+        });
+        assert!(SteerFile::parse(&nested).is_ok());
+    }
+
+    #[test]
+    fn a_scale_that_overflows_f32_is_refused() {
+        let f = file(&[("talker.layer.1", &[1.0, 1e10])]).unwrap();
+        // 1e39 is a finite f64 and an infinite f32.
+        let e = f.select(None, 1e39).unwrap_err();
+        assert!(e.0.contains("not a finite number in f32"), "{e}");
+        // A finite f32 scale whose product with an element overflows.
+        let e = f.select(None, 1e30).unwrap_err();
+        assert!(e.0.contains("times element 1 of layer 1"), "{e}");
+        assert!(f.select(None, 1e20).is_ok());
+        // The model check refuses it too, for steering not made by `select`.
+        let mut s = f.select(None, 1.0).unwrap();
+        s.scale = 1e39;
+        assert!(s.check(4, 2).unwrap_err().0.contains("not a finite number in f32"));
     }
 
     #[test]

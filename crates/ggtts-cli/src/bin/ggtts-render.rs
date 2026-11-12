@@ -2083,6 +2083,7 @@ mod tests {
         let good = steer_file(&dir, "good.safetensors", &[("talker.layer.3", &[1.0, 2.0])]);
         let nan = steer_file(&dir, "nan.safetensors", &[("talker.layer.3", &[1.0, f32::NAN])]);
         let named = steer_file(&dir, "named.safetensors", &[("model.layers.3", &[1.0, 2.0])]);
+        let big = steer_file(&dir, "big.safetensors", &[("talker.layer.3", &[1.0, 1e10])]);
         let out = dir.join("out.flac");
         let args = |engine: &str, steer: Option<&Path>, scale: Option<f64>, layers: Option<Vec<u32>>| Args {
             engine: Some(engine.into()),
@@ -2123,6 +2124,15 @@ mod tests {
             (
                 args("qwen3-tts", Some(&good), None, Some(vec![4])),
                 "layer 4 is not in the steering file",
+            ),
+            // 1e39 parses as a finite f64 and is infinite in f32, the precision the vectors are added in.
+            (
+                args("qwen3-tts", Some(&good), Some(1e39), None),
+                "not a finite number in f32",
+            ),
+            (
+                args("qwen3-tts", Some(&big), Some(1e30), None),
+                "times element 1 of layer 3",
             ),
         ];
         for (a, want) in cases {

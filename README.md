@@ -63,9 +63,11 @@ lists the included engines and backends.
 Every release archive after v0.1.0-rc.10 also ships ggtts behind its C ABI, for programs that render without running
 `ggtts-render`: the library in `lib/` (`libggtts_ffi.so` on Linux; `ggtts_ffi.dll` and its import library
 `ggtts_ffi.dll.lib` on Windows) and the header in `include/ggtts.h`. `BUILDINFO.json` lists the library under
-`"libraries"`. How to link it, call it and free what it returns: [ggtts from C](docs/bindings/c.md). The release smoke
-builds a small C program ([scripts/ffi_smoke.c](scripts/ffi_smoke.c)) against each archive's header and library and
-renders a line on the fake engine through it.
+`"libraries"`. The library is the CPU build in every archive, the CUDA archive's included, so it refuses the C
+ABI's `device = "cuda"` setting; a GPU build is made from source. How to link it, call it and free what it returns:
+[ggtts from C](docs/bindings/c.md). The release smoke builds a small C program
+([scripts/ffi_smoke.c](scripts/ffi_smoke.c)) against each archive's header and library and renders a line on the
+fake engine through it.
 
 ### Streaming: which stream
 

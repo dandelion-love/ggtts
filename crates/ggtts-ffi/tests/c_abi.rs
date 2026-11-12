@@ -166,15 +166,27 @@ fn a_freed_or_null_handle_is_an_error_never_a_crash() {
     assert_eq!(ggtts_free(h2), GGTTS_OK);
 }
 
+/// A version-3 struct with no setting: `GGTTS_SETTINGS_INIT`.
+fn unset() -> GgttsSettings {
+    GgttsSettings {
+        size: std::mem::size_of::<GgttsSettings>(),
+        speaker: ptr::null(),
+        instruction: ptr::null(),
+        device: ptr::null(),
+        cache_dir: ptr::null(),
+        allow_download: 0,
+    }
+}
+
 /// `ggtts_load_with` with `settings` NULL (`None`) or a struct of the given speaker and instruction.
 fn load_with(engine: &str, settings: Option<(Option<&str>, Option<&str>)>) -> (i32, u64) {
     let e = c(engine);
     let strings = settings.map(|(s, i)| (s.map(c), i.map(c)));
     let ptr_of = |s: &Option<CString>| s.as_ref().map_or(ptr::null(), |s| s.as_ptr());
     let st = strings.as_ref().map(|(s, i)| GgttsSettings {
-        size: std::mem::size_of::<GgttsSettings>(),
         speaker: ptr_of(s),
         instruction: ptr_of(i),
+        ..unset()
     });
     let mut h = 0u64;
     let code = unsafe {
@@ -219,17 +231,170 @@ fn the_header_reads_the_same_with_lf_and_crlf_endings() {
 }
 
 #[test]
-fn the_abi_version_is_2_in_the_library_and_the_header() {
-    assert_eq!(ggtts_abi_version(), 2);
-    assert_eq!(GGTTS_ABI_VERSION, 2);
+fn the_abi_version_is_3_in_the_library_and_the_header() {
+    assert_eq!(ggtts_abi_version(), 3);
+    assert_eq!(GGTTS_ABI_VERSION, 3);
     let header = include_str!("../include/ggtts.h");
-    assert_eq!(header_version(header), Some(2), "the header's version");
-    // The header's struct is the library's: three fields, size first.
+    assert_eq!(header_version(header), Some(3), "the header's version");
+    // The header's struct is the library's: version 2's three fields, size first, then version 3's.
+    let joined = header_lines(header).join("\n");
     assert!(
-        header_lines(header).join("\n").contains("typedef struct ggtts_settings {\n    size_t size;\n    const char *speaker;\n    const char *instruction;\n} ggtts_settings;"),
+        joined.contains(
+            "typedef struct ggtts_settings {\n    size_t size;\n    const char *speaker;\n    const char *instruction;\n    \
+             const char *device;\n    const char *cache_dir;\n    int32_t allow_download;\n} ggtts_settings;"
+        ),
         "the header's ggtts_settings"
     );
-    assert_eq!(std::mem::size_of::<GgttsSettings>(), 3 * std::mem::size_of::<usize>());
+    assert!(
+        joined.contains("#define GGTTS_SETTINGS_INIT {sizeof(ggtts_settings), NULL, NULL, NULL, NULL, 0}"),
+        "the header's GGTTS_SETTINGS_INIT"
+    );
+    let word = std::mem::size_of::<usize>();
+    assert_eq!(GGTTS_SETTINGS_V2_SIZE, 3 * word, "a version-2 struct");
+    assert_eq!(
+        std::mem::size_of::<GgttsSettings>(),
+        (5 * word + 4).next_multiple_of(word)
+    );
+}
+
+/// A caller built against the version-2 header passes a struct of three fields. It loads as it did, and nothing past
+/// its end is read (the struct here is exactly that long).
+#[test]
+fn a_version_2_struct_still_loads() {
+    #[repr(C)]
+    struct V2 {
+        size: usize,
+        speaker: *const std::ffi::c_char,
+        instruction: *const std::ffi::c_char,
+    }
+    let e = c("fake");
+    let (code, h) = load("fake", None, None);
+    assert_eq!(code, GGTTS_OK);
+    let today = render(h, TEXT).1;
+    assert_eq!(ggtts_free(h), GGTTS_OK);
+    let v2 = Box::new(V2 {
+        size: std::mem::size_of::<V2>(),
+        speaker: ptr::null(),
+        instruction: ptr::null(),
+    });
+    assert_eq!(v2.size, GGTTS_SETTINGS_V2_SIZE);
+    let mut h = 0u64;
+    let code = unsafe {
+        ggtts_load_with(
+            e.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            &*v2 as *const V2 as *const GgttsSettings,
+            &mut h,
+        )
+    };
+    assert_eq!(code, GGTTS_OK, "{}", last_error());
+    assert_eq!(render(h, TEXT).1, today);
+    assert_eq!(ggtts_free(h), GGTTS_OK);
+    // A speaker on another engine is still refused through a version-2 struct.
+    let st = V2 {
+        size: GGTTS_SETTINGS_V2_SIZE,
+        speaker: c"hk_voice_777".as_ptr(),
+        instruction: ptr::null(),
+    };
+    let code = unsafe {
+        ggtts_load_with(
+            e.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            &st as *const V2 as *const GgttsSettings,
+            &mut h,
+        )
+    };
+    assert_eq!(code, GGTTS_ERR_ARG);
+}
+
+/// `ggtts_load_with` with a version-3 struct of `engine` and `device`, and no paths.
+fn load_on(engine: &str, device: &str) -> (i32, u64) {
+    let (e, d) = (c(engine), c(device));
+    let st = GgttsSettings {
+        device: d.as_ptr(),
+        ..unset()
+    };
+    let mut h = 0u64;
+    let code = unsafe { ggtts_load_with(e.as_ptr(), ptr::null(), ptr::null(), ptr::null(), 0, &st, &mut h) };
+    (code, h)
+}
+
+/// The device setting: `cpu` (or none) is what `ggtts_load` gives; an unknown device is an argument error; the fake
+/// engine takes the CPU only; and a build without the CUDA backend refuses `cuda` before reading any file. Each
+/// refusal writes no handle.
+#[test]
+fn the_device_is_cpu_unless_asked_and_a_missing_backend_is_refused() {
+    let (code, h) = load_on("fake", "cpu");
+    assert_eq!(code, GGTTS_OK, "{}", last_error());
+    assert_eq!(
+        backend_of(h),
+        Ok("none".to_string()),
+        "the fake engine has no compute backend"
+    );
+    assert_eq!(ggtts_free(h), GGTTS_OK);
+
+    let (code, h) = load_on("fake", "gpu");
+    assert_eq!((code, h), (GGTTS_ERR_ARG, 0));
+    assert_eq!(last_error(), "settings.device must be cpu or cuda, not \"gpu\"");
+
+    let (code, h) = load_on("fake", "cuda");
+    assert_eq!((code, h), (GGTTS_ERR_ARG, 0));
+    assert_eq!(last_error(), "the fake engine runs on the CPU only");
+
+    if !cfg!(feature = "cuda") {
+        for engine in ["qwen3-tts", "kitten-tts-2"] {
+            let (code, h) = load_on(engine, "cuda");
+            assert_eq!((code, h), (GGTTS_ERR_ENGINE, 0), "{engine}: {}", last_error());
+            assert!(
+                last_error().starts_with("this build has no CUDA backend (built without the cuda feature)"),
+                "{}",
+                last_error()
+            );
+        }
+    }
+}
+
+/// With no model, a version-3 load of `qwen3-tts` looks for the default files, and with downloading off a missing one
+/// is an error naming the file and its URL (a build with engines); a build without engines refuses before looking.
+#[test]
+fn no_model_resolves_the_default_files_and_never_downloads_unless_allowed() {
+    let root = std::env::temp_dir().join(format!("ggtts-ffi-c-abi-offline-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (e, dir) = (c("qwen3-tts"), c(root.to_str().unwrap()));
+    let st = GgttsSettings {
+        cache_dir: dir.as_ptr(),
+        ..unset()
+    };
+    let mut h = 0u64;
+    let code = unsafe { ggtts_load_with(e.as_ptr(), ptr::null(), ptr::null(), ptr::null(), 0, &st, &mut h) };
+    assert_eq!((code, h), (GGTTS_ERR_ENGINE, 0));
+    let msg = last_error();
+    if cfg!(feature = "ggml") {
+        assert!(
+            msg.contains("qwen-talker-hk-cantonese-cc0-v0.0.5-q8_0.gguf")
+                && msg.contains("https://huggingface.co/jmtl/hk-cantonese-cc0-qwen3-tts-GGUF/resolve/")
+                && msg.contains("allow_download"),
+            "{msg}"
+        );
+    } else {
+        assert_eq!(
+            msg,
+            "this build has no qwen3-tts engine (built without the ggml feature)"
+        );
+    }
+    assert!(!root.join("models").exists(), "nothing was downloaded");
+    let _ = std::fs::remove_dir_all(&root);
+
+    // ggtts_load and NULL settings keep version 1's answer for no model: an argument error, nothing looked up.
+    let (code, h) = load("qwen3-tts", None, None);
+    assert_eq!((code, h), (GGTTS_ERR_ARG, 0));
+    assert_eq!(last_error(), "the qwen3-tts engine needs a model");
 }
 
 /// AC3: a caller that sets neither speaker nor instruction gets today's output, sample for sample, whether it calls
@@ -274,26 +439,42 @@ fn a_refused_setting_is_a_code_and_a_message_and_no_handle() {
 
     // A struct of another size (a caller built against another header) is refused, not misread.
     let e = c("fake");
-    let wrong = GgttsSettings {
-        size: 8,
-        speaker: ptr::null(),
-        instruction: ptr::null(),
-    };
     let mut h = 0u64;
-    let code = unsafe { ggtts_load_with(e.as_ptr(), ptr::null(), ptr::null(), ptr::null(), 0, &wrong, &mut h) };
-    assert_eq!((code, h), (GGTTS_ERR_ARG, 0));
-    assert!(last_error().starts_with("settings.size is 8;"), "{}", last_error());
+    for size in [8, GGTTS_SETTINGS_V2_SIZE + 8, std::mem::size_of::<GgttsSettings>() + 8] {
+        let wrong = GgttsSettings { size, ..unset() };
+        let code = unsafe { ggtts_load_with(e.as_ptr(), ptr::null(), ptr::null(), ptr::null(), 0, &wrong, &mut h) };
+        assert_eq!((code, h), (GGTTS_ERR_ARG, 0));
+        assert!(
+            last_error().starts_with(&format!("settings.size is {size};")),
+            "{}",
+            last_error()
+        );
+    }
 
-    // A speaker that is not UTF-8.
+    // A speaker, a device or a cache directory that is not UTF-8.
     let bad = [0xffu8, 0xfe, 0];
-    let st = GgttsSettings {
-        size: std::mem::size_of::<GgttsSettings>(),
-        speaker: bad.as_ptr() as *const std::ffi::c_char,
-        instruction: ptr::null(),
-    };
-    let code = unsafe { ggtts_load_with(e.as_ptr(), ptr::null(), ptr::null(), ptr::null(), 0, &st, &mut h) };
-    assert_eq!((code, h), (GGTTS_ERR_ARG, 0));
-    assert_eq!(last_error(), "settings.speaker is not UTF-8");
+    let bad = bad.as_ptr() as *const std::ffi::c_char;
+    for (st, name) in [
+        (
+            GgttsSettings {
+                speaker: bad,
+                ..unset()
+            },
+            "speaker",
+        ),
+        (GgttsSettings { device: bad, ..unset() }, "device"),
+        (
+            GgttsSettings {
+                cache_dir: bad,
+                ..unset()
+            },
+            "cache_dir",
+        ),
+    ] {
+        let code = unsafe { ggtts_load_with(e.as_ptr(), ptr::null(), ptr::null(), ptr::null(), 0, &st, &mut h) };
+        assert_eq!((code, h), (GGTTS_ERR_ARG, 0));
+        assert_eq!(last_error(), format!("settings.{name} is not UTF-8"));
+    }
 
     // The engine still loads and renders after every refusal.
     let (code, h) = load_with("fake", None);

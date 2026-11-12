@@ -204,6 +204,7 @@ dependencies = [
  "ggtts-core",
  "ggtts-fake",
  "ggtts-kitten",
+ "ggtts-models",
  "ggtts-qwen3-tts",
 ]
 

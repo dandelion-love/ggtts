@@ -61,6 +61,53 @@ private fun qwenSettings() {
     check(first.isNotEmpty() && !first.contentEquals(spoken(speakers[1], null)), "qwen3-tts: speaker ${speakers[1]} differs from ${speakers[0]}")
     check(!first.contentEquals(spoken(speakers[0], "Speak slowly and softly.")), "qwen3-tts: an instruction changes the render")
     check(first.contentEquals(spoken(speakers[0], "")), "qwen3-tts: an empty instruction is no instruction")
+
+    // The default model, when -Dggtts.cachedir names a cache already holding the pinned v0.0.5 files: no paths and no
+    // speaker render as those files with hk_voice_343, and nothing is downloaded.
+    val cacheDir = System.getProperty("ggtts.cachedir")
+    if (cacheDir == null) {
+        println("skip qwen3-tts default model (set -Dggtts.cachedir to a cache holding the default files)")
+        return
+    }
+    val byDefault = samplesOf(Ggtts.load("qwen3-tts", cacheDir = cacheDir), line)
+    check(
+        byDefault.isNotEmpty() && byDefault.contentEquals(spoken("hk_voice_343", null)),
+        "qwen3-tts: the default model renders with its default speaker hk_voice_343",
+    )
+}
+
+/** The default model files without a network: whatever the build, nothing is downloaded unless asked. */
+private fun defaultModel() {
+    val empty = java.nio.file.Files.createTempDirectory("ggtts-binding-cache").toFile()
+    try {
+        throwsCode(Ggtts.ERR_ENGINE, "qwen3-tts with no model and an empty cache, downloading off") {
+            try {
+                Ggtts.load("qwen3-tts", cacheDir = empty.path).close()
+            } catch (e: GgttsException) {
+                val said = e.message ?: ""
+                // A build with engines names the missing file and its URL; one without says it has no engine.
+                check(
+                    said.contains("no qwen3-tts engine") ||
+                        (said.contains("qwen-talker-hk-cantonese-cc0-v0.0.5-q8_0.gguf") && said.contains("https://huggingface.co/")),
+                    "the refusal names the missing file and its URL, or the missing engine: $said",
+                )
+                throw e
+            }
+        }
+        check(empty.listFiles().isNullOrEmpty(), "nothing was written to the cache")
+        // The fake engine takes the new parameters and renders as before.
+        val plain = samplesOf(Ggtts.load("fake"), TEXT)
+        check(
+            plain.contentEquals(samplesOf(Ggtts.load("fake", cacheDir = empty.path, allowDownload = false), TEXT)),
+            "the default-model parameters leave another engine's samples unchanged",
+        )
+    } finally {
+        empty.deleteRecursively()
+    }
+    // The entry point the seven-parameter load used still loads only the paths given.
+    throwsCode(Ggtts.ERR_ARG, "the version-2 entry point with no model", "needs a model") {
+        Native.loadWith("qwen3-tts", null, null, null, 4, null, null)
+    }
 }
 
 private const val TEXT = "今日天氣好好，我哋去海邊行下。\n行完之後，去食飯。"
@@ -132,6 +179,7 @@ fun main() {
         Ggtts.load("fake", instruction = "Speak slowly and softly.")
     }
     qwenSettings()
+    defaultModel()
 
     // Closed: every call throws, none crashes; closing twice is harmless.
     g.close()

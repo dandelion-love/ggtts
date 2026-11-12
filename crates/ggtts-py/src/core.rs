@@ -405,6 +405,13 @@ fn load_inner(
     if !ENGINES.contains(&name) {
         return Err(engine_err(format!("no engine named {name:?}")));
     }
+    // As the C-ABI: refused before any file is read or downloaded, with the same code (ERR_ENGINE). The message starts
+    // the same way; the rest names Python's `device` argument where the C-ABI names `settings.device`.
+    if req.device == Device::Cuda && !cfg!(feature = "cuda") {
+        return Err(engine_err(
+            "this build has no CUDA backend (built without the cuda feature): device cuda is not available; use cpu",
+        ));
+    }
     // The model files: the given paths, or the engine's pinned defaults from the cache, as ggtts-render resolves them.
     let given = vec![req.model.clone(), req.codec.clone()];
     let given_file = |role: &str, path: &PathBuf| ModelFile {
@@ -853,6 +860,39 @@ mod tests {
             assert!(msg.contains("built without the ggml feature"), "{msg}");
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `cuda` on a build without the CUDA backend is refused as the C-ABI refuses it (`ERR_ENGINE`, before any file
+    /// is looked up or fetched), for the default model as for given paths.
+    #[cfg(not(feature = "cuda"))]
+    #[test]
+    fn cuda_without_the_backend_is_refused_before_any_file() {
+        let root = std::env::temp_dir().join(format!("ggtts-py-cuda-{}", std::process::id()));
+        for model in [None, Some(PathBuf::from("/no/such/model.gguf"))] {
+            let r = LoadRequest {
+                device: Device::Cuda,
+                model: model.clone(),
+                ..req("qwen3-tts")
+            };
+            let got = guard(|| {
+                load_inner(
+                    &r,
+                    &mut |_| {},
+                    &|| Ok(ggtts_models::Cache::new(root.clone())),
+                    &NoNetwork,
+                )
+            });
+            let (code, msg) = match got {
+                Ok(_) => panic!("loaded on cuda without the backend"),
+                Err(e) => e,
+            };
+            assert_eq!(code, ERR_ENGINE, "{msg}");
+            assert!(
+                msg.starts_with("this build has no CUDA backend (built without the cuda feature)"),
+                "{model:?}: {msg}"
+            );
+        }
+        assert!(!root.exists(), "the cache was touched");
     }
 
     struct Panics(ggtts_fake::FakeEngine);

@@ -8,7 +8,14 @@
 //! ```
 //!
 //! The published v0.0.5 GGUF (`jmtl/hk-cantonese-cc0-qwen3-tts-GGUF`, speakers `hk_voice_343` and `hk_voice_777`)
-//! is such a talker. `GGTTS_BASE_TALKER`, a Qwen3-TTS Base talker GGUF, is needed by the Base test only.
+//! is such a talker. `GGTTS_BASE_TALKER`, a Qwen3-TTS Base talker GGUF, is needed by the Base test only. The
+//! default-model test needs `GGTTS_TALKER` and `GGTTS_CODEC` to be the pinned v0.0.5 files themselves (it puts them
+//! in a cache of its own, where the library verifies their sha256). The CUDA test needs a build with the `cuda`
+//! feature and a GPU:
+//!
+//! ```text
+//! cargo test -p ggtts-ffi --features cuda --test qwen_settings -- --ignored --nocapture cuda
+//! ```
 #![cfg(feature = "ggml")]
 
 use std::ffi::{c_char, CString};
@@ -38,13 +45,34 @@ fn load(talker: &str, settings: Option<(Option<&str>, Option<&str>)>) -> (i32, u
         None => unsafe { ggtts_load(e.as_ptr(), m.as_ptr(), k.as_ptr(), ptr::null(), 4, &mut h) },
         Some((s, i)) => {
             let st = GgttsSettings {
-                size: std::mem::size_of::<GgttsSettings>(),
                 speaker: p(s),
                 instruction: p(i),
+                ..unset()
             };
             unsafe { ggtts_load_with(e.as_ptr(), m.as_ptr(), k.as_ptr(), ptr::null(), 4, &st, &mut h) }
         }
     };
+    (code, h)
+}
+
+/// A version-3 struct with no setting: `GGTTS_SETTINGS_INIT`.
+fn unset() -> GgttsSettings {
+    GgttsSettings {
+        size: std::mem::size_of::<GgttsSettings>(),
+        speaker: ptr::null(),
+        instruction: ptr::null(),
+        device: ptr::null(),
+        cache_dir: ptr::null(),
+        allow_download: 0,
+    }
+}
+
+/// `ggtts_load_with` of Qwen3-TTS with a version-3 struct: `model` and `codec` NULL for `None`.
+fn load_v3(model: Option<&str>, codec: Option<&str>, st: GgttsSettings) -> (i32, u64) {
+    let (e, m, k) = (c("qwen3-tts"), model.map(c), codec.map(c));
+    let p = |s: &Option<CString>| s.as_ref().map_or(ptr::null::<c_char>(), |s| s.as_ptr());
+    let mut h = 0u64;
+    let code = unsafe { ggtts_load_with(e.as_ptr(), p(&m), p(&k), ptr::null(), 4, &st, &mut h) };
     (code, h)
 }
 
@@ -165,4 +193,112 @@ fn an_instruction_on_a_base_checkpoint_is_refused() {
         msg.contains("base model") && msg.contains("takes no style instruction"),
         "{msg}"
     );
+}
+
+/// #164: with no paths and no speaker, a version-3 load finds the pinned default files in the cache, verifies them,
+/// and renders with the default model's default speaker: the same samples as the same files given as paths with
+/// `hk_voice_343`. A given model keeps `ggtts_load`'s default speaker, and a given codec is used as it is. Nothing is
+/// downloaded (downloading stays off).
+#[test]
+#[ignore = "needs GGTTS_TALKER and GGTTS_CODEC to be the pinned v0.0.5 talker and codec"]
+fn the_default_model_and_its_default_speaker_come_from_the_cache() {
+    let (talker, codec) = (env("GGTTS_TALKER"), env("GGTTS_CODEC"));
+    let root = std::env::temp_dir().join(format!("ggtts-ffi-default-model-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let cache = ggtts_models::Cache::new(root.clone());
+    for (pinned, file) in ggtts_models::QWEN3_TTS.files.iter().zip([&talker, &codec]) {
+        let path = cache.path_for(pinned);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(std::fs::canonicalize(file).unwrap(), &path).unwrap();
+    }
+    let dir = c(root.to_str().unwrap());
+    let st = GgttsSettings {
+        cache_dir: dir.as_ptr(),
+        ..unset()
+    };
+
+    let (code, h) = load_v3(None, None, st);
+    assert_eq!(code, GGTTS_OK, "{}", last_error());
+    let by_default = render_once(h, "the default model and speaker");
+    let explicit = spoken(
+        &talker,
+        Some((Some("hk_voice_343"), None)),
+        "the same files with hk_voice_343",
+    );
+    assert!(!by_default.is_empty());
+    assert_eq!(by_default, explicit, "the default speaker is not hk_voice_343");
+
+    // A given codec is used as it is, with the default talker and speaker.
+    let (code, h) = load_v3(None, Some(&codec), st);
+    assert_eq!(code, GGTTS_OK, "{}", last_error());
+    assert_eq!(render_once(h, "a given codec"), explicit);
+
+    // A given talker keeps ggtts_load's default speaker, which the v0.0.5 talker does not have.
+    let (code, h) = load_v3(Some(&talker), None, st);
+    assert_eq!((code, h), (GGTTS_ERR_ENGINE, 0));
+    assert!(
+        last_error().contains("no speaker hk_cantonese_speaker"),
+        "{}",
+        last_error()
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The memory the GPU has in use, in MiB, from `nvidia-smi`; `None` without it.
+#[cfg(feature = "cuda")]
+fn gpu_memory_used() -> Option<u64> {
+    let out = std::process::Command::new("nvidia-smi")
+        .args(["--query-gpu=memory.used", "--format=csv,noheader,nounits"])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).lines().next()?.trim().parse().ok()
+}
+
+/// #167: a CUDA build renders Qwen3-TTS on the GPU through `ggtts_load_with` with `device` `cuda`. The engine reports
+/// the ggml CUDA backend (which loads only when ggml initialises a GPU device), the GPU's memory grows by the model
+/// while the engine is held, and the samples differ from the CPU's at the same seed (the CUDA path packs Q, K and V,
+/// so it is a different computation). `cpu`, and no device, render on the CPU.
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore = "needs a CUDA build (--features cuda), a GPU, GGTTS_TALKER and GGTTS_CODEC"]
+fn cuda_renders_qwen_on_the_gpu() {
+    let (talker, codec) = (env("GGTTS_TALKER"), env("GGTTS_CODEC"));
+    let speaker = speakers(&talker).remove(0);
+    let s = c(&speaker);
+    let on = |device: Option<&str>| {
+        let d = device.map(c);
+        let st = GgttsSettings {
+            speaker: s.as_ptr(),
+            device: d.as_ref().map_or(ptr::null(), |d| d.as_ptr()),
+            ..unset()
+        };
+        load_v3(Some(&talker), Some(&codec), st)
+    };
+
+    let before = gpu_memory_used();
+    let (code, h) = on(Some("cuda"));
+    assert_eq!(code, GGTTS_OK, "{}", last_error());
+    assert_eq!(backend_of(h).as_deref(), Ok("ggml-cuda"));
+    let held = gpu_memory_used();
+    println!("GPU memory in use: {before:?} MiB before the load, {held:?} MiB with the engine held");
+    if let (Some(before), Some(held)) = (before, held) {
+        assert!(
+            held >= before + 1024,
+            "the GPU's memory grew by {} MiB",
+            held as i64 - before as i64
+        );
+    }
+    let gpu = render_once(h, "cuda");
+
+    let (code, h) = on(Some("cpu"));
+    assert_eq!(code, GGTTS_OK, "{}", last_error());
+    assert_eq!(backend_of(h).as_deref(), Ok("ggml-cpu"));
+    let cpu = render_once(h, "cpu");
+    let (code, h) = on(None);
+    assert_eq!(code, GGTTS_OK, "{}", last_error());
+    assert_eq!(backend_of(h).as_deref(), Ok("ggml-cpu"), "no device is the CPU");
+    assert_eq!(render_once(h, "no device"), cpu);
+
+    assert!(!gpu.is_empty() && !cpu.is_empty());
+    assert_ne!(gpu, cpu, "the GPU rendered the CPU's samples");
 }

@@ -2,6 +2,9 @@
 
 ## 2026-11-12
 
+- Off-screen reads: Android confines the app to three little cores even under a foreground service, and four
+  threads on three cores stall (#236 filed for the engine fix). Pattern 3 done (#222).
+
 - Pattern 1 is done: ggtts is a system TTS engine (#221). Integration is rated 3 (from 2), and the landscape row is
   updated.
 

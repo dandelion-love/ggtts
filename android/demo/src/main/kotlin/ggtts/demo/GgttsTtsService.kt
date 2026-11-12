@@ -27,13 +27,15 @@ class GgttsTtsService : TextToSpeechService() {
             GgttsBinding(File(filesDir, "ggtts-cache").path),
             voices,
             log = { Log.i(MainActivity.TAG, it) },
+            // The engine the demo's screen loaded, if it is the same request: one model resident, not two.
+            cache = Reader.shared(this),
         )
         super.onCreate()
     }
 
-    override fun onDestroy() {
-        session.close()
-        super.onDestroy()
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        Reader.trim(this, level)
     }
 
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int =

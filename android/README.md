@@ -130,6 +130,19 @@ When the line is done, the whole read is saved to `/sdcard/Android/data/ggtts.de
 heard can differ slightly in loudness. The app logs to logcat under the tag `ggtts-demo`: what it loaded, the time
 to first audio, how long the render took, and its real-time factor.
 
+## Leaving the screen during a read
+
+A read belongs to the app, not its screen. Leave the screen and the read goes on, in a foreground service. Its
+notification shows the progress and has Stop, and reopening the app shows where the read is. The loaded model stays
+loaded between reads, shared with the system engine below, and is released when Android asks for memory back while
+nothing is being read.
+
+- **Off screen it is much slower.** On the phone this was measured on, Android moved the app to its `moderate`
+  cpuset once the screen was left: the four render threads ran only on the three Cortex-A510 little cores. An app
+  cannot change that. So the screen stays on while a read runs and the app is open.
+- **The notification needs permission.** On Android 13 and later it shows only after you allow notifications for
+  the app in its settings. The app does not ask; the read runs either way.
+
 ## ggtts as Android's text-to-speech engine
 
 The demo app also provides a system TTS engine, a `TextToSpeechService` labelled "ggtts (on-device, slow)". Any app

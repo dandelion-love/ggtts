@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- No permissions: model files live in the app's own storage, and an imported file comes through the system picker. -->
+<!-- Model files live in the app's own storage, and an imported file comes through the system picker, so no storage
+     permission. The foreground-service permissions keep a read going off screen; POST_NOTIFICATIONS is declared so
+     the user can allow the read's notification in the app's settings, and the app never asks for it itself. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application
         android:allowBackup="false"
         android:label="ggtts demo">
@@ -15,6 +20,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Keeps a read going when the screen is left, with a notification that has Stop. -->
+        <service
+            android:name=".ReadingService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
         <!-- ggtts as a system TTS engine (Android's TextToSpeech API). Only the system may bind it. -->
         <service
             android:name=".GgttsTtsService"

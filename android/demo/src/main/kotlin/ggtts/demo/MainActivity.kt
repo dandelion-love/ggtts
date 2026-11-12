@@ -27,6 +27,7 @@ import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import android.view.View
 import android.view.Window
+import android.view.WindowManager
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
@@ -79,23 +80,18 @@ class MainActivity : Activity(), DemoView {
         // The screen draws its own title; Android 15 and later lay the window out edge to edge, under the bars.
         requestWindowFeature(Window.FEATURE_NO_TITLE)
         modelsDir = File(getExternalFilesDir(null) ?: filesDir, "models").apply { mkdirs() }
-        controller = DemoController(
-            binding = GgttsBinding(File(filesDir, "ggtts-cache").path),
-            view = this,
-            audio = DeviceAudio(File(getExternalFilesDir(null) ?: filesDir, "out")),
-            background = { worker.execute(it) },
-            main = { handler.post(it) },
-            log = { Log.i(TAG, it) },
-            memory = {
-                val info = ActivityManager.MemoryInfo()
-                (getSystemService(ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(info)
-                info.availMem to info.lowMemory
-            },
-            onSpoke = { VoiceStore(GgttsTtsService.prefs(this)).save(it) },
-        )
+        // The read belongs to the process (Reader), not to this screen: it goes on when the screen is left, and a
+        // screen opened later shows its progress.
+        controller = Reader.controller(this)
         setContentView(layout())
         refreshFiles()
+        Reader.screen = this
         applyIntent(intent)
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        Reader.trim(this, level)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -152,7 +148,8 @@ class MainActivity : Activity(), DemoView {
 
     override fun onDestroy() {
         platformTts?.shutdown()
-        worker.execute { controller.close() }
+        // The read and the loaded engine stay with the process (see Reader); only this screen goes.
+        if (Reader.screen === this) Reader.screen = null
         worker.shutdown()
         super.onDestroy()
     }
@@ -162,6 +159,11 @@ class MainActivity : Activity(), DemoView {
     override fun setBusy(busy: Boolean) {
         speak.isEnabled = !busy
         stop.isEnabled = busy
+        // While a read runs on this screen, keep the screen on. Off screen, Android moves the app to the phone's slow
+        // cores (measured: the render threads ran on the three Cortex-A510s only), and the read takes several times
+        // longer; the reading service keeps it going there, but slowly.
+        if (busy) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         importButton.isEnabled = !busy
     }
 

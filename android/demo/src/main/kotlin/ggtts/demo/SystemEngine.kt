@@ -65,10 +65,9 @@ class SynthesisSession(
     private val binding: TtsBinding,
     private val voices: VoiceStore,
     private val log: (String) -> Unit = {},
+    /** Where engines are loaded and held; the app passes the one it shares with the demo's screen. */
+    private val cache: EngineCache = EngineCache(binding, log),
 ) {
-    private var loaded: LoadRequest? = null
-    private var engine: TtsEngine? = null
-
     @Volatile
     private var stopped = false
 
@@ -134,22 +133,9 @@ class SynthesisSession(
         out.done()
     }
 
-    fun close() = drop()
+    private fun engineFor(request: LoadRequest): TtsEngine = cache.acquire(request)
 
-    private fun engineFor(request: LoadRequest): TtsEngine {
-        engine?.let { if (loaded == request) return it }
-        drop()
-        val e = binding.load(request)
-        engine = e
-        loaded = request
-        return e
-    }
-
-    private fun drop() {
-        engine?.close()
-        engine = null
-        loaded = null
-    }
+    private fun drop() = cache.release()
 
     companion object {
         /** Float samples as 16-bit little-endian PCM, the format the session starts its stream in. */

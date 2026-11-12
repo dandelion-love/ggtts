@@ -48,10 +48,9 @@ class DemoController(
     private val memory: () -> Pair<Long, Boolean> = { Long.MAX_VALUE to false },
     /** Told the request of every read that finished, so the system engine can speak with the same files. */
     private val onSpoke: (LoadRequest) -> Unit = {},
+    /** Where engines are loaded and held; the app passes the one it shares with the system engine. */
+    private val cache: EngineCache = EngineCache(binding, log),
 ) {
-    @Volatile private var loaded: LoadRequest? = null
-    @Volatile private var engine: TtsEngine? = null
-
     /** A load the user was warned about; the same request again goes ahead. Main thread only. */
     private var warnedFor: LoadRequest? = null
 
@@ -69,7 +68,7 @@ class DemoController(
         }
         // Before a load (not when this engine is already loaded), warn once if memory is short; the same request
         // again goes ahead.
-        if (!(engine != null && loaded == request) && warnedFor != request) {
+        if (!cache.holds(request) && warnedFor != request) {
             val (available, low) = memory()
             EngineCosts.memoryWarning(request.engine, available, low)?.let {
                 warnedFor = request
@@ -114,7 +113,9 @@ class DemoController(
     }
 
     /** Release the loaded engine, if any. */
-    fun close() = drop()
+    fun close() {
+        if (!busy) drop()
+    }
 
     private fun run(request: LoadRequest, text: String, seed: Long): String {
         val tts = engineFor(request)
@@ -165,20 +166,8 @@ class DemoController(
         )
     }
 
-    private fun engineFor(request: LoadRequest): TtsEngine {
-        engine?.let { if (loaded == request) return it }
-        drop()
-        val t0 = clock()
-        val e = binding.load(request)
-        log("loaded ${request.engine} in ${(clock() - t0) / 1_000_000} ms: model=${request.model} codec=${request.codec} voice=${request.voice} threads=${request.threads}")
-        engine = e
-        loaded = request
-        return e
-    }
+    private fun engineFor(request: LoadRequest): TtsEngine = cache.acquire(request)
 
-    private fun drop() {
-        engine?.close()
-        engine = null
-        loaded = null
-    }
+    /** A failed load or render releases the engine, so the next try loads afresh. */
+    private fun drop() = cache.release()
 }

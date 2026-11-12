@@ -18,6 +18,7 @@ mod error;
 pub mod manifest;
 mod package;
 pub mod plan;
+pub mod render;
 mod toc;
 pub mod xhtml;
 

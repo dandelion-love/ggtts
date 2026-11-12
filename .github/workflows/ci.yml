@@ -201,12 +201,13 @@ jobs:
 
   cuda-compile:
     needs: specialized-selection
-    # Never on an ordinary pull request. The selector sets `cuda` only for a pull request into main (the promotion)
-    # and for a push to rc that touches something the CUDA build depends on (cuda_push_path in the selector).
+    # Never on an ordinary pull request. The selector sets `cuda` only for a pull request into main (the promotion),
+    # a pull request into rc that changes a CUDA archive script (CUDA_SCRIPTS in the selector), and a push to rc that
+    # touches something the CUDA build depends on (cuda_push_path in the selector).
     # Everything from runs-on to the build command is release.yml's cuda-build, line for line: the selection job
     # refuses any difference (select_specialized_ci.py --check-cuda-drift).
     if: needs.specialized-selection.outputs.cuda == 'true'
-    name: cuda-compile (the release CUDA archive, sm_86 and sm_89, built and smoked without a GPU)
+    name: cuda-compile (the release CUDA archive, sm_75 to sm_90 with PTX, built and smoked without a GPU)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     container:
@@ -237,6 +238,14 @@ jobs:
         env:
           TAG: ci
         run: bash scripts/package_cuda_release.sh
+      - name: Smoke the archive as release.yml's smoke-cuda does (its recorded sha256, the commit in --version, on the stub driver)
+        run: |
+          set -eu
+          mkdir -p sums
+          for a in dist/*.tar.gz; do
+            bash scripts/release_smoke.sh sum "$a" | tee "sums/$(basename "$a").sha256"
+            bash scripts/release_smoke.sh archive "$a" sums ci "$GITHUB_SHA" --cuda-stub
+          done
 
   specialized-selection:
     name: Select release and binding checks (a skip is not a pass)
@@ -355,6 +364,50 @@ jobs:
           set -eu
           (cd dist && ../scripts/package_and_smoke.sh archive ggtts-ci ${{ matrix.archive }})
           scripts/package_and_smoke.sh smoke dist/ggtts-ci.${{ matrix.archive }} v0.1.0-rc.999
+      - name: The release smoke on the archive (release.yml's smoke job, without the real render); a planted sha256, tag, commit or FLAC is red
+        env:
+          A: dist/ggtts-ci.${{ matrix.archive }}
+        run: |
+          set -u
+          mkdir -p sums
+          scripts/release_smoke.sh sum "$A" | tee "sums/$(basename "$A").sha256"
+          scripts/release_smoke.sh archive "$A" sums v0.1.0-rc.999 "$GITHUB_SHA" || exit 1
+          # Planted: a sha256 the build did not record.
+          mkdir -p sums-bad
+          awk '{ c = substr($1, 1, 1) == "0" ? "1" : "0"; print c substr($1, 2) "  " $2 }' "sums/$(basename "$A").sha256" \
+            > "sums-bad/$(basename "$A").sha256"
+          if scripts/release_smoke.sh archive "$A" sums-bad v0.1.0-rc.999 "$GITHUB_SHA" 2> sum.err; then
+            cat sum.err; echo "::error::the release smoke passed an archive whose sha256 its build did not record"; exit 1
+          fi
+          cat sum.err; grep -F "its build recorded" sum.err
+          # Planted: another commit, and another tag, than the binary was built from.
+          if scripts/release_smoke.sh version dist/ggtts-ci v0.1.0-rc.999 0000000000000000000000000000000000000000 2> commit.err; then
+            cat commit.err; echo "::error::the release smoke passed a --version that does not name the expected commit"; exit 1
+          fi
+          cat commit.err; grep -F "does not name the ggtts commit 0000000000000000000000000000000000000000" commit.err
+          if scripts/release_smoke.sh version dist/ggtts-ci v0.1.0-rc.998 "$GITHUB_SHA" 2> tag.err; then
+            cat tag.err; echo "::error::the release smoke passed a --version that names another tag"; exit 1
+          fi
+          cat tag.err; grep -F "expected 'ggtts-render v0.1.0-rc.998'" tag.err
+          # The FLAC reader the render check uses: a real render reads as its length, a truncated one is red.
+          dist/ggtts-ci/ggtts-render${{ matrix.exe }} --engine fake --text "Smoke" --out fake.flac
+          scripts/release_smoke.sh flac-ms fake.flac
+          head -c 20 fake.flac > truncated.flac
+          if scripts/release_smoke.sh flac-ms truncated.flac 2> flac.err; then
+            echo "::error::a truncated FLAC was read as a length"; exit 1
+          fi
+          cat flac.err; grep -F "not a FLAC with a STREAMINFO block" flac.err
+      - name: Planted, a stale libggtts_ffi.so on LD_LIBRARY_PATH must not fail the C library smoke (ldd runs under the program's loader environment)
+        if: runner.os == 'Linux'
+        run: |
+          set -u
+          mkdir -p "$RUNNER_TEMP/stale"
+          test -f /lib/x86_64-linux-gnu/libz.so.1
+          cp /lib/x86_64-linux-gnu/libz.so.1 "$RUNNER_TEMP/stale/libggtts_ffi.so"
+          if ! LD_LIBRARY_PATH="$RUNNER_TEMP/stale" scripts/package_and_smoke.sh smoke dist/ggtts-ci 2> stale.err; then
+            cat stale.err; echo "::error::an unrelated libggtts_ffi.so on LD_LIBRARY_PATH failed the smoke"; exit 1
+          fi
+          grep -F "a C program built against include/ggtts.h and lib/ loaded and rendered on the fake engine" stale.err
       - name: Planted, wrong release metadata or either binary must fail the version check
         run: |
           set -eu
@@ -668,6 +721,37 @@ jobs:
             cat planted-kitten.err
             grep -F "no $b$EXE in dist/planted-kitten" planted-kitten.err
           done
+      - name: The default model's cache key, from its pinned sha256s in crates/ggtts-models
+        id: model
+        run: echo "key=$(scripts/release_smoke.sh model-key)" >> "$GITHUB_OUTPUT"
+      # The default model (2.3 GB), as ggtts-render downloads and verifies it; the cache only spares the download.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ggtts-model-cache
+          key: ${{ steps.model.outputs.key }}
+          enableCrossOsArchive: true
+      - name: Render one real Qwen3-TTS line from the packed directory, as release.yml's smoke does (and in a bare ubuntu:22.04 on Linux)
+        env:
+          GGTTS_CACHE_DIR: ${{ github.workspace }}/ggtts-model-cache
+          EXE: ${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: |
+          set -euo pipefail
+          tag=$("dist/release-ci/ggtts-render$EXE" --version | tr -d '\r' | sed -n '1s/^ggtts-render //p')
+          scripts/release_smoke.sh version dist/release-ci "$tag" "$GITHUB_SHA"
+          scripts/release_smoke.sh render dist/release-ci
+          if [ "$RUNNER_OS" = Linux ]; then
+            SMOKE_TAG=$tag SMOKE_COMMIT=$GITHUB_SHA scripts/release_smoke.sh container dist/release-ci \
+              ubuntu:22.04@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11
+          fi
+      - name: Verify the latest published release as release.yml's verify-published does (sha256 and attestations, with contents read)
+        if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(gh release list -R "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName')
+          echo "latest release: $tag"
+          scripts/release_smoke.sh published "$tag" "$GITHUB_REPOSITORY"
       - name: The Linux binaries and the C library need no newer glibc, libstdc++, libgcc_s or libgomp than Ubuntu 22.04 ships
         if: runner.os == 'Linux'
         run: |

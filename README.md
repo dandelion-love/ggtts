@@ -428,8 +428,12 @@ in an Ubuntu 22.04 container, because a binary needs the glibc it was linked aga
 (`readelf --version-info`) and fails the release, and CI's release build, when any is above the floor. Older
 systems (Ubuntu 20.04, glibc 2.31) are not supported.
 
-Linux releases also include a separate `x86_64-linux-cuda` archive. It includes CUDA code for NVIDIA compute
-capabilities 8.6 and 8.9; other GPU architectures are not covered by the tested release. It requires an NVIDIA
+Linux releases also include a separate `x86_64-linux-cuda` archive. It carries machine code for NVIDIA compute
+capabilities 7.5 (T4, RTX 20 series), 8.0 (A100, A30), 8.6 (RTX 30 series, A10, A40), 8.9 (RTX 40 series, L4, L40)
+and 9.0 (H100, H200), and PTX for 9.0, which the driver compiles on first use for a newer GPU (slower to start, and
+not tested). Older GPUs (compute capability below 7.5) are not supported. `BUILDINFO.json` lists them as
+`cuda_architectures` and `cuda_ptx`, and the release build reads them back from the binary (`cuobjdump`) and fails if
+they differ. Only some of these GPUs are exercised by a real render before a release. It requires an NVIDIA
 driver and the CUDA 12.6 runtime and cuBLAS libraries installed on the host and discoverable by the dynamic loader;
 these libraries are not bundled. Never add CUDA's `stubs` directory to the runtime library path. NVIDIA documents
 the [driver requirements](https://docs.nvidia.com/cuda/archive/12.6.3/cuda-toolkit-release-notes/index.html) and
@@ -437,6 +441,17 @@ the [driver requirements](https://docs.nvidia.com/cuda/archive/12.6.3/cuda-toolk
 CPU-only. The CUDA release does not include NCCL for multi-GPU communication. The hosted release smoke test exercises
 the packaged fake engine without a GPU; actual GPU inference
 requires a separate test on a GPU-equipped host.
+
+**What a release checks before it publishes** (`.github/workflows/release.yml`, `scripts/release_smoke.sh`). Each
+archive is smoked as its build uploaded it, before anything is attested or published: its sha256 is the one its build
+recorded, `ggtts-render --version` names the tag and the tag's commit, the instruments, `ggtts-measure`, the Kitten
+tools and a C program against `lib/` and `include/ggtts.h` run from it, and on the CPU archives one Qwen3-TTS line
+renders with `--speaker hk_voice_343` and the default model (downloaded and verified against its pinned sha256)
+while `--speaker no_such_speaker` is refused. The Linux CPU archive also does this inside a bare `ubuntu:22.04`
+container with only `libgomp1` added; the Windows archive on Windows. The CUDA archive is smoked on a runner without
+a GPU, on the CUDA toolkit's stub driver, so its render on a GPU is not part of the release. After publishing, the
+release downloads its own assets and checks each sha256 and `gh attestation verify`. A Kitten-TTS 2 render is not
+part of the release smoke: no ggtts-ready Kitten files are published to render with.
 
 An experimental [Windows CUDA source build and local packaging guide](https://github.com/dandelion-love/ggtts/blob/rc/docs/windows-cuda-build.md)
 is available; it is not yet a released or GPU-validated archive.

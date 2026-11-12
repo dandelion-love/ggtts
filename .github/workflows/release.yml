@@ -1,5 +1,10 @@
 name: Release
 
+# Four stages: build (one job per kind of archive), smoke (one job per kind, on the artifact the build uploaded,
+# before anything is published), attest and publish, and verify-published (the published assets against the sha256
+# each build recorded, and their attestations). A new kind of archive adds a build job or matrix entry that uploads
+# dist-<target> and sums-<target>, and a smoke job or matrix entry for it; publish needs both.
+
 on:
   push:
     tags: ["v*"]
@@ -107,19 +112,23 @@ jobs:
           ../scripts/package_and_smoke.sh archive "$name" "$ARCHIVE"
           rm -rf "$name"
           ls -l
-      - name: Smoke the archive (a shipped Python instrument runs from it, and a C program builds and renders against its library and header)
-        env:
-          TAG: ${{ github.ref_name }}
+      - name: Record the archive's sha256, which the smoke and the published check hold it to
         run: |
           set -euo pipefail
+          mkdir -p sums
           for a in dist/*.tar.gz dist/*.zip; do
             [ -e "$a" ] || continue
-            scripts/package_and_smoke.sh smoke "$a" "$TAG"
+            scripts/release_smoke.sh sum "$a" | tee "sums/$(basename "$a").sha256"
           done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.target }}
           path: dist/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sums-${{ matrix.target }}
+          path: sums/*
           if-no-files-found: error
 
   cuda-build:
@@ -156,15 +165,133 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: bash scripts/package_cuda_release.sh
+      - name: Record the archive's sha256, which the smoke and the published check hold it to
+        run: |
+          set -eu
+          mkdir -p sums
+          for a in dist/*.tar.gz; do bash scripts/release_smoke.sh sum "$a" | tee "sums/$(basename "$a").sha256"; done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-x86_64-linux-cuda
           path: dist/*.tar.gz
           if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sums-x86_64-linux-cuda
+          path: sums/*
+          if-no-files-found: error
+
+  smoke:
+    name: smoke (${{ matrix.target }}, before publishing)
+    # The archive as its build uploaded it, smoked the way a user meets it (scripts/release_smoke.sh archive): the
+    # sha256 its build recorded, the package smoke (instruments, ggtts-measure, the C program against lib/ and
+    # include/ggtts.h, the Kitten tools, --version against the tag and BUILDINFO), the tag's commit in --version, one
+    # real Qwen3-TTS line on the CPU with --speaker hk_voice_343 and the default pinned model, and an unknown speaker
+    # refused. ci.yml's package-smoke and release-build run the same script on every pull request that selects them.
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04 is the oldest system the Linux CPU archive supports. --container also runs --version and the
+          # render inside a bare ubuntu:22.04 with nothing added but libgomp1 (the README's instruction for a minimal
+          # system), so a runtime library the runner image happens to carry cannot hide a missing one.
+          - os: ubuntu-22.04
+            target: x86_64-linux
+            smoke: --render --container ubuntu:22.04@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11
+          - os: windows-latest
+            target: x86_64-windows
+            smoke: --render
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      GGTTS_CACHE_DIR: ${{ github.workspace }}/ggtts-model-cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sums-${{ matrix.target }}
+          path: sums
+      - name: The default model's cache key, from its pinned sha256s in crates/ggtts-models
+        id: model
+        run: echo "key=$(scripts/release_smoke.sh model-key)" >> "$GITHUB_OUTPUT"
+      # The default model (2.3 GB), as ggtts-render downloads and verifies it; the cache only spares the download.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ggtts-model-cache
+          key: ${{ steps.model.outputs.key }}
+          enableCrossOsArchive: true
+      - name: Smoke the archive before it is published
+        env:
+          TAG: ${{ github.ref_name }}
+          SMOKE: ${{ matrix.smoke }}
+        run: |
+          set -euo pipefail
+          n=0
+          for a in dist/*.tar.gz dist/*.zip; do
+            [ -e "$a" ] || continue
+            # SMOKE is a list of options, split on purpose.
+            scripts/release_smoke.sh archive "$a" sums "$TAG" "$GITHUB_SHA" $SMOKE
+            n=$((n + 1))
+          done
+          test "$n" -eq 1
+
+  smoke-cuda:
+    name: smoke (x86_64-linux-cuda, before publishing)
+    # The CUDA archive as its build uploaded it, on a runner without a GPU: the sha256 its build recorded, the package
+    # smoke (the fake engine, the C program against the archive's CPU library, the Kitten tools, --version against the
+    # tag and BUILDINFO) and the tag's commit in --version. ggtts-render links the CUDA driver, so it starts here on
+    # the toolkit's stub driver, as cuda-build's own smoke does; the image is cuda-build's. A real GPU render is the
+    # promotion gate's. ci.yml's cuda-compile runs the same command on the archive it builds.
+    needs: cuda-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    container:
+      image: nvidia/cuda:12.6.3-devel-ubuntu22.04@sha256:d49bb8a4ff97fb5fe477947a3f02aa8c0a53eae77e11f00ec28618a0bcaa2ad1
+    steps:
+      - name: Install what the smoke needs (python3 for the instruments, a C compiler for the library smoke)
+        run: |
+          attempt=1
+          until apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates gcc libc6-dev python3; do
+            if [ "$attempt" -ge 3 ]; then echo "apt-get failed $attempt times"; exit 1; fi
+            attempt=$((attempt + 1))
+            sleep 20
+          done
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist-x86_64-linux-cuda
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sums-x86_64-linux-cuda
+          path: sums
+      - name: Smoke the archive before it is published
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          for a in dist/*.tar.gz; do bash scripts/release_smoke.sh archive "$a" sums "$TAG" "$GITHUB_SHA" --cuda-stub; done
 
   publish:
     name: attest and publish
-    needs: [build, cuda-build]
+    # Nothing is attested or published until every archive has passed its smoke.
+    needs: [build, cuda-build, smoke, smoke-cuda]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -190,3 +317,29 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           bash scripts/publish_release.sh dist/*
+
+  verify-published:
+    name: verify the published release
+    # What a user downloads: every published asset's sha256 is the one its build recorded and the one GitHub reports,
+    # no smoked archive is missing from the release, and gh attestation verify accepts each as built by this workflow
+    # at this tag. Read access is enough; ci.yml's release-build runs the same check, with contents: read, on the
+    # latest published release.
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: sums-*
+          path: sums
+          merge-multiple: true
+      - name: Download the published assets; verify their sha256 and attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: bash scripts/release_smoke.sh published "$TAG" "$GITHUB_REPOSITORY" sums

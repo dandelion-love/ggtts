@@ -39,7 +39,7 @@ JOB_MAP = {
     "package-smoke": {"package"}, "binding": {"binding"}, "android-arm64": {"android"},
     "release-build": {"release"}, "ggml": {"ggml"}, "ggml-windows": {"ggml"},
     # cuda-compile never runs on an ordinary PR (cuda_decision below), so an edit to it selects nothing here; the
-    # push to rc that lands a workflow edit runs it.
+    # push to rc that lands a workflow edit runs it. A PR that changes a CUDA archive script runs it (CUDA_SCRIPTS).
     "cuda-compile": set(), "specialized-selection": set(JOBS),
     "check": set(), "build-test": set(), "planted-ceiling": set(), "python": {"python"},
 }
@@ -272,13 +272,17 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
         if path == "scripts/check_glibc_floor.py":
             # The release build runs it on the real binaries; its tests run in the selection job on every run.
             selected.add("release")
-        if path in (".github/workflows/release.yml", "scripts/package_cuda_release.sh"):
+        if path in (".github/workflows/release.yml", "scripts/package_cuda_release.sh", "scripts/release_smoke.sh"):
+            # release_smoke.sh: package-smoke runs its checks on the fake-engine archive, release-build its real render.
             selected.update(("package", "release"))
     return selected
 
 
 RELEASE_WORKFLOW = ".github/workflows/release.yml"
 GGML_SUBMODULE = "crates/ggtts-ggml-sys/ggml"
+# The scripts the CUDA archive is built and smoked with. A pull request into rc that changes one runs the CUDA compile,
+# so the change is proven before it merges rather than first on the push to rc. No other pull request into rc runs it.
+CUDA_SCRIPTS = ("scripts/package_cuda_release.sh", "scripts/release_smoke.sh")
 
 
 def cuda_push_path(path):
@@ -287,7 +291,7 @@ def cuda_push_path(path):
     A crate's build script, anything in the ggml bindings crate (its submodule pointer included), any manifest, the
     lockfile, the script the archive is built with, and the workflows.
     """
-    return (path in ("Cargo.lock", ".gitmodules", "Cargo.toml", "scripts/package_cuda_release.sh")
+    return (path in ("Cargo.lock", ".gitmodules", "Cargo.toml") or path in CUDA_SCRIPTS
             or path.endswith("/Cargo.toml")
             or path == GGML_SUBMODULE or path.startswith("crates/ggtts-ggml-sys/")
             or path.startswith(".github/workflows/")
@@ -297,13 +301,14 @@ def cuda_push_path(path):
 def cuda_decision(event, base_ref, ref, paths):
     """Whether the hosted CUDA archive compile runs. It is a separate output, never part of JOBS.
 
-    It runs on every pull request into main (the promotion), and on a push to rc that touches a cuda_push_path. It
-    never runs on a pull request into any other branch, whatever that pull request changes. `paths` is None when the
-    pushed range could not be read, which runs the compile. Each push is judged by its own range, so ci.yml must
+    It runs on every pull request into main (the promotion), on a pull request into rc that changes one of
+    CUDA_SCRIPTS, and on a push to rc that touches a cuda_push_path. It never runs on any other pull request, whatever
+    that pull request changes. `paths` is the pull request's changed paths, or the pushed range's; for a push it is
+    None when the range could not be read, which runs the compile. Each push is judged by its own range, so ci.yml must
     never cancel or supersede a push run (its concurrency group is per run for pushes; a test holds it to that).
     """
     if event == "pull_request":
-        return base_ref == "main"
+        return base_ref == "main" or (base_ref == "rc" and any(path in CUDA_SCRIPTS for path in paths or ()))
     if event == "push" and ref == "refs/heads/rc":
         return paths is None or any(cuda_push_path(path) for path in paths)
     return False
@@ -403,7 +408,7 @@ def main():
         print(f"{job}={'true' if job in selected else 'false'}")
     ref = os.environ.get("REF", "")
     pushed = pushed_paths(os.environ.get("PUSH_BEFORE", ""), os.environ.get("PUSH_AFTER", "")) \
-        if event == "push" and ref == "refs/heads/rc" else []
+        if event == "push" and ref == "refs/heads/rc" else paths
     cuda = cuda_decision(event, base_ref, ref, pushed)
     print(f"cuda={'true' if cuda else 'false'}")
     if cuda:

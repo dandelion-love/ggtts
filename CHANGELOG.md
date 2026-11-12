@@ -21,6 +21,16 @@ that a merge places under a released heading is caught.
   build and loads without the NVIDIA driver. It exports the C ABI only, not the JNI entry points. `BUILDINFO.json`
   lists it under `"libraries"`, and the Linux library is held to the same Ubuntu 22.04 glibc floor as the binaries.
   Where the files are and how to link them: the README's "The C library" section.
+- **The CUDA archive runs on T4, A100 and H100 class GPUs.** It carried code for compute capabilities 8.6 and 8.9
+  only; it now carries machine code for 7.5, 8.0, 8.6, 8.9 and 9.0, and PTX for 9.0 so a newer GPU can compile it
+  on first use. `BUILDINFO.json` lists them as `cuda_architectures` and the new `cuda_ptx`. The archive is larger;
+  the README lists the supported GPUs.
+- **Every archive is smoked before it is published, and the published release is checked.** The release renders one
+  Qwen3-TTS line with `--speaker hk_voice_343` and the default model from the Linux CPU archive (on Ubuntu 22.04 and
+  in a bare `ubuntu:22.04` container with only `libgomp1`) and the Windows archive, checks that an unknown speaker
+  is refused and that `--version` names the tag's commit, and holds each archive to the sha256 its build recorded.
+  Only then are the archives attested and published; afterwards the release downloads them and checks their sha256
+  and attestations.
 - **A Python binding: `import ggtts`.** `crates/ggtts-py` (PyO3, an abi3 wheel for Python 3.9 and later, built
   with maturin) loads Qwen3-TTS and Kitten-TTS 2 with the settings of `ggtts_load_with` (a speaker, a style
   instruction) and a device (`cpu` or `cuda`), and with no model loads the default model as `ggtts-render` does,

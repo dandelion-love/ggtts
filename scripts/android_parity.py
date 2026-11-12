@@ -202,10 +202,10 @@ def run_log(dir_a, dir_b, pattern):
 
 
 def self_test():
-    def write(d, name, tokens, samples, engine="qwen3-tts", model="m", seed=7, frames=None, stop="eos"):
+    def write(d, name, tokens, samples, engine="qwen3-tts", model="m", codec="c", seed=7, frames=None, stop="eos"):
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, f"{name}.trace.jsonl"), "w", encoding="utf-8") as f:
-            f.write(json.dumps({"ev": "trace", "engine": engine, "model_sha256": model, "codec_sha256": "c"}) + "\n")
+            f.write(json.dumps({"ev": "trace", "engine": engine, "model_sha256": model, "codec_sha256": codec}) + "\n")
             f.write(json.dumps({"ev": "chunk_begin", "chunk": 0, "seed": seed}) + "\n")
             for i, t in enumerate(tokens):
                 f.write(json.dumps({"ev": "step", "chunk": 0, "frame": i, "token": t}) + "\n")
@@ -235,11 +235,12 @@ def self_test():
         r = compare(a, b, name)
         failed = [k for k, v in r["checks"].items() if not v]
         ok &= r["identical"] is False and failed == [check]
-    for name, field in (("void-model", dict(model="m2")), ("void-engine", dict(engine="kitten-tts-2"))):
+    for name, field in (("void-model", dict(model="m2")), ("void-codec", dict(codec="c2")),
+                        ("void-engine", dict(engine="kitten-tts-2"))):
         write(a, name, **base)
         write(b, name, **dict(base, **field))
         r = compare(a, b, name)
-        ok &= "void" in r and r["identical"] is False
+        ok &= "void" in r and r["identical"] is False and list(field)[0] in r["void"]
     # The permutation test and its interval: two samples from one distribution are not told apart; far ones are.
     ok &= permutation_p([10, 12, 11, 13], [12, 11, 10, 13]) > 0.5
     ok &= permutation_p([10, 11, 12, 10, 11, 12], [40, 41, 42, 40, 41, 42]) < 0.01
@@ -265,11 +266,22 @@ def self_test():
         ok = False
     except Refused as err:
         ok &= "chunks" in str(err)
+    # Different draws (chunk seeds differ) are refused, by frames and by runlog.
+    d1, d2 = os.path.join(tmp, "d1"), os.path.join(tmp, "d2")
+    write(d1, "run", **base)
+    write(d2, "run", **dict(base, seed=8))
+    for f in (frames_table, run_log):
+        try:
+            f(d1, d2, "run")
+            ok = False
+        except Refused as err:
+            ok &= "different draws" in str(err)
     print("android_parity: self-test " + ("passed: identical reads identical; a changed token, sample, frame count, "
                                           "seed and stop are each caught alone by their own check; a different "
-                                          "model or engine voids the comparison; the permutation test and its "
+                                          "model, codec or engine voids the comparison; the permutation test and its "
                                           "interval tell far samples apart and near ones not; frames refuses no "
-                                          "runs, one-sided runs and unequal chunk counts" if ok else "FAILED"))
+                                          "runs, one-sided runs and unequal chunk counts, and frames and runlog "
+                                          "refuse different draws" if ok else "FAILED"))
     return 0 if ok else 1
 
 

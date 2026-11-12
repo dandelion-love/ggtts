@@ -13,11 +13,13 @@ import android.app.Activity
 import android.app.ActivityManager
 import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -27,6 +29,7 @@ import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import android.view.View
 import android.view.Window
+import android.view.WindowManager
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
@@ -53,6 +56,7 @@ class MainActivity : Activity(), DemoView {
         val THREADS = listOf(2, 4, 6, 8)
         /** The binding's default. See android/README.md for what more threads buy on a phone. */
         const val DEFAULT_THREADS = 4
+        private const val REQUEST_NOTIFICATIONS = 2
     }
 
     private val worker = Executors.newSingleThreadExecutor()
@@ -71,6 +75,7 @@ class MainActivity : Activity(), DemoView {
     private lateinit var stop: Button
     private lateinit var systemSpeak: Button
     private var platformTts: TextToSpeech? = null
+    private var askedForNotifications = false
     private lateinit var importButton: Button
     private lateinit var status: TextView
 
@@ -79,23 +84,18 @@ class MainActivity : Activity(), DemoView {
         // The screen draws its own title; Android 15 and later lay the window out edge to edge, under the bars.
         requestWindowFeature(Window.FEATURE_NO_TITLE)
         modelsDir = File(getExternalFilesDir(null) ?: filesDir, "models").apply { mkdirs() }
-        controller = DemoController(
-            binding = GgttsBinding(File(filesDir, "ggtts-cache").path),
-            view = this,
-            audio = DeviceAudio(File(getExternalFilesDir(null) ?: filesDir, "out")),
-            background = { worker.execute(it) },
-            main = { handler.post(it) },
-            log = { Log.i(TAG, it) },
-            memory = {
-                val info = ActivityManager.MemoryInfo()
-                (getSystemService(ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(info)
-                info.availMem to info.lowMemory
-            },
-            onSpoke = { VoiceStore(GgttsTtsService.prefs(this)).save(it) },
-        )
+        // The read belongs to the process (Reader), not to this screen: it goes on when the screen is left, and a
+        // screen opened later shows its progress.
+        controller = Reader.controller(this)
         setContentView(layout())
         refreshFiles()
+        Reader.screen = this
         applyIntent(intent)
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        Reader.trim(this, level)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -152,7 +152,8 @@ class MainActivity : Activity(), DemoView {
 
     override fun onDestroy() {
         platformTts?.shutdown()
-        worker.execute { controller.close() }
+        // The read and the loaded engine stay with the process (see Reader); only this screen goes.
+        if (Reader.screen === this) Reader.screen = null
         worker.shutdown()
         super.onDestroy()
     }
@@ -162,6 +163,11 @@ class MainActivity : Activity(), DemoView {
     override fun setBusy(busy: Boolean) {
         speak.isEnabled = !busy
         stop.isEnabled = busy
+        // While a read runs on this screen, keep the screen on. Off screen, Android moves the app to the phone's slow
+        // cores (measured: the render threads ran on the three Cortex-A510s only), and the read takes several times
+        // longer; the reading service keeps it going there, but slowly.
+        if (busy) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         importButton.isEnabled = !busy
     }
 
@@ -228,7 +234,10 @@ class MainActivity : Activity(), DemoView {
         col.addView(label("CPU threads")); col.addView(threads)
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         speak = Button(this).apply { text = "Speak" }
-        speak.setOnClickListener { speakNow() }
+        speak.setOnClickListener {
+            askForNotifications()
+            speakNow()
+        }
         stop = Button(this).apply { text = "Stop"; isEnabled = false }
         stop.setOnClickListener { controller.stop() }
         buttons.addView(speak, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -295,6 +304,19 @@ class MainActivity : Activity(), DemoView {
         val name = s.selectedItem as String? ?: return null
         if (name == NONE) return null
         return if (name.startsWith("/")) name else File(modelsDir, name).path
+    }
+
+    /**
+     * Android 13 and later hide the read's notification, and its Stop, until the app may post notifications. Ask once,
+     * at the first Speak pressed on the screen (not one driven by adb extras, which must not wait on a dialog). The
+     * read starts either way; refusing hides only the notification.
+     */
+    private fun askForNotifications() {
+        if (Build.VERSION.SDK_INT < 33 || askedForNotifications) return
+        askedForNotifications = true
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
+        }
     }
 
     private fun speakNow() {

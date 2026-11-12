@@ -48,10 +48,9 @@ class DemoController(
     private val memory: () -> Pair<Long, Boolean> = { Long.MAX_VALUE to false },
     /** Told the request of every read that finished, so the system engine can speak with the same files. */
     private val onSpoke: (LoadRequest) -> Unit = {},
+    /** Where engines are loaded and held; the app passes the one it shares with the system engine. */
+    private val cache: EngineCache = EngineCache(binding, log),
 ) {
-    @Volatile private var loaded: LoadRequest? = null
-    @Volatile private var engine: TtsEngine? = null
-
     /** A load the user was warned about; the same request again goes ahead. Main thread only. */
     private var warnedFor: LoadRequest? = null
 
@@ -69,7 +68,7 @@ class DemoController(
         }
         // Before a load (not when this engine is already loaded), warn once if memory is short; the same request
         // again goes ahead.
-        if (!(engine != null && loaded == request) && warnedFor != request) {
+        if (!cache.holds(request) && warnedFor != request) {
             val (available, low) = memory()
             EngineCosts.memoryWarning(request.engine, available, low)?.let {
                 warnedFor = request
@@ -88,12 +87,13 @@ class DemoController(
                 Result.success(run(request, text, seed))
             } catch (e: GgttsException) {
                 audio.stop()
-                drop()
                 log("error ${e.code}: ${e.message}")
                 Result.failure(IllegalStateException("ggtts error ${e.code}: ${e.message}"))
+            } catch (e: EngineInUse) {
+                log("refused: ${e.message}")
+                Result.failure(IllegalStateException("Not started: ${e.message}."))
             } catch (e: RuntimeException) {
                 audio.stop()
-                drop()
                 log("error: $e")
                 Result.failure(IllegalStateException("${e.javaClass.simpleName}: ${e.message}"))
             }
@@ -113,11 +113,23 @@ class DemoController(
         view.showStatus("Stopping after the chunk in progress...")
     }
 
-    /** Release the loaded engine, if any. */
-    fun close() = drop()
+    /** Release the loaded engine, if any, unless a read (this screen's or the system engine's) is using it. */
+    fun close() {
+        if (!busy) cache.release()
+    }
 
+    /** One read with the shared engine: it is this read's until the read ends, and a failed read closes it. */
     private fun run(request: LoadRequest, text: String, seed: Long): String {
-        val tts = engineFor(request)
+        val tts = cache.acquire(request)
+        var ok = false
+        try {
+            return read(tts, request, text, seed).also { ok = true }
+        } finally {
+            cache.done(failed = !ok)
+        }
+    }
+
+    private fun read(tts: TtsEngine, request: LoadRequest, text: String, seed: Long): String {
         main(Runnable { view.showStatus("Rendering the first chunk...") })
         val t0 = clock()
         var firstMs = -1L
@@ -163,22 +175,5 @@ class DemoController(
         return "${request.engine}: %.2f s of audio in %.1f s (RTF %.2f); first audio after %.1f s. Saved to $path".format(
             seconds, renderMs / 1000.0, rtf, firstMs / 1000.0,
         )
-    }
-
-    private fun engineFor(request: LoadRequest): TtsEngine {
-        engine?.let { if (loaded == request) return it }
-        drop()
-        val t0 = clock()
-        val e = binding.load(request)
-        log("loaded ${request.engine} in ${(clock() - t0) / 1_000_000} ms: model=${request.model} codec=${request.codec} voice=${request.voice} threads=${request.threads}")
-        engine = e
-        loaded = request
-        return e
-    }
-
-    private fun drop() {
-        engine?.close()
-        engine = null
-        loaded = null
     }
 }

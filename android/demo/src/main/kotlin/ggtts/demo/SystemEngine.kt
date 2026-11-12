@@ -33,6 +33,7 @@ class VoiceStore(private val kv: KeyValue) {
 /** Android's TextToSpeech codes the system engine reports (the platform's values). */
 object TtsCodes {
     const val ERROR_SYNTHESIS = -3
+    const val ERROR_SERVICE = -4
     const val ERROR_INVALID_REQUEST = -8
     const val ERROR_NOT_INSTALLED_YET = -9
     const val LANG_COUNTRY_AVAILABLE = 1
@@ -87,10 +88,9 @@ class SynthesisSession(
     private val binding: TtsBinding,
     private val voices: VoiceStore,
     private val log: (String) -> Unit = {},
+    /** Where engines are loaded and held; the app passes the one it shares with the demo's screen. */
+    private val cache: EngineCache = EngineCache(binding, log),
 ) {
-    private var loaded: LoadRequest? = null
-    private var engine: TtsEngine? = null
-
     @Volatile
     private var stopped = false
 
@@ -119,7 +119,10 @@ class SynthesisSession(
             return out.error(TtsCodes.ERROR_NOT_INSTALLED_YET)
         }
         val tts = try {
-            engineFor(request)
+            cache.acquire(request)
+        } catch (e: EngineInUse) {
+            log("system engine: ${e.message}")
+            return out.error(TtsCodes.ERROR_SERVICE)
         } catch (e: GgttsException) {
             log("system engine: load failed ${e.code}: ${e.message}")
             return out.error(TtsCodes.ERROR_NOT_INSTALLED_YET)
@@ -127,6 +130,16 @@ class SynthesisSession(
             log("system engine: load failed: $e")
             return out.error(TtsCodes.ERROR_NOT_INSTALLED_YET)
         }
+        var ok = false
+        try {
+            ok = stream(tts, text, seed, out)
+        } finally {
+            cache.done(failed = !ok)
+        }
+    }
+
+    /** Stream one render into [out]. Returns false when the render failed (the engine is then closed). */
+    private fun stream(tts: TtsEngine, text: String, seed: Long, out: SynthesisOut): Boolean {
         var started = false
         val finished = try {
             tts.renderStream(text, seed) { samples, rate ->
@@ -146,35 +159,19 @@ class SynthesisSession(
             }
         } catch (e: GgttsException) {
             log("system engine: render failed ${e.code}: ${e.message}")
-            drop()
-            return out.error(TtsCodes.ERROR_SYNTHESIS)
+            out.error(TtsCodes.ERROR_SYNTHESIS)
+            return false
         } catch (e: RuntimeException) {
             log("system engine: render failed: $e")
-            drop()
-            return out.error(TtsCodes.ERROR_SYNTHESIS)
+            out.error(TtsCodes.ERROR_SYNTHESIS)
+            return false
         }
         if (!finished || stopped) {
             log("system engine: stopped")
-            return
+            return true
         }
         out.done()
-    }
-
-    fun close() = drop()
-
-    private fun engineFor(request: LoadRequest): TtsEngine {
-        engine?.let { if (loaded == request) return it }
-        drop()
-        val e = binding.load(request)
-        engine = e
-        loaded = request
-        return e
-    }
-
-    private fun drop() {
-        engine?.close()
-        engine = null
-        loaded = null
+        return true
     }
 
     companion object {

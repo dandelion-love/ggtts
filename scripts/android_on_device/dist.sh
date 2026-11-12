@@ -1,6 +1,7 @@
 #!/system/bin/sh
 # dist.sh N: the phone half of the distribution, titles "Parity 1".."Parity N", and a repeat of title "Parity" to
-# show whether the phone repeats itself. Same flags as the desktop half.
+# show whether the phone repeats itself. Same flags as the desktop half. Stops at the first failed render.
+set -e
 cd /data/local/tmp/ggtts
 M=/sdcard/Android/data/ggtts.demo/files/models
 QA="--model $M/qwen-talker-hk-cantonese-cc0-v0.0.5-q8_0.gguf --codec $M/qwen-tokenizer-12hz-q8_0.gguf --speaker hk_voice_343"

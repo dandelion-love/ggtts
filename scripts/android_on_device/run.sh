@@ -1,6 +1,7 @@
 #!/system/bin/sh
 # run.sh OUT ARGS...: run ggtts-render ARGS from this directory, logging to OUT.log, and record the process's peak
-# resident memory (VmHWM, a high-water mark the kernel keeps) and exit code in OUT.mem.
+# resident memory (VmHWM, a high-water mark the kernel keeps) and exit code in OUT.mem. Exits with ggtts-render's
+# exit code, so a failed render fails whatever called this.
 cd /data/local/tmp/ggtts
 out=$1
 shift
@@ -16,3 +17,8 @@ wait $pid
 rc=$?
 echo "rc=$rc vmhwm_kb=$hwm" > "$out.mem"
 cat "$out.mem"
+if [ $rc -ne 0 ]; then
+    echo "run.sh: ggtts-render failed (exit $rc); the end of $out.log:" >&2
+    tail -5 "$out.log" >&2
+fi
+exit $rc

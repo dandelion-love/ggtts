@@ -18,6 +18,12 @@ tpid=$!
 ./run.sh budget --model $M/kitten-lm.gguf --codec $M/kitten-s3gen.gguf --voice $M/voice.json \
     --story budget-story.txt --threads 4 --trace budget.trace.jsonl --stream budget.stream.wav \
     --out budget.flac --timing-report budget.timing.json
+render=$?
 wait $tpid
+thermal=$?
 cat thermal-budget.txt
+if [ $render -ne 0 ] || [ $thermal -ne 0 ]; then
+    echo "run-budget.sh: FAILED (render exit $render, thermal exit $thermal)" >&2
+    exit 1
+fi
 echo BUDGET_DONE

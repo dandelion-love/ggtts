@@ -44,9 +44,14 @@ class DemoController(
     private val log: (String) -> Unit = {},
     /** The clock, in nanoseconds; tests pass their own. */
     private val clock: () -> Long = System::nanoTime,
+    /** Available memory in bytes, and whether the system reports memory is low; tests pass their own. */
+    private val memory: () -> Pair<Long, Boolean> = { Long.MAX_VALUE to false },
 ) {
-    private var loaded: LoadRequest? = null
-    private var engine: TtsEngine? = null
+    @Volatile private var loaded: LoadRequest? = null
+    @Volatile private var engine: TtsEngine? = null
+
+    /** A load the user was warned about; the same request again goes ahead. Main thread only. */
+    private var warnedFor: LoadRequest? = null
 
     @Volatile
     private var stopRequested = false
@@ -60,6 +65,18 @@ class DemoController(
             view.showStatus("Still speaking; press Stop first.")
             return
         }
+        // Before a load (not when this engine is already loaded), warn once if memory is short; the same request
+        // again goes ahead.
+        if (!(engine != null && loaded == request) && warnedFor != request) {
+            val (available, low) = memory()
+            EngineCosts.memoryWarning(request.engine, available, low)?.let {
+                warnedFor = request
+                log("memory warning: $it")
+                view.showError(it)
+                return
+            }
+        }
+        warnedFor = null
         busy = true
         stopRequested = false
         view.setBusy(true)

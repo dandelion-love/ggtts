@@ -106,6 +106,16 @@ the model), the screen shows the library's error, for example `ggtts error -3: .
 press Speak. A model the phone cannot hold in memory may still stop the app; Kitten-TTS 2 at Q4_0 is the smaller of
 the two.
 
+**What each engine costs is on the screen before you press Speak:**
+- the model files' size and the memory it peaked at;
+- how long the first audio and each second of speech took, on the phone it was measured on;
+- that it is not suitable for screen readers.
+
+Before loading, the app checks free memory. Below the engine's measured peak, or when Android reports low memory,
+the first press of Speak only shows a warning; pressing Speak again loads anyway. It warns rather than refuses
+because the peak counts the memory-mapped model files, which Android can reclaim: Kitten-TTS 2 rendered with
+3.2 GB available against a 3.7 GB peak.
+
 **Speaking streams.** The line plays chunk by chunk: each chunk starts playing as soon as it is rendered, while the
 next renders. On a phone, a chunk takes tens of seconds (the engines run at 7 to 13 times slower than real time on
 a Snapdragon 8 Gen 2), so the first sound comes after the first chunk, not after the whole line. Stop silences

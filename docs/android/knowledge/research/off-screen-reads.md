@@ -4,7 +4,7 @@ title: Off-screen reads run on the little cores, and stall with too many threads
 description: Off screen, Android confines the app to three little cores even under a foreground service; with more ggml threads than allowed cores, rendering stalls.
 tags: [android, performance, scheduling]
 status: draft
-generated: { by: claude-code/opus-5.5, at: 2026-11-12T09:05:00-07:00 }
+generated: { by: claude-code/opus-5.5, at: 2026-11-12T09:25:00-07:00 }
 ---
 # What was seen
 
@@ -28,6 +28,12 @@ One short Qwen3-TTS line, `ggtts-render` at four threads unless stated, pinned w
 | 0-2 (little) | 3 | RTF 15.6 (87 s) |
 | 0-2 (little) | 2 | RTF 19.3 (103 s) |
 | 0-2 (little) | 4 | not done after 400 s, killed |
+
+# With the engine fix
+
+With the threads capped at the allowed CPUs before each compute (PR 240, issue 236), the same line pinned to CPUs
+0-2 with four threads configured finished in 86 s (RTF 14.4), at the three-thread speed, instead of stalling.
+Unpinned, it ran at RTF 4.3 (4.5 before). The audio was byte-identical in every run, capped or not.
 
 # Consequences
 

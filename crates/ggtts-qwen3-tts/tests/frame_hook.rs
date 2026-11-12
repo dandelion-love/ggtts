@@ -70,6 +70,7 @@ fn event_trace_emits_steps_without_changing_tokens_or_audio() {
         chunk: 0,
         draw: 0,
         instruction: None,
+        steer: None,
     };
     let mut engine = Qwen3Tts::load(&talker, &codec, 4, voice).unwrap();
     let plain = engine.generate(&req).unwrap();
@@ -107,6 +108,7 @@ fn stop_trace_tensor_hook_preserves_real_tokens_and_samples() {
         chunk: 0,
         draw: 0,
         instruction: None,
+        steer: None,
     };
     let mut engine = Qwen3Tts::load(&talker, &codec, 4, voice).unwrap();
     let plain = engine.generate(&req).unwrap();
@@ -292,6 +294,7 @@ fn frame_level_streaming_end_to_end_is_the_batch_decode() {
             chunk: 0,
             draw: 0,
             instruction: None,
+            steer: None,
         };
         let mut stream = Vec::new();
         let mut first_at = None;

@@ -58,6 +58,33 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **`ggtts-kitten-convert --layout tq1_0` writes an exact `TQ1_0` Kitten-TTS 2 GGUF**
+  ([#200](https://github.com/dandelion-love/ggtts/issues/200)). The layout is `tq1_0-pad128`: each stock `TQ1_0`
+  block holds one 128-weight group and 128 zero trits, with the group's own scale, so every trit and every scale of
+  the source survives. The readback check verifies it as it does `q4_0` and `tq2_0`, and `--verify` checks an
+  existing one. The 196 ternary matrices take 3.375 bits a weight, about 595 MB against 793 MB for `Q4_0`. `Q4_0`
+  stays the default: on the CPU the padded `TQ1_0` product is bit-identical to padded `TQ2_0`'s, which misses the
+  ternary parity bar that `Q4_0` passes. On CUDA every layout is held as the same exact f16. The engine and
+  `ggtts-render` load the new layout on the CPU and on CUDA. Files in the older 256-weight `tq1_0-256-experimental`
+  layout still load; that layout gives two 128-weight groups one scale, which is lossy for this model, and the
+  converter refuses to write it.
+- **Steering: `ggtts-render --steer FILE` adds vectors to the Qwen3-TTS talker's hidden state.** The file is
+  safetensors with one F32 vector per talker layer, named `talker.layer.<i>`, each of the talker's hidden size.
+  Each vector, times `--steer-scale X` (default 1.0), is added at the output of its layer, after the layer's residual
+  add, at every position of the prompt and of every generated frame: what a PyTorch forward hook on the layer's
+  output does. `--steer-layers 23,24,25` applies only those layers of the file (default: every layer in it). The
+  code predictor is not steered. A render without `--steer` is the same render as before, and its graph has no
+  steering node. A file that is not readable, a tensor with another name or dtype, a tensor named twice, a value that
+  is not finite, a vector of the wrong length, a layer out of range, a layer list naming a layer the file does not
+  hold or naming one twice, a scale that is not finite in f32 or makes a scaled value overflow f32, `--steer-scale` or
+  `--steer-layers` without `--steer`, and `--steer` with any engine but `qwen3-tts`, are each refused before anything
+  is rendered. Steering is a request input, not an instrument: it does not go through
+  the hooks, and the trace-identity check still holds on a steered render. See [docs/steering.md](docs/steering.md).
+- **A steered render says so in every record it writes.** The trace header, the timing and duration reports and the
+  instruments' `report.json` gain an optional `steer` object: the steering file's sha256, the layers applied and the
+  scale. An unsteered render writes none. The field is added within `ggtts-trace/2`, `ggtts-timing/1`,
+  `ggtts-duration/1` and `ggtts-report/2`, as `instruction` and `models` were: a document without it is still valid.
+  Replay refuses a steered trace unless it is given the same steering.
 - **The C and Kotlin binding find the default model, and the C ABI can render on the GPU.** The C ABI is now
   version 3: `ggtts_settings` gains three trailing fields, `device`, `cache_dir` and `allow_download`
   (`GGTTS_SETTINGS_INIT` sets them to NULL, NULL and 0). With engine `qwen3-tts` and no model or codec path,

@@ -9,6 +9,7 @@
 
 use crate::hooks::Hooks;
 use crate::profile::Profile;
+use crate::steer::Steering;
 use crate::trace::Events;
 
 /// What an engine is, for provenance.
@@ -38,6 +39,10 @@ pub struct ChunkRequest<'a> {
     /// `Some("")` are the same request: no instruction, rendered exactly as without the field. An engine that cannot
     /// use an instruction refuses a non-empty one ([`refuse_instruction`]) rather than ignoring it.
     pub instruction: Option<&'a str>,
+    /// Vectors to add to the talker's hidden state at the output of chosen layers ([`crate::steer`]). `None` is the
+    /// render exactly as without the field. An engine that cannot apply steering refuses a request that carries it
+    /// ([`refuse_steer`](crate::steer::refuse_steer)) rather than ignoring it.
+    pub steer: Option<&'a Steering>,
 }
 
 impl<'a> ChunkRequest<'a> {
@@ -176,6 +181,7 @@ mod tests {
             chunk: 0,
             draw: 0,
             instruction,
+            steer: None,
         }
     }
 

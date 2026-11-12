@@ -228,6 +228,7 @@ fn each_event_instrument_preserves_real_qwen_tokens_and_samples() {
             instruments_dir: Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments")),
             models: None,
             instruction: None,
+            steer: None,
         };
         let summary = ggtts_instruments::run(&config, &inputs).unwrap();
         assert!(summary.complete(), "{}: {:?}", item.name, summary.incomplete);

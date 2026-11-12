@@ -56,6 +56,8 @@ pub fn render_chunk(engine: &mut dyn Engine, plan: &ChapterPlan, index: usize) -
         chunk: index as u32,
         draw: 0,
         instruction: None,
+        // A book render takes no steering: `None` renders exactly as without the field.
+        steer: None,
     };
     let generated = engine.generate(&req).map_err(|e| e.to_string())?;
     let pcm = engine.decode(&generated.codes).map_err(|e| e.to_string())?;

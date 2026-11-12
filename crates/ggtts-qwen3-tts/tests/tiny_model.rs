@@ -95,6 +95,7 @@ fn the_trace_changes_no_token_and_no_sample_on_the_tiny_model() {
             chunk: 0,
             draw: 0,
             instruction: None,
+            steer: None,
         };
         let a = plain.generate(&req).unwrap();
         let pa = plain.decode(&a.codes).unwrap();

@@ -3,7 +3,7 @@
 //! ```text
 //! ggtts-render [--model M.gguf] [--codec C.gguf] [--offline] --out x.flac [--engine auto|qwen3-tts|kitten-tts-2|fake]
 //!              [--threads N] [--device cpu|cuda] [--trace trace.jsonl [--trace-level 1|2]] [--timing-report FILE] [--voice REF.json] [--speaker NAME]
-//!              [--instruction TEXT]
+//!              [--instruction TEXT] [--steer FILE [--steer-scale X] [--steer-layers LIST]]
 //!              [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text "..." [--seed S] | --story story.txt)
 //!              [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE.yaml] [--require NAME]...
 //!              [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID]
@@ -22,6 +22,11 @@
 //! prompt as the reference runtime places it. A Qwen3-TTS custom_voice checkpoint of 1.7B or a voice_design
 //! checkpoint takes one; any other checkpoint, and any other engine, refuses it before rendering. An empty
 //! instruction is no instruction: the output is the same as without the flag.
+//! `--steer FILE` adds vectors to the Qwen3-TTS talker's hidden state at the output of chosen layers
+//! (`docs/steering.md`). The file is safetensors with one F32 vector per layer, named `talker.layer.<i>`.
+//! `--steer-scale X` multiplies every vector (default 1.0); `--steer-layers 23,24,25` applies only those layers of the
+//! file (default: every layer in it). Any other engine refuses `--steer`, and every report and trace header records
+//! the file's sha256, the layers and the scale.
 //! `--engine auto` (the default) picks the engine from the model's `general.architecture`. `--text` renders one
 //! request at one seed (default 20260905). `--story` reads a story file (title line, then one paragraph per line)
 //! and renders it on the core's story path. For stories `--trace` writes a complete ggtts-trace/2 event stream;
@@ -122,6 +127,7 @@ impl StreamTiming {
 }
 const USAGE: &str = "usage: ggtts-render [--model M.gguf] [--codec C.gguf] [--offline] --out x.flac \
 [--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--speaker NAME] [--instruction TEXT] \
+[--steer FILE [--steer-scale X] [--steer-layers LIST]] \
 [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
 [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID] \
@@ -175,6 +181,12 @@ struct Args {
     speaker: Option<String>,
     /// A style instruction, for a Qwen3-TTS checkpoint that takes one. Empty is no instruction.
     instruction: Option<String>,
+    /// A steering file (`--steer`), its scale (`--steer-scale`) and the layers of it to apply (`--steer-layers`).
+    steer: Option<PathBuf>,
+    steer_scale: Option<f64>,
+    steer_layers: Option<Vec<u32>>,
+    /// The steering read from `steer`, set by [`load_steering`] before the engine is loaded.
+    steering: Option<ggtts_core::steer::Steering>,
     stream: Option<String>,
     stream_format: Option<String>,
     stream_raw: bool,
@@ -228,6 +240,18 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 a.speaker = Some(speaker);
             }
             "--instruction" => a.instruction = Some(value()?),
+            "--steer" => a.steer = Some(value()?.into()),
+            "--steer-scale" => {
+                let v: f64 = value()?.parse().map_err(|_| "--steer-scale needs a number")?;
+                if !v.is_finite() {
+                    return Err("--steer-scale must be a finite number".into());
+                }
+                a.steer_scale = Some(v);
+            }
+            "--steer-layers" => {
+                a.steer_layers =
+                    Some(ggtts_core::steer::parse_layers(&value()?).map_err(|e| format!("--steer-layers: {e}"))?)
+            }
             "--stream" => a.stream = Some(value()?),
             "--stream-format" => a.stream_format = Some(value()?),
             "--stream-raw" => a.stream_raw = true,
@@ -277,9 +301,14 @@ fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, St
             let codec = a.codec.as_ref().ok_or("the qwen3-tts engine needs --codec")?;
             let voice = qwen_voice(a)?;
             // A checkpoint that takes no instruction refuses one while loading, before anything is rendered.
-            ggtts_qwen3_tts::engine::Qwen3Tts::load_for(model, codec, threads, voice, a.instruction.as_deref())
-                .map(|e| Box::new(e) as Box<dyn Engine>)
-                .map_err(|e| e.to_string())
+            let e = ggtts_qwen3_tts::engine::Qwen3Tts::load_for(model, codec, threads, voice, a.instruction.as_deref())
+                .map_err(|e| e.to_string())?;
+            // Steering the talker cannot take (a layer out of range, a vector of the wrong length) is refused here,
+            // before anything is rendered.
+            if let Some(s) = &a.steering {
+                e.check_steer(s).map_err(|e| format!("--steer: {e}"))?;
+            }
+            Ok(Box::new(e))
         }
         // Kitten-TTS 2: --model is the LM GGUF, --codec the S3Gen GGUF, --voice the reference (`ggtts-kitten prepare`).
         #[cfg(feature = "ggml")]
@@ -385,6 +414,27 @@ fn resolve_models_with(
     a.codec = paths.next().flatten().or(a.codec.take());
     a.voice = paths.next().flatten().or(a.voice.take());
     Ok(files)
+}
+
+/// The steering `--steer`, `--steer-scale` and `--steer-layers` name, read and checked: `None` without `--steer`.
+/// Refuses the other two without `--steer`, an engine other than qwen3-tts, and every defect of the file or the
+/// selection ([`ggtts_core::steer`]). Needs no model: the talker's own check follows when it is loaded.
+fn load_steering(a: &Args, engine: &str) -> Result<Option<ggtts_core::steer::Steering>, String> {
+    let Some(path) = &a.steer else {
+        if a.steer_scale.is_some() || a.steer_layers.is_some() {
+            return Err("--steer-scale and --steer-layers need --steer".into());
+        }
+        return Ok(None);
+    };
+    if engine != "qwen3-tts" {
+        return Err(format!(
+            "--steer is only supported by the qwen3-tts engine, not {engine}"
+        ));
+    }
+    let file = ggtts_core::steer::SteerFile::read(path).map_err(|e| format!("--steer: {e}"))?;
+    file.select(a.steer_layers.as_deref(), a.steer_scale.unwrap_or(1.0))
+        .map(Some)
+        .map_err(|e| format!("--steer: {e}"))
 }
 
 /// Where `--stream` writes: a file, or stdout for `-`.
@@ -561,6 +611,7 @@ fn render_with_models(
     if a.instruction.as_deref().is_some_and(|i| !i.is_empty()) && name != "qwen3-tts" {
         return Err("--instruction is only supported by the qwen3-tts engine".into());
     }
+    a.steering = load_steering(&a, &name)?;
     // Validate and plan before opening output files or loading model weights.
     let preplanned = if let Some((title, paragraphs)) = story_input {
         let profile = match name.as_str() {
@@ -609,9 +660,14 @@ fn render_with_models(
         .collect::<Result<Vec<_>, _>>()?;
     // The instruction goes beside the model files in every report, when there is one: an empty one is none.
     let instruction = a.instruction.clone().filter(|i| !i.is_empty());
+    // So does the steering: the file's sha256, the layers applied and the scale. An unsteered render records none.
+    let steer_record = a.steering.as_ref().map(ggtts_core::steer::Steering::record);
     let with_instruction = |mut doc: serde_json::Value| {
         if let Some(i) = &instruction {
             doc["instruction"] = i.as_str().into();
+        }
+        if let Some(s) = &steer_record {
+            doc["steer"] = s.clone();
         }
         doc
     };
@@ -636,6 +692,7 @@ fn render_with_models(
                 chunk: 0,
                 draw: 0,
                 instruction: a.instruction.as_deref(),
+                steer: a.steering.as_ref(),
             };
             let g = engine.generate(&req).map_err(|e| e.to_string())?;
             frames_generated = g.codes.n_frames() as u64;
@@ -704,10 +761,12 @@ fn render_with_models(
             header.codec_sha256 = sha_of(&["codec"]);
             header.models = model_files.clone();
             header.instruction.clone_from(&instruction);
+            header.steer.clone_from(&steer_record);
             emit_header(&mut events, &header);
             let mut options = RenderOptions::for_profile(&profile);
             options.measure_timings = a.timing_report.is_some();
             options.instruction.clone_from(&a.instruction);
+            options.steer.clone_from(&a.steering);
             let read = render_story_streamed(engine.as_mut(), &title, &chunks, &options, &mut events, &mut |p| {
                 if let Some(w) = stream.as_mut() {
                     let started = Instant::now();
@@ -974,6 +1033,7 @@ fn render_with_models(
         instruments_dir: None,
         models: Some(model_files.clone()),
         instruction: instruction.clone(),
+        steer: steer_record.clone(),
     };
     let summary = ggtts_instruments::runner::run_with_logging(&config, &inputs, log)?;
     if let Some(data) = &duration_data {
@@ -1940,5 +2000,236 @@ mod tests {
             assert!(!err.starts_with("no engine for architecture"), "{name}: {err}");
         }
         assert!(refused("not-an-engine").starts_with("no engine for architecture"));
+    }
+
+    /// The fake engine, recording each request's steering record and rendering as if unsteered. A stand-in for the
+    /// Qwen3-TTS engine, which steers, so the reports can be checked with no model.
+    struct Steered {
+        inner: ggtts_fake::FakeEngine,
+        seen: std::rc::Rc<std::cell::RefCell<Vec<Option<serde_json::Value>>>>,
+    }
+
+    impl Engine for Steered {
+        fn info(&self) -> &EngineInfo {
+            self.inner.info()
+        }
+        fn profile(&self) -> &Profile {
+            self.inner.profile()
+        }
+        fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
+            self.seen
+                .borrow_mut()
+                .push(req.steer.map(ggtts_core::steer::Steering::record));
+            self.inner.generate(&ChunkRequest { steer: None, ..*req })
+        }
+        fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
+            self.inner.decode(codes)
+        }
+    }
+
+    /// A steering file of `tensors`, written as `name` in `dir`.
+    fn steer_file(dir: &Path, name: &str, tensors: &[(&str, &[f32])]) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, ggtts_core::steer::write_safetensors(tensors)).unwrap();
+        path
+    }
+
+    fn schema(name: &str) -> jsonschema::Validator {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../schemas")
+            .join(name);
+        let s: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        jsonschema::validator_for(&s).expect("the schema compiles")
+    }
+
+    #[test]
+    fn the_steering_flags_parse_and_refuse_bad_values() {
+        let p = |args: &[&str]| parse(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let a = p(&[
+            "--steer",
+            "s.safetensors",
+            "--steer-scale",
+            "0.25",
+            "--steer-layers",
+            "23,24,25",
+        ])
+        .unwrap();
+        assert_eq!(a.steer.as_deref(), Some(Path::new("s.safetensors")));
+        assert_eq!(a.steer_scale, Some(0.25));
+        assert_eq!(a.steer_layers.as_deref(), Some(&[23, 24, 25][..]));
+        for (args, want) in [
+            (&["--steer-scale", "x"][..], "--steer-scale needs a number"),
+            (&["--steer-scale", "inf"][..], "finite"),
+            (&["--steer-scale", "NaN"][..], "finite"),
+            (&["--steer-layers", "1,1"][..], "named twice"),
+            (&["--steer-layers", "a"][..], "not a layer index"),
+            (&["--steer"][..], "needs a value"),
+        ] {
+            let e = p(args).err().unwrap_or_default();
+            assert!(e.contains(want), "{args:?}: {e}");
+        }
+    }
+
+    /// Every refusal that needs no model happens before anything is loaded or rendered: the loader is never called
+    /// and no output is written.
+    #[test]
+    fn steering_is_refused_before_loading_with_a_message_naming_the_problem() {
+        let log = LogSettings {
+            level: LogLevel::Error,
+            format: LogFormat::Text,
+        };
+        let dir = std::env::temp_dir().join(format!("ggtts-steer-refusals-{}", std::process::id()));
+        let good = steer_file(&dir, "good.safetensors", &[("talker.layer.3", &[1.0, 2.0])]);
+        let nan = steer_file(&dir, "nan.safetensors", &[("talker.layer.3", &[1.0, f32::NAN])]);
+        let named = steer_file(&dir, "named.safetensors", &[("model.layers.3", &[1.0, 2.0])]);
+        let big = steer_file(&dir, "big.safetensors", &[("talker.layer.3", &[1.0, 1e10])]);
+        let out = dir.join("out.flac");
+        let args = |engine: &str, steer: Option<&Path>, scale: Option<f64>, layers: Option<Vec<u32>>| Args {
+            engine: Some(engine.into()),
+            model: Some(dir.join("model.gguf")),
+            text: Some("今日天氣好好。".into()),
+            out: Some(out.clone()),
+            steer: steer.map(Path::to_path_buf),
+            steer_scale: scale,
+            steer_layers: layers,
+            ..Args::default()
+        };
+        let cases = [
+            (
+                args("qwen3-tts", None, Some(0.5), None),
+                "--steer-scale and --steer-layers need --steer",
+            ),
+            (
+                args("qwen3-tts", None, None, Some(vec![3])),
+                "--steer-scale and --steer-layers need --steer",
+            ),
+            (
+                args("kitten-tts-2", Some(&good), None, None),
+                "only supported by the qwen3-tts engine",
+            ),
+            (
+                args("fake", Some(&good), None, None),
+                "only supported by the qwen3-tts engine",
+            ),
+            (
+                args("qwen3-tts", Some(&dir.join("missing.safetensors")), None, None),
+                "missing.safetensors",
+            ),
+            (args("qwen3-tts", Some(&nan), None, None), "not finite"),
+            (
+                args("qwen3-tts", Some(&named), None, None),
+                "is not named talker.layer.<i>",
+            ),
+            (
+                args("qwen3-tts", Some(&good), None, Some(vec![4])),
+                "layer 4 is not in the steering file",
+            ),
+            // 1e39 parses as a finite f64 and is infinite in f32, the precision the vectors are added in.
+            (
+                args("qwen3-tts", Some(&good), Some(1e39), None),
+                "not a finite number in f32",
+            ),
+            (
+                args("qwen3-tts", Some(&big), Some(1e30), None),
+                "times element 1 of layer 3",
+            ),
+        ];
+        for (a, want) in cases {
+            let err = render_with_models(
+                a,
+                log,
+                |_, _, _| panic!("must refuse before loading"),
+                |_| unreachable!("no story"),
+                open_stream,
+                |_, _, _| panic!("must refuse before resolving the model files"),
+            )
+            .unwrap_err();
+            assert!(err.contains(want), "want {want:?}: {err}");
+            assert!(!out.exists(), "a refused render wrote {}", out.display());
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A steered render records the file's sha256, the layers applied and the scale in the timing and duration
+    /// reports, the trace header, and on every request; an unsteered render records none of them. Every document
+    /// validates against its schema.
+    #[test]
+    fn a_steered_render_is_recorded_in_every_report_and_the_trace_header() {
+        let log = LogSettings {
+            level: LogLevel::Error,
+            format: LogFormat::Text,
+        };
+        let (root, cache) = prepared_cache("steer-records");
+        let file = steer_file(
+            &root,
+            "steer.safetensors",
+            &[("talker.layer.3", &[1.0, 2.0]), ("talker.layer.5", &[0.5, 0.5])],
+        );
+        let bytes = std::fs::read(&file).unwrap();
+        let sha = ggtts_core::seed::hex(&ggtts_core::seed::sha256(&bytes));
+        let want = serde_json::json!({"sha256": sha, "layers": [5], "scale": 0.25});
+        for (tag, steered) in [("steered", true), ("plain", false)] {
+            let dir = root.join(tag);
+            std::fs::create_dir_all(&dir).unwrap();
+            let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let s = seen.clone();
+            let args = Args {
+                story: Some(dir.join("story.txt")),
+                out: Some(dir.join("out.flac")),
+                trace: Some(dir.join("trace.jsonl")),
+                timing_report: Some(dir.join("timing.json")),
+                duration_report: Some(dir.join("duration.json")),
+                offline: true,
+                steer: steered.then(|| file.clone()),
+                steer_scale: steered.then_some(0.25),
+                steer_layers: steered.then(|| vec![5]),
+                ..Args::default()
+            };
+            let code = render_with_models(
+                args,
+                log,
+                move |name, _, _| {
+                    assert_eq!(name, "qwen3-tts");
+                    Ok(Box::new(Steered {
+                        inner: ggtts_fake::FakeEngine::default(),
+                        seen: s,
+                    }) as Box<dyn Engine>)
+                },
+                |_| Ok("Title\n今日天氣好好，我哋去公園行下。佢話聽日會早啲返嚟食飯。\n".into()),
+                open_stream,
+                |a, name, log| {
+                    resolve_models_with(a, name, log, true, &|| Ok(cache.clone()), &NoNetwork, &mut Vec::new())
+                },
+            )
+            .unwrap();
+            assert_eq!(code, 0, "{tag}");
+            let expect = steered.then(|| want.clone());
+            let seen = seen.borrow();
+            assert!(!seen.is_empty(), "{tag}: no request");
+            assert!(seen.iter().all(|r| *r == expect), "{tag}: {seen:?}");
+            for (report, schema_name) in [
+                ("timing.json", "ggtts-timing-1.schema.json"),
+                ("duration.json", "ggtts-duration-1.schema.json"),
+            ] {
+                let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(report)).unwrap()).unwrap();
+                assert_eq!(doc.get("steer"), expect.as_ref(), "{tag} {report}");
+                let errors: Vec<String> = schema(schema_name).iter_errors(&doc).map(|e| e.to_string()).collect();
+                assert!(errors.is_empty(), "{tag} {report}: {errors:?}");
+            }
+            let trace = std::fs::read_to_string(dir.join("trace.jsonl")).unwrap();
+            let v = schema("ggtts-trace-2.schema.json");
+            for (i, line) in trace.lines().enumerate() {
+                let doc: serde_json::Value = serde_json::from_str(line).unwrap();
+                if i == 0 {
+                    assert_eq!(doc.get("steer"), expect.as_ref(), "{tag} trace header");
+                } else {
+                    assert!(doc.get("steer").is_none(), "{tag}: steer outside the header: {line}");
+                }
+                let errors: Vec<String> = v.iter_errors(&doc).map(|e| e.to_string()).collect();
+                assert!(errors.is_empty(), "{tag} trace line {i}: {errors:?}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 }

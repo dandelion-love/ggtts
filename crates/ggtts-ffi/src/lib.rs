@@ -372,6 +372,7 @@ impl<'a> Settings<'a> {
             chunk: 0,
             draw: 0,
             instruction: self.instruction,
+            steer: None,
         };
         refuse_instruction(&req, engine).map_err(|e| (GGTTS_ERR_ARG, e.0))
     }

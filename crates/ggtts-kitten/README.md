@@ -43,6 +43,19 @@ $K/ggtts-render --model kitten-lm.gguf --codec kitten-s3gen.gguf --voice voice.j
     --text "The little lighthouse kept its lamp burning all through the stormy night." --out line.flac
 ```
 
+The ternary matrices can be stored three ways, each exact: every trit and every per-128 scale of the source, which
+the readback check proves after writing.
+
+| `--layout` | Stored as | Bits per ternary weight | The 1.41B ternary weights | On the CPU |
+|---|---|---|---|---|
+| `q4_0` (the default) | `Q4_0` | 4.5 | 793 MB | passes the ternary parity bar |
+| `tq2_0` | padded `TQ2_0` | 4.125 | 727 MB | below it (`Q8_K` activations) |
+| `tq1_0` | padded `TQ1_0` (`tq1_0-pad128`) | 3.375 | 595 MB | below it, bit-identical to `tq2_0` |
+
+On CUDA all three are held as the same exact f16 matrices. A `TQ1_0` file with one scale per 256 weights
+(`tq1_0-256-experimental`) still loads, but it is lossy for this model, whose groups are 128 weights, and the
+converter does not write one.
+
 `ggtts-render --story FILE` renders a story on the core's story path, with a draft profile (`draft/kitten-tts-2`).
 `ggtts-kitten render --lines FILE` writes one FLAC per line, with a timing report. Add `--device cuda` to any of
 them.
@@ -55,7 +68,7 @@ tokens cannot match PyTorch's. Under that level, deterministic checks with bars 
 
 | Check | Result on CPU |
 |---|---|
-| Ternary weights in the GGUF | equal to the source, trit for trit and scale bit for bit, on all 196 matrices |
+| Ternary weights in the GGUF (any `--layout`) | equal to the source, trit for trit and scale bit for bit, on all 196 matrices |
 | LM logits against float32 PyTorch, weights dequantized | per-layer relative L2 at most `1.8e-6` |
 | LM logits against float32 PyTorch, ternary at run time (Q4_0) | cosine `0.9999091` (bar 0.9999), argmax 32/32 |
 | S3Gen decode, with the noise recorded | waveform SNR `89.3 dB` (bar 40 dB) |

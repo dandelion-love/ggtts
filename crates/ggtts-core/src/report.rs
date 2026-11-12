@@ -687,6 +687,9 @@ pub struct Report {
     pub models: Option<Vec<Value>>,
     /// The measured render's style instruction, when it had a non-empty one. Written to `report.json` only then.
     pub instruction: Option<String>,
+    /// The measured render's steering ([`Steering::record`](crate::steer::Steering::record)), when it was steered.
+    /// Written to `report.json` only then.
+    pub steer: Option<Value>,
 }
 
 /// The name an invalid envelope is listed under: its own `name` when that is a valid name, else its source's
@@ -826,6 +829,7 @@ pub fn merge(run: &str, inputs: &[Input], required: &[&str]) -> Report {
         required,
         models: None,
         instruction: None,
+        steer: None,
     }
 }
 
@@ -883,6 +887,9 @@ impl Report {
         }
         if let Some(instruction) = &self.instruction {
             report["instruction"] = json!(instruction);
+        }
+        if let Some(steer) = &self.steer {
+            report["steer"] = steer.clone();
         }
         report
     }

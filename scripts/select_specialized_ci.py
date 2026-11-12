@@ -55,6 +55,7 @@ GGML_GATED_FILES = {
     "crates/ggtts-cli/tests/default_models_cli.rs",
     "crates/ggtts-cli/tests/kitten_refusals.rs",
     "crates/ggtts-cli/tests/no_change_real.rs",
+    "crates/ggtts-cli/tests/steer_cli.rs",
     "crates/ggtts-cli/tests/version_engines.rs",
 }
 

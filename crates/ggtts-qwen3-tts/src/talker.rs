@@ -18,6 +18,7 @@
 //! graphs and are not reproduced.
 
 use ggtts_core::hooks::Wants;
+use ggtts_core::steer::Steering;
 use std::collections::HashMap;
 use std::path::Path;
 use std::ptr;
@@ -131,11 +132,26 @@ mod planted {
         /// The style instruction's rows placed after the role rows instead of before them. Changes nothing for a
         /// request with no instruction.
         InstructionAfterRole,
+        /// The steering add node left out of the talker graph: a steered request renders as an unsteered one. Changes
+        /// nothing for a request with no steering. It exists to show that the steering checks can see a missing add.
+        SteerAddMissing,
+        /// Each steering vector added one layer late: the vector for layer `k` lands at `k + 1` (and nowhere when `k`
+        /// is the last layer). It exists to show that the reference check sees a vector at the wrong layer.
+        SteerLayerShift,
+        /// Each steering vector added at its own layer and again at the next one. It exists to show that the
+        /// reference check sees a vector at an extra layer.
+        SteerNextLayerToo,
+        /// The step hook of [`Talker::generate_steered`](super::Talker::generate_steered) draws once from the
+        /// sampler's stream after each step it sees, so every later token moves. It fires only when a step hook is
+        /// passed (a traced or hooked render): it exists to show that the trace-identity check sees an instrument that
+        /// is not read-only.
+        StepHookDraw,
     }
 
     #[cfg(feature = "plant")]
     impl Plant {
-        /// `none`, `rope-normal`, `sampler-off-by-one` or `frame-hook-draw`.
+        /// `none`, `rope-normal`, `sampler-off-by-one`, `frame-hook-draw`, `instruction-after-role`,
+        /// `steer-add-missing`, `steer-layer-shift`, `steer-next-layer-too` or `step-hook-draw`.
         pub fn parse(s: &str) -> Option<Self> {
             Some(match s {
                 "" | "none" => Self::None,
@@ -143,6 +159,10 @@ mod planted {
                 "sampler-off-by-one" => Self::SamplerOffByOne,
                 "frame-hook-draw" => Self::FrameHookDraw,
                 "instruction-after-role" => Self::InstructionAfterRole,
+                "steer-add-missing" => Self::SteerAddMissing,
+                "steer-layer-shift" => Self::SteerLayerShift,
+                "steer-next-layer-too" => Self::SteerNextLayerToo,
+                "step-hook-draw" => Self::StepHookDraw,
                 _ => return None,
             })
         }
@@ -776,11 +796,52 @@ impl Talker {
         seed: u64,
         max_len: i32,
         sampling: Sampling,
+        on_step: Option<(Wants, &mut StepHook<'_>)>,
+        on_frame: Option<&mut FrameHook<'_>>,
+    ) -> Result<Generation, EngineError> {
+        self.generate_steered(
+            text,
+            instruction,
+            speaker,
+            language_id,
+            seed,
+            max_len,
+            sampling,
+            None,
+            on_step,
+            on_frame,
+        )
+    }
+
+    /// `Ok` for steering this talker can apply: every layer in range and every vector of the hidden size.
+    pub fn check_steer(&self, steer: &Steering) -> Result<(), EngineError> {
+        steer
+            .check(self.config.n_layers as usize, self.config.hidden_size as usize)
+            .map_err(|e| err(e.0))
+    }
+
+    /// [`generate_streamed`](Self::generate_streamed) with steering: each of `steer`'s vectors, times its scale, is
+    /// added to the hidden state at the output of its talker layer, after the layer's residual add, at every
+    /// position of the prefill and of every step. `None` builds exactly the graphs `generate_streamed` builds, with no
+    /// add node. The code predictor is not steered. Steering a talker cannot take is refused before anything runs
+    /// ([`check_steer`](Self::check_steer)).
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate_steered(
+        &mut self,
+        text: &str,
+        instruction: Option<&str>,
+        speaker: &str,
+        language_id: i32,
+        seed: u64,
+        max_len: i32,
+        sampling: Sampling,
+        steer: Option<&Steering>,
         mut on_step: Option<(Wants, &mut StepHook<'_>)>,
         mut on_frame: Option<&mut FrameHook<'_>>,
     ) -> Result<Generation, EngineError> {
         sampling.check()?;
         self.check_instruction(instruction)?;
+        let steer = self.steer_rows(steer)?;
         let c = self.config.clone();
         let h = c.hidden_size as usize;
         let spk = self
@@ -884,7 +945,7 @@ impl Talker {
             )?);
         }
 
-        let (mut logits, mut hidden) = self.talker_prefill(&prefill, prefill_len)?;
+        let (mut logits, mut hidden) = self.talker_prefill(&prefill, prefill_len, &steer)?;
 
         let mut out = Vec::with_capacity(max_len as usize * c.n_codebooks as usize);
         let mut n_past = prefill_len;
@@ -920,6 +981,9 @@ impl Talker {
             };
             if let Some((_, f)) = on_step.as_mut() {
                 f(frame, next, p_stop, seen.as_deref());
+                if self.plant == Plant::StepHookDraw {
+                    rng.next_uniform();
+                }
             }
             if next == c.codec_eos_id {
                 stop = Stop::Eos;
@@ -948,7 +1012,7 @@ impl Talker {
                 &tts_pad[..]
             };
             let row = row.to_vec();
-            let (l, hid) = self.talker_step(&frame_codes, &row, n_past)?;
+            let (l, hid) = self.talker_step(&frame_codes, &row, n_past, &steer)?;
             logits = l;
             hidden = hid;
             n_past += 1;
@@ -1103,6 +1167,7 @@ impl Talker {
         mrope_pos: T,
         mask: T,
         prefill: bool,
+        steer: &[(usize, T)],
     ) -> T {
         let c = &self.config;
         let cache = self.cache.as_ref().unwrap();
@@ -1245,8 +1310,58 @@ impl Talker {
             cur = g::ggml_swiglu_split(ctx, gate, up);
             cur = ffn_down(ctx, l.ffn_down, cur);
             inp_l = g::ggml_add(ctx, cur, inp_ff);
+            // Steering: one add at the block's output, after its residual add, broadcast over every position. A layer
+            // with no vector gets no node.
+            if let Some(&(_, v)) = steer.iter().find(|(layer, _)| *layer == il) {
+                inp_l = g::ggml_add(ctx, inp_l, v);
+            }
         }
         g::ggml_mul(ctx, g::ggml_rms_norm(ctx, inp_l, eps), self.output_norm)
+    }
+
+    /// The steering rows a request adds, scaled, by layer: none for `None`. Refuses steering this talker cannot take.
+    fn steer_rows(&self, steer: Option<&Steering>) -> Result<Vec<(usize, Vec<f32>)>, EngineError> {
+        let Some(s) = steer else {
+            return Ok(Vec::new());
+        };
+        self.check_steer(s)?;
+        let rows: Vec<(usize, Vec<f32>)> = s.scaled().into_iter().map(|(l, v)| (l as usize, v)).collect();
+        let n = self.config.n_layers as usize;
+        Ok(match self.plant {
+            Plant::SteerLayerShift => rows
+                .into_iter()
+                .map(|(l, v)| (l + 1, v))
+                .filter(|(l, _)| *l < n)
+                .collect(),
+            Plant::SteerNextLayerToo => rows
+                .into_iter()
+                .flat_map(|(l, v)| [(l, v.clone()), (l + 1, v)])
+                .filter(|(l, _)| *l < n)
+                .collect(),
+            _ => rows,
+        })
+    }
+
+    /// One graph input per steered layer, each a row of the hidden size. Set with [`set_steer`](Self::set_steer).
+    /// None under the planted missing add, so the graph is the unsteered one.
+    unsafe fn steer_inputs(&self, ctx: Ctx, rows: &[(usize, Vec<f32>)]) -> Vec<(usize, T)> {
+        if self.plant == Plant::SteerAddMissing {
+            return Vec::new();
+        }
+        rows.iter()
+            .map(|(l, _)| {
+                let t = g::ggml_new_tensor_1d(ctx, g::GGML_TYPE_F32, self.config.hidden_size as i64);
+                g::ggml_set_input(t);
+                (*l, t)
+            })
+            .collect()
+    }
+
+    /// Fills the inputs [`steer_inputs`](Self::steer_inputs) made.
+    unsafe fn set_steer(inputs: &[(usize, T)], rows: &[(usize, Vec<f32>)]) {
+        for ((_, t), (_, v)) in inputs.iter().zip(rows) {
+            g::ggml_backend_tensor_set(*t, v.as_ptr().cast(), 0, v.len() * 4);
+        }
     }
 
     /// Positions, M-RoPE positions and the F16 causal mask as `forward_prefill` and `forward_step_internal` fill
@@ -1297,7 +1412,23 @@ impl Talker {
     }
 
     /// `forward_prefill` from position 0: returns the last row's codec logits and hidden state.
-    fn talker_prefill(&mut self, embd: &[f32], n_tokens: i64) -> Result<(Vec<f32>, Vec<f32>), EngineError> {
+    fn talker_prefill(
+        &mut self,
+        embd: &[f32],
+        n_tokens: i64,
+        steer: &[(usize, Vec<f32>)],
+    ) -> Result<(Vec<f32>, Vec<f32>), EngineError> {
+        self.talker_prefill_rows(embd, n_tokens, steer, false)
+    }
+
+    /// [`talker_prefill`](Self::talker_prefill), returning every row's hidden state when `all_rows`.
+    fn talker_prefill_rows(
+        &mut self,
+        embd: &[f32],
+        n_tokens: i64,
+        steer: &[(usize, Vec<f32>)],
+        all_rows: bool,
+    ) -> Result<(Vec<f32>, Vec<f32>), EngineError> {
         let h = self.config.hidden_size as i64;
         let vocab = self.config.codec_vocab_size as usize;
         let n_kv_pad = self.n_kv_pad(0, n_tokens);
@@ -1308,7 +1439,8 @@ impl Talker {
             let inp = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_F32, h, n_tokens);
             g::ggml_set_input(inp);
             let (pos, mrope_pos, mask) = self.talker_inputs(ctx, n_tokens, n_kv_pad);
-            let hidden = self.talker_layers(ctx, gf, inp, n_tokens, n_kv_pad, pos, mrope_pos, mask, true);
+            let steer_in = self.steer_inputs(ctx, steer);
+            let hidden = self.talker_layers(ctx, gf, inp, n_tokens, n_kv_pad, pos, mrope_pos, mask, true, &steer_in);
             g::ggml_set_output(hidden);
             let logits = g::ggml_mul_mat(ctx, self.codec_head, hidden);
             g::ggml_set_output(logits);
@@ -1319,6 +1451,7 @@ impl Talker {
                 || {
                     g::ggml_backend_tensor_set(inp, embd.as_ptr().cast(), 0, embd.len() * 4);
                     self.set_positions(pos, mrope_pos, mask, 0, n_tokens, n_kv_pad);
+                    Self::set_steer(&steer_in, steer);
                 },
                 || {
                     let mut l = vec![0f32; vocab];
@@ -1328,16 +1461,79 @@ impl Talker {
                         (n_tokens as usize - 1) * vocab * 4,
                         vocab * 4,
                     );
-                    let mut hid = vec![0f32; h as usize];
-                    g::ggml_backend_tensor_get(
-                        hidden,
-                        hid.as_mut_ptr().cast(),
-                        (n_tokens - 1) as usize * h as usize * 4,
-                        h as usize * 4,
-                    );
+                    let first = if all_rows { 0 } else { n_tokens as usize - 1 };
+                    let mut hid = vec![0f32; (n_tokens as usize - first) * h as usize];
+                    g::ggml_backend_tensor_get(hidden, hid.as_mut_ptr().cast(), first * h as usize * 4, hid.len() * 4);
                     (l, hid)
                 },
             )
+        }
+    }
+
+    /// The talker's final hidden state (after its output norm) for every row of a prefill of `embd`, `n_tokens` rows
+    /// of the hidden size, from position 0, under `steer`. The prefill graph [`generate_steered`](Self::generate_steered)
+    /// runs, on given rows instead of a composed prompt: for checking the talker against a reference.
+    pub fn prefill_hidden(
+        &mut self,
+        embd: &[f32],
+        n_tokens: usize,
+        steer: Option<&Steering>,
+    ) -> Result<Vec<f32>, EngineError> {
+        let h = self.config.hidden_size as usize;
+        if n_tokens == 0 || embd.len() != n_tokens * h {
+            return Err(err(format!(
+                "a prefill of {n_tokens} rows of {h} needs {} values, not {}",
+                n_tokens * h,
+                embd.len()
+            )));
+        }
+        let rows = self.steer_rows(steer)?;
+        let c = self.config.clone();
+        let required = n_tokens as i64 + 8;
+        if self.cache.as_ref().is_none_or(|k| k.n_ctx < required) {
+            self.cache = None;
+            self.cache = Some(self.new_cache(
+                g::GGML_TYPE_F16,
+                [c.head_dim as i64, c.n_kv_heads as i64, required],
+                c.n_layers as usize,
+                required,
+            )?);
+        }
+        Ok(self.talker_prefill_rows(embd, n_tokens as i64, &rows, true)?.1)
+    }
+
+    /// The number of nodes in the talker's prefill graph for `n_tokens` rows under `steer`. Test builds only: it
+    /// shows that an unsteered graph has no steering node and a steered one has one per layer.
+    #[cfg(feature = "plant")]
+    pub fn prefill_graph_nodes(&mut self, n_tokens: usize, steer: Option<&Steering>) -> Result<i32, EngineError> {
+        let rows = self.steer_rows(steer)?;
+        let c = self.config.clone();
+        let required = n_tokens as i64 + 8;
+        if self.cache.as_ref().is_none_or(|k| k.n_ctx < required) {
+            self.cache = None;
+            self.cache = Some(self.new_cache(
+                g::GGML_TYPE_F16,
+                [c.head_dim as i64, c.n_kv_heads as i64, required],
+                c.n_layers as usize,
+                required,
+            )?);
+        }
+        let n_tokens = n_tokens as i64;
+        let h = c.hidden_size as i64;
+        let n_kv_pad = self.n_kv_pad(0, n_tokens);
+        // SAFETY: the graph is built and counted, never allocated or run; the context is freed before return.
+        unsafe {
+            let ctx = self.meta.context();
+            let gf = g::ggml_new_graph_custom(ctx, MAX_NODES, false);
+            let inp = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_F32, h, n_tokens);
+            let (pos, mrope_pos, mask) = self.talker_inputs(ctx, n_tokens, n_kv_pad);
+            let steer_in = self.steer_inputs(ctx, &rows);
+            let hidden = self.talker_layers(ctx, gf, inp, n_tokens, n_kv_pad, pos, mrope_pos, mask, true, &steer_in);
+            let logits = g::ggml_mul_mat(ctx, self.codec_head, hidden);
+            g::ggml_build_forward_expand(gf, logits);
+            let n = g::ggml_graph_n_nodes(gf);
+            g::ggml_free(ctx);
+            Ok(n)
         }
     }
 
@@ -1347,6 +1543,7 @@ impl Talker {
         codes: &[i32],
         overlay: &[f32],
         n_past: i64,
+        steer: &[(usize, Vec<f32>)],
     ) -> Result<(Vec<f32>, Vec<f32>), EngineError> {
         let h = self.config.hidden_size as i64;
         let vocab = self.config.codec_vocab_size as usize;
@@ -1372,7 +1569,8 @@ impl Talker {
             }
             cur = g::ggml_add(ctx, cur, inp_overlay);
             let (pos, mrope_pos, mask) = self.talker_inputs(ctx, 1, n_kv_pad);
-            let hidden = self.talker_layers(ctx, gf, cur, 1, n_kv_pad, pos, mrope_pos, mask, false);
+            let steer_in = self.steer_inputs(ctx, steer);
+            let hidden = self.talker_layers(ctx, gf, cur, 1, n_kv_pad, pos, mrope_pos, mask, false, &steer_in);
             g::ggml_set_output(hidden);
             let logits = g::ggml_mul_mat(ctx, self.codec_head, hidden);
             g::ggml_set_output(logits);
@@ -1384,6 +1582,7 @@ impl Talker {
                     g::ggml_backend_tensor_set(inp_codes, codes.as_ptr().cast(), 0, codes.len() * 4);
                     g::ggml_backend_tensor_set(inp_overlay, overlay.as_ptr().cast(), 0, overlay.len() * 4);
                     self.set_positions(pos, mrope_pos, mask, n_past, 1, n_kv_pad);
+                    Self::set_steer(&steer_in, steer);
                 },
                 || {
                     let mut l = vec![0f32; vocab];

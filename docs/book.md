@@ -10,6 +10,7 @@ ggtts-book inspect BOOK.epub [--engine qwen3-tts|fake] [--seed-root R]
                                  print the chapter model, and each chapter's planned chunks and seeds, as JSON
 ggtts-book render BOOK.epub --out DIR [--engine ...] [--seed-root R] [model flags, see Rendering]
                                  render every chapter into DIR, resuming what an earlier run finished
+ggtts-book export DIR --out BOOK.flac   one FLAC with a chapter mark per chapter, see Export
 ggtts-book --version
 ```
 
@@ -260,6 +261,30 @@ hardware class. Redraws of chunks the judge rejects are not done yet: every chun
 
 `DIR/book.json` names the book rendered into `DIR`. A `DIR` holding another book, or a non-empty `DIR` with no
 `book.json`, is refused before anything is written, so one book never overwrites another's chunks.
+
+### Chapter files and their tags
+
+Each chapter FLAC carries a VORBIS_COMMENT block: `TITLE` (the chapter's title), `ALBUM` (the book's title), one
+`ARTIST` per author, `TRACKNUMBER` (its place among the chapters written), and `GGTTS_BOOK_ID`, `GGTTS_CHAPTER_ID`
+and `GGTTS_SEED_ROOT`, which tie it to its render. Front and back matter is left out unless `render` is given
+`--include-skippable`.
+
+## Export: one chaptered audiobook file
+
+```text
+ggtts-book export DIR --out BOOK.flac
+```
+
+`export` joins a finished render into one FLAC: the chapter files' own samples, in order, with 2 seconds of silence
+between chapters (`CHAPTER_GAP_S`), and a chapter mark at the start of each, written as Vorbis comments:
+`CHAPTER001=00:00:00.000` and `CHAPTER001NAME=<title>`, the convention ffmpeg-based players (mpv, VLC) read as chapters.
+The book's title and authors are its `TITLE`, `ALBUM` and `ARTIST` tags. The file is written a block at a time, so a
+book of many hours is never held in memory, and the same render always exports to the same bytes. It prints a JSON
+report (`ggtts-book-export/1`) with each chapter's start.
+
+`export` refuses, naming the chapter: a directory with no `book.json`; a chapter whose manifest has a chunk not done;
+a chapter directory with no chapter file; chapters rendered with different seed roots or engines; chapters at
+different sample rates. An `.m4b` for audiobook apps (lossless ALAC with a chapter track) is issue 226.
 
 ### Not yet
 

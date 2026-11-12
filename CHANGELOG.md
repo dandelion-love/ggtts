@@ -44,6 +44,12 @@ that a merge places under a released heading is caught.
   records the engine's provenance (family, backend, profile, model SHA-256s, speaker, ggtts build) and each
   chunk's render time; a resume with another engine re-renders the chapter rather than mixing two renders. An
   output directory holding another book is refused.
+- **`ggtts-book export DIR --out BOOK.flac` joins a rendered book into one chaptered FLAC.** The chapters'
+  own samples, 2 s apart, with a chapter mark per chapter as Vorbis comments (`CHAPTER001`,
+  `CHAPTER001NAME`), which mpv and VLC read; written a block at a time, byte-identical for the same render. An
+  unfinished render, or one that mixes seed roots or engines, is refused naming the chapter. Each chapter FLAC
+  now carries `TITLE`, `ALBUM`, `ARTIST` and `TRACKNUMBER` tags, and `render --include-skippable` renders the
+  front and back matter too.
 
 ## v0.1.0-rc.11 (2026-11-12)
 

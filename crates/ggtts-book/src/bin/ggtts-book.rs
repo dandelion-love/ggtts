@@ -6,7 +6,10 @@
 //! ggtts-book render BOOK.epub --out DIR [--engine qwen3-tts|kitten-tts-2|fake] [--seed-root R]
 //!                  [--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME]
 //!                  [--device cpu|cuda] [--threads N] [--offline]
+//!                  [--include-skippable]
 //!                                   render every chapter into DIR, resuming what an earlier run finished
+//! ggtts-book export DIR --out BOOK.flac
+//!                                   join a finished render into one FLAC with a chapter mark per chapter
 //! ggtts-book --version
 //! ```
 //!
@@ -20,7 +23,10 @@
 //!
 //! `render` writes `DIR/book.json`, `DIR/NNN-<chapter id>/` (the chapter's chunks and manifest) and
 //! `DIR/NNN-<chapter id>.flac`, and prints a JSON report. Front and back matter is left out. Run it again on the same
-//! `DIR` to resume; a `DIR` holding another book is refused.
+//! `DIR` to resume; a `DIR` holding another book is refused. `--include-skippable` renders the front and back
+//! matter too. Each chapter FLAC is tagged: TITLE, ALBUM, ARTIST, TRACKNUMBER.
+//!
+//! `export` refuses a render that is not finished, or that mixes seed roots or engines, naming the chapter.
 //!
 //! Exit 0 on success; 2 when the book or the engine is refused (the reason on stderr), a render fails (what was
 //! finished is kept), or the command line is wrong.
@@ -29,13 +35,15 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use ggtts_book::plan::{engine_profile, plan_book, DEFAULT_SEED_ROOT};
-use ggtts_book::render::{render_command, LoadedEngine};
+use ggtts_book::render::{render_command_with, LoadedEngine};
 use ggtts_book::Book;
 use serde_json::json;
 
 const USAGE: &str = "usage: ggtts-book inspect BOOK.epub [--engine qwen3-tts|fake] [--seed-root R]\n       \
 ggtts-book render BOOK.epub --out DIR [--engine qwen3-tts|kitten-tts-2|fake] [--seed-root R]\n                  \
-[--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME] [--device cpu|cuda] [--threads N] [--offline]\n       \
+[--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME] [--device cpu|cuda] [--threads N] [--offline]\n                  \
+[--include-skippable]\n       \
+ggtts-book export DIR --out BOOK.flac\n       \
 ggtts-book --version";
 
 fn fail(message: &str) -> ExitCode {
@@ -56,6 +64,7 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             ExitCode::SUCCESS
         }
+        Some("export") => export(&args[1..]),
         Some(command @ ("inspect" | "render")) => match Options::parse(command, &args[1..]) {
             Ok(o) if command == "inspect" => inspect(o),
             Ok(o) => render(o),
@@ -72,6 +81,7 @@ struct Options {
     book: String,
     seed_root: String,
     out: Option<PathBuf>,
+    include_skippable: bool,
     load: ggtts_load::Request,
 }
 
@@ -81,6 +91,7 @@ impl Options {
             book: String::new(),
             seed_root: DEFAULT_SEED_ROOT.to_string(),
             out: None,
+            include_skippable: false,
             load: ggtts_load::Request {
                 engine: "qwen3-tts".into(),
                 ..Default::default()
@@ -100,6 +111,10 @@ impl Options {
                 "--offline" => {
                     render_only("--offline")?;
                     o.load.offline = true;
+                }
+                "--include-skippable" => {
+                    render_only("--include-skippable")?;
+                    o.include_skippable = true;
                 }
                 flag @ ("--engine" | "--seed-root" | "--out" | "--model" | "--codec" | "--voice" | "--speaker"
                 | "--device" | "--threads") => {
@@ -208,7 +223,39 @@ fn render(o: Options) -> ExitCode {
         return fail("render needs --out DIR");
     };
     let req = o.load;
-    match render_command(Path::new(&o.book), &out_dir, &o.seed_root, || load_engine(req)) {
+    match render_command_with(Path::new(&o.book), &out_dir, &o.seed_root, o.include_skippable, || {
+        load_engine(req)
+    }) {
+        Ok(report) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).expect("JSON values serialize")
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&e),
+    }
+}
+
+fn export(args: &[String]) -> ExitCode {
+    let mut dir = None;
+    let mut out = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--out" => match it.next() {
+                Some(v) => out = Some(PathBuf::from(v)),
+                None => return fail(&format!("--out needs a value\n{USAGE}")),
+            },
+            a if a.starts_with("--") => return fail(&format!("unknown option {a}\n{USAGE}")),
+            _ if dir.is_none() => dir = Some(PathBuf::from(arg)),
+            _ => return fail(&format!("one directory at a time\n{USAGE}")),
+        }
+    }
+    let (Some(dir), Some(out)) = (dir, out) else {
+        return fail(&format!("export needs DIR and --out BOOK.flac\n{USAGE}"));
+    };
+    match ggtts_book::export::export(&dir, &out) {
         Ok(report) => {
             println!(
                 "{}",

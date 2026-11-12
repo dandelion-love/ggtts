@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use ggtts_core::audio::trim_edges_f32;
 use ggtts_core::engine::{ChunkRequest, Engine};
-use ggtts_core::flac::{encode_flac, write_flac};
+use ggtts_core::flac::encode_flac;
 use ggtts_core::pipeline::{gap_samples, level};
 use ggtts_core::profile::Profile;
 
@@ -87,8 +87,15 @@ pub fn chapter_stem(index: usize, chapter: &Chapter) -> String {
     format!("{index:03}-{id}")
 }
 
-/// Join a finished chapter's stored chunks with the profile's pauses, level it, and write `out` (a `.flac` path).
-pub fn join_chapter(profile: &Profile, dir: &Path, plan: &ChapterPlan, out: &Path) -> Result<PathBuf, String> {
+/// Join a finished chapter's stored chunks with the profile's pauses, level it, and write `out` (a `.flac` path)
+/// with `tags` in its VORBIS_COMMENT block.
+pub fn join_chapter(
+    profile: &Profile,
+    dir: &Path,
+    plan: &ChapterPlan,
+    out: &Path,
+    tags: &[(String, String)],
+) -> Result<PathBuf, String> {
     let mut read: Vec<f32> = Vec::new();
     let mut rate = None;
     for (i, chunk) in plan.chunks.iter().enumerate() {
@@ -115,7 +122,28 @@ pub fn join_chapter(profile: &Profile, dir: &Path, plan: &ChapterPlan, out: &Pat
     }
     let rate = rate.ok_or_else(|| format!("chapter {} has no chunks", plan.chapter_id))?;
     level(profile, &mut read);
-    write_flac(out, &read, rate).map_err(|e| format!("{}: {e}", out.display()))
+    let pcm: Vec<i16> = read.iter().map(|&x| ggtts_core::flac::to_i16(x)).collect();
+    let flac = encode_flac(&pcm, rate).map_err(|e| format!("{}: {e}", out.display()))?;
+    let tagged = crate::flac::with_tags(&flac, tags).map_err(|e| format!("{}: {e}", out.display()))?;
+    crate::manifest::write_atomic(out, &tagged).map_err(|e| format!("{}: {e}", out.display()))?;
+    Ok(out.to_path_buf())
+}
+
+/// The tags a chapter FLAC carries: TITLE (the chapter), ALBUM (the book), one ARTIST per author, TRACKNUMBER (its
+/// place among the chapters written), and the ids that tie it to its render.
+pub fn chapter_tags(book: &Book, chapter: &Chapter, track: usize, plan: &ChapterPlan) -> Vec<(String, String)> {
+    let mut tags = vec![
+        ("TITLE".to_string(), chapter.title.clone()),
+        ("ALBUM".to_string(), book.title.clone()),
+    ];
+    tags.extend(book.authors.iter().map(|a| ("ARTIST".to_string(), a.clone())));
+    tags.extend([
+        ("TRACKNUMBER".to_string(), track.to_string()),
+        ("GGTTS_BOOK_ID".to_string(), plan.book_id.clone()),
+        ("GGTTS_CHAPTER_ID".to_string(), plan.chapter_id.clone()),
+        ("GGTTS_SEED_ROOT".to_string(), plan.seed_root.clone()),
+    ]);
+    tags
 }
 
 /// The file in an output directory that names the book rendered into it.
@@ -186,6 +214,17 @@ pub fn render_command(
     seed_root: &str,
     load: impl FnOnce() -> Result<LoadedEngine, String>,
 ) -> Result<serde_json::Value, String> {
+    render_command_with(book_path, out, seed_root, false, load)
+}
+
+/// [`render_command`], rendering front and back matter too when `include_skippable`.
+pub fn render_command_with(
+    book_path: &Path,
+    out: &Path,
+    seed_root: &str,
+    include_skippable: bool,
+    load: impl FnOnce() -> Result<LoadedEngine, String>,
+) -> Result<serde_json::Value, String> {
     let book = Book::open(book_path).map_err(|e| e.to_string())?;
     let LoadedEngine {
         mut engine,
@@ -198,7 +237,7 @@ pub fn render_command(
     for plan in &mut plans {
         plan.engine = engine_record.clone();
     }
-    let reports = render_book(engine.as_mut(), &book, &plans, out)?;
+    let reports = render_book_with(engine.as_mut(), &book, &plans, out, include_skippable)?;
     let chapters: Vec<_> = reports
         .iter()
         .map(|r| match &r.outcome {
@@ -237,11 +276,27 @@ pub fn render_book(
     plans: &[ChapterPlan],
     out: &Path,
 ) -> Result<Vec<ChapterReport>, String> {
+    render_book_with(engine, book, plans, out, false)
+}
+
+/// [`render_book`], rendering front and back matter too when `include_skippable`.
+pub fn render_book_with(
+    engine: &mut dyn Engine,
+    book: &Book,
+    plans: &[ChapterPlan],
+    out: &Path,
+    include_skippable: bool,
+) -> Result<Vec<ChapterReport>, String> {
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     claim_output(out, &book.book_id())?;
     let mut reports = Vec::new();
+    let mut track = 0;
     for (i, (chapter, plan)) in book.chapters.iter().zip(plans).enumerate() {
-        if let Some(reason) = chapter.skip_reason.clone().filter(|_| chapter.skippable) {
+        if let Some(reason) = chapter
+            .skip_reason
+            .clone()
+            .filter(|_| chapter.skippable && !include_skippable)
+        {
             reports.push(ChapterReport {
                 id: chapter.id.clone(),
                 outcome: ChapterOutcome::Skipped { reason },
@@ -272,7 +327,9 @@ pub fn render_book(
             RunError::Io(e) => format!("chapter {}: {e}", chapter.id),
         })?;
         let profile = *engine.profile();
-        let file = join_chapter(&profile, &dir, plan, &out.join(format!("{stem}.flac")))?;
+        track += 1;
+        let tags = chapter_tags(book, chapter, track, plan);
+        let file = join_chapter(&profile, &dir, plan, &out.join(format!("{stem}.flac")), &tags)?;
         reports.push(ChapterReport {
             id: chapter.id.clone(),
             outcome: ChapterOutcome::Written {

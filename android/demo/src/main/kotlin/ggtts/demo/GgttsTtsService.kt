@@ -14,7 +14,6 @@ import android.speech.tts.Voice
 import android.util.Log
 import ggtts.Ggtts
 import java.io.File
-import java.util.Locale
 
 class GgttsTtsService : TextToSpeechService() {
     private lateinit var session: SynthesisSession
@@ -69,32 +68,27 @@ class GgttsTtsService : TextToSpeechService() {
         })
     }
 
-    override fun onGetVoices(): List<Voice> = VOICES.mapNotNull { (name, locale, engine) ->
-        if (voices.load(engine) == null) return@mapNotNull null
+    override fun onGetVoices(): List<Voice> = SystemVoices.ALL.mapNotNull { (name, locale, _) ->
+        if (!SystemVoices.usable(name, voices)) return@mapNotNull null
         Voice(name, locale, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_VERY_HIGH, false, emptySet())
     }
 
     override fun onIsValidVoiceName(voiceName: String?): Int =
-        if (VOICES.any { it.first == voiceName }) TextToSpeech.SUCCESS else TextToSpeech.ERROR
+        if (SystemVoices.usable(voiceName, voices)) TextToSpeech.SUCCESS else TextToSpeech.ERROR
 
     override fun onLoadVoice(voiceName: String?): Int {
-        val v = VOICES.firstOrNull { it.first == voiceName } ?: return TextToSpeech.ERROR
+        if (!SystemVoices.usable(voiceName, voices)) return TextToSpeech.ERROR
+        val v = SystemVoices.ALL.first { it.first == voiceName }
         current = arrayOf(v.second.isO3Language, v.second.isO3Country, "")
         return TextToSpeech.SUCCESS
     }
 
     override fun onGetDefaultVoiceNameFor(lang: String?, country: String?, variant: String?): String? {
         val engine = Languages.engineFor(lang ?: "", country ?: "") ?: return null
-        return VOICES.firstOrNull { it.third == engine }?.first
+        return SystemVoices.ALL.firstOrNull { it.third == engine }?.first
     }
 
     companion object {
-        /** Voice name, its locale, and the engine that speaks it. */
-        val VOICES = listOf(
-            Triple("yue-hk-ggtts-qwen3", Locale("yue", "HK"), "qwen3-tts"),
-            Triple("en-us-ggtts-kitten", Locale.US, "kitten-tts-2"),
-        )
-
         fun prefs(context: android.content.Context): KeyValue {
             val p = context.getSharedPreferences("ggtts-system-engine", MODE_PRIVATE)
             return object : KeyValue {

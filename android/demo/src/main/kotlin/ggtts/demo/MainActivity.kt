@@ -111,7 +111,7 @@ class MainActivity : Activity(), DemoView {
      */
     private fun speakThroughAndroid() {
         val engine = ENGINES[engines.checkedRadioButtonId - 100]
-        val locale = GgttsTtsService.VOICES.first { it.third == engine }.second
+        val locale = SystemVoices.ALL.first { it.third == engine }.second
         val line = text.text.toString()
         val t0 = System.nanoTime()
         fun ms() = (System.nanoTime() - t0) / 1_000_000

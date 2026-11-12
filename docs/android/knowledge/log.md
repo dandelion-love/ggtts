@@ -2,6 +2,10 @@
 
 ## 2026-11-12
 
+- A Kitten-TTS 2 step profiled in the engine's own graph (desktop): layer products about 27 to 30 ms, the head 16 ms,
+  copying the V cache 26 ms. The head now computes only the 6,566 samplable rows: the same tokens on 44 of 44 lines,
+  1.14x (TQ1_0) and 1.21x (Q4_0) faster. Filed: the V cache copy (257).
+
 - Kitten-TTS 2 on the phone with the released Cantonese TQ1_0 LM against the base Q4_0: 195 MB lower peak, 24% and 35%
   slower generation in two pairs. The 3.78 GB peak is two load-time spikes (whole-file reads and per-tensor copies), about 0.9 GB
   above what a render holds. Peak-memory figures corrected for a KiB slip (3.69 to 3.78 GB, 2.93 to 3.00 GB), here and

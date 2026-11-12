@@ -40,6 +40,10 @@ that a merge places under a released heading is caught.
 
 ### Changed
 
+- **Kitten-TTS 2 computes its output head only for the tokens a step can sample** (the audio tokens and the two end
+  tokens, one range of 6,566 of the 158,241 rows), and gives every other token the lowest finite score. On a test set of
+  22 lines with both language models the tokens are identical, and a step is 1.14x to 1.21x faster on desktop CPU.
+  `GGTTS_KITTEN_FULL_HEAD=1` computes the whole head.
 - **The Android demo states peak memory in bytes, as it compares them.** Its figures read the kernel's KiB as 1000
   bytes: Kitten-TTS 2 peaks at 3.78 GB, not 3.70, and Qwen3-TTS at 3.00 GB, not 2.93, so the low-memory warning now
   comes at the right point.

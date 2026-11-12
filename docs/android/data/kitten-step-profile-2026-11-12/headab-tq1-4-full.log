@@ -1,0 +1,7 @@
+head_rows_check: 4 lines, seed 20260905, 4 threads; allowed: audio ids 151675..158236 (6561), speech_end 151670, stop 151674
+line  1:  228 steps, 14.4 finite a step, 0 steps with another id finite (0 in all)  | 227 tokens, Eos, hash e712e612ec04f8a1, 23.9 s
+line  2:  237 steps, 13.1 finite a step, 0 steps with another id finite (0 in all)  | 236 tokens, Eos, hash a2506d3401ecc65d, 24.3 s
+line  3:  139 steps, 14.0 finite a step, 0 steps with another id finite (0 in all)  | 138 tokens, Eos, hash de53c48356e4e471, 16.0 s
+line  4:  159 steps, 12.9 finite a step, 0 steps with another id finite (0 in all)  | 158 tokens, Eos, hash cbb0567da6500843, 17.6 s
+all: 763 steps; 0 with an id outside the allowed set still finite (0 in all); distinct ids 0
+wrote /home/jleung/work/op-timing/headab/tq1-4-full.json

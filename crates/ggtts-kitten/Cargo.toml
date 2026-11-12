@@ -17,6 +17,18 @@ name = "ggtts-kitten"
 path = "src/bin/ggtts-kitten.rs"
 required-features = ["ggml"]
 
+[[example]]
+name = "matmul_bench"
+required-features = ["ggml"]
+
+[[example]]
+name = "head_rows_check"
+required-features = ["ggml"]
+
+[[example]]
+name = "op_profile"
+required-features = ["ggml"]
+
 [features]
 default = []
 # The ggml graph (the model, the session, the parity check and rendering). Off by default, like ggtts-ggml-sys's

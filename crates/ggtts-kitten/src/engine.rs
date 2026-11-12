@@ -330,6 +330,15 @@ impl KittenEngine {
         threads: usize,
     ) -> Result<Self, String> {
         let tm = TokenMap::from_meta(&model.meta)?;
+        let mut model = model;
+        // A step samples only the audio ids and the two end ids, and they are one contiguous range of the
+        // vocabulary: compute the head for that range alone (a view; Model::head_rows says when it is exact).
+        // GGTTS_KITTEN_FULL_HEAD=1 computes the whole head, to compare.
+        let lo = tm.speech_end.min(tm.stop).min(tm.audio_base) as usize;
+        let hi = (tm.audio_base + tm.audio_count).max(tm.speech_end + 1).max(tm.stop + 1) as usize;
+        if std::env::var_os("GGTTS_KITTEN_FULL_HEAD").is_none() {
+            model.head_rows = Some(lo..hi);
+        }
         let ref_text = tokenizer.encode(&reference.transcript)?;
         let speaker = model.project_speaker(&reference.embedding);
         let m = &model.meta;
@@ -396,6 +405,17 @@ impl KittenEngine {
     }
 
     pub fn generate_ids(&mut self, text: &str, seed: u64) -> Result<(Vec<u32>, Stop), String> {
+        self.generate_ids_observed(text, seed, &mut |_| {})
+    }
+
+    /// [`Self::generate_ids`], also handing `observe` each step's scores after the sampler's filters, just before
+    /// the draw. For checks that need to see what could have been sampled; it cannot change the draw.
+    pub fn generate_ids_observed(
+        &mut self,
+        text: &str,
+        seed: u64,
+        observe: &mut dyn FnMut(&[f32]),
+    ) -> Result<(Vec<u32>, Stop), String> {
         let text_ids = self.tokenizer.encode(text)?;
         let prompt = self
             .tm
@@ -426,6 +446,7 @@ impl KittenEngine {
             // Step 0 samples the prefill's logits; step k > 0 those of the k-th single-token forward.
             sampler::process(&mut scores, &history, prompt.len(), ids, &self.settings)
                 .map_err(|e| format!("generation step {step} (position {}): {e}", history.len() - 1))?;
+            observe(&scores);
             let tok = sampler::sample(&scores, &mut rng);
             history.push(tok);
             if tok == self.tm.speech_end || tok == self.tm.stop {

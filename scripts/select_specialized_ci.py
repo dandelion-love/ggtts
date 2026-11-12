@@ -62,6 +62,9 @@ GGML_GATED_FILES = {
 # its ggml-gated code on Linux. It links these crates (ggtts-ffi only for a test that holds the error codes equal), so a
 # change to their source or manifest also runs it. Their own tests do not reach the binding.
 PYTHON_CRATE = "crates/ggtts-py/"
+# The book layer (crates/ggtts-book) links no ggml and ships in no archive, wheel or binding: the general CPU
+# checks (fmt, clippy, and build-test on Linux and Windows) build and test it, and no specialized job reads it.
+BOOK_CRATE = "crates/ggtts-book/"
 PYTHON_ENGINE_CRATES = ("crates/ggtts-core/", "crates/ggtts-fake/", "crates/ggtts-qwen3-tts/", "crates/ggtts-kitten/",
                         "crates/ggtts-ggml-sys/", "crates/ggtts-models/", "crates/ggtts-ffi/")
 
@@ -266,6 +269,8 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
         if path.startswith(GGML_GATED_CRATES) or path in GGML_GATED_FILES:
             # Code behind `feature = "ggml"` is compiled and tested only by the ggml job.
             selected.add("ggml")
+        if path.startswith(BOOK_CRATE):
+            continue
         if path.startswith("crates/"):
             if path == "crates/ggtts-cli/src/bin/ggtts-render.rs":
                 # The renderer contains ggml-gated engine loading and routing. Default CPU

@@ -11,6 +11,17 @@ that a merge places under a released heading is caught.
 
 ## Unreleased
 
+### Added
+
+- **`ggtts-book inspect` reads an EPUB into chapters.** A new crate and binary, `ggtts-book`, a layer on top of
+  the engines. It reads the container, the package's metadata and spine, and the table of contents (the EPUB 3 nav
+  document, else the EPUB 2 NCX, else the spine), and turns each chapter's XHTML into headings and paragraphs.
+  Nested tables of contents keep their depth, a chapter split across files is one chapter, and front and back
+  matter (cover, title page, copyright, contents, index, colophon) is kept and marked skippable. `inspect` prints
+  the chapter model as JSON (`ggtts-book-chapters/1`). A DRM-protected book is refused, never decrypted or
+  stripped; so are a file that is not a zip, a missing or malformed `container.xml`, and a spine item whose file
+  is absent, each with its own error code. Rendering a book comes later. See `docs/book.md`.
+
 ## v0.1.0-rc.11 (2026-11-12)
 
 ### Added

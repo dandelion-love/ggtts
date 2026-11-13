@@ -11,6 +11,13 @@ that a merge places under a released heading is caught.
 
 ## Unreleased
 
+### Changed
+
+- **A Kitten-TTS 2 model whose token map names ids outside its vocabulary is refused when it loads,** with an error
+  naming the `kitten.token_map` field and both numbers. Such a file used to load and could fail or misbehave later.
+  For code using the engine crate directly: output-head rows set outside the head are now an error from the forward
+  pass, where they used to fall back to the whole head.
+
 ## v0.1.0-rc.12 (2026-11-13)
 
 ### Added

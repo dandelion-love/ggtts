@@ -71,7 +71,8 @@ copyright page, table of contents, index, colophon, imprint, errata and the like
 * Character references, the HTML5 named entities (`&nbsp;`, `&mdash;`) and the internal entities a document's DTD
   declares (`<!ENTITY c "Company">`) are decoded. A DTD entity's value is taken as written, never expanded again,
   so nested entities cannot multiply; external (`SYSTEM`, `PUBLIC`) and parameter entities are never fetched or
-  used. A paragraph holding an entity nothing declares keeps its text as written.
+  used. An entity nothing declares is left out, and the rest of the paragraph is read. The text entities expand to
+  counts against the book's budget (see Limits).
 * A `<sup>` is a note marker, and not read, when it links somewhere (an `<a href>` inside) or holds only digits or
   note symbols and does not follow a letter or digit directly (`wool.<sup>2</sup>`). Digits right after a letter
   or digit with no link are an exponent and are read: `mc<sup>2</sup>` reads as `mc2`. After a digit the exponent
@@ -89,7 +90,7 @@ A book is read under resource limits (`Limits`, with `Book::read_with_limits` fo
 | Limit | Default | Refusal |
 |---|---|---|
 | one entry, inflated | 64 MiB | `too-large` |
-| every read of the book together, inflated | 256 MiB | `book-too-large` |
+| every read of the book together, inflated, plus the text its entities expand to | 256 MiB | `book-too-large` |
 | element nesting in any XML document | 256 levels | the document's own code (`content`, `package`, `container`), naming the depth |
 
 Inflation stops at whatever the budget has left, whatever an entry's header claims. The depth limit keeps every
@@ -109,7 +110,7 @@ Each has its own error and a stable code, printed first:
 | `content` | A spine file is not well-formed UTF-8 XHTML. |
 | `not-zip` | The file is not a zip archive. |
 | `too-large` | An entry is over 64 MiB uncompressed. |
-| `book-too-large` | The book's reads together inflate past 256 MiB: a zip bomb, or one file read many times. |
+| `book-too-large` | The book's reads together, with the text its entities expand to, pass 256 MiB: a zip bomb, an entity bomb, or one file read many times. |
 | `zip`, `io` | The archive or the file cannot be read. |
 
 Font obfuscation (`http://www.idpf.org/2008/embedding` and Adobe's) scrambles embedded fonts, not the text, so it
@@ -181,7 +182,7 @@ The length prefix makes the encoding unambiguous: a `|` inside a chapter id cann
 field changes the seed; changing the key's fields or encoding is a new key version, with new expected seeds committed
 (`tests/plan.rs`, checked on Linux and Windows CI, and checked against Python's `hashlib` when committed).
 
-Seeds make a chunk reproducible within ggtts's own guarantees for one engine, model, backend and hardware class. They
+Seeds make a chunk reproducible within ggtts's own guarantees for one engine, model, backend and platform (hardware class, OS and compiler; see the README). They
 do not promise identical audio across hardware.
 
 ## The chapter manifest and resume
@@ -258,19 +259,23 @@ as done (a run killed between writing the file and saving the manifest), and any
 chunk is rendered again. A resume with another engine, backend, model file, speaker or ggtts build does not splice two
 renders into one chapter: the earlier manifest is refused (`for engine ...`) and the chapter is rendered again.
 
-**When a resumed chapter is byte-identical to one rendered in a single run.** Chapters are always joined from the
-stored chunk files, so a resumed chapter is byte-identical to an uninterrupted one **when two conditions hold**:
+**What a resume can match, and what has been observed.** Chapters are always joined from the stored chunk files, so
+a resumed chapter can match an uninterrupted one byte for byte only when both of these hold:
 
-* **The same hardware class** (and the same engine, model, backend and ggtts build, which the manifest enforces). The
-  seed fixes a chunk's sampling, not the floating-point results of different hardware.
-* **An engine whose output for a chunk does not depend on what it rendered before in the same process.** A resumed run
-  starts a new process, so its first chunk follows nothing, where in the uninterrupted run it followed the earlier
-  chunks. The tests use an engine without such history and check every kill point. `ggtts-fake` on its own is not
-  such an engine (its output alternates with the number of texts it has seen). For Qwen3-TTS on CPU, a 13-chunk
-  chapter was killed after 1, 4 and 6 chunks and resumed: each resume exported byte-identically to the uninterrupted
-  run, and every chunk file was identical to the uninterrupted run's. That is evidence at those three points on one
-  machine that this engine keeps no history that changes its output, not a proof for every kill point, engine and
-  device.
+* **The same platform and build, run the same way.** A platform is the hardware class, the operating system and the
+  compiler (see the README): the Windows and Linux CPU builds do not give identical bytes for the same seed. The
+  `--threads` setting must also be the same. The manifest enforces the engine, model, backend, speaker and ggtts
+  build. It does not record the operating system, the compiler or `--threads`, so keeping those the same is up to
+  you. The seed fixes a chunk's sampling, not the floating-point results of another platform.
+* **An engine whose output for a chunk does not depend on what it rendered before in the same process.** A resumed
+  run starts a new process, so its first chunk follows nothing, where in the uninterrupted run it followed the
+  earlier chunks. The tests use an engine without such history and check every kill point. `ggtts-fake` on its own
+  is not such an engine (its output alternates with the number of texts it has seen).
+
+Neither condition is a guarantee of identical bytes; they are what a match needs. What has been observed: Qwen3-TTS
+on CPU, on one Linux machine with the same build and `--threads`, a 13-chunk chapter killed after 1, 4 and 6 chunks.
+Each resume exported byte-identically to the uninterrupted run, and every chunk file matched. That is evidence at
+those three points, not a proof for every kill point, engine or device; CUDA was not tried.
 
 Redraws of chunks the judge rejects are not done yet: every chunk is a first draw.
 

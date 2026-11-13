@@ -56,7 +56,8 @@ impl fmt::Display for BookError {
             BookError::TooLarge { file } => write!(f, "{file} inflates past the per-entry limit"),
             BookError::BookTooLarge { limit } => write!(
                 f,
-                "the book inflates past {limit} bytes in total (a zip bomb, or one file read many times)"
+                "the book inflates past {limit} bytes in total (a zip bomb, entities that expand to more text than \
+                 the book holds, or one file read many times)"
             ),
             BookError::Drm { files } => write!(
                 f,

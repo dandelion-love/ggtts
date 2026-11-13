@@ -177,11 +177,20 @@ fn claim_output(out: &Path, book_id: &str) -> Result<(), String> {
                     out.display()
                 ));
             }
-            let text = serde_json::json!({"format": "ggtts-book-output/1", "book_id": book_id}).to_string();
-            crate::manifest::write_atomic(&marker, text.as_bytes()).map_err(|e| format!("{}: {e}", marker.display()))
+            write_marker(out, book_id, &[])
         }
         Err(e) => Err(format!("{}: {e}", marker.display())),
     }
+}
+
+/// The format of `book.json`.
+pub const MARKER_FORMAT: &str = "ggtts-book-output/1";
+
+/// Write `book.json`: the book rendered into `out`, and the chapter directories its latest render planned, in order.
+fn write_marker(out: &Path, book_id: &str, chapters: &[String]) -> Result<(), String> {
+    let marker = out.join(BOOK_MARKER);
+    let text = serde_json::json!({"format": MARKER_FORMAT, "book_id": book_id, "chapters": chapters}).to_string();
+    crate::manifest::write_atomic(&marker, text.as_bytes()).map_err(|e| format!("{}: {e}", marker.display()))
 }
 
 /// What a render's chunks come from, recorded in every chapter manifest and checked on resume: the engine family,
@@ -291,6 +300,17 @@ pub fn render_book_with(
 ) -> Result<Vec<ChapterReport>, String> {
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     claim_output(out, &book.book_id())?;
+    // Record which chapters this render plans, before rendering any: `export` takes exactly these, so a directory a
+    // render with other options left behind is never exported, and a planned chapter that is missing is refused.
+    let planned: Vec<String> = book
+        .chapters
+        .iter()
+        .zip(plans)
+        .enumerate()
+        .filter(|(_, (c, p))| (include_skippable || !c.skippable) && !p.chunks.is_empty())
+        .map(|(i, (c, _))| chapter_stem(i, c))
+        .collect();
+    write_marker(out, &book.book_id(), &planned)?;
     let mut reports = Vec::new();
     let mut track = 0;
     for (i, (chapter, plan)) in book.chapters.iter().zip(plans).enumerate() {
@@ -332,6 +352,9 @@ pub fn render_book_with(
         track += 1;
         let tags = chapter_tags(book, chapter, track, plan);
         let file = join_chapter(&profile, &dir, plan, &out.join(format!("{stem}.flac")), &tags)?;
+        let bytes = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        crate::manifest::Manifest::record_chapter(&dir, plan, &format!("{stem}.flac"), &bytes)
+            .map_err(|e| format!("chapter {}: {e}", chapter.id))?;
         reports.push(ChapterReport {
             id: chapter.id.clone(),
             outcome: ChapterOutcome::Written {

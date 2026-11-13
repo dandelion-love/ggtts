@@ -6,7 +6,8 @@
 //!   note references and the notes themselves (`epub:type` `noteref`, `footnote`, `endnote`, `rearnote` and their
 //!   plurals, or the matching `doc-*` roles), page-break markers, and a `<sup>` that is a note marker: one that
 //!   links somewhere, or holds only digits or note symbols and does not follow a letter or digit directly. An
-//!   exponent (`mc<sup>2</sup>`, `10<sup>6</sup>`) is read.
+//!   exponent (`mc<sup>2</sup>`, `10<sup>6</sup>`) is read; after a digit it is marked with `^` (`10^6`) so it does
+//!   not run into the number.
 //! * Whitespace runs become one space, and a run that holds a line break between two CJK characters (or full-width
 //!   punctuation) is dropped, so a line break inside Chinese text does not become a pause. A space the author wrote
 //!   between CJK characters (`第一章 退潮`) is kept. Soft hyphens and zero-width spaces are
@@ -175,6 +176,13 @@ impl State<'_> {
         if heading.is_some() {
             self.heading = heading;
         }
+        // An exponent right after a digit would run into it (`10<sup>6</sup>` read as "106"): mark it with `^`.
+        if local == "sup"
+            && self.buf.chars().next_back().is_some_and(|c| c.is_ascii_digit())
+            && el.text().trim_start().starts_with(|c: char| c.is_ascii_digit())
+        {
+            self.buf.push('^');
+        }
         for child in &el.children {
             match child {
                 Node::Text(t) => self.buf.push_str(t),
@@ -289,7 +297,12 @@ mod tests {
     fn exponents_are_read_and_note_markers_are_not() {
         // An exponent, right after a letter or digit, with no link: read.
         assert_eq!(paragraphs("<p>E = mc<sup>2</sup>.</p>"), ["E = mc2."]);
-        assert_eq!(paragraphs("<p>About 10<sup>6</sup> stars.</p>"), ["About 106 stars."]);
+        // After a digit it is marked, so 10 to the 6th does not read as 106.
+        assert_eq!(paragraphs("<p>About 10<sup>6</sup> stars.</p>"), ["About 10^6 stars."]);
+        assert_eq!(
+            paragraphs("<p>About 10<sup> 6</sup> stars.</p>"),
+            ["About 10^ 6 stars."]
+        );
         // A marker after punctuation or a space, or at the start: not read.
         assert_eq!(
             paragraphs("<p>Thick as wool.<sup>2</sup> Then rain.</p>"),

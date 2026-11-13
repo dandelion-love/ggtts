@@ -74,7 +74,8 @@ copyright page, table of contents, index, colophon, imprint, errata and the like
   used. A paragraph holding an entity nothing declares keeps its text as written.
 * A `<sup>` is a note marker, and not read, when it links somewhere (an `<a href>` inside) or holds only digits or
   note symbols and does not follow a letter or digit directly (`wool.<sup>2</sup>`). Digits right after a letter
-  or digit with no link are an exponent and are read: `mc<sup>2</sup>` reads as `mc2`, `10<sup>6</sup>` as `106`.
+  or digit with no link are an exponent and are read: `mc<sup>2</sup>` reads as `mc2`. After a digit the exponent
+  is marked with `^`, so `10<sup>6</sup>` reads as `10^6` rather than running into the number as `106`.
   The price: a note marker without a link straight after a word (`shown<sup>3</sup>`) is read too.
 * Whitespace runs become one space. A run holding a line break between two CJK characters or full-width
   punctuation is dropped, so a line break in the middle of Chinese text does not become a pause; a space the
@@ -266,13 +267,17 @@ stored chunk files, so a resumed chapter is byte-identical to an uninterrupted o
   starts a new process, so its first chunk follows nothing, where in the uninterrupted run it followed the earlier
   chunks. The tests use an engine without such history and check every kill point. `ggtts-fake` on its own is not
   such an engine (its output alternates with the number of texts it has seen). For Qwen3-TTS on CPU, a 13-chunk
-  chapter killed after 4 chunks and resumed exported byte-identically to the uninterrupted run; that is evidence for
-  that point on one machine, not a proof for every kill point, engine and device.
+  chapter was killed after 1, 4 and 6 chunks and resumed: each resume exported byte-identically to the uninterrupted
+  run, and every chunk file was identical to the uninterrupted run's. That is evidence at those three points on one
+  machine that this engine keeps no history that changes its output, not a proof for every kill point, engine and
+  device.
 
 Redraws of chunks the judge rejects are not done yet: every chunk is a first draw.
 
-`DIR/book.json` names the book rendered into `DIR`. A `DIR` holding another book, or a non-empty `DIR` with no
-`book.json`, is refused before anything is written, so one book never overwrites another's chunks.
+`DIR/book.json` names the book rendered into `DIR` and lists the chapters the last render planned (`chapters`, the
+directory names, in order). A `DIR` holding another book, or a non-empty `DIR` with no `book.json`, is refused before
+anything is written, so one book never overwrites another's chunks. When a chapter file is written, its SHA-256 is
+recorded in the chapter's manifest (`chapter_file`).
 
 ### Chapter files and their tags
 
@@ -294,9 +299,12 @@ The book's title and authors are its `TITLE`, `ALBUM` and `ARTIST` tags. The fil
 book of many hours is never held in memory, and the same render always exports to the same bytes. It prints a JSON
 report (`ggtts-book-export/1`) with each chapter's start.
 
-`export` refuses, naming the chapter: a directory with no `book.json`; a chapter whose manifest has a chunk not done;
-a chapter directory with no chapter file; chapters rendered with different seed roots or engines; chapters at
-different sample rates. The container follows the extension of `--out`; anything other than `.flac` or `.m4b` is refused.
+`export` takes exactly the chapters `book.json` lists for the last render, so a directory left from an earlier render
+with other options (front matter rendered with `--include-skippable`, then rendered without it) is not exported. It
+refuses, naming the chapter: a directory with no `book.json`, or a `book.json` from before the chapter list; a listed
+chapter with no directory; a chapter whose manifest has a chunk not done; a chapter directory with no chapter file; a
+chapter file whose SHA-256 is not the one its manifest recorded (changed or replaced after the render); chapters
+rendered with different seed roots or engines, or for another book; chapters at different sample rates. The container follows the extension of `--out`; anything other than `.flac` or `.m4b` is refused.
 
 **`.m4b`, for audiobook apps.** The same samples as the `.flac` export, as ALAC (lossless) in ALAC's uncompressed
 frame form, with the chapters twice: a QuickTime chapter text track (the form Apple's players read) and a Nero

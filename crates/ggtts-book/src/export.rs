@@ -7,9 +7,11 @@
 //! ([`crate::mp4`]). Chapters are separated by [`CHAPTER_GAP_S`] of silence. The audio
 //! stays lossless: the samples are the chapter files' own.
 //!
-//! Nothing is exported from a directory that is not a finished render of one book: a chapter whose manifest has a
-//! chunk not done, a chapter directory with no chapter file, chapters rendered with different seed roots or engines,
-//! or a directory with no `book.json`, is refused, naming the chapter.
+//! Exactly the chapters `book.json` lists for the latest render are exported, so a directory an earlier render left
+//! behind is not. Nothing is exported from a directory that is not a finished render of one book: a listed chapter
+//! that is missing, a chapter whose manifest has a chunk not done, a chapter file missing or not the one its manifest
+//! records, chapters rendered with different seed roots, engines or books, or a directory with no `book.json`, is
+//! refused, naming the chapter.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -161,26 +163,43 @@ pub fn export(dir: &Path, out: &Path) -> Result<Value, String> {
             dir.display()
         )
     })?;
-    let book_id = serde_json::from_str::<Value>(&marker)
-        .ok()
-        .and_then(|v| v.get("book_id").and_then(Value::as_str).map(String::from))
+    let not_a_marker = || {
+        format!(
+            "{} is not a book marker this tool wrote",
+            dir.join(BOOK_MARKER).display()
+        )
+    };
+    let marker: Value = serde_json::from_str(&marker).map_err(|_| not_a_marker())?;
+    let book_id = marker
+        .get("book_id")
+        .and_then(Value::as_str)
+        .map(String::from)
+        .ok_or_else(not_a_marker)?;
+    // The chapters the latest render planned, in order: a directory some other render left behind is not exported,
+    // and a planned chapter that is missing is refused.
+    let stems: Vec<String> = marker
+        .get("chapters")
+        .and_then(Value::as_array)
         .ok_or_else(|| {
             format!(
-                "{} is not a book marker this tool wrote",
+                "{} lists no planned chapters: render the book again",
                 dir.join(BOOK_MARKER).display()
             )
-        })?;
-
-    let mut stems: Vec<String> = std::fs::read_dir(dir)
-        .map_err(|e| format!("{}: {e}", dir.display()))?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|name| name.len() > 4 && name.as_bytes()[..3].iter().all(u8::is_ascii_digit) && &name[3..4] == "-")
-        .collect();
-    stems.sort();
+        })?
+        .iter()
+        .map(|s| s.as_str().map(String::from).ok_or_else(not_a_marker))
+        .collect::<Result<_, _>>()?;
     if stems.is_empty() {
         return Err(format!("{} holds no rendered chapters", dir.display()));
+    }
+    if let Some(stem) = stems
+        .iter()
+        .find(|s| s.contains(['/', '\\']) || s.as_str() == ".." || s.as_str() == ".")
+    {
+        return Err(format!(
+            "{} names {stem:?}, which is not a chapter directory",
+            dir.join(BOOK_MARKER).display()
+        ));
     }
 
     let mut chapters = Vec::new();
@@ -189,6 +208,11 @@ pub fn export(dir: &Path, out: &Path) -> Result<Value, String> {
     let mut album = String::new();
     let mut artists: Vec<String> = Vec::new();
     for stem in &stems {
+        if !dir.join(stem).is_dir() {
+            return Err(format!(
+                "chapter {stem} was planned but is not rendered: run render again to finish it"
+            ));
+        }
         let body = Manifest::read_body(&dir.join(stem)).map_err(|e| format!("chapter {stem}: {e}"))?;
         if body["book_id"].as_str() != Some(book_id.as_str()) {
             return Err(format!("chapter {stem} belongs to another book"));
@@ -214,6 +238,18 @@ pub fn export(dir: &Path, out: &Path) -> Result<Value, String> {
             ));
         }
         let file = dir.join(format!("{stem}.flac"));
+        let recorded = body["chapter_file"]["sha256"].as_str().ok_or_else(|| {
+            format!("chapter {stem} has no chapter file recorded in its manifest; run render again to finish it")
+        })?;
+        let bytes =
+            std::fs::read(&file).map_err(|e| format!("chapter {stem} has no chapter file {}: {e}", file.display()))?;
+        if ggtts_core::seed::hex(&ggtts_core::seed::sha256(&bytes)) != recorded {
+            return Err(format!(
+                "chapter {stem}'s file {} is not the one its manifest records; run render again to rebuild it",
+                file.display()
+            ));
+        }
+        drop(bytes);
         let reader = claxon::FlacReader::open(&file)
             .map_err(|e| format!("chapter {stem} has no chapter file {}: {e}", file.display()))?;
         let info = reader.streaminfo();

@@ -70,9 +70,12 @@ use std::time::Instant;
 
 use ggtts_core::engine::{ChunkRequest, Engine};
 use ggtts_core::flac::write_flac;
+use ggtts_core::hooks::Hooks;
 use ggtts_core::logging::{Format as LogFormat, Level as LogLevel, Settings as LogSettings};
-use ggtts_core::pipeline::{plan_story, render_story_streamed, RenderOptions};
-use ggtts_core::stream::{Container, StreamLevel, StreamWriter};
+use ggtts_core::pipeline::{
+    plan_story, render_plan, DurationJudge, Observers, Output, RenderOptions, StorySeeds, StreamMode, StreamPiece,
+};
+use ggtts_core::stream::{Container, StreamWriter};
 use ggtts_core::text::read_text;
 use ggtts_core::trace::{emit_header, Event, Events, Header, JsonlEvents, NullEvents};
 
@@ -736,10 +739,13 @@ fn render_with_models(
             let (title, chunks) = preplanned.expect("story was planned before loading");
             let profile = *engine.profile();
             let mut timing = StreamTiming::default();
-            let mut level_ns = 0u128;
             let hold_s = a.stream_level_seconds.unwrap_or(ggtts_core::stream::DEFAULT_HOLD_S);
-            let mut leveller = StreamLevel::new(&profile, hold_s);
             let raw = a.stream_raw;
+            let stream_mode = if raw {
+                StreamMode::Raw
+            } else {
+                StreamMode::Levelled { hold_s }
+            };
             let trace_level = a.trace_level.unwrap_or(1);
             let mut trace = a
                 .trace
@@ -770,33 +776,37 @@ fn render_with_models(
             options.measure_timings = a.timing_report.is_some();
             options.instruction.clone_from(&a.instruction);
             options.steer.clone_from(&a.steering);
-            let read = render_story_streamed(engine.as_mut(), &title, &chunks, &options, &mut events, &mut |p| {
-                if let Some(w) = stream.as_mut() {
-                    let started = Instant::now();
-                    let ready = if raw {
-                        vec![p.samples.to_vec()]
-                    } else {
-                        leveller.push(p.samples, p.sample_rate)
-                    };
-                    level_ns += started.elapsed().as_nanos();
-                    for piece in ready {
-                        timing.write(w, &piece, p.sample_rate, t1).map_err(|e| e.to_string())?;
-                    }
+            let seeds = StorySeeds {
+                story_id: &title,
+                salt: &options.seed_salt,
+            };
+            let mut hooks = Hooks::new();
+            let obs = &mut Observers::new(&mut events, &mut hooks);
+            let streaming = stream.is_some();
+            // The pipeline levels the stream (`StreamMode::Levelled`); this sink only writes what it is handed.
+            let mut sink = |p: StreamPiece<'_>| match stream.as_mut() {
+                Some(w) => timing.write(w, p.samples, p.sample_rate, t1).map_err(|e| e.to_string()),
+                None => Ok(()),
+            };
+            let output = if streaming {
+                Output::Stream {
+                    sink: &mut sink,
+                    level: stream_mode,
                 }
-                Ok(())
-            })
+            } else {
+                Output::Whole
+            };
+            let read = render_plan(
+                engine.as_mut(),
+                &chunks,
+                &seeds,
+                &mut DurationJudge,
+                &options,
+                obs,
+                output,
+            )
             .map_err(|e| e.to_string())?;
-            if let Some(w) = stream.as_mut() {
-                // A read shorter than the hold leaves at the end, levelled over all of it.
-                let started = Instant::now();
-                let ready = leveller.finish();
-                level_ns += started.elapsed().as_nanos();
-                for piece in ready {
-                    timing
-                        .write(w, &piece, read.sample_rate, t1)
-                        .map_err(|e| format!("--stream: {e}"))?;
-                }
-            }
+            let level_ns = read.stream.map_or(0, |s| s.level_ns);
             let render_ms = t1.elapsed().as_millis();
             measured_render_ms = render_ms;
             frames_generated = read.frames_generated;
@@ -837,14 +847,13 @@ fn render_with_models(
             }
             if let Some(w) = &stream {
                 let db = |g: Option<f64>| g.map_or("none".to_string(), |g| format!("{:+.4} dB", 20.0 * g.log10()));
-                let what = if raw {
-                    "before the level step".to_string()
-                } else {
-                    format!(
+                let what = match read.stream {
+                    Some(s) if !raw => format!(
                         "levelled by the gain of its first {:.1} s (--stream-level-seconds {hold_s}) {}",
-                        leveller.held_seconds(),
-                        db(leveller.gain())
-                    )
+                        s.held_s,
+                        db(s.gain)
+                    ),
+                    _ => "before the level step".to_string(),
                 };
                 log.stderr(
                     LogLevel::Info,

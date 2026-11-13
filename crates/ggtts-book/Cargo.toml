@@ -1,0 +1,40 @@
+[package]
+name = "ggtts-book"
+description = "ggtts-book: an EPUB book read into chapters a TTS engine can speak, a layer on top of the ggtts engines"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "ggtts-book"
+path = "src/bin/ggtts-book.rs"
+
+[dependencies]
+ggtts-core.workspace = true
+# Only for the engine profile the chunk plan is made with: its default build links no ggml.
+ggtts-qwen3-tts.workspace = true
+# Loads the engine `render` uses, once per book: the fake engine always, the model engines with `ggml`.
+ggtts-load.workspace = true
+# Reads the stored chunk FLACs back when a chapter is joined.
+claxon.workspace = true
+serde_json.workspace = true
+# The EPUB container. No default features: reading needs only stored and deflated entries, through flate2's
+# pure-Rust backend below, so no C library and none of zip's other codecs or its encryption support are linked.
+zip = { version = "2.4", default-features = false, features = ["deflate-flate2", "flate2"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# XHTML, OPF, NCX and container.xml. escape-html resolves the HTML5 named entities (&nbsp;, &mdash;) XHTML books use.
+quick-xml = { version = "0.37", features = ["escape-html"] }
+
+[dev-dependencies]
+# The tests drive the render loop with the fake engine directly.
+ggtts-fake.workspace = true
+
+[features]
+default = []
+# The model engines over ggml (qwen3-tts, kitten-tts-2). Off by default, so the crate builds without the ggml
+# submodule; `render` then refuses a model engine with a named reason.
+ggml = ["ggtts-load/ggml"]
+cuda = ["ggml", "ggtts-load/cuda"]

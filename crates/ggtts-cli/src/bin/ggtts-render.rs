@@ -22,6 +22,9 @@
 //! prompt as the reference runtime places it. A Qwen3-TTS custom_voice checkpoint of 1.7B or a voice_design
 //! checkpoint takes one; any other checkpoint, and any other engine, refuses it before rendering. An empty
 //! instruction is no instruction: the output is the same as without the flag.
+//! `--threads` (default 4) is the CPU threads asked for. Before each graph the count is capped at the CPUs this process
+//! may use now, re-read at most every 100 ms, and the first time the cap lowers it ggtts says so once on stderr.
+//! On Windows the cap sees only the processor count, not affinity or job objects.
 //! `--steer FILE` adds vectors to the Qwen3-TTS talker's hidden state at the output of chosen layers
 //! (`docs/steering.md`). The file is safetensors with one F32 vector per layer, named `talker.layer.<i>`.
 //! `--steer-scale X` multiplies every vector (default 1.0); `--steer-layers 23,24,25` applies only those layers of the
@@ -126,7 +129,7 @@ impl StreamTiming {
     }
 }
 const USAGE: &str = "usage: ggtts-render [--model M.gguf] [--codec C.gguf] [--offline] --out x.flac \
-[--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--speaker NAME] [--instruction TEXT] \
+[--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N (capped at the CPUs allowed)] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--speaker NAME] [--instruction TEXT] \
 [--steer FILE [--steer-scale X] [--steer-layers LIST]] \
 [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \

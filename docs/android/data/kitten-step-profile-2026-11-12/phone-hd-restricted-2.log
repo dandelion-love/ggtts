@@ -1,0 +1,7 @@
+ggtts-render: model /sdcard/Android/data/ggtts.demo/files/models/kitten-cantonese-qat-tq1_0.gguf sha256 11555aa314f8bd229da03292ad1db3743855a59b47ba7e3dfc002b1824641380 (path, hashed in 4.4 s)
+ggtts-render: codec /sdcard/Android/data/ggtts.demo/files/models/kitten-s3gen.gguf sha256 54ad2c36c0b322788a55f79dcd0207e3d9114bb6370b6e3f2800ac9b8e362321 (path, hashed in 4.3 s)
+ggtts-render: voice /sdcard/Android/data/ggtts.demo/files/models/voice-yue.json sha256 d7b0aec8133f522fd0033e1d758bb823d4f717e48b719bee2085d81e27201ad4 (path, hashed in 0.0 s)
+ggtts-render: streamed 236640 samples before the level step, first audio at 44031 ms; the read's level gain -4.1127 dB (the --out FLAC applies it)
+ggtts-render: stream handoffs 2 writes, 249740 ns preparing/levelling, 1127343 ns writing
+ggtts-render: 2 chunks, 0 first-draw defects, 9.86 s of audio
+ggtts-render: wrote hd-restricted-2.flac (236640 samples at 24000 Hz) with kitten-tts-2 on ggml-cpu LM (tq1_0-pad128 ternary); ggml-cpu S3Gen decoder, parity distribution; load 4196 ms, render 109548 ms

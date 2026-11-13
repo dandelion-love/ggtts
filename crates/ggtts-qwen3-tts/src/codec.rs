@@ -593,6 +593,7 @@ impl Decoder {
                 }
             }
             g::ggml_backend_tensor_set(mask, m.as_ptr().cast(), 0, m.len() * 4);
+            self.cpu.cap_threads();
             if g::ggml_backend_sched_graph_compute(sched, gf) != g::GGML_STATUS_SUCCESS {
                 g::ggml_backend_sched_reset(sched);
                 g::ggml_free(ctx);

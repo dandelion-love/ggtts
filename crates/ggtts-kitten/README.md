@@ -60,6 +60,18 @@ converter does not write one.
 `ggtts-kitten render --lines FILE` writes one FLAC per line, with a timing report. Add `--device cuda` to any of
 them.
 
+### The output head
+
+Generation computes the head (the 158,241 by 2048 token table) only from the first end id to the end of the
+vocabulary: the two end ids, the audio ids and the special ids after them, 6,571 rows. Every other id gets the lowest
+finite score. This is a measured shortcut, not a rule of the model: the sampler draws over the whole vocabulary, as
+both references do, so it is exact only while no other id reaches the top-k set. At every step of a 22-line test set
+at the default sampler settings, the 50th score beat every other id's by at least 4.3 (`examples/head_rows_check.rs`).
+The special ids after the audio ids are included because one of them, the reference's own end marker, does reach the
+top-k set at the end of a line. The engine uses the subset only inside the measured envelope: top-k on and at most 50,
+and top-p below 1. Outside it the whole head is computed. `GGTTS_KITTEN_FULL_HEAD=1` (exactly `1`) computes
+the whole head always, to compare.
+
 ## Parity
 
 This engine reports the parity level **`distribution`**. It shares no kernels with a reference runtime, and sampled

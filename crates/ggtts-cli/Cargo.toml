@@ -23,6 +23,9 @@ ggtts-qwen3-tts.workspace = true
 ggtts-kitten = { path = "../ggtts-kitten" }
 ggtts-fake.workspace = true
 ggtts-models.workspace = true
+# Not called by ggtts-render yet; linked so the ggml builds of this crate (CI's ggml job) compile the
+# shared loader's engine code too.
+ggtts-load.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
@@ -33,9 +36,9 @@ jsonschema = { version = "0.60.2", default-features = false }
 default = []
 # The engines over ggml. Off by default, so the workspace builds without the ggml submodule; ggtts-render then
 # only reports its version.
-ggml = ["ggtts-qwen3-tts/ggml", "ggtts-kitten/ggml"]
+ggml = ["ggtts-qwen3-tts/ggml", "ggtts-kitten/ggml", "ggtts-load/ggml"]
 # The CUDA backend as well, for --device cuda.
-cuda = ["ggml", "ggtts-qwen3-tts/cuda", "ggtts-kitten/cuda"]
+cuda = ["ggml", "ggtts-qwen3-tts/cuda", "ggtts-kitten/cuda", "ggtts-load/cuda"]
 # The engines over ggml with bindings generated at build time, for targets with no committed bindings (everything but
 # x86_64 Linux, so the Windows release). Needs libclang. A feature of ggtts-cli, because `cargo build -p ggtts-cli`
 # cannot name a feature of a package it does not select.

@@ -17,7 +17,7 @@ bundle. Plans and work items are GitHub issues, not concepts here. Each decision
 
 ## Research
 
-* [Where a Kitten-TTS 2 generation step goes](/research/kitten-step-profile.md) - products, head and V-cache copying each about a third or a fifth; a head for the samplable rows only is exact on 44 lines and 1.14x to 1.21x faster
+* [Where a Kitten-TTS 2 generation step goes](/research/kitten-step-profile.md) - products, head and V-cache copying each about a third or a fifth; TQ1_0 is slow on the phone from its kernel, not its padding; a head for 6,571 rows is exact on 44 lines and about 1.2x faster
 * [Kitten-TTS 2's memory, and the released TQ1_0 model on a phone](/research/kitten-memory-and-tq1.md) - TQ1_0 saves 195 MB and is 24 to 35% slower; the 3.78 GB peak is a load-time spike
 * [On-device parity and resource budget](/research/on-device-parity-and-budget.md) - a Galaxy Z Fold5 against desktop CPU: no exact parity, budget fails on memory, speed and first audio
 * [Threads on the phone](/research/threads-on-the-phone.md) - what more CPU threads buy for each engine

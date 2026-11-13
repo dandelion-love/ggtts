@@ -295,6 +295,22 @@ impl KittenEngine {
     }
 }
 
+/// The largest top-k at which computing only the samplable head rows was measured exact (the default is 50).
+pub const HEAD_ROWS_MAX_TOP_K: usize = 50;
+
+/// One generation step, as [`KittenEngine::generate_ids_observed`] shows it.
+pub struct Step<'a> {
+    /// The logits as the model gave them (with the restricted head, every id outside it is `f32::MIN`).
+    pub raw: &'a [f32],
+    /// The scores after the sampler's penalties and filters, just before the draw.
+    pub filtered: &'a [f32],
+    /// The prompt and the tokens drawn so far.
+    pub history: &'a [u32],
+    pub prompt_len: usize,
+    pub ids: sampler::Ids,
+    pub settings: Settings,
+}
+
 /// Timings of the last `generate`, for the render report.
 #[derive(Debug, Default, Clone)]
 pub struct GenStats {
@@ -330,15 +346,6 @@ impl KittenEngine {
         threads: usize,
     ) -> Result<Self, String> {
         let tm = TokenMap::from_meta(&model.meta)?;
-        let mut model = model;
-        // A step samples only the audio ids and the two end ids, and they are one contiguous range of the
-        // vocabulary: compute the head for that range alone (a view; Model::head_rows says when it is exact).
-        // GGTTS_KITTEN_FULL_HEAD=1 computes the whole head, to compare.
-        let lo = tm.speech_end.min(tm.stop).min(tm.audio_base) as usize;
-        let hi = (tm.audio_base + tm.audio_count).max(tm.speech_end + 1).max(tm.stop + 1) as usize;
-        if std::env::var_os("GGTTS_KITTEN_FULL_HEAD").is_none() {
-            model.head_rows = Some(lo..hi);
-        }
         let ref_text = tokenizer.encode(&reference.transcript)?;
         let speaker = model.project_speaker(&reference.embedding);
         let m = &model.meta;
@@ -405,17 +412,43 @@ impl KittenEngine {
     }
 
     pub fn generate_ids(&mut self, text: &str, seed: u64) -> Result<(Vec<u32>, Stop), String> {
-        self.generate_ids_observed(text, seed, &mut |_| {})
+        self.generate_ids_observed(text, seed, None)
     }
 
-    /// [`Self::generate_ids`], also handing `observe` each step's scores after the sampler's filters, just before
-    /// the draw. For checks that need to see what could have been sampled; it cannot change the draw.
+    /// The head rows a generation computes: from the first end id to the end of the vocabulary (the end ids, the
+    /// audio ids and the special ids after them, 6,571 of 158,241 rows), or `None` for the whole head.
+    ///
+    /// It is a measured shortcut, not a rule of the model: the sampler draws over the whole vocabulary, as both
+    /// references do, so computing only these rows is exact while no other id reaches the top-k set. That held at
+    /// every step of a 22-line test set at the default settings (`examples/head_rows_check.rs`), so the subset is
+    /// used only inside that envelope: top-k on and at most 50, and top-p below 1. Outside it, or with
+    /// `GGTTS_KITTEN_FULL_HEAD=1`, the whole head is computed.
+    pub fn head_rows(&self) -> Option<std::ops::Range<usize>> {
+        if std::env::var("GGTTS_KITTEN_FULL_HEAD").is_ok_and(|v| v == "1") {
+            return None;
+        }
+        let s = &self.settings;
+        if !(s.top_k > 0 && s.top_k <= HEAD_ROWS_MAX_TOP_K && s.top_p < 1.0) {
+            return None;
+        }
+        // From the first end id to the end of the vocabulary: the end ids, the audio ids, and the special ids after
+        // them. The last matter: the reference's own end marker (`reference_speech_end_id`, 158,238) reached the
+        // top-k set at the last step of 14 of 44 test lines, so a range ending with the audio ids would not be exact.
+        let tm = &self.tm;
+        let lo = tm.speech_end.min(tm.stop).min(tm.audio_base) as usize;
+        Some(lo..self.model.hp.n_vocab)
+    }
+
+    /// [`Self::generate_ids`], also handing `observe` each step: the logits as the model gave them, the scores
+    /// after the sampler's filters, and the history so far. For checks that need to see what could have been
+    /// sampled; it cannot change the draw.
     pub fn generate_ids_observed(
         &mut self,
         text: &str,
         seed: u64,
-        observe: &mut dyn FnMut(&[f32]),
+        mut observe: Option<&mut dyn FnMut(&Step<'_>)>,
     ) -> Result<(Vec<u32>, Stop), String> {
+        self.model.head_rows = self.head_rows();
         let text_ids = self.tokenizer.encode(text)?;
         let prompt = self
             .tm
@@ -443,10 +476,20 @@ impl KittenEngine {
         let t1 = std::time::Instant::now();
         for step in 0..self.max_new_tokens {
             let mut scores = out.logits;
+            let raw = observe.as_ref().map(|_| scores.clone());
             // Step 0 samples the prefill's logits; step k > 0 those of the k-th single-token forward.
             sampler::process(&mut scores, &history, prompt.len(), ids, &self.settings)
                 .map_err(|e| format!("generation step {step} (position {}): {e}", history.len() - 1))?;
-            observe(&scores);
+            if let (Some(f), Some(raw)) = (observe.as_mut(), raw.as_ref()) {
+                f(&Step {
+                    raw,
+                    filtered: &scores,
+                    history: &history,
+                    prompt_len: prompt.len(),
+                    ids,
+                    settings: self.settings,
+                });
+            }
             let tok = sampler::sample(&scores, &mut rng);
             history.push(tok);
             if tok == self.tm.speech_end || tok == self.tm.stop {

@@ -90,9 +90,8 @@ pub struct Model {
     /// The GGUF's metadata, for the token map and the sampler's defaults.
     pub meta: std::collections::BTreeMap<String, crate::gguf::Value>,
     /// When set, the head is computed for these token ids only, and every other logit is `f32::MIN`. The engine
-    /// sets it to the ids a generation step can sample (the audio ids and the two end ids, one contiguous range):
-    /// that is exact while no other id survives the sampler's top-k, which `examples/head_rows_check.rs` measures.
-    /// Unset (the full head) for the parity checks, which compare every logit.
+    /// sets it per generation (`KittenEngine::head_rows`) to the ids a step can sample, inside the sampler settings
+    /// where that was measured exact. Unset (the full head) for the parity checks, which compare every logit.
     pub head_rows: Option<std::ops::Range<usize>>,
     /// The ternary matrices are held as exact f16 and multiplied at f32 precision (`GGML_PREC_F32`), not run
     /// through ggml's quantized kernels. True on CUDA for the ternary arms. ggml's CUDA quantized products quantize

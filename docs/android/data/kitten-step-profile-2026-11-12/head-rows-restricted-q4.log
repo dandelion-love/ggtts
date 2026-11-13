@@ -22,4 +22,4 @@ line 20:  125 steps, 4.8 finite a step, 0 steps with another id finite (0 in all
 line 21:  153 steps, 5.1 finite a step, 0 steps with another id finite (0 in all)  | 152 tokens, Eos, hash c123b99ec65e8226, 11.5 s
 line 22:  145 steps, 5.4 finite a step, 0 steps with another id finite (0 in all)  | 144 tokens, Eos, hash ab4682c608a26029, 11.1 s
 all: 3713 steps; 0 with an id outside the allowed set still finite (0 in all); distinct ids 0
-wrote /home/jleung/work/op-timing/head-rows-restricted-q4.json
+wrote <out>/head-rows-restricted-q4.json

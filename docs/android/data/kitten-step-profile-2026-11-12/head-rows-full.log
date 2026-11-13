@@ -23,7 +23,7 @@ line 20:  140 steps, 13.5 finite a step, 0 steps with another id finite (0 in al
 line 21:  142 steps, 13.7 finite a step, 0 steps with another id finite (0 in all)  | 141 tokens, Eos, hash b66bc29ed42a82a7, 17.3 s
 line 22:  132 steps, 12.0 finite a step, 0 steps with another id finite (0 in all)  | 131 tokens, Eos, hash e60d6a71415055bd, 16.3 s
 all: 3923 steps; 0 with an id outside the allowed set still finite (0 in all); distinct ids 0
-wrote /home/jleung/work/op-timing/head-rows-tq1.json
+wrote <out>/head-rows-tq1.json
 === q4
 head_rows_check: 22 lines, seed 20260905, 4 threads; allowed: audio ids 151675..158236 (6561), speech_end 151670, stop 151674
 line  1:  205 steps, 4.7 finite a step, 0 steps with another id finite (0 in all)  | 204 tokens, Eos, hash a00f574e93a225f2, 17.9 s
@@ -49,6 +49,6 @@ line 20:  125 steps, 4.8 finite a step, 0 steps with another id finite (0 in all
 line 21:  153 steps, 5.1 finite a step, 0 steps with another id finite (0 in all)  | 152 tokens, Eos, hash c123b99ec65e8226, 13.6 s
 line 22:  145 steps, 5.4 finite a step, 0 steps with another id finite (0 in all)  | 144 tokens, Eos, hash ab4682c608a26029, 13.1 s
 all: 3713 steps; 0 with an id outside the allowed set still finite (0 in all); distinct ids 0
-wrote /home/jleung/work/op-timing/head-rows-q4.json
+wrote <out>/head-rows-q4.json
 
 [exited with code 0]

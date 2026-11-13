@@ -4,8 +4,9 @@
 //! head's, bit for bit (the same rows through the same kernel), and every id outside it must read `f32::MIN`. Whether
 //! that changes a draw is a separate question, measured by `examples/head_rows_check.rs` on a test set.
 //!
-//! Needs a converted Kitten-TTS 2 LM GGUF, which is never in this repository: set `GGTTS_KITTEN_LM`. Skipped when it
-//! is not set.
+//! Needs a converted Kitten-TTS 2 LM GGUF, which is never in this repository, so it is `#[ignore]`d: run it with
+//! `GGTTS_KITTEN_LM=LM.gguf cargo test -p ggtts-kitten --features ggml --test head_rows -- --ignored`. Without the
+//! variable it fails, rather than passing without having looked.
 #![cfg(feature = "ggml")]
 
 use ggtts_kitten::backend::{Backend, Device};
@@ -15,16 +16,15 @@ use ggtts_kitten::parity;
 use ggtts_kitten::prompt::TokenMap;
 
 #[test]
+#[ignore = "needs GGTTS_KITTEN_LM, a converted Kitten-TTS 2 LM GGUF; run with --ignored"]
 fn the_restricted_head_is_the_full_head_inside_its_rows() {
-    let Some(path) = std::env::var_os("GGTTS_KITTEN_LM") else {
-        eprintln!("skipped: set GGTTS_KITTEN_LM to a converted Kitten-TTS 2 LM GGUF");
-        return;
-    };
+    let path = std::env::var_os("GGTTS_KITTEN_LM").expect("set GGTTS_KITTEN_LM to a converted Kitten-TTS 2 LM GGUF");
     let be = Backend::new(Device::Cpu, 4).expect("backend");
     let gguf = Gguf::open(std::path::Path::new(&path)).expect("open the GGUF");
     let mut model = Model::load(&gguf, Weights::Ternary, be).expect("load");
     let tm = TokenMap::from_meta(&model.meta).expect("token map");
-    let rows = tm.speech_end.min(tm.stop) as usize..(tm.audio_base + tm.audio_count) as usize;
+    // As KittenEngine::head_rows: from the first end id to the end of the vocabulary.
+    let rows = tm.speech_end.min(tm.stop).min(tm.audio_base) as usize..model.hp.n_vocab;
     let n = model.hp.n_embd;
     let ids = parity::pseudo_ids(24, model.hp.n_vocab, 99);
     let mut embd = Vec::new();

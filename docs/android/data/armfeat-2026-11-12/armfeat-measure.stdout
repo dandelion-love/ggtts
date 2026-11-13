@@ -1,0 +1,32 @@
+# stdout of the phone run, 2026-11-12: first `ggtts-render --version` for each build (first line of each) and
+# `sha256sum` of both binaries (first 12 hex digits), then scripts/android_on_device/armfeat-measure.sh. Each run's
+# `raw` line is the first 16 hex digits of the sha256 of its raw stream (af-RUN.raw.wav, which is not committed).
+ggtts-render 0.0.1
+ggtts-render 0.0.1
+ddfb75c156c8  ggtts-render-base
+4816f2aa3068  ggtts-render-armv86
+== base-q4-1 thermal status  0
+base-q4-1 raw db8b311882be24b8
+ggtts-render: wrote af-base-q4-1.flac (226560 samples at 24000 Hz) with kitten-tts-2 on ggml-cpu LM (q4_0-g128 ternary); ggml-cpu S3Gen decoder, parity distribution; load 5845 ms, render 86422 ms
+== armv86-q4-1 thermal status  0
+armv86-q4-1 raw c2202c0f5e38d7e1
+ggtts-render: wrote af-armv86-q4-1.flac (219360 samples at 24000 Hz) with kitten-tts-2 on ggml-cpu LM (q4_0-g128 ternary); ggml-cpu S3Gen decoder, parity distribution; load 3761 ms, render 75179 ms
+== armv86-q4-2 thermal status  0
+armv86-q4-2 raw c2202c0f5e38d7e1
+ggtts-render: wrote af-armv86-q4-2.flac (219360 samples at 24000 Hz) with kitten-tts-2 on ggml-cpu LM (q4_0-g128 ternary); ggml-cpu S3Gen decoder, parity distribution; load 3651 ms, render 95825 ms
+== base-q4-2 thermal status  0
+base-q4-2 raw db8b311882be24b8
+ggtts-render: wrote af-base-q4-2.flac (226560 samples at 24000 Hz) with kitten-tts-2 on ggml-cpu LM (q4_0-g128 ternary); ggml-cpu S3Gen decoder, parity distribution; load 4087 ms, render 103603 ms
+== base-tq1-1 thermal status  0
+base-tq1-1 raw 52072e629ade76a6
+ggtts-render: wrote af-base-tq1-1.flac (236640 samples at 24000 Hz) with kitten-tts-2 on ggml-cpu LM (tq1_0-pad128 ternary); ggml-cpu S3Gen decoder, parity distribution; load 3692 ms, render 134979 ms
+== armv86-tq1-1 thermal status  0
+armv86-tq1-1 raw 52072e629ade76a6
+ggtts-render: wrote af-armv86-tq1-1.flac (236640 samples at 24000 Hz) with kitten-tts-2 on ggml-cpu LM (tq1_0-pad128 ternary); ggml-cpu S3Gen decoder, parity distribution; load 3733 ms, render 118058 ms
+== armv86-tq1-2 thermal status  0
+armv86-tq1-2 raw 52072e629ade76a6
+ggtts-render: wrote af-armv86-tq1-2.flac (236640 samples at 24000 Hz) with kitten-tts-2 on ggml-cpu LM (tq1_0-pad128 ternary); ggml-cpu S3Gen decoder, parity distribution; load 3859 ms, render 119001 ms
+== base-tq1-2 thermal status  0
+base-tq1-2 raw 52072e629ade76a6
+ggtts-render: wrote af-base-tq1-2.flac (236640 samples at 24000 Hz) with kitten-tts-2 on ggml-cpu LM (tq1_0-pad128 ternary); ggml-cpu S3Gen decoder, parity distribution; load 4205 ms, render 141410 ms
+ARMFEAT_MEASURE_DONE

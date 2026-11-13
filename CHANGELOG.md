@@ -18,6 +18,12 @@ that a merge places under a released heading is caught.
   For code using the engine crate directly: output-head rows set outside the head are now an error from the forward
   pass, where they used to fall back to the whole head.
 
+### Fixed
+
+- **Stop in the Android demo is immediate and safe at any moment.** It no longer holds the screen for up to a second
+  while playback winds down, a Stop pressed while the last chunk plays is reported as stopped rather than as a
+  finished read, and a Stop pressed just as a read starts no longer lets its first chunk play on.
+
 ## v0.1.0-rc.12 (2026-11-13)
 
 ### Added

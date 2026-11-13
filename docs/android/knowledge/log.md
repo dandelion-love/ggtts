@@ -2,6 +2,11 @@
 
 ## 2026-11-12
 
+- A Kitten-TTS 2 step profiled in the engine's own graph (desktop): layer products about 27 to 30 ms, the head 16 ms,
+  copying the V cache 26 ms (filed as 257). On the phone, TQ1_0's products take 1.6 to 1.7 times Q4_0's while padded
+  TQ2_0 is level with Q4_0: the kernel, not the padding. The head now computes 6,571 rows (first end id to the end of
+  the vocabulary; the reference end marker reaches the top-50 at line ends, so the audio ids alone were not exact):
+  identical tokens on 44 lines, smallest top-k margin 4.3, about 1.2x on the phone and desktop.
 - ggml built with armv8.6-a+dotprod+i8mm+fp16 on the phone: the released TQ1_0 LM runs 1.23x faster with
   byte-identical audio; Q4_0 gains 1.12x (within drift) and changes its draw; the decoder is unchanged. Shipping it
   needs CPU variants chosen at run time, since the build crashes on CPUs without i8mm.

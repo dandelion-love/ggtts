@@ -89,6 +89,10 @@ pub struct Model {
     spk_ln_b: Vec<f32>,
     /// The GGUF's metadata, for the token map and the sampler's defaults.
     pub meta: std::collections::BTreeMap<String, crate::gguf::Value>,
+    /// When set, the head is computed for these token ids only, and every other logit is `f32::MIN`. The engine
+    /// sets it per generation (`KittenEngine::head_rows`) to the ids a step can sample, inside the sampler settings
+    /// where that was measured exact. Unset (the full head) for the parity checks, which compare every logit.
+    pub head_rows: Option<std::ops::Range<usize>>,
     /// The ternary matrices are held as exact f16 and multiplied at f32 precision (`GGML_PREC_F32`), not run
     /// through ggml's quantized kernels. True on CUDA for the ternary arms. ggml's CUDA quantized products quantize
     /// the activations to 8 bits per 32 values, and the single-token kernel applies `Q4_0`'s offset of 8 through
@@ -388,6 +392,7 @@ impl Model {
             spk_ln_w: Vec::new(),
             spk_ln_b: Vec::new(),
             meta: gguf.kv.clone(),
+            head_rows: None,
             ternary_f16: held(layout.ggml_type(), weights, be.device)? == Held::ExactF16,
         };
         // Tensors first, in a no-alloc context; then one device buffer; then the bytes.
@@ -784,7 +789,20 @@ impl<'m> Session<'m> {
             );
             let last = g::ggml_cont(ctx, last);
             let normed = g::ggml_mul(ctx, g::ggml_rms_norm(ctx, last, hp.eps), m.norm);
-            let logits = g::ggml_mul_mat(ctx, m.head, normed);
+            // The head, or only its rows in `head_rows` (a view: no copy) when the caller can sample nothing else.
+            let rows = m.head_rows.clone().filter(|r| r.start < r.end && r.end <= hp.n_vocab);
+            let head = match &rows {
+                Some(r) => g::ggml_view_2d(
+                    ctx,
+                    m.head,
+                    (*m.head).ne[0],
+                    r.len() as i64,
+                    (*m.head).nb[1],
+                    r.start * (*m.head).nb[1],
+                ),
+                None => m.head,
+            };
+            let logits = g::ggml_mul_mat(ctx, head, normed);
             g::ggml_set_output(logits);
             if hidden {
                 g::ggml_set_output(normed);
@@ -825,8 +843,21 @@ impl<'m> Session<'m> {
                 g::ggml_backend_tensor_get(t, v.as_mut_ptr().cast(), 0, n * 4);
                 v
             };
+            let logits = match &rows {
+                // Back to full rows: every id outside the range gets f32::MIN, finite (so the sampler's check for
+                // non-finite logits still guards the computed ones) and below any top-k cutoff.
+                Some(r) => {
+                    let part = read(logits);
+                    let mut full = vec![f32::MIN; hp.n_vocab * n_logits];
+                    for (dst, src) in full.chunks_mut(hp.n_vocab).zip(part.chunks(r.len())) {
+                        dst[r.clone()].copy_from_slice(src);
+                    }
+                    full
+                }
+                None => read(logits),
+            };
             let out = Output {
-                logits: read(logits),
+                logits,
                 hidden: outs.iter().map(|&t| read(t)).collect(),
             };
             g::ggml_backend_sched_reset(sched);

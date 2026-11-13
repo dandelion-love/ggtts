@@ -1,0 +1,38 @@
+# stdout of scripts/android_on_device/head-measure.sh on the Galaxy Z Fold5, 2026-11-12, preceded by `sha256sum`
+# (first 12 hex digits) of the three binaries it ran. Each `raw` line is the first 16 hex digits of the sha256 of
+# that run's raw stream (hd-RUN.raw.wav, not committed).
+#
+# ggtts-render-head (sha256 0e0f0ed9f2f26d52...) and op_profile-* were built for aarch64-linux-android from the
+# android/op-timing working tree at 08342ed plus the review changes then uncommitted. In that build the restricted
+# head computed the audio ids and the two end ids (6,566 rows); the range was widened to 6,571 rows afterwards, in
+# f187749. ggtts-render-head used ggml's default ARM build; op_profile-base and -armv86 the two builds compared.
+#
+# The matmul_bench binaries (phone-mb-*.json) were: 021802fd26a4 matmul_bench-base, 1c2ee77c62ff matmul_bench-armv86.
+0e0f0ed9f2f2  ggtts-render-head
+243da0afb992  op_profile-base
+22c6f6d37de7  op_profile-armv86
+== head full-1 thermal status  0
+head full-1 raw 52072e629ade76a6
+ggtts-render: wrote hd-full-1.flac (236640 samples at 24000 Hz) with kitten-tts-2 on ggml-cpu LM (tq1_0-pad128 ternary); ggml-cpu S3Gen decoder, parity distribution; load 6358 ms, render 106810 ms
+== head restricted-1 thermal status  0
+head restricted-1 raw 52072e629ade76a6
+ggtts-render: wrote hd-restricted-1.flac (236640 samples at 24000 Hz) with kitten-tts-2 on ggml-cpu LM (tq1_0-pad128 ternary); ggml-cpu S3Gen decoder, parity distribution; load 4351 ms, render 101292 ms
+== head restricted-2 thermal status  0
+head restricted-2 raw 52072e629ade76a6
+ggtts-render: wrote hd-restricted-2.flac (236640 samples at 24000 Hz) with kitten-tts-2 on ggml-cpu LM (tq1_0-pad128 ternary); ggml-cpu S3Gen decoder, parity distribution; load 4196 ms, render 109548 ms
+== head full-2 thermal status  0
+head full-2 raw 52072e629ade76a6
+ggtts-render: wrote hd-full-2.flac (236640 samples at 24000 Hz) with kitten-tts-2 on ggml-cpu LM (tq1_0-pad128 ternary); ggml-cpu S3Gen decoder, parity distribution; load 4668 ms, render 139707 ms
+== op base-tq1 thermal status  0
+op_profile: 2 lines, 233 steps, 4 threads, 283.8 s observed (1218.0 ms a step with the observer)
+per step: observed nodes 1013.30 ms = layer products 295.73 + head 85.91 + other ops 631.66
+== op armv86-tq1 thermal status  0
+op_profile: 2 lines, 233 steps, 4 threads, 247.6 s observed (1062.5 ms a step with the observer)
+per step: observed nodes 902.07 ms = layer products 244.03 + head 84.44 + other ops 573.60
+== op armv86-q4 thermal status  0
+op_profile: 2 lines, 216 steps, 4 threads, 232.5 s observed (1076.5 ms a step with the observer)
+per step: observed nodes 957.73 ms = layer products 322.53 + head 94.85 + other ops 540.36
+== op base-q4 thermal status  0
+op_profile: 2 lines, 220 steps, 4 threads, 213.8 s observed (971.6 ms a step with the observer)
+per step: observed nodes 818.85 ms = layer products 286.54 + head 85.93 + other ops 446.38
+HEAD_MEASURE_DONE

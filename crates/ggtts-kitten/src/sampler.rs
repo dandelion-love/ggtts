@@ -34,6 +34,34 @@ impl Default for Settings {
     }
 }
 
+/// The largest top-k at which computing only the head rows below was measured exact (the default is 50).
+pub const HEAD_ROWS_MAX_TOP_K: usize = 50;
+
+/// The output-head rows a generation needs, or `None` for the whole head.
+///
+/// The rows run from the first end id to the end of the vocabulary: the end ids, the audio ids, and the special ids
+/// after them, among them the reference's own end marker (`reference_speech_end_id`), which reaches the top-k set at
+/// the end of a line. Computing only these rows is a measured shortcut, not a rule of the model: the sampler draws
+/// over the whole vocabulary, as both references do, so it is exact only while no other id reaches the top-k set.
+/// That was measured at the default settings (`examples/head_rows_check.rs`), so the subset is used only inside that
+/// envelope: top-k on and at most [`HEAD_ROWS_MAX_TOP_K`], and top-p below 1. `full_head` is the value of
+/// `GGTTS_KITTEN_FULL_HEAD`: exactly `"1"` asks for the whole head; any other value, or none, does not.
+pub fn head_rows(
+    s: &Settings,
+    tm: &crate::prompt::TokenMap,
+    n_vocab: usize,
+    full_head: Option<&str>,
+) -> Option<std::ops::Range<usize>> {
+    if full_head == Some("1") {
+        return None;
+    }
+    if !(s.top_k > 0 && s.top_k <= HEAD_ROWS_MAX_TOP_K && s.top_p < 1.0) {
+        return None;
+    }
+    let lo = tm.speech_end.min(tm.stop).min(tm.audio_base) as usize;
+    Some(lo..n_vocab)
+}
+
 /// The ids the penalties need.
 #[derive(Debug, Clone, Copy)]
 pub struct Ids {
@@ -184,6 +212,76 @@ mod tests {
         speech_end: 2,
         stop: 3,
     };
+
+    /// The token map of the released Kitten-TTS 2 LMs (`kitten.token_map`).
+    fn kitten_map() -> crate::prompt::TokenMap {
+        crate::prompt::TokenMap {
+            audio_base: 151_675,
+            audio_count: 6561,
+            speech_start: 151_669,
+            speech_end: 151_670,
+            text_start: 151_671,
+            start: 151_673,
+            stop: 151_674,
+            final_seg: 158_236,
+            ref_text_start: 158_239,
+            ref_text_end: 158_240,
+            ref_speech_start: 158_237,
+            ref_speech_end: 158_238,
+        }
+    }
+
+    #[test]
+    fn the_head_rows_cover_every_id_a_step_can_keep_and_the_reference_end_marker() {
+        let tm = kitten_map();
+        let rows = head_rows(&Settings::default(), &tm, 158_241, None).expect("the default settings use the subset");
+        assert_eq!(rows, 151_670..158_241);
+        for id in [
+            tm.speech_end,
+            tm.stop,
+            tm.audio_base,
+            tm.audio_base + tm.audio_count - 1,
+        ] {
+            assert!(rows.contains(&(id as usize)), "id {id}");
+        }
+        // Measured: this id reaches the top-k set at the end of a line, so the rows must cover it.
+        assert!(rows.contains(&(tm.ref_speech_end as usize)), "reference_speech_end_id");
+        for id in [tm.final_seg, tm.ref_speech_start, tm.ref_text_start, tm.ref_text_end] {
+            assert!(rows.contains(&(id as usize)), "special id {id} after the audio ids");
+        }
+    }
+
+    #[test]
+    fn the_head_rows_are_used_only_inside_the_measured_sampler_envelope() {
+        let tm = kitten_map();
+        let with = |top_k: usize, top_p: f32| {
+            let s = Settings {
+                top_k,
+                top_p,
+                ..Settings::default()
+            };
+            head_rows(&s, &tm, 158_241, None).is_some()
+        };
+        assert!(with(50, 0.8), "the defaults");
+        assert!(with(1, 0.8));
+        assert!(!with(0, 0.8), "top-k off: every id is a candidate");
+        assert!(!with(51, 0.8), "above the measured top-k");
+        assert!(!with(64, 0.8));
+        assert!(!with(50, 1.0), "top-p off");
+    }
+
+    #[test]
+    fn only_exactly_one_asks_for_the_whole_head() {
+        let tm = kitten_map();
+        let s = Settings::default();
+        assert_eq!(head_rows(&s, &tm, 158_241, Some("1")), None);
+        for v in ["0", "", "true", "yes", " 1"] {
+            assert!(
+                head_rows(&s, &tm, 158_241, Some(v)).is_some(),
+                "GGTTS_KITTEN_FULL_HEAD={v:?}"
+            );
+        }
+    }
 
     #[test]
     fn same_seed_same_draws() {

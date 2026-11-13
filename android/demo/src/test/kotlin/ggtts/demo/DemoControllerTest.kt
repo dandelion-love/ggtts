@@ -29,9 +29,11 @@ class DemoControllerTest {
         val played = mutableListOf<FloatArray>()
         var saved: FloatArray? = null
         var stops = 0
+        /** Runs inside [finish], while the last chunks play out. */
+        var duringFinish: () -> Unit = {}
         override fun begin(rate: Int) { events += "begin $rate" }
         override fun play(samples: FloatArray) { played += samples; events += "play ${samples.size}" }
-        override fun finish() { events += "finish" }
+        override fun finish() { events += "finish"; duringFinish() }
         override fun stop() { stops++; events += "stop" }
         override fun save(samples: FloatArray, rate: Int, engine: String): String {
             saved = samples
@@ -102,6 +104,17 @@ class DemoControllerTest {
         assertEquals("Stopped after 1 chunk(s).", view.statuses.last())
         assertFalse(c.busy)
         assertTrue(view.errors.isEmpty())
+    }
+
+    @Test
+    fun aStopWhileTheLastChunksPlayReportsStoppedNotFinished() {
+        val c = controller(FakeBinding())
+        audio.duringFinish = { c.stop() }
+        c.speak(request, "Hello.", Ggtts.DEFAULT_SEED)
+        assertTrue("playback stopped", audio.stops >= 1)
+        assertTrue(view.statuses.last(), view.statuses.last().startsWith("Stopped during playback"))
+        assertEquals("the whole read was rendered, so it is saved", 72000, audio.saved!!.size)
+        assertFalse(c.busy)
     }
 
     @Test

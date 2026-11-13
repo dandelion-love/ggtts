@@ -172,6 +172,11 @@ class DemoController(
         // The files rendered: remember them now (the system engine can use them while this read still plays).
         onSpoke(request)
         audio.finish()
+        // A Stop while the last chunks play out cuts the playback short: say so, not that the read finished.
+        if (stopRequested) {
+            log("stopped during playback, after rendering ${pieces.size} chunks")
+            return "Stopped during playback. The whole read was rendered and saved to $path."
+        }
         return "${request.engine}: %.2f s of audio in %.1f s (RTF %.2f); first audio after %.1f s. Saved to $path".format(
             seconds, renderMs / 1000.0, rtf, firstMs / 1000.0,
         )

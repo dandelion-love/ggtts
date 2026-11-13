@@ -44,7 +44,6 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.Executors
-import java.util.concurrent.LinkedBlockingQueue
 
 class MainActivity : Activity(), DemoView {
     companion object {
@@ -380,66 +379,16 @@ class MainActivity : Activity(), DemoView {
 }
 
 /**
- * Plays a stream of pieces through one AudioTrack, on its own thread, so rendering the next chunk never waits for
- * playback; saves a whole read as a 16-bit WAV in [dir] (one file per engine, overwritten).
+ * Plays a stream of pieces through one AudioTrack per stream (see [StreamPlayer]: the player thread owns the track, and
+ * Stop never waits for it); saves a whole read as a 16-bit WAV in [dir] (one file per engine, overwritten).
  */
 class DeviceAudio(private val dir: File) : AudioOut {
-    private val queue = LinkedBlockingQueue<FloatArray>()
-    private val end = FloatArray(0)
-    @Volatile private var track: AudioTrack? = null
-    @Volatile private var player: Thread? = null
+    private val player = StreamPlayer({ rate -> TrackSink(rate) })
 
-    override fun begin(rate: Int) {
-        stop()
-        val t = AudioTrack.Builder()
-            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-            .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-                .setSampleRate(rate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .setBufferSizeInBytes(AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_FLOAT).coerceAtLeast(rate))
-            .build()
-        track = t
-        t.play()
-        player = Thread({
-            try {
-                while (true) {
-                    val piece = queue.take()
-                    if (piece === end) break
-                    t.write(piece, 0, piece.size, AudioTrack.WRITE_BLOCKING)
-                }
-                Thread.sleep(250) // let the last buffer drain
-            } catch (_: InterruptedException) {
-            }
-        }, "ggtts-player").apply { start() }
-    }
-
-    override fun play(samples: FloatArray) {
-        if (samples.isNotEmpty()) queue.put(samples)
-    }
-
-    override fun finish() {
-        val p = player ?: return
-        queue.put(end)
-        p.join()
-        release()
-    }
-
-    override fun stop() {
-        queue.clear()
-        player?.interrupt()
-        track?.let { runCatching { it.pause(); it.flush() } }
-        player?.join(1000)
-        release()
-    }
-
-    private fun release() {
-        player = null
-        track?.let { runCatching { it.stop() }; it.release() }
-        track = null
-        queue.clear()
-    }
+    override fun begin(rate: Int) = player.begin(rate)
+    override fun play(samples: FloatArray) = player.play(samples)
+    override fun finish() = player.finish()
+    override fun stop() = player.stop()
 
     override fun save(samples: FloatArray, rate: Int, engine: String): String {
         dir.mkdirs()
@@ -453,4 +402,27 @@ class DeviceAudio(private val dir: File) : AudioOut {
         file.writeBytes(b.array())
         return file.path
     }
+}
+
+/** One stream's AudioTrack, as [StreamPlayer] drives it. */
+private class TrackSink(rate: Int) : PcmSink {
+    private val track = AudioTrack.Builder()
+        .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+        .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
+            .setSampleRate(rate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+        .setTransferMode(AudioTrack.MODE_STREAM)
+        .setBufferSizeInBytes(AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_FLOAT).coerceAtLeast(rate))
+        .build()
+
+    override fun play() = track.play()
+    // A blocking write returns early once the track is paused, which is how a Stop ends it.
+    override fun write(samples: FloatArray) {
+        track.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
+    }
+    override fun pause() = track.pause()
+    override fun flush() = track.flush()
+    override fun stop() = track.stop()
+    override fun release() = track.release()
 }

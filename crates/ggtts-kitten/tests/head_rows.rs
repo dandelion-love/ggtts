@@ -22,7 +22,7 @@ fn the_restricted_head_is_the_full_head_inside_its_rows() {
     let be = Backend::new(Device::Cpu, 4).expect("backend");
     let gguf = Gguf::open(std::path::Path::new(&path)).expect("open the GGUF");
     let mut model = Model::load(&gguf, Weights::Ternary, be).expect("load");
-    let tm = TokenMap::from_meta(&model.meta).expect("token map");
+    let tm = TokenMap::from_meta(&model.meta, model.hp.n_vocab).expect("token map");
     // As KittenEngine::head_rows: from the first end id to the end of the vocabulary.
     let rows = tm.speech_end.min(tm.stop).min(tm.audio_base) as usize..model.hp.n_vocab;
     let n = model.hp.n_embd;

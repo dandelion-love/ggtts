@@ -1,0 +1,25 @@
+head_rows_check: 22 lines, seed 20260905, 4 threads; allowed: audio ids 151675..158236 (6561), speech_end 151670, stop 151674
+line  1:  228 steps, 14.4 finite a step, 0 steps with another id finite (0 in all)  | 227 tokens, Eos, hash e712e612ec04f8a1, 21.2 s
+line  2:  237 steps, 13.1 finite a step, 0 steps with another id finite (0 in all)  | 236 tokens, Eos, hash a2506d3401ecc65d, 21.6 s
+line  3:  139 steps, 14.0 finite a step, 0 steps with another id finite (0 in all)  | 138 tokens, Eos, hash de53c48356e4e471, 14.3 s
+line  4:  159 steps, 12.9 finite a step, 0 steps with another id finite (0 in all)  | 158 tokens, Eos, hash cbb0567da6500843, 15.5 s
+line  5:  140 steps, 14.3 finite a step, 0 steps with another id finite (0 in all)  | 139 tokens, Eos, hash b86b8a68636bfd3d, 14.5 s
+line  6:  135 steps, 14.2 finite a step, 0 steps with another id finite (0 in all)  | 134 tokens, Eos, hash 551ff8fa81c90e5c, 14.6 s
+line  7:  112 steps, 15.5 finite a step, 0 steps with another id finite (0 in all)  | 111 tokens, Eos, hash 925c2745cf532161, 12.9 s
+line  8:  136 steps, 15.1 finite a step, 0 steps with another id finite (0 in all)  | 135 tokens, Eos, hash c213bf22be716547, 14.2 s
+line  9:  159 steps, 11.8 finite a step, 0 steps with another id finite (0 in all)  | 158 tokens, Eos, hash d399cf00fba82826, 16.0 s
+line 10:  135 steps, 14.3 finite a step, 0 steps with another id finite (0 in all)  | 134 tokens, Eos, hash 84e8eade0d1b20ee, 14.0 s
+line 11:  204 steps, 14.3 finite a step, 0 steps with another id finite (0 in all)  | 203 tokens, Eos, hash 03523f2ee3061024, 18.8 s
+line 12:  259 steps, 12.3 finite a step, 0 steps with another id finite (0 in all)  | 258 tokens, Eos, hash 9385779007e0cf1c, 24.0 s
+line 13:  275 steps, 12.9 finite a step, 0 steps with another id finite (0 in all)  | 274 tokens, Eos, hash 607d0e36ba05c353, 26.1 s
+line 14:  366 steps, 12.1 finite a step, 0 steps with another id finite (0 in all)  | 365 tokens, Eos, hash 019bc6f95c5215f0, 34.6 s
+line 15:  299 steps, 11.8 finite a step, 0 steps with another id finite (0 in all)  | 298 tokens, Eos, hash 421339d538657838, 27.9 s
+line 16:  194 steps, 13.0 finite a step, 0 steps with another id finite (0 in all)  | 193 tokens, Eos, hash dec4c030241e1a1d, 18.6 s
+line 17:  112 steps, 12.2 finite a step, 0 steps with another id finite (0 in all)  | 111 tokens, Eos, hash 7c2e70a7a3602dc8, 12.5 s
+line 18:  118 steps, 11.8 finite a step, 0 steps with another id finite (0 in all)  | 117 tokens, Eos, hash 90e283099c7915d3, 13.3 s
+line 19:  102 steps, 11.9 finite a step, 0 steps with another id finite (0 in all)  | 101 tokens, Eos, hash f5c015a39f101195, 12.1 s
+line 20:  140 steps, 13.5 finite a step, 0 steps with another id finite (0 in all)  | 139 tokens, Eos, hash 4b0218ba393e5294, 14.6 s
+line 21:  142 steps, 13.7 finite a step, 0 steps with another id finite (0 in all)  | 141 tokens, Eos, hash b66bc29ed42a82a7, 15.1 s
+line 22:  132 steps, 12.0 finite a step, 0 steps with another id finite (0 in all)  | 131 tokens, Eos, hash e60d6a71415055bd, 14.4 s
+all: 3923 steps; 0 with an id outside the allowed set still finite (0 in all); distinct ids 0
+wrote <out>/head-rows-restricted-tq1.json

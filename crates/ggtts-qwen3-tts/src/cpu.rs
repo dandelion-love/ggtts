@@ -61,9 +61,20 @@ pub struct Cpu {
     pub backend: g::ggml_backend_t,
     fallback: g::ggml_backend_t,
     pub sched: g::ggml_backend_sched_t,
+    /// The CPU threads asked for; each compute runs with no more than the process may use then
+    /// ([`g::cap_sched_threads`]).
+    pub threads: i32,
 }
 
 impl Cpu {
+    /// Before a compute: the CPU backends get the configured threads, capped at the CPUs this process may use now.
+    ///
+    /// # Safety
+    /// `self.sched` is live for as long as `self` is.
+    pub(crate) unsafe fn cap_threads(&self) {
+        g::cap_sched_threads(self.sched, self.threads);
+    }
+
     pub fn new(threads: i32, graph_size: usize) -> Result<Self, EngineError> {
         Self::on(Device::Cpu, threads, graph_size)
     }
@@ -104,6 +115,7 @@ impl Cpu {
                 backend,
                 fallback,
                 sched,
+                threads,
             })
         }
     }

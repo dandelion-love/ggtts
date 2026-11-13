@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Model files live in the app's own storage, and an imported file comes through the system picker, so no storage
+     permission. The foreground-service permissions keep a read going off screen. POST_NOTIFICATIONS shows the read's
+     notification (with Stop) on Android 13 and later; the app asks for it at the first Speak pressed on its screen. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <application
+        android:allowBackup="false"
+        android:label="ggtts demo">
+        <!-- configChanges: a fold, unfold or rotation keeps the activity, so a render in progress reports to it. -->
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|density"
+            android:exported="true"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- Keeps a read going when the screen is left, with a notification that has Stop. -->
+        <service
+            android:name=".ReadingService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+        <!-- ggtts as a system TTS engine (Android's TextToSpeech API). Only the system may bind it. -->
+        <service
+            android:name=".GgttsTtsService"
+            android:exported="true"
+            android:label="ggtts (on-device, slow)"
+            android:permission="android.permission.BIND_TEXT_TO_SPEECH_SERVICE">
+            <intent-filter>
+                <action android:name="android.intent.action.TTS_SERVICE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data
+                android:name="android.speech.tts"
+                android:resource="@xml/tts_engine" />
+        </service>
+    </application>
+    <!-- To find and bind TTS engines (its own included) from the "Speak through Android" check on Android 11+. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+</manifest>

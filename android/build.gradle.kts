@@ -1,0 +1,6 @@
+// Plugin versions, pinned. Gradle itself is pinned (version and sha256) in scripts/android_build.sh.
+plugins {
+    id("com.android.library") version "8.7.3" apply false
+    id("com.android.application") version "8.7.3" apply false
+    id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+}

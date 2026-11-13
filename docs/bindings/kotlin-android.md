@@ -7,9 +7,16 @@ desktop JVM. [All bindings](README.md) compares it with C and Python.
 
 ## Get it
 
-**No Android package is published.** There is no AAR, no Maven artifact and no Gradle project in this repository, and
-the C library in the release archives does not export the JNI entry points. You build two pieces from source and add
-them to your app:
+**No Android package is published**: there is no Maven artifact, and the C library in the release archives does not
+export the JNI entry points. There are two ways to get it.
+
+**The AAR.** [`android/`](../../android/README.md) is a Gradle project. Its `ggtts` module packs `Ggtts.kt` and the
+arm64-v8a library into an AAR, and its `demo` module is a one-screen app that uses it.
+`scripts/android_build.sh app OUT_DIR` builds both, and CI's `android-arm64` job uploads them as its artifact. Add the
+AAR to your app as a file dependency. It carries its licence notices and build record under `META-INF/ggtts/`
+([what the AAR carries](../../android/README.md#what-the-aar-carries)).
+
+**By hand.** Build two pieces from source and add them to your app:
 
 1. **The Kotlin class.** Copy `Ggtts.kt` into your app as it is. Keep its package, `ggtts`: the JNI function names
    (`Java_ggtts_Native_*`) are tied to the package and class names.
@@ -33,8 +40,7 @@ cargo ndk -t arm64-v8a --platform 24 build --release --locked -p ggtts-ffi -p gg
 # the library: target/aarch64-linux-android/release/libggtts_ffi.so
 ```
 
-CI does not build this library for Android; it builds `ggtts-render` that way, and runs the binding against a host
-build (below). Check what the library needs with the NDK's `llvm-readelf -d libggtts_ffi.so`, and ship any `NEEDED`
+CI builds this library for Android inside the AAR (above), and also runs the binding against a host build (below). Check what the library needs with the NDK's `llvm-readelf -d libggtts_ffi.so`, and ship any `NEEDED`
 library that is not an Android system library beside it. For `ggtts-render` that is the NDK's `libc++_shared.so`,
 which `scripts/android_build.sh` copies.
 
@@ -131,7 +137,7 @@ In an app, `load` and `render` block: call them off the main thread. To play a `
 | `model` | null | The model GGUF path: Qwen3-TTS's talker, or Kitten-TTS 2's LM. Null for Qwen3-TTS means the default model (below). |
 | `codec` | null | The audio decoder GGUF: Qwen3-TTS's 12 Hz codec, or Kitten-TTS 2's S3Gen GGUF. Null for Qwen3-TTS means the default codec. |
 | `voice` | null | Kitten-TTS 2's prepared reference voice (a JSON file). |
-| `threads` | 4 | CPU threads. 0 or less means 4. |
+| `threads` | 4 | CPU threads. 0 or less means 4. Before each graph the count is capped at the CPUs the app may use, so an app moved to the little cores when it leaves the screen does not stall; the first cap is said once on stderr, which an Android app does not show in logcat. |
 | `speaker` | null | A Qwen3-TTS speaker the model has, such as `"hk_voice_777"`. Case is ignored. |
 | `instruction` | null | A Qwen3-TTS style instruction for every chunk, such as `"Speak slowly and softly."` |
 | `cacheDir` | null | Where the default model files are cached. An app passes its own (below). |
@@ -142,6 +148,10 @@ no setting. That is not true of `model`, `codec` and `voice`: an empty one is ta
 `ERR_ENGINE`, so pass null, not `""`, to get the default model. A setting the engine does not take is refused, never
 ignored. A file that is missing or is not a GGUF is refused before any engine loads. The settings hold
 for the engine's life.
+
+`GGTTS_KITTEN_FULL_HEAD=1` (exactly `1`) makes Kitten-TTS 2 compute its whole output head instead of the rows a step can
+keep (see the crate README). It is a diagnostic switch read from the process environment only; no binding setting
+carries it.
 
 ### The default model (Qwen3-TTS)
 

@@ -211,6 +211,7 @@ impl<'a> Graph<'a> {
                 }
                 g::ggml_backend_tensor_set(*t, d.as_ptr().cast(), 0, d.len() * 4);
             }
+            g::cap_sched_threads(sched, self.be.threads as i32);
             if g::ggml_backend_sched_graph_compute(sched, self.gf) != g::GGML_STATUS_SUCCESS {
                 return Err("decoder graph compute failed".into());
             }

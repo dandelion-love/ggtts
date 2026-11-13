@@ -13,6 +13,30 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **An Android library (AAR) and a demo app, built in CI.** `android/` is a Gradle project, and
+  `scripts/android_build.sh app OUT_DIR` builds it. It writes `ggtts.aar`, which holds the Kotlin binding,
+  `libggtts_ffi.so` for arm64-v8a with `libc++_shared.so`, and under `META-INF/ggtts/` the licence notices and a build
+  record (`BUILDINFO.json`: version, commit, ggml pin, features, ABI, minimum SDK). It also writes a one-screen demo
+  app that speaks a line with either engine from model files you supply, and the library's unstripped copy for crash
+  symbols. No model ships in either. The `android-arm64` CI job uploads all three. See
+  [android/README.md](android/README.md).
+- `licenses/android-crates.txt`: the licences of the Rust crates linked into the Android library, generated and
+  checked by `scripts/third_party_notices.py --check-android`.
+- **The Android demo plays a line as it renders.** Each chunk plays as soon as it is made, so first audio comes after
+  one chunk instead of the whole line. Stop ends both the playback and the rendering, the screen shows progress, and a
+  menu picks 2, 4, 6 or 8 CPU threads (4 by default).
+- **The Android demo says what each engine costs before loading it:** the model size, the memory it peaked at on a
+  phone, the wait for first audio, and that it is too slow for a screen reader. When free memory is below an engine's
+  measured peak, the first Speak warns instead of loading; a second Speak loads it anyway.
+- **ggtts can be Android's text-to-speech engine.** The demo app registers a system TTS engine (`TextToSpeechService`)
+  that other apps can pick in the phone's settings: Hong Kong Cantonese with Qwen3-TTS and US English with Kitten-TTS 2,
+  from the model files of the demo's last finished Speak. It streams each chunk to the platform as it is made, and
+  declares its voices as very high latency (first audio takes tens of seconds), so it is not meant for screen readers.
+- **An Android read outlives its screen.** Leave the demo during a read and it goes on in a foreground media-playback
+  service, whose notification shows progress and has Stop; the app asks for the notification permission at the first
+  Speak on Android 13 and later. The screen and the system TTS engine share one loaded engine, kept between reads: one
+  of them reads at a time, the other is refused rather than load a second model, and Android's memory trims release it
+  only when neither is reading.
 - **`ggtts-book inspect` reads an EPUB into chapters.** A new crate and binary, `ggtts-book`, a layer on top of
   the engines. It reads the container, the package's metadata and spine, and the table of contents (the EPUB 3 nav
   document, else the EPUB 2 NCX, else the spine), and turns each chapter's XHTML into headings and paragraphs.
@@ -62,6 +86,36 @@ that a merge places under a released heading is caught.
 - **`ggtts-book export --out BOOK.m4b` writes an audiobook for audiobook apps.** Lossless ALAC with a chapter
   track and a `chpl` chapter list, and the book's title and authors; the same samples as the `.flac` export. The
   container follows the extension; any other is refused.
+
+### Changed
+
+- **The Android demo's adb extras take only file names in its models directory.** `model`, `codec` and `voice` used to
+  accept any path, from any app (the activity is exported), and a path used for a finished read was saved as the system
+  TTS engine's model. A path, or a name with `/` or `..`, is now refused, and the whole intent with it, `speak`
+  included. Only debug builds read these extras.
+- **Kitten-TTS 2 computes its output head only for the tokens a step can keep** (from the first end token to the end of
+  the vocabulary: the end, audio and following special tokens, 6,571 of the 158,241 rows), and gives every other token
+  the lowest finite score, when the sampler's top-k is on and at most 50 and its top-p is below 1 (the defaults). On a
+  test set of 22 lines with both language models no other token reached the top-k set and the tokens are identical; a
+  step is 1.14x to 1.21x faster on desktop CPU and about 1.2x on a Galaxy Z Fold5. Outside those settings, or with
+  `GGTTS_KITTEN_FULL_HEAD=1`, the whole head is computed. Every report names the head a render ran, in the engine's
+  backend string (`output head rows A..B` or `whole output head`).
+- **The Android demo states peak memory in bytes, as it compares them.** Its figures read the kernel's KiB as 1000
+  bytes: Kitten-TTS 2 peaks at 3.78 GB, not 3.70, and Qwen3-TTS at 3.00 GB, not 2.93, so the low-memory warning now
+  comes at the right point.
+- **The CPU thread count is capped at the CPUs the process may use, checked before each graph.** Asking for more threads
+  than CPUs no longer stalls: ggml's threads wait for each other, so on an Android phone whose app is moved to three
+  cores when it leaves the screen, four threads did not finish a line in 400 s that three rendered in 87 s. The count is
+  re-read at most every 100 ms; the first time it lowers your count, ggtts says so once on stderr. The output is the
+  same at any count. On Linux and Android the cap follows affinity masks, cpusets and cgroup quotas; on Windows it sees
+  only the number of logical processors, so affinity and job objects are not honoured there. `--threads`, and `threads`
+  in the bindings, still mean the count asked for, and a value of 0 or less is treated as before. Kitten-TTS 2's bench
+  JSON records the count asked for, not the count run.
+- **Android builds are aligned for 16 KB pages.** `libggtts_ffi.so` and the Android `ggtts-render` link with
+  `-z max-page-size=16384`. With 4 KB alignment, Android 15 and later flag the library on a device, and a 16 KB-page
+  device refuses it. `scripts/android_build.sh` refuses a library aligned below 16 KB.
+- `scripts/android_build.sh build` now ends by building the AAR and the demo app, so it needs a JDK 17 to 23 and the
+  Android SDK as well as the NDK.
 
 ## v0.1.0-rc.11 (2026-11-12)
 

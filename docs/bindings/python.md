@@ -86,7 +86,7 @@ ggtts.load(engine="qwen3-tts", model=None, codec=None, voice=None, speaker=None,
 | `speaker` | A Qwen3-TTS speaker the model has, such as `"hk_voice_777"`. Case is ignored. |
 | `instruction` | A Qwen3-TTS style instruction for every chunk, such as `"Speak slowly and softly."` |
 | `device` | `"cpu"` or `"cuda"`. See [CUDA](#cuda). |
-| `threads` | CPU threads. None means 4. |
+| `threads` | CPU threads. None means 4. Before each graph, ggtts lowers the count to the CPUs the process may use at that moment, re-read at most every 100 ms, and says so once on stderr. On Windows only the processor count is seen, not affinity or job objects. |
 | `offline` | True: never download. A default model file missing from the cache is then an error naming it and its URL. |
 | `progress` | A function called with each download message. By default they go to stderr. |
 
@@ -97,6 +97,10 @@ path and fails with `ERR_ENGINE`, so pass None, not `""`, to get the default mod
 What was loaded is on the `TTS`: `tts.engine`, `tts.speaker` (None for the model's own), `tts.instruction`,
 `tts.device`, `tts.info` (the engine's family, backend and parity level) and `tts.model_files` (each file's role,
 path, and source: `path` if you gave it, `cache` for a default file).
+
+`GGTTS_KITTEN_FULL_HEAD=1` (exactly `1`) makes Kitten-TTS 2 compute its whole output head instead of the rows a step can
+keep (see the crate README). It is a diagnostic switch read from the process environment only; no binding setting
+carries it.
 
 ### The default model (Qwen3-TTS)
 

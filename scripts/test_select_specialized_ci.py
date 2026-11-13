@@ -289,6 +289,25 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(decide("pull_request", "rc", "feature", True,
                                 ["crates/ggtts-cli/tests/no_change_real.rs"]), {"ggml", "package"})
 
+    def test_the_book_crate_selects_no_specialized_job(self):
+        select = lambda paths: decide("pull_request", "rc", "feature", True, paths)
+        for path in ("crates/ggtts-book/src/lib.rs", "crates/ggtts-book/Cargo.toml",
+                     "crates/ggtts-book/tests/reader.rs", "crates/ggtts-book/src/bin/ggtts-book.rs"):
+            self.assertEqual(select([path]), set(), path)
+        # Its new dependencies still change the workspace lockfile, which selects everything.
+        self.assertEqual(select(["crates/ggtts-book/src/lib.rs", "Cargo.lock"]), set(JOBS))
+        # A crate the selector does not know still selects every job.
+        self.assertEqual(select(["crates/ggtts-bookish/src/lib.rs"]), set(JOBS))
+        # The promotion still runs everything.
+        self.assertEqual(decide("pull_request", "main", "rc", True, ["crates/ggtts-book/src/lib.rs"]), set(JOBS))
+
+    def test_the_loader_crate_selects_the_ggml_job(self):
+        # crates/ggtts-load gates its engine code behind `ggml`: only the ggml job compiles and tests it.
+        select = lambda paths: decide("pull_request", "rc", "feature", True, paths)
+        for path in ("crates/ggtts-load/src/lib.rs", "crates/ggtts-load/tests/load.rs"):
+            self.assertIn("ggml", select([path]), path)
+            self.assertNotEqual(select([path]), set(JOBS), path)
+
     def test_ggml_gated_code_selects_the_ggml_job(self):
         select = lambda paths: decide("pull_request", "rc", "feature", True, paths)
         for path in ("crates/ggtts-kitten/src/model.rs", "crates/ggtts-kitten/src/refdsp.rs",

@@ -49,7 +49,7 @@ JOB_MAP = {
 # Where `feature = "ggml"` gates code: the default build compiles none of it, so only the ggml job runs its tests.
 # The engine crates are gated throughout; elsewhere it is these files. A test greps the tree and fails when a gated
 # file is in neither list. (crates/ggtts-ggml-sys/ and crates/ggtts-ffi/ select ggml by their own rule below.)
-GGML_GATED_CRATES = ("crates/ggtts-kitten/", "crates/ggtts-qwen3-tts/")
+GGML_GATED_CRATES = ("crates/ggtts-kitten/", "crates/ggtts-qwen3-tts/", "crates/ggtts-load/")
 GGML_GATED_FILES = {
     "crates/ggtts-cli/src/bin/ggtts-render.rs",
     "crates/ggtts-cli/tests/default_models_cli.rs",
@@ -63,6 +63,9 @@ GGML_GATED_FILES = {
 # its ggml-gated code on Linux. It links these crates (ggtts-ffi only for a test that holds the error codes equal), so a
 # change to their source or manifest also runs it. Their own tests do not reach the binding.
 PYTHON_CRATE = "crates/ggtts-py/"
+# The book layer (crates/ggtts-book) links no ggml and ships in no archive, wheel or binding: the general CPU
+# checks (fmt, clippy, and build-test on Linux and Windows) build and test it, and no specialized job reads it.
+BOOK_CRATE = "crates/ggtts-book/"
 PYTHON_ENGINE_CRATES = ("crates/ggtts-core/", "crates/ggtts-fake/", "crates/ggtts-qwen3-tts/", "crates/ggtts-kitten/",
                         "crates/ggtts-ggml-sys/", "crates/ggtts-models/", "crates/ggtts-ffi/")
 
@@ -267,6 +270,8 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
         if path.startswith(GGML_GATED_CRATES) or path in GGML_GATED_FILES:
             # Code behind `feature = "ggml"` is compiled and tested only by the ggml job.
             selected.add("ggml")
+        if path.startswith(BOOK_CRATE):
+            continue
         if path.startswith("crates/"):
             if path == "crates/ggtts-cli/src/bin/ggtts-render.rs":
                 # The renderer contains ggml-gated engine loading and routing. Default CPU
@@ -280,7 +285,7 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
                 continue
             if not path.startswith(("crates/ggtts-core/", "crates/ggtts-cli/", "crates/ggtts-instruments/",
                                     "crates/ggtts-qwen3-tts/", "crates/ggtts-kitten/", "crates/ggtts-ggml-sys/",
-                                    "crates/ggtts-fake/", "crates/ggtts-ffi/")):
+                                    "crates/ggtts-fake/", "crates/ggtts-ffi/", "crates/ggtts-load/")):
                 return set(JOBS)
             if path.startswith(("crates/ggtts-ggml-sys/", "crates/ggtts-ffi/")):
                 # Direct changes to native build or bindings need their targeted checks.

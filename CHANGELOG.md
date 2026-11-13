@@ -89,6 +89,10 @@ that a merge places under a released heading is caught.
 
 ### Changed
 
+- **The Android demo's adb extras take only file names in its models directory.** `model`, `codec` and `voice` used to
+  accept any path, from any app (the activity is exported), and a path used for a finished read was saved as the system
+  TTS engine's model. A path, or a name with `/` or `..`, is now refused, and the whole intent with it, `speak`
+  included. Only debug builds read these extras.
 - **Kitten-TTS 2 computes its output head only for the tokens a step can keep** (from the first end token to the end of
   the vocabulary: the end, audio and following special tokens, 6,571 of the 158,241 rows), and gives every other token
   the lowest finite score, when the sampler's top-k is on and at most 50 and its top-p is below 1 (the defaults). On a

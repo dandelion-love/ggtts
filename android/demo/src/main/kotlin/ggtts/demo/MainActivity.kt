@@ -6,7 +6,7 @@
 //   adb shell am start -n ggtts.demo/.MainActivity --es engine kitten-tts-2 --es model lm.gguf \
 //       --es codec s3gen.gguf --es voice voice.json --es text "Hello." --ei threads 4 --ez speak true
 //   adb shell am start -n ggtts.demo/.MainActivity --ez stop true      # presses Stop
-// A file name is looked up in the models directory; an absolute path is used as it is.
+// Model, codec and voice extras are file names in the models directory; a path is refused (ModelImport.isPlainName).
 package ggtts.demo
 
 import android.app.Activity
@@ -275,17 +275,27 @@ class MainActivity : Activity(), DemoView {
         val adapter = s.adapter as ArrayAdapter<String>
         var i = (0 until adapter.count).firstOrNull { adapter.getItem(it) == name }
         if (i == null) {
-            adapter.add(name) // an absolute path, or a name not (yet) in the directory: the binding will say
+            adapter.add(name) // a name not (yet) in the directory: the binding will say
             i = adapter.count - 1
         }
         s.setSelection(i)
     }
 
     private fun applyIntent(intent: Intent?) {
-        // The scripted extras (any path, and Speak pressed for you) are for testing a debug build from adb. Another
-        // app can send this exported activity an intent too, so a release build ignores them.
+        // The scripted extras (file names in the models directory, and Speak pressed for you) are for testing a debug
+        // build from adb. Another app can send this exported activity an intent too, so a release build ignores them,
+        // and a debug build takes only names of files already in the models directory (pick).
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) return
         val extras = intent?.extras ?: return
+        // Only file names inside the models directory: another app can send this exported activity extras too, and a
+        // path it chose would be loaded and then saved as the system engine's model. One refused name refuses the whole
+        // intent, Speak included, so the error stays on screen and nothing speaks with the previous selection.
+        val refused = ModelImport.refusedNames(listOf("model", "codec", "voice").map { extras.getString(it) })
+        if (refused.isNotEmpty()) {
+            Log.w(TAG, "adb extras refused: $refused are not file names in the models directory; nothing applied")
+            showError("Refused ${refused.joinToString()}: scripted model files must be names in the models directory, not paths. Nothing was applied.")
+            return
+        }
         extras.getString("engine")?.let { e -> ENGINES.indexOf(e).takeIf { it >= 0 }?.let { engines.check(100 + it) } }
         pick(model, extras.getString("model"))
         pick(codec, extras.getString("codec"))
@@ -303,7 +313,7 @@ class MainActivity : Activity(), DemoView {
     private fun path(s: Spinner): String? {
         val name = s.selectedItem as String? ?: return null
         if (name == NONE) return null
-        return if (name.startsWith("/")) name else File(modelsDir, name).path
+        return File(modelsDir, name).path
     }
 
     /**

@@ -6,6 +6,8 @@
 # android/op-timing working tree at 08342ed plus the review changes then uncommitted. In that build the restricted
 # head computed the audio ids and the two end ids (6,566 rows); the range was widened to 6,571 rows afterwards, in
 # f187749. ggtts-render-head used ggml's default ARM build; op_profile-base and -armv86 the two builds compared.
+# Because those changes were not committed when it was built, that binary cannot be rebuilt from a commit; its sha256
+# above is the record of it.
 #
 # The matmul_bench binaries (phone-mb-*.json) were: 021802fd26a4 matmul_bench-base, 1c2ee77c62ff matmul_bench-armv86.
 0e0f0ed9f2f2  ggtts-render-head

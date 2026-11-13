@@ -4,7 +4,7 @@ title: Where a Kitten-TTS 2 generation step goes, and a head that computes only 
 description: TQ1_0 is slower than Q4_0 on a phone because of its kernel, not its padding; the bf16 head costs about as much as all the layers there; computing the head only from the first end id to the end of the vocabulary is exact on 44 test lines (top-k margin at least 4.3) and about 1.2x faster on the phone and desktop.
 tags: [kitten-tts-2, performance, profiling, tq1_0, android]
 status: draft
-generated: { by: claude-code/opus-5.5, at: 2026-11-12T17:10:00-07:00 }
+generated: { by: claude-code/opus-5.5, at: 2026-11-12T21:30:00-07:00 }
 sources:
   - { id: arm, resource: "/research/arm-features-on-the-phone.md", title: "ggml's ARM dot-product and matrix features on a phone" }
   - { id: tq1, resource: "/research/kitten-memory-and-tq1.md", title: "Kitten-TTS 2's memory, and the released TQ1_0 model on a phone" }
@@ -41,7 +41,7 @@ armv86, base):
 | Output head, f16 | 30 to 33 ms | 17 to 18 ms | 22 ms |
 
 - **The padding is not the cause.** Padded TQ2_0 does the same doubled work (one 128-group plus 128 zeros per block) and
-  runs within about 10% of Q4_0 on the phone (1.7% and 7.0% slower with the default build, 8.9% and 11.4% with the
+  runs within about 10% of Q4_0 on the phone (1.8% and 8.9% slower with the default build, 11.4% and 7.0% with the
   armv8.6-a one). TQ1_0's products take 1.6 to 1.7 times Q4_0's there: its kernel unpacks base-3
   trits, which costs this ARM CPU far more than desktop, where the three types are level. That explains the 24 to 35%
   slower LM step measured on the phone.[^tq1]

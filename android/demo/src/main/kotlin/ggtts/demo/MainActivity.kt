@@ -271,13 +271,6 @@ class MainActivity : Activity(), DemoView {
 
     private fun pick(s: Spinner, name: String?) {
         if (name == null) return
-        // Only a file name inside the models directory: another app can send this exported activity extras too, and
-        // a path it chose would be loaded and then saved as the system engine's model.
-        if (!ModelImport.isPlainName(name)) {
-            Log.w(TAG, "adb extra refused: \"$name\" is not a file name in the models directory")
-            showError("Refused \"$name\": scripted model files must be names in the models directory, not paths.")
-            return
-        }
         @Suppress("UNCHECKED_CAST")
         val adapter = s.adapter as ArrayAdapter<String>
         var i = (0 until adapter.count).firstOrNull { adapter.getItem(it) == name }
@@ -294,6 +287,15 @@ class MainActivity : Activity(), DemoView {
         // and a debug build takes only names of files already in the models directory (pick).
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) return
         val extras = intent?.extras ?: return
+        // Only file names inside the models directory: another app can send this exported activity extras too, and a
+        // path it chose would be loaded and then saved as the system engine's model. One refused name refuses the whole
+        // intent, Speak included, so the error stays on screen and nothing speaks with the previous selection.
+        val refused = ModelImport.refusedNames(listOf("model", "codec", "voice").map { extras.getString(it) })
+        if (refused.isNotEmpty()) {
+            Log.w(TAG, "adb extras refused: $refused are not file names in the models directory; nothing applied")
+            showError("Refused ${refused.joinToString()}: scripted model files must be names in the models directory, not paths. Nothing was applied.")
+            return
+        }
         extras.getString("engine")?.let { e -> ENGINES.indexOf(e).takeIf { it >= 0 }?.let { engines.check(100 + it) } }
         pick(model, extras.getString("model"))
         pick(codec, extras.getString("codec"))

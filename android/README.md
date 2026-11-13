@@ -171,7 +171,9 @@ For a scripted check, a **debug build** of the activity takes its settings as ex
 `adb push`); a path, or a name with `/` or `..`, is refused with a message. The activity is exported (it is the
 launcher), so any app on the phone could send it these extras: limiting them to files already in the models
 directory means another app cannot point the demo, or the system engine that remembers its files, at a file of its
-own. A release build ignores the extras.
+own. One refused name refuses the whole intent, `speak` included. A release build ignores the extras. One gap remains
+on Android 7 to 10: an app holding the legacy storage permission can write into the demo's models directory
+(`Android/data/ggtts.demo/files/models`) and then name the file it planted, in a debug build only.
 
 Pass `--activity-single-top`. Without it, when the app is in the background, Android may only bring its task to the
 front ("its current task has been brought to the front") and drop the extras.

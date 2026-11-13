@@ -36,6 +36,9 @@ class ModelImport(
         fun isPlainName(name: String): Boolean =
             name.isNotEmpty() && name != "." && name != ".." && name.none { it == '/' || it == '\\' || it == '\u0000' }
 
+        /** The scripted extras among [names] (null where absent) that [isPlainName] refuses, in order. */
+        fun refusedNames(names: List<String?>): List<String> = names.filterNotNull().filterNot { isPlainName(it) }
+
         /** The files the screen lists: complete ones only, never a copy in progress. */
         fun listed(dir: File): List<String> =
             dir.listFiles()?.filter { it.isFile && !it.name.endsWith(PART) }?.map { it.name }?.sorted() ?: emptyList()

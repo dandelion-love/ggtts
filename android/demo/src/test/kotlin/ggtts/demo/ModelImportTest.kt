@@ -17,6 +17,13 @@ import org.junit.Test
 
 class ModelImportTest {
     @Test
+    fun oneRefusedExtraIsReportedSoTheIntentIsRefused() {
+        assertEquals(emptyList<String>(), ModelImport.refusedNames(listOf("lm.gguf", null, "voice.json")))
+        assertEquals(listOf("../x.gguf"), ModelImport.refusedNames(listOf("lm.gguf", "../x.gguf", null)))
+        assertEquals(listOf("/a", ".."), ModelImport.refusedNames(listOf("/a", "s3gen.gguf", "..")))
+    }
+
+    @Test
     fun scriptedModelExtrasMustBePlainNamesInTheModelsDirectory() {
         for (ok in listOf("kitten-lm.gguf", "voice.json", "a b.gguf", ".hidden.gguf")) {
             assertTrue(ok, ModelImport.isPlainName(ok))

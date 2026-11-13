@@ -37,6 +37,55 @@ that a merge places under a released heading is caught.
   Speak on Android 13 and later. The screen and the system TTS engine share one loaded engine, kept between reads: one
   of them reads at a time, the other is refused rather than load a second model, and Android's memory trims release it
   only when neither is reading.
+- **`ggtts-book inspect` reads an EPUB into chapters.** A new crate and binary, `ggtts-book`, a layer on top of
+  the engines. It reads the container, the package's metadata and spine, and the table of contents (the EPUB 3 nav
+  document, else the EPUB 2 NCX, else the spine), and turns each chapter's XHTML into headings and paragraphs.
+  Nested tables of contents keep their depth, a chapter split across files is one chapter, and front and back
+  matter (cover, title page, copyright, contents, index, colophon) is kept and marked skippable. `inspect` prints
+  the chapter model as JSON (`ggtts-book-chapters/1`). A DRM-protected book is refused, never decrypted or
+  stripped; so are a file that is not a zip, a missing or malformed `container.xml`, and a spine item whose file
+  is absent, each with its own error code. A book is read under limits: 64 MiB per entry, 256 MiB for the whole
+  book (`book-too-large`), and 256 levels of element nesting, so a zip bomb or a deeply nested document is refused
+  with a named error rather than exhausting memory or the stack. Entities count against that budget as they
+  expand. `ggtts-book` is not yet in the release archives: build it with `cargo build --release -p ggtts-book`.
+  See `docs/book.md`.
+- **An exponent in a book is read.** `ggtts-book` drops a superscript only when it is a note marker: it links
+  somewhere, or holds only digits or note symbols after punctuation or a space. `mc<sup>2</sup>` keeps its 2, and
+  after a digit the exponent is marked so it does not run into the number (`10<sup>6</sup>` reads `10^6`).
+- **A space an author wrote between CJK characters is kept.** `第一章 退潮` keeps its space; only a line break
+  from the source's formatting between two CJK characters is dropped.
+- **`ggtts-book inspect` plans every chunk and its seed.** Chapters are chunked by ggtts's own story chunker at
+  the engine profile's ceiling (`--engine`, default `qwen3-tts`), and each chunk gets a seed derived from the
+  seed root (`--seed-root`, default `20260905`), the book's identifier, the chapter, paragraph, chunk and draw,
+  and the SHA-256 of its text (key `ggtts-book-seed/1`), so any chunk can be rendered alone. The library adds a
+  per-chapter manifest (`ggtts-book-manifest/1`), written atomically and checksummed, from which a killed
+  render resumes without redoing a finished chunk; a truncated, edited or mismatched manifest is refused and the
+  chapter re-planned.
+- **`ggtts-book render --engine fake` renders a book end to end.** Each chapter that is not front or back matter
+  is rendered chunk by chunk at its planned seeds through one engine, stored per chunk with its manifest, then
+  joined with the profile's pauses, levelled, and written as one FLAC per chapter. A stopped render resumes on
+  the next run with the same `--out`, rendering only what was left. A resumed chapter can match an uninterrupted
+  one byte for byte only on the same platform and build with the same `--threads`, and with an engine whose output
+  does not depend on what it rendered earlier in the process. With Qwen3-TTS on CPU it was observed byte-identical
+  at kill points 1, 4 and 6 of 13 chunks (see `docs/book.md`). `--engine fake` (no model) runs the whole path without a model.
+- **`ggtts-book render` renders with the real engines, loaded once per book.** `--engine qwen3-tts` (now the
+  default, as for `ggtts-render`) or `kitten-tts-2`, with `ggtts-render`'s model flags (`--model`, `--codec`,
+  `--voice`, `--speaker`, `--device`, `--threads`, `--offline`) and its pinned default model files, in a build with
+  the `ggml` feature. A new crate, `ggtts-load`, loads an engine by name with those rules. Every chapter manifest
+  records the engine's provenance (family, backend, profile, model SHA-256s, speaker, ggtts build) and each
+  chunk's render time; a resume with another engine re-renders the chapter rather than mixing two renders. An
+  output directory holding another book is refused.
+- **`ggtts-book export DIR --out BOOK.flac` joins a rendered book into one chaptered FLAC.** The chapters'
+  own samples, 2 s apart, with a chapter mark per chapter as Vorbis comments (`CHAPTER001`,
+  `CHAPTER001NAME`), which mpv and VLC read; written a block at a time, byte-identical for the same render. It
+  exports exactly the chapters the last render planned, and checks each chapter file against the SHA-256 its
+  manifest recorded. An unfinished render, a changed chapter file, or one that mixes seed roots, engines or books,
+  is refused naming the chapter. Each chapter FLAC
+  now carries `TITLE`, `ALBUM`, `ARTIST` and `TRACKNUMBER` tags, and `render --include-skippable` renders the
+  front and back matter too.
+- **`ggtts-book export --out BOOK.m4b` writes an audiobook for audiobook apps.** Lossless ALAC with a chapter
+  track and a `chpl` chapter list, and the book's title and authors; the same samples as the `.flac` export. The
+  container follows the extension; any other is refused.
 
 ### Changed
 

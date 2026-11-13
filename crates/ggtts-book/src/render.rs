@@ -1,0 +1,369 @@
+//! Rendering a book through one engine, chapter by chapter, resumable.
+//!
+//! The engine is passed in already loaded and is used for every chunk of every chapter, so a book loads its model
+//! once. Each chunk is generated at its planned seed ([`ChapterPlan::seed_at`], draw 0), decoded, trimmed at its
+//! edges by the profile's rule, and stored as FLAC through [`run_chapter`], so a killed render resumes where it
+//! stopped. A finished chapter is then joined from the stored chunks with the profile's pauses, levelled by the
+//! story path's level step, and written as one FLAC.
+//!
+//! Chunks are joined from the stored files, never from memory, so a chapter rendered in one run and a chapter
+//! resumed after a kill are built from the same bytes and come out identical.
+
+use std::path::{Path, PathBuf};
+
+use ggtts_core::audio::trim_edges_f32;
+use ggtts_core::engine::{ChunkRequest, Engine};
+use ggtts_core::flac::encode_flac;
+use ggtts_core::pipeline::{gap_samples, level};
+use ggtts_core::profile::Profile;
+
+use crate::book::{Book, Chapter};
+use crate::manifest::{chunk_file, run_chapter, Resume, RunError};
+use crate::plan::ChapterPlan;
+
+/// What happened to one chapter.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChapterOutcome {
+    /// Rendered (or resumed) and written.
+    Written {
+        /// The chapter's FLAC.
+        file: PathBuf,
+        /// Chunks rendered in this run.
+        rendered: Vec<usize>,
+        /// Chunks taken from an earlier run.
+        resumed: usize,
+        /// Why an earlier manifest was not used, if one was refused.
+        refused: Option<String>,
+    },
+    /// Front or back matter, left out.
+    Skipped { reason: String },
+}
+
+/// A chapter's outcome, by its id.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChapterReport {
+    pub id: String,
+    pub outcome: ChapterOutcome,
+}
+
+/// Generate, decode and edge-trim one planned chunk at its first draw's seed; the FLAC bytes to store.
+pub fn render_chunk(engine: &mut dyn Engine, plan: &ChapterPlan, index: usize) -> Result<Vec<u8>, String> {
+    let chunk = &plan.chunks[index];
+    let profile = *engine.profile();
+    let req = ChunkRequest {
+        text: &chunk.text,
+        seed: u64::from(plan.seed_at(index, 0)),
+        chunk: index as u32,
+        draw: 0,
+        instruction: None,
+        // A book render takes no steering: `None` renders exactly as without the field.
+        steer: None,
+    };
+    let generated = engine.generate(&req).map_err(|e| e.to_string())?;
+    let pcm = engine.decode(&generated.codes).map_err(|e| e.to_string())?;
+    let t = trim_edges_f32(&profile, &pcm.samples, pcm.sample_rate, profile.edge_s);
+    let kept: Vec<i16> = pcm.samples[t.start_sample..t.end_sample]
+        .iter()
+        .map(|&x| to_i16(x))
+        .collect();
+    encode_flac(&kept, pcm.sample_rate).map_err(|e| e.to_string())
+}
+
+fn to_i16(x: f32) -> i16 {
+    (f64::from(x).clamp(-1.0, 1.0) * 32767.0).round() as i16
+}
+
+/// The directory a chapter's chunks and manifest live in, and the chapter's FLAC beside it: `NNN-<id>`.
+pub fn chapter_stem(index: usize, chapter: &Chapter) -> String {
+    let id: String = chapter
+        .id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{index:03}-{id}")
+}
+
+/// Join a finished chapter's stored chunks with the profile's pauses, level it, and write `out` (a `.flac` path)
+/// with `tags` in its VORBIS_COMMENT block.
+pub fn join_chapter(
+    profile: &Profile,
+    dir: &Path,
+    plan: &ChapterPlan,
+    out: &Path,
+    tags: &[(String, String)],
+) -> Result<PathBuf, String> {
+    let mut read: Vec<f32> = Vec::new();
+    let mut rate = None;
+    for (i, chunk) in plan.chunks.iter().enumerate() {
+        let path = dir.join(chunk_file(i));
+        let mut reader = claxon::FlacReader::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let sr = reader.streaminfo().sample_rate;
+        if *rate.get_or_insert(sr) != sr {
+            return Err(format!(
+                "{}: sample rate {sr}, not {}",
+                path.display(),
+                rate.unwrap_or(sr)
+            ));
+        }
+        for s in reader.samples() {
+            let s = s.map_err(|e| format!("{}: {e}", path.display()))?;
+            read.push(s as f32 / 32768.0);
+        }
+        if i + 1 < plan.chunks.len() {
+            read.extend(std::iter::repeat_n(
+                0.0,
+                gap_samples(profile, &chunk.punct, chunk.last_in_para, sr),
+            ));
+        }
+    }
+    let rate = rate.ok_or_else(|| format!("chapter {} has no chunks", plan.chapter_id))?;
+    level(profile, &mut read);
+    let pcm: Vec<i16> = read.iter().map(|&x| ggtts_core::flac::to_i16(x)).collect();
+    let flac = encode_flac(&pcm, rate).map_err(|e| format!("{}: {e}", out.display()))?;
+    let tagged = crate::flac::with_tags(&flac, tags).map_err(|e| format!("{}: {e}", out.display()))?;
+    crate::manifest::write_atomic(out, &tagged).map_err(|e| format!("{}: {e}", out.display()))?;
+    Ok(out.to_path_buf())
+}
+
+/// The tags a chapter FLAC carries: TITLE (the chapter), ALBUM (the book), one ARTIST per author, TRACKNUMBER (its
+/// place among the chapters written), and the ids that tie it to its render.
+pub fn chapter_tags(book: &Book, chapter: &Chapter, track: usize, plan: &ChapterPlan) -> Vec<(String, String)> {
+    let mut tags = vec![
+        ("TITLE".to_string(), chapter.title.clone()),
+        ("ALBUM".to_string(), book.title.clone()),
+    ];
+    tags.extend(book.authors.iter().map(|a| ("ARTIST".to_string(), a.clone())));
+    tags.extend([
+        ("TRACKNUMBER".to_string(), track.to_string()),
+        ("GGTTS_BOOK_ID".to_string(), plan.book_id.clone()),
+        ("GGTTS_CHAPTER_ID".to_string(), plan.chapter_id.clone()),
+        ("GGTTS_SEED_ROOT".to_string(), plan.seed_root.clone()),
+    ]);
+    tags
+}
+
+/// The file in an output directory that names the book rendered into it.
+pub const BOOK_MARKER: &str = "book.json";
+
+/// Refuse an output directory that holds another book; mark a fresh one as this book's. Without this, a second book
+/// rendered into the same directory would refuse the first book's manifests and overwrite its chunks.
+fn claim_output(out: &Path, book_id: &str) -> Result<(), String> {
+    let marker = out.join(BOOK_MARKER);
+    match std::fs::read_to_string(&marker) {
+        Ok(text) => {
+            let held = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("book_id").and_then(|b| b.as_str()).map(String::from));
+            match held {
+                Some(id) if id == book_id => Ok(()),
+                Some(id) => Err(format!(
+                    "{} holds another book ({id}), not {book_id}: render into another --out",
+                    out.display()
+                )),
+                None => Err(format!("{} is not a book marker this tool wrote", marker.display())),
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let has_entries = std::fs::read_dir(out).map_err(|e| e.to_string())?.next().is_some();
+            if has_entries {
+                return Err(format!(
+                    "{} is not empty and holds no {BOOK_MARKER}: render into an empty directory or one this tool wrote",
+                    out.display()
+                ));
+            }
+            write_marker(out, book_id, &[])
+        }
+        Err(e) => Err(format!("{}: {e}", marker.display())),
+    }
+}
+
+/// The format of `book.json`.
+pub const MARKER_FORMAT: &str = "ggtts-book-output/1";
+
+/// Write `book.json`: the book rendered into `out`, and the chapter directories its latest render planned, in order.
+fn write_marker(out: &Path, book_id: &str, chapters: &[String]) -> Result<(), String> {
+    let marker = out.join(BOOK_MARKER);
+    let text = serde_json::json!({"format": MARKER_FORMAT, "book_id": book_id, "chapters": chapters}).to_string();
+    crate::manifest::write_atomic(&marker, text.as_bytes()).map_err(|e| format!("{}: {e}", marker.display()))
+}
+
+/// What a render's chunks come from, recorded in every chapter manifest and checked on resume: the engine family,
+/// backend and parity, the profile, each model file's role and SHA-256, the speaker, and the ggtts build.
+pub fn provenance(engine: &dyn Engine, files: &[(String, String)], speaker: Option<&str>) -> serde_json::Value {
+    let info = engine.info();
+    serde_json::json!({
+        "family": info.family,
+        "backend": info.backend,
+        "parity": info.parity,
+        "profile": engine.profile().name,
+        "files": files.iter().map(|(role, sha)| serde_json::json!({"role": role, "sha256": sha})).collect::<Vec<_>>(),
+        "speaker": speaker,
+        "ggtts_version": ggtts_core::VERSION,
+        "ggtts_commit": ggtts_core::SOURCE_COMMIT,
+    })
+}
+
+/// The engine, the files it came from (role and SHA-256) and its speaker: what [`render_command`]'s loader returns.
+pub struct LoadedEngine {
+    pub engine: Box<dyn Engine>,
+    pub files: Vec<(String, String)>,
+    pub speaker: Option<String>,
+}
+
+/// The whole `ggtts-book render`: read the book, load the engine once through `load`, plan every chapter with the
+/// engine's own profile, tie the plans to the engine's provenance, and render into `out`. The book is read before the
+/// engine is loaded, so a refused book costs no model load.
+pub fn render_command(
+    book_path: &Path,
+    out: &Path,
+    seed_root: &str,
+    load: impl FnOnce() -> Result<LoadedEngine, String>,
+) -> Result<serde_json::Value, String> {
+    render_command_with(book_path, out, seed_root, false, load)
+}
+
+/// [`render_command`], rendering front and back matter too when `include_skippable`.
+pub fn render_command_with(
+    book_path: &Path,
+    out: &Path,
+    seed_root: &str,
+    include_skippable: bool,
+    load: impl FnOnce() -> Result<LoadedEngine, String>,
+) -> Result<serde_json::Value, String> {
+    let book = Book::open(book_path).map_err(|e| e.to_string())?;
+    let LoadedEngine {
+        mut engine,
+        files,
+        speaker,
+    } = load()?;
+    let profile = *engine.profile();
+    let mut plans = crate::plan::plan_book(&profile, &book, seed_root)?;
+    let engine_record = provenance(engine.as_ref(), &files, speaker.as_deref());
+    for plan in &mut plans {
+        plan.engine = engine_record.clone();
+    }
+    let reports = render_book_with(engine.as_mut(), &book, &plans, out, include_skippable)?;
+    let chapters: Vec<_> = reports
+        .iter()
+        .map(|r| match &r.outcome {
+            ChapterOutcome::Written {
+                file,
+                rendered,
+                resumed,
+                refused,
+            } => serde_json::json!({
+                "id": r.id,
+                "state": "written",
+                "file": file.strip_prefix(out).unwrap_or(file).to_string_lossy(),
+                "rendered": rendered.len(),
+                "resumed": resumed,
+                "refused_manifest": refused,
+            }),
+            ChapterOutcome::Skipped { reason } => serde_json::json!({"id": r.id, "state": "skipped", "reason": reason}),
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "format": "ggtts-book-render/1",
+        "book_id": book.book_id(),
+        "engine": engine_record,
+        "seed_root": seed_root,
+        "chapters": chapters,
+    }))
+}
+
+/// Render every chapter of `book` into `out`, with `engine` loaded once for all of them.
+///
+/// Skippable chapters (front and back matter) are left out. A chapter whose chunk fails stops the render with that
+/// chunk named; what was finished is kept, and the next run resumes from it.
+pub fn render_book(
+    engine: &mut dyn Engine,
+    book: &Book,
+    plans: &[ChapterPlan],
+    out: &Path,
+) -> Result<Vec<ChapterReport>, String> {
+    render_book_with(engine, book, plans, out, false)
+}
+
+/// [`render_book`], rendering front and back matter too when `include_skippable`.
+pub fn render_book_with(
+    engine: &mut dyn Engine,
+    book: &Book,
+    plans: &[ChapterPlan],
+    out: &Path,
+    include_skippable: bool,
+) -> Result<Vec<ChapterReport>, String> {
+    std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+    claim_output(out, &book.book_id())?;
+    // Record which chapters this render plans, before rendering any: `export` takes exactly these, so a directory a
+    // render with other options left behind is never exported, and a planned chapter that is missing is refused.
+    let planned: Vec<String> = book
+        .chapters
+        .iter()
+        .zip(plans)
+        .enumerate()
+        .filter(|(_, (c, p))| (include_skippable || !c.skippable) && !p.chunks.is_empty())
+        .map(|(i, (c, _))| chapter_stem(i, c))
+        .collect();
+    write_marker(out, &book.book_id(), &planned)?;
+    let mut reports = Vec::new();
+    let mut track = 0;
+    for (i, (chapter, plan)) in book.chapters.iter().zip(plans).enumerate() {
+        if let Some(reason) = chapter
+            .skip_reason
+            .clone()
+            .filter(|_| chapter.skippable && !include_skippable)
+        {
+            reports.push(ChapterReport {
+                id: chapter.id.clone(),
+                outcome: ChapterOutcome::Skipped { reason },
+            });
+            continue;
+        }
+        if plan.chunks.is_empty() {
+            let reason = "nothing to speak".to_string();
+            reports.push(ChapterReport {
+                id: chapter.id.clone(),
+                outcome: ChapterOutcome::Skipped { reason },
+            });
+            continue;
+        }
+        let stem = chapter_stem(i, chapter);
+        let dir = out.join(&stem);
+        let mut rendered = Vec::new();
+        let start: Resume = run_chapter(&dir, plan, |p, index| {
+            rendered.push(index);
+            render_chunk(engine, p, index)
+        })
+        .map_err(|e| match e {
+            RunError::Render { index, reason } => format!(
+                "render stopped at chapter {}, chunk {index}: {reason}; what was finished is kept, run again with the \
+                 same --out to resume",
+                chapter.id
+            ),
+            RunError::Io(e) => format!("chapter {}: {e}", chapter.id),
+        })?;
+        let profile = *engine.profile();
+        track += 1;
+        let tags = chapter_tags(book, chapter, track, plan);
+        let file = join_chapter(&profile, &dir, plan, &out.join(format!("{stem}.flac")), &tags)?;
+        let bytes = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        crate::manifest::Manifest::record_chapter(&dir, plan, &format!("{stem}.flac"), &bytes)
+            .map_err(|e| format!("chapter {}: {e}", chapter.id))?;
+        reports.push(ChapterReport {
+            id: chapter.id.clone(),
+            outcome: ChapterOutcome::Written {
+                file,
+                resumed: plan.chunks.len() - start.todo.len(),
+                rendered,
+                refused: start.refused.map(|e| e.to_string()),
+            },
+        });
+    }
+    Ok(reports)
+}

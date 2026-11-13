@@ -1,0 +1,22 @@
+[package]
+name = "ggtts-load"
+description = "Load a ggtts engine by name, with its pinned default model files resolved from the cache, for tools that keep one engine for many requests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ggtts-core.workspace = true
+ggtts-models.workspace = true
+ggtts-fake.workspace = true
+ggtts-qwen3-tts.workspace = true
+ggtts-kitten = { path = "../ggtts-kitten" }
+
+[features]
+default = []
+# The engines over ggml. Without it only the fake engine loads, and a model engine is refused with a named reason.
+ggml = ["ggtts-qwen3-tts/ggml", "ggtts-kitten/ggml"]
+cuda = ["ggml", "ggtts-qwen3-tts/cuda", "ggtts-kitten/cuda"]

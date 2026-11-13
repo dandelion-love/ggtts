@@ -10,6 +10,8 @@ members = [
     "crates/ggtts-ffi",
     "crates/ggtts-instruments",
     "crates/ggtts-kitten",
+    "crates/ggtts-book",
+    "crates/ggtts-load",
     "instruments/templates/rust/event",
     "instruments/templates/rust/tensor",
 ]
@@ -30,6 +32,7 @@ ggtts-fake = { path = "crates/ggtts-fake", version = "0.0.1" }
 ggtts-instruments = { path = "crates/ggtts-instruments", version = "0.0.1" }
 ggtts-qwen3-tts = { path = "crates/ggtts-qwen3-tts", version = "0.0.1" }
 ggtts-models = { path = "crates/ggtts-models", version = "0.0.1" }
+ggtts-load = { path = "crates/ggtts-load", version = "0.0.1" }
 # One log10, pow and sin on every platform (a port of musl's libm), so a float result does not depend on the
 # platform's C library.
 libm = "0.2"

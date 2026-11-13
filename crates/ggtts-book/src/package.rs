@@ -1,7 +1,7 @@
 //! `META-INF/encryption.xml`, `META-INF/container.xml` and the package document (the OPF).
 
 use crate::archive::{resolve, Archive};
-use crate::dom::{parse, Element};
+use crate::dom::Element;
 use crate::error::BookError;
 use crate::xhtml::normalize;
 
@@ -113,12 +113,12 @@ pub(crate) struct Package {
     pub guide: Vec<Pointer>,
 }
 
-pub(crate) fn package(path: &str, bytes: &[u8], depth: usize) -> Result<Package, BookError> {
+pub(crate) fn package(path: &str, bytes: &[u8], zip: &mut Archive) -> Result<Package, BookError> {
     let error = |reason: String| BookError::Package {
         file: path.to_string(),
         reason,
     };
-    let root = parse(bytes, depth).map_err(error)?;
+    let root = zip.parse(bytes).map_err(error)?;
     if root.local != "package" {
         return Err(error(format!("the root element is <{}>, not <package>", root.qname)));
     }

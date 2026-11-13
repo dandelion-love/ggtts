@@ -37,14 +37,23 @@ impl Default for Limits {
 pub(crate) struct Archive {
     zip: zip::ZipArchive<Cursor<Vec<u8>>>,
     pub(crate) limits: Limits,
-    /// Bytes inflated so far, every read counted.
+    /// Bytes counted against the book's budget so far: every read inflated, and every document's text with its
+    /// entities expanded.
     total: u64,
+    /// Set when a document's expanded text ran past the budget, so the book is refused as `book-too-large` whatever
+    /// the caller makes of the parse error.
+    pub(crate) over_budget: bool,
 }
 
 impl Archive {
     pub(crate) fn new(bytes: Vec<u8>, limits: Limits) -> Result<Self, BookError> {
         zip::ZipArchive::new(Cursor::new(bytes))
-            .map(|zip| Self { zip, limits, total: 0 })
+            .map(|zip| Self {
+                zip,
+                limits,
+                total: 0,
+                over_budget: false,
+            })
             .map_err(|e| BookError::NotZip(e.to_string()))
     }
 
@@ -52,9 +61,20 @@ impl Archive {
         self.zip.index_for_name(name).is_some()
     }
 
-    /// Parse an XML document from the book under the book's depth limit.
-    pub(crate) fn parse(&self, bytes: &[u8]) -> Result<crate::dom::Element, String> {
-        crate::dom::parse(bytes, self.limits.depth)
+    /// Parse an XML document from the book under the book's depth limit, counting its text (entities expanded)
+    /// against the book's budget.
+    pub(crate) fn parse(&mut self, bytes: &[u8]) -> Result<crate::dom::Element, String> {
+        let left = self.limits.book_bytes.saturating_sub(self.total);
+        match crate::dom::parse(bytes, self.limits.depth, left) {
+            Ok((root, text)) => {
+                self.total += text;
+                Ok(root)
+            }
+            Err(e) => {
+                self.over_budget |= matches!(e, crate::dom::ParseError::OverBudget { .. });
+                Err(e.to_string())
+            }
+        }
     }
 
     /// The entry's bytes, or `None` when the archive has no entry of that name. A zip-level encrypted entry is

@@ -255,6 +255,67 @@ fn a_missing_or_changed_output_is_rendered_again() {
     assert_eq!(*calls.borrow(), [1, 4]);
 }
 
+/// Mark one done chunk as planned again in `d`'s manifest (re-checksummed), as a run killed after writing the
+/// chunk's file and before saving the manifest leaves it.
+fn mark_planned(d: &std::path::Path, index: usize) {
+    let path = d.join(MANIFEST_FILE);
+    let mut outer: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    outer["manifest"]["chunks"][index]["state"] = "planned".into();
+    outer["manifest"]["chunks"][index]["output"] = serde_json::Value::Null;
+    outer["manifest"]["chunks"][index]["render_ms"] = serde_json::Value::Null;
+    let body = serde_json::to_string(&outer["manifest"]).unwrap();
+    outer["sha256"] = ggtts_core::seed::hex(&ggtts_core::seed::sha256(body.as_bytes())).into();
+    std::fs::write(&path, outer.to_string()).unwrap();
+}
+
+/// Review finding 211-B: a run killed after a chunk's file was renamed into place and before the manifest was saved
+/// leaves a chunk file the manifest calls planned. The manifest is the record: the file is not trusted, the chunk is
+/// rendered again, and nothing else is.
+#[test]
+fn a_chunk_file_the_manifest_calls_planned_is_rendered_again() {
+    let d = dir("stray-chunk");
+    let plan = plan();
+    run_chapter(&d, &plan, |p, i| Ok(audio(p, i))).unwrap();
+    mark_planned(&d, 2);
+    // A file that is not what the renderer makes, so an output taken from disk would show.
+    std::fs::write(d.join(chunk_file(2)), b"left by a killed run").unwrap();
+    let calls = RefCell::new(Vec::new());
+    run_chapter(&d, &plan, |p, i| {
+        calls.borrow_mut().push(i);
+        Ok(audio(p, i))
+    })
+    .unwrap();
+    assert_eq!(*calls.borrow(), [2]);
+    assert_eq!(std::fs::read(d.join(chunk_file(2))).unwrap(), audio(&plan, 2));
+    assert!(Manifest::load(&d, &plan).unwrap().done[2].is_some());
+}
+
+/// Review finding 211-B: a run killed while writing a chunk leaves a `.partial` file and a manifest that says
+/// planned. The chunk is rendered again, its file is the renderer's, and no `.partial` file is left.
+#[test]
+fn a_partial_chunk_file_is_rendered_again_and_cleaned_up() {
+    let d = dir("partial");
+    let plan = plan();
+    run_chapter(&d, &plan, |p, i| Ok(audio(p, i))).unwrap();
+    mark_planned(&d, 3);
+    std::fs::remove_file(d.join(chunk_file(3))).unwrap();
+    std::fs::write(d.join(format!(".{}.partial", chunk_file(3))), b"half a chunk").unwrap();
+    let calls = RefCell::new(Vec::new());
+    run_chapter(&d, &plan, |p, i| {
+        calls.borrow_mut().push(i);
+        Ok(audio(p, i))
+    })
+    .unwrap();
+    assert_eq!(*calls.borrow(), [3]);
+    assert_eq!(std::fs::read(d.join(chunk_file(3))).unwrap(), audio(&plan, 3));
+    let partials: Vec<_> = std::fs::read_dir(&d)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".partial"))
+        .collect();
+    assert!(partials.is_empty(), "{partials:?}");
+}
+
 /// AC6 and AC7 together: a manifest for another seed root in the directory is refused, and every chunk is rendered.
 #[test]
 fn a_refused_manifest_renders_everything() {

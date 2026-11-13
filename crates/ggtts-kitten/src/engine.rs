@@ -344,7 +344,7 @@ impl KittenEngine {
         decoder: Decoder,
         threads: usize,
     ) -> Result<Self, String> {
-        let tm = TokenMap::from_meta(&model.meta)?;
+        let tm = TokenMap::from_meta(&model.meta, model.hp.n_vocab)?;
         let ref_text = tokenizer.encode(&reference.transcript)?;
         let speaker = model.project_speaker(&reference.embedding);
         let m = &model.meta;

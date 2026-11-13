@@ -666,6 +666,9 @@ impl<'m> Session<'m> {
         if self.n_past + t > self.n_ctx {
             return Err(format!("context full: {} + {t} > {}", self.n_past, self.n_ctx));
         }
+        if let Some(r) = &m.head_rows {
+            crate::sampler::check_head_rows(r, hp.n_vocab)?;
+        }
         let pos0 = self.n_past;
         let n_kv = pos0 + t;
         let (hd, nh, nkv) = (hp.head_dim as i64, hp.n_head as i64, hp.n_head_kv as i64);
@@ -790,7 +793,7 @@ impl<'m> Session<'m> {
             let last = g::ggml_cont(ctx, last);
             let normed = g::ggml_mul(ctx, g::ggml_rms_norm(ctx, last, hp.eps), m.norm);
             // The head, or only its rows in `head_rows` (a view: no copy) when the caller can sample nothing else.
-            let rows = m.head_rows.clone().filter(|r| r.start < r.end && r.end <= hp.n_vocab);
+            let rows = m.head_rows.clone(); // checked above
             let head = match &rows {
                 Some(r) => g::ggml_view_2d(
                     ctx,

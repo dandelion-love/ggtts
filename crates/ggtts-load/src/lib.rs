@@ -32,23 +32,9 @@ pub fn engines_built() -> bool {
     cfg!(feature = "ggml")
 }
 
-/// What to load. The paths are in the order an engine takes them: model (the talker or LM), codec, voice.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Request {
-    pub engine: String,
-    pub model: Option<PathBuf>,
-    pub codec: Option<PathBuf>,
-    /// A reference voice, for an engine that clones one (kitten-tts-2).
-    pub voice: Option<PathBuf>,
-    /// A named speaker in a Qwen3-TTS talker.
-    pub speaker: Option<String>,
-    /// `cpu` (the default) or `cuda`.
-    pub device: Option<String>,
-    /// CPU threads; 4 when not given.
-    pub threads: Option<i32>,
-    /// Never download a default file.
-    pub offline: bool,
-}
+/// What to load: the options value's load section ([`ggtts_core::options::Load`]), one type for every front end. The
+/// paths are in the order an engine takes them: model (the talker or LM), codec, voice.
+pub use ggtts_core::options::Load as Request;
 
 /// A loaded engine and the files it was loaded from, for provenance.
 pub struct Loaded {
@@ -163,11 +149,20 @@ fn load_model_engine(_req: &Request) -> Result<Box<dyn Engine>, String> {
     Err(NO_ENGINES.into())
 }
 
-/// [`resolve`] with the per-user cache and HTTPS (notices to stderr), then [`load`].
+/// The cache root: `cache_dir` when given, else the per-user cache (`GGTTS_CACHE_DIR`, else the platform's).
+pub fn cache_root(cache_dir: Option<&std::path::Path>) -> Result<PathBuf, String> {
+    match cache_dir {
+        Some(dir) => Ok(dir.to_path_buf()),
+        None => Cache::default_root(),
+    }
+}
+
+/// [`resolve`] with the request's cache (`cache_dir`, else the per-user cache) and HTTPS (notices to stderr), then [`load`].
 pub fn load_default(mut req: Request) -> Result<Loaded, String> {
+    let cache_dir = req.cache_dir.clone();
     let files = resolve(
         &mut req,
-        &|| Cache::default_root().map(Cache::new),
+        &|| cache_root(cache_dir.as_deref()).map(Cache::new),
         &ggtts_models::Http::default(),
         &mut |m| eprintln!("ggtts: {m}"),
     )?;

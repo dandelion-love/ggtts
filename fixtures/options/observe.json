@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "observe": {
+    "trace": "read.trace.jsonl",
+    "trace_level": 2,
+    "timing_report": "timing.json",
+    "duration_report": "durations.json",
+    "log_level": "debug",
+    "log_format": "json",
+    "instruments": "instruments.yaml",
+    "instrument": ["loudness-ends", "asr,model=small"],
+    "require": ["loudness-ends"],
+    "on_instrument_error": "abort",
+    "instrument_timeout": 90.5,
+    "instrument_device": "cpu",
+    "report": "read.report",
+    "run": "run-1"
+  }
+}

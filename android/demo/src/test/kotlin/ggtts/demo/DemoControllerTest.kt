@@ -119,6 +119,30 @@ class DemoControllerTest {
     }
 
     @Test
+    fun anErrorFromPlaybackLeavesTheScreenUsable() {
+        val c = controller(FakeBinding())
+        audio.duringFinish = { throw OutOfMemoryError("planted") }
+        c.speak(request, "Hello.", Ggtts.DEFAULT_SEED)
+        assertEquals(listOf("OutOfMemoryError: planted"), view.errors)
+        assertFalse(c.busy)
+        assertFalse(view.shownBusy)
+        assertEquals("playback was stopped", "stop", events.last())
+        audio.duringFinish = {}
+        c.speak(request, "Hello.", Ggtts.DEFAULT_SEED)
+        assertTrue("the next Speak works", view.statuses.last().startsWith("kitten-tts-2: 3.00 s of audio"))
+    }
+
+    @Test
+    fun aRefusedWriteIsShownAsAnErrorNotAFinishedRead() {
+        val c = controller(FakeBinding())
+        audio.duringFinish = { throw PlaybackFailed(-6) }
+        c.speak(request, "Hello.", Ggtts.DEFAULT_SEED)
+        assertEquals(listOf("PlaybackFailed: the audio device refused a write (error -6)"), view.errors)
+        assertFalse(view.statuses.last(), view.statuses.last().startsWith("kitten-tts-2:"))
+        assertFalse(c.busy)
+    }
+
+    @Test
     fun aStopWhileTheLastChunksPlayReportsStoppedNotFinished() {
         val c = controller(FakeBinding())
         audio.duringFinish = { c.stop() }

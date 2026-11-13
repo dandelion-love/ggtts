@@ -27,7 +27,14 @@ class StreamPlayerTest {
             if (isReleased) misuse += "$name after release"
         }
 
-        override fun play() = call("play")
+        /** play() throws, as AudioTrack.play() does on a track that failed to initialise. */
+        var playThrows = false
+        /** What every write returns when not paused; null takes everything. */
+        var writeResult: Int? = null
+        override fun play() {
+            call("play")
+            if (playThrows) throw IllegalStateException("play() called on an uninitialized AudioTrack")
+        }
         /** Runs inside write(), on the player thread, before the write takes anything. */
         var beforeWrite: () -> Unit = {}
         @Volatile var isPaused = false
@@ -35,7 +42,7 @@ class StreamPlayerTest {
             call("write")
             beforeWrite()
             // A paused device takes nothing, as a full AudioTrack buffer does; with blockWrites a running one is full too.
-            return if (isPaused || blockWrites) 0 else count
+            return if (isPaused || blockWrites) 0 else writeResult ?: count
         }
         override fun pause() { call("pause"); isPaused = true; paused.countDown() }
         override fun flush() = call("flush")
@@ -49,7 +56,9 @@ class StreamPlayerTest {
     }
 
     private val sinks = mutableListOf<FakeSink>()
-    private val player = StreamPlayer({ FakeSink().also { sinks += it } }, drainMs = 0)
+    /** Applied to each new sink as begin() creates it, before its play(). */
+    private var setUp: (FakeSink) -> Unit = {}
+    private val player = StreamPlayer({ FakeSink().also { setUp(it); sinks += it } }, drainMs = 0)
 
     private fun awaitIgnoringInterrupts(latch: CountDownLatch) {
         while (true) {
@@ -140,6 +149,37 @@ class StreamPlayerTest {
         player.play(FloatArray(10))
         assertTrue("the player thread released the device", sink.released.await(2, TimeUnit.SECONDS))
         assertEquals(emptyList<String>(), sink.misuse)
+    }
+
+    @Test
+    fun aDeviceThatFailsToStartIsReleasedAndTheNextStreamWorks() {
+        setUp = { it.playThrows = true }
+        val e = runCatching { player.begin(24000) }.exceptionOrNull()
+        assertTrue("the failure reaches the caller: $e", e is IllegalStateException)
+        val failed = sinks.single()
+        assertEquals("released once", 1, failed.calls.count { it.startsWith("release@") })
+        assertEquals(emptyList<String>(), failed.misuse)
+        player.play(FloatArray(10)) // nothing is playing: dropped
+        player.stop() // nothing is playing: does nothing
+        assertEquals(1, failed.calls.count { it.startsWith("release@") })
+        setUp = {}
+        player.begin(24000)
+        player.play(FloatArray(10))
+        player.finish()
+        assertTrue(sinks[1].calls.any { it.startsWith("write@") })
+    }
+
+    @Test
+    fun aRefusedWriteIsReportedByFinishNotTakenForTheEnd() {
+        setUp = { it.writeResult = -6 }
+        player.begin(24000)
+        player.play(FloatArray(10))
+        player.play(FloatArray(10))
+        val e = runCatching { player.finish() }.exceptionOrNull()
+        assertTrue("finish reports the refusal: $e", e is PlaybackFailed && e.code == -6)
+        val sink = sinks.single()
+        assertTrue(sink.isReleased)
+        assertEquals("the stream ended at the refused write", 1, sink.calls.count { it.startsWith("write@") })
     }
 
     @Test

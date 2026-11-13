@@ -23,7 +23,7 @@ interface AudioOut {
     /** Queue [samples] for playback and return at once; playback runs on its own. */
     fun play(samples: FloatArray)
 
-    /** Wait until everything queued has played. */
+    /** Wait until everything queued has played. Throws if playback failed before the end (the read is not finished). */
     fun finish()
 
     /** Drop what is queued and stop playing now. Safe from any thread, and when nothing is playing. */
@@ -94,6 +94,11 @@ class DemoController(
                 Result.failure(IllegalStateException("Not started: ${e.message}."))
             } catch (e: RuntimeException) {
                 audio.stop()
+                log("error: $e")
+                Result.failure(IllegalStateException("${e.javaClass.simpleName}: ${e.message}"))
+            } catch (e: Throwable) {
+                // An Error (out of memory, say) too: shown, and the screen is left usable rather than busy for good.
+                runCatching { audio.stop() }
                 log("error: $e")
                 Result.failure(IllegalStateException("${e.javaClass.simpleName}: ${e.message}"))
             }

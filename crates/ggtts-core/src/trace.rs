@@ -32,8 +32,9 @@ use std::time::Instant;
 
 use serde_json::{Map, Value};
 
-use crate::audio::{judge_f32, trim_edges_f32};
-use crate::engine::{ChunkRequest, Codes, Engine, EngineError, Pcm, Stop};
+use crate::engine::{ChunkRequest, Codes, Engine, EngineError, Stop};
+use crate::hooks::Hooks;
+use crate::pipeline::{render_chunk, DurationJudge, Observers, RenderOptions};
 use crate::steer::Steering;
 
 /// The trace format this module writes and reads.
@@ -613,10 +614,12 @@ fn u32_of(m: &Map<String, Value>, k: &str) -> Result<u32, TraceError> {
         .ok_or_else(|| TraceError(format!("`{k}` missing or not a u32 in {}", Value::Object(m.clone()))))
 }
 
-/// Replay a recorded trace on `engine`: each `chunk_begin`'s request (text, seed, chunk, draw, instruction) is generated again,
-/// in the recorded order, at the header's trace level, then decoded and judged; where the trace records a chunk's
-/// `trim`, the last regenerated draw of that chunk is trimmed again. The regenerated events are compared with the
-/// recorded ones field for field, ignoring the clock, so a decoder change is red as well as a generator change.
+/// Replay a recorded trace on `engine`: each chunk's recorded draws are made again by the pipeline's own step,
+/// [`render_chunk`], with the recorded text, chunk, instruction and seeds and as many redraws as the trace records, at
+/// the header's trace level: generated, decoded, judged and, where the trace records the chunk's `trim`, trimmed. The
+/// regenerated events are compared with the recorded ones field for field, ignoring the clock, so a decoder change is
+/// red as well as a generator change. A draw the replayed judge keeps ends the chunk there, as it ends a render.
+/// [`ReplayReport::draws`] counts the draws made.
 ///
 /// The trim keeps `edge_s` seconds: the header's `flags.edge_s` when the render set it, else the profile's.
 ///
@@ -670,47 +673,49 @@ pub fn replay_steered(
         .and_then(Value::as_f64)
         .unwrap_or(profile.edge_s);
     let mut rec = Recorder::new(level);
+    let mut opts = RenderOptions::for_profile(&profile);
+    opts.edge_s = edge_s;
+    opts.steer = steer.cloned();
     let mut draws = 0;
-    let mut last: Option<(u32, Pcm)> = None;
-    for m in lines {
+    let mut last: Option<u32> = None;
+    let mut i = 0;
+    while i < lines.len() {
+        let m = &lines[i];
+        i += 1;
         if m["ev"] == "trim" {
+            // Emitted by the step with the draws it follows.
             let chunk = u32_of(m, "chunk")?;
-            let pcm = match &last {
-                Some((c, pcm)) if *c == chunk => pcm,
-                _ => return Err(TraceError(format!("a trim for chunk {chunk} follows no draw of it"))),
-            };
-            let t = trim_edges_f32(&profile, &pcm.samples, pcm.sample_rate, edge_s);
-            rec.emit(Event::Trim {
-                chunk,
-                lead_s: t.lead_cut_s,
-                tail_s: t.tail_cut_s,
-                start: t.start_sample,
-                end: t.end_sample,
-            });
+            if last != Some(chunk) {
+                return Err(TraceError(format!("a trim for chunk {chunk} follows no draw of it")));
+            }
             continue;
         }
         if m["ev"] != "chunk_begin" {
             continue;
         }
-        let text = m
-            .get("text")
-            .and_then(Value::as_str)
-            .ok_or_else(|| TraceError("chunk_begin without text".into()))?;
-        let seed = m
-            .get("seed")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| TraceError("chunk_begin without seed".into()))?;
-        let req = ChunkRequest {
-            text,
-            seed,
-            chunk: u32_of(m, "chunk")?,
-            draw: u32_of(m, "draw")?,
-            instruction: m.get("instruction").and_then(Value::as_str),
-            steer,
+        let group = DrawGroup::read(&lines[i - 1..])?;
+        let seeds = group.seeds;
+        opts.redraw = seeds.len() as u32 - 1;
+        opts.instruction = group.instruction.map(str::to_string);
+        let mut events = TrimFilter {
+            inner: &mut rec,
+            keep_trim: group.trimmed,
         };
-        let pcm = generate_chunk(engine, &req, &mut rec).map_err(|e| TraceError(format!("engine: {e}")))?;
-        last = Some((req.chunk, pcm));
-        draws += 1;
+        let mut hooks = Hooks::new();
+        let kept = render_chunk(
+            engine,
+            group.text,
+            group.chunk as usize,
+            &|_: usize, _: &str, k: u32| seeds[k as usize],
+            &mut DurationJudge,
+            &opts,
+            &mut Observers::new(&mut events, &mut hooks),
+        )
+        .map_err(|e| TraceError(e.to_string()))?;
+        draws += kept.draws.len();
+        last = Some(group.chunk);
+        // Skip past the recorded draws of this chunk; the next line read is the one after its last `chunk_begin`.
+        i += group.span - 1;
     }
     let recorded = engine_events(lines);
     let replayed = engine_events(&rec.lines);
@@ -721,39 +726,84 @@ pub fn replay_steered(
     })
 }
 
-/// One chunk draw as the pipeline makes it: `chunk_begin`, the engine's `step`s, then decode and judge, and a
-/// `chunk_end` with the frames, stop and the judge's fields. The decoded samples, for the trim.
-fn generate_chunk(
-    engine: &mut dyn Engine,
-    req: &ChunkRequest<'_>,
-    events: &mut dyn Events,
-) -> Result<Pcm, EngineError> {
-    if events.level() > 0 {
-        events.emit(Event::ChunkBegin {
-            chunk: req.chunk,
-            draw: req.draw,
-            text: req.text,
-            seed: req.seed,
-            n_text_tokens: None,
-            instruction: req.instruction(),
-        });
+/// One chunk's recorded draws: consecutive `chunk_begin`s of the same chunk, text and instruction, numbered from 0,
+/// up to the chunk's `trim` or the next chunk's first draw. Replay regenerates them with [`render_chunk`] at the
+/// recorded seeds and as many redraws as were recorded, so it makes the draws the pipeline made, by the same code.
+struct DrawGroup<'a> {
+    chunk: u32,
+    text: &'a str,
+    instruction: Option<&'a str>,
+    seeds: Vec<u32>,
+    /// Whether the trace records the chunk's `trim` (a render that failed mid-chunk does not).
+    trimmed: bool,
+    /// Lines from the first `chunk_begin` to the last, inclusive.
+    span: usize,
+}
+
+impl<'a> DrawGroup<'a> {
+    fn read(lines: &'a [Map<String, Value>]) -> Result<Self, TraceError> {
+        let head = &lines[0];
+        let text = head
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or_else(|| TraceError("chunk_begin without text".into()))?;
+        let chunk = u32_of(head, "chunk")?;
+        let instruction = head.get("instruction").and_then(Value::as_str);
+        let mut group = Self {
+            chunk,
+            text,
+            instruction,
+            seeds: vec![seed_of_line(head)?],
+            trimmed: false,
+            span: 1,
+        };
+        for (j, m) in lines.iter().enumerate().skip(1) {
+            match m["ev"].as_str() {
+                Some("trim") => {
+                    group.trimmed = u32_of(m, "chunk")? == chunk;
+                    break;
+                }
+                Some("chunk_begin") => {
+                    let same = u32_of(m, "chunk")? == chunk
+                        && m.get("text").and_then(Value::as_str) == Some(text)
+                        && m.get("instruction").and_then(Value::as_str) == instruction
+                        && u32_of(m, "draw")? as usize == group.seeds.len();
+                    if !same {
+                        break;
+                    }
+                    group.seeds.push(seed_of_line(m)?);
+                    group.span = j + 1;
+                }
+                _ => {}
+            }
+        }
+        Ok(group)
     }
-    let t0 = Instant::now();
-    let g = engine.generate_traced(req, events)?;
-    let pcm = engine.decode(&g.codes)?;
-    let j = judge_f32(engine.profile(), &pcm.samples, pcm.sample_rate, req.text);
-    if events.level() > 0 {
-        events.emit(Event::ChunkEnd {
-            chunk: req.chunk,
-            draw: req.draw,
-            frames: g.codes.n_frames() as u32,
-            stop: g.stop,
-            spc: Some(j.s_per_char),
-            verdict: j.verdict.map(|v| v.as_str()),
-            ms: t0.elapsed().as_millis() as u64,
-        });
+}
+
+fn seed_of_line(m: &Map<String, Value>) -> Result<u32, TraceError> {
+    let seed = m
+        .get("seed")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| TraceError("chunk_begin without seed".into()))?;
+    u32::try_from(seed).map_err(|_| TraceError(format!("chunk_begin seed {seed} is not a u32")))
+}
+
+/// Passes every event through, except a `trim` the recorded trace does not have.
+struct TrimFilter<'a> {
+    inner: &'a mut dyn Events,
+    keep_trim: bool,
+}
+
+impl Events for TrimFilter<'_> {
+    fn level(&self) -> u8 {
+        self.inner.level()
     }
-    Ok(pcm)
+    fn emit(&mut self, event: Event<'_>) {
+        if self.keep_trim || !matches!(event, Event::Trim { .. }) {
+            self.inner.emit(event);
+        }
+    }
 }
 
 /// The first codec token that differs between an untraced and a traced generation.

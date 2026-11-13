@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "load": {"engine": "fake", "voice": "voice.json"},
+  "render": {"text": "一句話。", "seed": 7},
+  "output": {"out": "line.flac", "stream": "line.wav", "stream_level_seconds": 2.5}
+}

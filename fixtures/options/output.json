@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "output": {
+    "out": "read.flac",
+    "stream": "-",
+    "stream_format": "s16le",
+    "stream_raw": true
+  }
+}

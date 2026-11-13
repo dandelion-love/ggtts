@@ -112,3 +112,23 @@ fn offline_names_the_missing_default_files() {
     assert!(err.contains("huggingface.co"), "{err}");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn the_request_is_the_options_values_load_section() {
+    let o = ggtts_core::options::Options::from_json(r#"{"load": {"engine": "fake", "threads": 2}}"#).unwrap();
+    let req: Request = o.load;
+    assert_eq!(req.engine, "fake");
+    assert_eq!(req.threads, Some(2));
+    assert_eq!(Request::default().engine, "auto");
+}
+
+#[test]
+fn a_cache_dir_given_is_the_cache_root() {
+    let dir = std::path::Path::new("/a/cache");
+    assert_eq!(ggtts_load::cache_root(Some(dir)).unwrap(), dir);
+    // Unset is the per-user cache, as before.
+    assert_eq!(
+        ggtts_load::cache_root(None).ok(),
+        ggtts_models::Cache::default_root().ok()
+    );
+}

@@ -11,6 +11,15 @@ that a merge places under a released heading is caught.
 
 ## Unreleased
 
+### Added
+
+- **One render entry point in the `ggtts-core` library: `pipeline::render_plan`.** It renders a plan with any trace
+  level, tensor hooks and output (the whole read, or a stream raw or levelled) in one call, so combinations that had
+  no function before, such as hooks with a stream, now work. It is built from a public step, `pipeline::render_chunk`,
+  which renders one chunk (draws at the caller's seeds, the judge, redraws, edge trim) for a caller with its own plan.
+  `render_story`, `render_story_traced`, `render_story_hooked` and `render_story_streamed` keep working unchanged, and
+  no output changes.
+
 ## v0.1.0-rc.12 (2026-11-13)
 
 ### Added

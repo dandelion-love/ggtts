@@ -44,7 +44,7 @@ A **front end** is anything a person or a program renders through:
 
 | Front end | Where | Render path today |
 |---|---|---|
-| `ggtts-render --story` | `crates/ggtts-cli` | `render_story_streamed` |
+| `ggtts-render --story` | `crates/ggtts-cli` | `render_plan`, with its stream mode as the output |
 | `ggtts-render --text` | `crates/ggtts-cli` | its own `engine.generate` and `decode`: no trim, no level, no judge |
 | `ggtts-book render` | `crates/ggtts-book`, on `track/epub` | its own `render_chunk`: `engine.generate` at draw 0, no judge |
 | C ABI (`libggtts_ffi`, `ggtts.h`) | `crates/ggtts-ffi` | `render_story`, `render_story_streamed` |
@@ -56,8 +56,8 @@ A **front end** is anything a person or a program renders through:
 `ggtts-kitten render` is an engine parity tool that happens to ship. It is listed so its exemption is checkable: the
 conformance table gives it a row with every capability `Refused` ("an engine parity tool; render with `ggtts-render
 --engine kitten-tts-2`"), and the grep test names its file as an exception. `ggtts-measure` renders nothing.
-`ggtts_core::trace::replay` and `replay_steered` regenerate recorded chunks with their own copy of the chunk step; they
-are rebuilt on `render_chunk` rather than exempted.
+`ggtts_core::trace::replay` and `replay_steered` regenerate recorded chunks through `render_chunk`
+([#276](https://github.com/dandelion-love/ggtts/issues/276)), so they need no exemption.
 
 ## The state today
 
@@ -90,16 +90,21 @@ What the table shows beyond missing cells:
 * **The same word means different things.** `seed` is a sampler seed on `--text`, ignored on `--story`, a seed salt
   in the bindings, a root in the book, and a base that each line adds its index to in `ggtts-kitten render`.
 * **The same capability has different defaults.** `ggtts-render --stream` is levelled unless asked for raw; every
-  binding streams the pieces before the level step. The levelled stream (`ggtts_core::stream::StreamLevel`) is in
-  `ggtts-core`, but only `ggtts-render`'s own code applies it, outside the render functions, so no binding gets it.
+  binding streams the pieces before the level step. Since [#276](https://github.com/dandelion-love/ggtts/issues/276)
+  the pipeline applies the levelled stream (`Output::Stream` with `StreamMode::Levelled`), so a binding can have it;
+  the bindings still ask for `Raw`.
 * **Options are accepted and dropped.** `--text` takes `--trace` on engines that write nothing, and the stream
   levelling flags, without effect.
 
-**The render entry points.** `ggtts-core` exports four: `render_story`, `render_story_traced`, `render_story_hooked`
-and `render_story_streamed` (`crates/ggtts-core/src/pipeline.rs`). They share one private loop, `render`, but each
-public one fixes which observers and which output it takes, so a caller cannot have hooks and a stream together. The
-paths that actually diverge are outside them: `ggtts-render --text`, `ggtts-book`'s `render_chunk`,
-`ggtts_core::trace::replay` and `ggtts-kitten render` each call the engine directly.
+**The render entry points.** Since [#276](https://github.com/dandelion-love/ggtts/issues/276), `ggtts-core` has one:
+`render_plan(engine, chunks, seeds, judge, opts, observers, output)` (`crates/ggtts-core/src/pipeline.rs`), with any
+observers (`Observers { events, hooks }`) and any output (`Output::Whole`, or `Output::Stream` raw or levelled). It is
+the public step `render_chunk` per chunk (draws at a caller's `SeedSource`, a pluggable `Judge`, redraws, trim), then
+join, output and level. `render_story`, `render_story_traced`, `render_story_hooked` and `render_story_streamed` are
+wrappers over it. Before #276 they shared a private loop but each fixed its observers and output, so a caller could
+not have hooks and a stream together. The paths that still diverge are outside them: `ggtts-render --text`,
+`ggtts-book`'s `render_chunk` (moved onto the core step by [#279](https://github.com/dandelion-love/ggtts/issues/279))
+and `ggtts-kitten render` each call the engine directly.
 
 ## What every epic and story states
 

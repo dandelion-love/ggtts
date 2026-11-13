@@ -47,11 +47,11 @@ impl TokenMap {
         .checked(n_vocab)
     }
 
-    /// This map, if every id it names exists in a vocabulary of `n_vocab` tokens: the audio range
-    /// `audio_id_base .. audio_id_base + num_audio_tokens` must end at or before `n_vocab`, and every id at or past
-    /// none of it (an optional id left at 0 is absent, and not checked). The C++ reference refuses such a map when it
-    /// loads; without this, an audio id past the vocabulary would index out of bounds in the sampler, and the
-    /// restricted head would be asked for rows the head does not have.
+    /// This map, if every id it names exists in a vocabulary of `n_vocab` tokens. The audio range
+    /// `audio_id_base .. audio_id_base + num_audio_tokens` must be non-empty and end at or before `n_vocab`, and every
+    /// other id must be below `n_vocab` (an optional id left at 0 is absent, and not checked). The C++ reference refuses
+    /// such a map when it loads; without this, an audio id past the vocabulary would index out of bounds in the
+    /// sampler, and the restricted head would be asked for rows the head does not have.
     pub fn checked(self, n_vocab: usize) -> Result<Self, String> {
         let n = n_vocab as u64;
         let end = self.audio_base as u64 + self.audio_count as u64;

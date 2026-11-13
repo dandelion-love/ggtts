@@ -149,6 +149,10 @@ no setting. That is not true of `model`, `codec` and `voice`: an empty one is ta
 ignored. A file that is missing or is not a GGUF is refused before any engine loads. The settings hold
 for the engine's life.
 
+`GGTTS_KITTEN_FULL_HEAD=1` (exactly `1`) makes Kitten-TTS 2 compute its whole output head instead of the rows a step can
+keep (see the crate README). It is a diagnostic switch read from the process environment only; no binding setting
+carries it.
+
 ### The default model (Qwen3-TTS)
 
 With engine `"qwen3-tts"` and a null `model` or `codec`, the binding uses the same default files as `ggtts-render`:

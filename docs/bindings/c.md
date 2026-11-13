@@ -193,6 +193,10 @@ by you, and read only during the call. A NULL or empty string is no setting.
 
 The settings hold for the engine's life: every render on the handle uses them.
 
+`GGTTS_KITTEN_FULL_HEAD=1` (exactly `1`) makes Kitten-TTS 2 compute its whole output head instead of the rows a step can
+keep (see the crate README). It is a diagnostic switch read from the process environment only; no binding setting
+carries it.
+
 ### The default model (Qwen3-TTS)
 
 With engine `"qwen3-tts"` and `model` or `codec` NULL, the library uses the same default files as `ggtts-render`:

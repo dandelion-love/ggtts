@@ -1,0 +1,35 @@
+checking against the audio ids and the two end ids only (--rows audio-and-ends)
+head_rows_check: 22 lines, seed 20260905, 4 threads, top_k 50, top_p 0.8; the head's rows 151670..158241 (6571 rows; audio ids from 151675, speech_end 151670, stop 151674)
+  step 200: id 158238 scored 73.746 against the top-50's 72.161 (margin -1.585); the head's rows cover it
+line  1:  205 steps, smallest margin  -1.585, 1 steps with another id in the top-50, 0 with one finite after the filters | 204 tokens, Eos, hash a00f574e93a225f2, 24.5 s
+line  2:  189 steps, smallest margin   1.539, 0 steps with another id in the top-50, 0 with one finite after the filters | 188 tokens, Eos, hash 2f1c0544b3a53f05, 23.3 s
+line  3:  117 steps, smallest margin   5.241, 0 steps with another id in the top-50, 0 with one finite after the filters | 116 tokens, Eos, hash 134f9ba6c7714d92, 16.7 s
+line  4:  121 steps, smallest margin   2.511, 0 steps with another id in the top-50, 0 with one finite after the filters | 120 tokens, Eos, hash a223ca2337d9501a, 16.8 s
+line  5:  121 steps, smallest margin   2.340, 0 steps with another id in the top-50, 0 with one finite after the filters | 120 tokens, Eos, hash 3c3a4b44d0f909e5, 16.7 s
+  step 122: id 158238 scored 80.304 against the top-50's 78.225 (margin -2.078); the head's rows cover it
+line  6:  125 steps, smallest margin  -2.078, 1 steps with another id in the top-50, 0 with one finite after the filters | 124 tokens, Eos, hash 6abd767002c9cdd7, 17.3 s
+  step 114: id 158238 scored 78.463 against the top-50's 77.019 (margin -1.443); the head's rows cover it
+line  7:  117 steps, smallest margin  -1.443, 1 steps with another id in the top-50, 0 with one finite after the filters | 116 tokens, Eos, hash be61a69d2da08199, 16.5 s
+line  8:  129 steps, smallest margin   4.164, 0 steps with another id in the top-50, 0 with one finite after the filters | 128 tokens, Eos, hash bb8d05cd00e57927, 17.4 s
+line  9:  133 steps, smallest margin   0.739, 0 steps with another id in the top-50, 0 with one finite after the filters | 132 tokens, Eos, hash a3f86707084ba731, 17.8 s
+line 10:  125 steps, smallest margin   1.825, 0 steps with another id in the top-50, 0 with one finite after the filters | 124 tokens, Eos, hash f619645396fb37a7, 16.6 s
+  step 133: id 158238 scored 79.777 against the top-50's 78.226 (margin -1.551); the head's rows cover it
+  step 136: id 158238 scored 71.852 against the top-50's 70.153 (margin -1.698); the head's rows cover it
+line 11:  137 steps, smallest margin  -1.698, 2 steps with another id in the top-50, 0 with one finite after the filters | 136 tokens, Eos, hash f4c065df38c43488, 18.3 s
+  step 257: id 158238 scored 78.400 against the top-50's 78.400 (margin 0.000); the head's rows cover it
+line 12:  261 steps, smallest margin   0.000, 1 steps with another id in the top-50, 0 with one finite after the filters | 260 tokens, Eos, hash 55e87fc4e5f9f6ec, 31.1 s
+line 13:  301 steps, smallest margin   2.374, 0 steps with another id in the top-50, 0 with one finite after the filters | 300 tokens, Eos, hash b48e402388c84730, 35.6 s
+  step 387: id 158238 scored 77.996 against the top-50's 77.996 (margin 0.000); the head's rows cover it
+line 14:  388 steps, smallest margin   0.000, 1 steps with another id in the top-50, 0 with one finite after the filters | 387 tokens, Eos, hash 6ca7ef5ffa9812ca, 46.0 s
+  step 158: id 158238 scored 74.716 against the top-50's 71.580 (margin -3.136); the head's rows cover it
+  step 328: id 158238 scored 76.309 against the top-50's 71.328 (margin -4.982); the head's rows cover it
+line 15:  329 steps, smallest margin  -4.982, 2 steps with another id in the top-50, 0 with one finite after the filters | 328 tokens, Eos, hash da919a09b4f1a9fb, 38.7 s
+line 16:  185 steps, smallest margin   1.136, 0 steps with another id in the top-50, 0 with one finite after the filters | 184 tokens, Eos, hash c1713731c40de12b, 23.1 s
+line 17:   89 steps, smallest margin   3.418, 0 steps with another id in the top-50, 0 with one finite after the filters | 88 tokens, Eos, hash dfc2eb6e0c6c70a1, 14.0 s
+line 18:  125 steps, smallest margin   2.472, 0 steps with another id in the top-50, 0 with one finite after the filters | 124 tokens, Eos, hash e24c5894523bc105, 17.4 s
+line 19:   93 steps, smallest margin   2.665, 0 steps with another id in the top-50, 0 with one finite after the filters | 92 tokens, Eos, hash b81831d09c4e39cd, 14.5 s
+line 20:  125 steps, smallest margin   0.463, 0 steps with another id in the top-50, 0 with one finite after the filters | 124 tokens, Eos, hash c375507c707979a6, 17.5 s
+line 21:  153 steps, smallest margin   2.664, 0 steps with another id in the top-50, 0 with one finite after the filters | 152 tokens, Eos, hash c123b99ec65e8226, 19.7 s
+line 22:  145 steps, smallest margin   3.543, 0 steps with another id in the top-50, 0 with one finite after the filters | 144 tokens, Eos, hash ab4682c608a26029, 19.3 s
+all: 3713 steps; smallest margin -4.982; 9 steps with another id in the top-50; 0 with one finite after the filters
+wrote narrow-q4.json

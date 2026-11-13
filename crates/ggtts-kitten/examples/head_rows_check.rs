@@ -3,7 +3,7 @@
 //! ```text
 //! cargo run --release -p ggtts-kitten --features ggml --example head_rows_check -- --model LM.gguf --codec S3GEN.gguf \
 //!     --voice VOICE.json --lines crates/ggtts-kitten/fixtures/head_rows_lines.txt [--threads 4] [--seed N] [--json FILE] \
-//!     [--head full|restricted]
+//!     [--head full|restricted] [--rows audio-and-ends]
 //! ```
 //!
 //! A step keeps a frame only for an audio id, and stops on the two end ids. But the sampler draws over the whole
@@ -57,10 +57,23 @@ fn main() {
         r
     };
     // "Allowed" is what the restricted head computes: an id outside it in the top-k set is what would break it.
+    // `--rows audio-and-ends` checks the narrower set (the audio ids and the two end ids) instead, the first range
+    // tried, to show why it was not enough.
     let rows = head
         .clone()
         .expect("the restricted head is off at these sampler settings; nothing to check");
-    let allowed = |i: usize| rows.contains(&i);
+    let narrow = a.get("rows").is_some_and(|v| v == "audio-and-ends");
+    let audio = tm.audio_base as usize..(tm.audio_base + tm.audio_count) as usize;
+    let allowed = |i: usize| {
+        if narrow {
+            audio.contains(&i) || i == tm.speech_end as usize || i == tm.stop as usize
+        } else {
+            rows.contains(&i)
+        }
+    };
+    if narrow {
+        println!("checking against the audio ids and the two end ids only (--rows audio-and-ends)");
+    }
     println!(
         "head_rows_check: {} lines, seed {seed}, {threads} threads, top_k {k}, top_p {}; the head's rows {}..{} ({} rows; audio ids from {}, speech_end {}, stop {})",
         lines.len(),

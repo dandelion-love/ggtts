@@ -98,6 +98,10 @@ What was loaded is on the `TTS`: `tts.engine`, `tts.speaker` (None for the model
 `tts.device`, `tts.info` (the engine's family, backend and parity level) and `tts.model_files` (each file's role,
 path, and source: `path` if you gave it, `cache` for a default file).
 
+`GGTTS_KITTEN_FULL_HEAD=1` (exactly `1`) makes Kitten-TTS 2 compute its whole output head instead of the rows a step can
+keep (see the crate README). It is a diagnostic switch read from the process environment only; no binding setting
+carries it.
+
 ### The default model (Qwen3-TTS)
 
 With engine `"qwen3-tts"` and no `model` or no `codec`, ggtts uses the same default files as `ggtts-render`: the

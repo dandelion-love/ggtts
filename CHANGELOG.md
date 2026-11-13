@@ -45,7 +45,8 @@ that a merge places under a released heading is caught.
   the lowest finite score, when the sampler's top-k is on and at most 50 and its top-p is below 1 (the defaults). On a
   test set of 22 lines with both language models no other token reached the top-k set and the tokens are identical; a
   step is 1.14x to 1.21x faster on desktop CPU and about 1.2x on a Galaxy Z Fold5. Outside those settings, or with
-  `GGTTS_KITTEN_FULL_HEAD=1`, the whole head is computed.
+  `GGTTS_KITTEN_FULL_HEAD=1`, the whole head is computed. Every report names the head a render ran, in the engine's
+  backend string (`output head rows A..B` or `whole output head`).
 - **The Android demo states peak memory in bytes, as it compares them.** Its figures read the kernel's KiB as 1000
   bytes: Kitten-TTS 2 peaks at 3.78 GB, not 3.70, and Qwen3-TTS at 3.00 GB, not 2.93, so the low-memory warning now
   comes at the right point.

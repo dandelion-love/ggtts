@@ -41,7 +41,8 @@ armv86, base):
 | Output head, f16 | 30 to 33 ms | 17 to 18 ms | 22 ms |
 
 - **The padding is not the cause.** Padded TQ2_0 does the same doubled work (one 128-group plus 128 zeros per block) and
-  runs within 6% of Q4_0 on the phone. TQ1_0's products take 1.6 to 1.7 times Q4_0's there: its kernel unpacks base-3
+  runs within about 10% of Q4_0 on the phone (1.7% and 7.0% slower with the default build, 8.9% and 11.4% with the
+  armv8.6-a one). TQ1_0's products take 1.6 to 1.7 times Q4_0's there: its kernel unpacks base-3
   trits, which costs this ARM CPU far more than desktop, where the three types are level. That explains the 24 to 35%
   slower LM step measured on the phone.[^tq1]
 - **On the phone the bf16 head costs about as much as all the layers** (82 to 93 ms a step). ggml has no NEON path for
@@ -68,10 +69,12 @@ A step keeps a frame for an audio id and stops on `speech_end` or `stop`, but th
 vocabulary, as both references do. So computing only some rows is exact for a step when no id outside them reaches the
 top-k set.
 
-**First range: the audio ids and the two end ids (6,566 rows). Not exact.** At 14 of 7,636 steps (5 with TQ1_0, 9 with
-Q4_0) one id outside it was in the top-50, by up to 5.7: always id 158,238, `reference_speech_end_id`, the marker that
-closes the reference's speech in the prompt, and always at the last step of a line, beside `speech_end`. Top-p then
-removed it, so the tokens still matched, but that is luck, not exactness.
+**First range: the audio ids and the two end ids (6,566 rows). Not exact.** At 14 of 7,636 steps, on 12 of the 44
+line runs (5 steps with TQ1_0, 9 with Q4_0), one id outside it was in the top-50, by up to 5.7: every time id 158,238,
+`reference_speech_end_id`, the marker that closes the reference's speech in the prompt. Where in a line varies: with
+TQ1_0 all 5 were at the line's last step, beside `speech_end`; with Q4_0, 3 of 9 were at the last step, 5 within the
+last few steps, and one mid-line (line 15, step 158 of 329). Top-p then removed it each time, so the tokens still
+matched, but that is luck, not exactness (`v3-narrow-*`, which lists every such step).
 
 **Second range: from the first end id to the end of the vocabulary (151,670 to 158,241: the end ids, the audio ids, and
 the five special ids after them; 6,571 rows). Exact on the test set.**
@@ -85,13 +88,18 @@ the five special ids after them; 6,571 rows). Exact on the test set.**
 | Desktop step, interleaved (whole, restricted, restricted, whole; 4 lines) | 108.3 to 94.6 ms, 1.14x | 87.3 to 71.9 ms, 1.21x |
 | Phone LM, interleaved (released TQ1_0, default build) | 2.54 to 3.09 frames/s, about 1.2x (1.14x and 1.33x per pair) | not measured |
 
-The desktop timings and the phone run used the first range; five more rows change neither. On the phone the raw stream
+The desktop timings and the phone run used the first range; five more rows change neither. The margins and token
+comparisons above are from the committed tool (`v3-rows-*`, `v3-restricted-*`). On the phone the raw stream
 was byte-identical in all four runs (`52072e62…`, the same as every earlier TQ1_0 run), and first audio fell from 48.6
 and 56.5 s to 43.9 and 44.0 s.
 
-**The guard.** The engine computes the restricted head (`KittenEngine::head_rows`, a view of the rows, no copy; every
-other id `f32::MIN`, finite and below any top-k cutoff) only inside the measured envelope: top-k on and at most 50, and
-top-p below 1, the defaults. Outside it, or with `GGTTS_KITTEN_FULL_HEAD=1`, it computes the whole head. The parity
+**The guard.** The engine computes the restricted head (a view of the rows, no copy; every other id `f32::MIN`, finite
+and below any top-k cutoff) only inside the measured envelope: top-k on and at most 50, and top-p below 1, the
+defaults. Outside it, or with `GGTTS_KITTEN_FULL_HEAD=1` (exactly `1`), it computes the whole head. The rule is a pure
+function, `sampler::head_rows`, with unit tests that run without a model: dropping the guard, raising the top-k cap,
+dropping the top-p term, reading any value of the variable, or ending the rows at the audio ids (which drops 158,238)
+each turns one red. Every report names the head a render ran, in the engine's backend string (`output head rows
+151670..158241` or `whole output head`). The parity
 checks build their `Model` without it. `tests/head_rows.rs` (ignored without `GGTTS_KITTEN_LM`; run with `--ignored`)
 requires the restricted logits to equal the whole head's bit for bit inside the rows and `f32::MIN` outside; a view
 shifted one row turns it red.

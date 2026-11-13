@@ -295,9 +295,6 @@ impl KittenEngine {
     }
 }
 
-/// The largest top-k at which computing only the samplable head rows was measured exact (the default is 50).
-pub const HEAD_ROWS_MAX_TOP_K: usize = 50;
-
 /// One generation step, as [`KittenEngine::generate_ids_observed`] shows it.
 pub struct Step<'a> {
     /// The logits as the model gave them (with the restricted head, every id outside it is `f32::MIN`).
@@ -322,6 +319,8 @@ pub struct GenStats {
 
 pub struct KittenEngine {
     info: EngineInfo,
+    /// The backend string without the head, which each generation appends.
+    backend_base: String,
     pub model: Model,
     pub tokenizer: Tokenizer,
     pub tm: TokenMap,
@@ -388,13 +387,14 @@ impl KittenEngine {
             Decoder::Ggml(_) => format!("{dev} S3Gen decoder"),
             Decoder::PyTorch(_) => "PyTorch S3Gen decoder (bridge)".to_string(),
         };
-        let backend = format!("{lm}; {dec}");
+        let backend_base = format!("{lm}; {dec}");
         Ok(KittenEngine {
             info: EngineInfo {
                 family: "kitten-tts-2".into(),
-                backend,
+                backend: backend_base.clone(),
                 parity: "distribution".into(),
             },
+            backend_base,
             model,
             tokenizer,
             tm,
@@ -424,19 +424,8 @@ impl KittenEngine {
     /// used only inside that envelope: top-k on and at most 50, and top-p below 1. Outside it, or with
     /// `GGTTS_KITTEN_FULL_HEAD=1`, the whole head is computed.
     pub fn head_rows(&self) -> Option<std::ops::Range<usize>> {
-        if std::env::var("GGTTS_KITTEN_FULL_HEAD").is_ok_and(|v| v == "1") {
-            return None;
-        }
-        let s = &self.settings;
-        if !(s.top_k > 0 && s.top_k <= HEAD_ROWS_MAX_TOP_K && s.top_p < 1.0) {
-            return None;
-        }
-        // From the first end id to the end of the vocabulary: the end ids, the audio ids, and the special ids after
-        // them. The last matter: the reference's own end marker (`reference_speech_end_id`, 158,238) reached the
-        // top-k set at the last step of 14 of 44 test lines, so a range ending with the audio ids would not be exact.
-        let tm = &self.tm;
-        let lo = tm.speech_end.min(tm.stop).min(tm.audio_base) as usize;
-        Some(lo..self.model.hp.n_vocab)
+        let env = std::env::var("GGTTS_KITTEN_FULL_HEAD").ok();
+        sampler::head_rows(&self.settings, &self.tm, self.model.hp.n_vocab, env.as_deref())
     }
 
     /// [`Self::generate_ids`], also handing `observe` each step: the logits as the model gave them, the scores
@@ -449,6 +438,11 @@ impl KittenEngine {
         mut observe: Option<&mut dyn FnMut(&Step<'_>)>,
     ) -> Result<(Vec<u32>, Stop), String> {
         self.model.head_rows = self.head_rows();
+        // Every report reads the backend string: name the head this generation ran.
+        self.info.backend = match &self.model.head_rows {
+            Some(r) => format!("{}; output head rows {}..{}", self.backend_base, r.start, r.end),
+            None => format!("{}; whole output head", self.backend_base),
+        };
         let text_ids = self.tokenizer.encode(text)?;
         let prompt = self
             .tm

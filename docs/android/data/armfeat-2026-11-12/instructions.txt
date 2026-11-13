@@ -1,0 +1,8 @@
+# Dot-product (sdot) and 8-bit matrix (smmla) instructions in each Android ggtts-render, counted on the build host
+# from the binaries the phone ran (sha256 prefixes ddfb75c156c8 base, 4816f2aa3068 armv86; see armfeat-measure.stdout).
+# Built from 1b7acba with scripts/android_build.sh cargo-build, GGML_CPU_ARM_ARCH unset (base) or
+# armv8.6-a+dotprod+i8mm+fp16 (armv86). Command, per binary:
+#   $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objdump -d ggtts-render | grep -c sdot
+#   (and the same with smmla)
+base: sdot 0 smmla 0
+armv86: sdot 923 smmla 244

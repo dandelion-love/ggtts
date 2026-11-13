@@ -31,12 +31,14 @@ Thank you for looking. ggtts is young and its design is still under review, so o
 
 ## Before you plan a feature
 
-Read [the architecture direction](docs/architecture-direction.md). A capability (an option, a mode, an observer, an
-output form) is defined once, as data with a schema, on one shared surface, and every front end (`ggtts-render`,
-`ggtts-book`, the C ABI, Kotlin, Python, the Android app) passes it through or explicitly refuses it. An epic or story
-that adds or exposes a capability states where it enters the shared options value, how each front end gets or refuses
-it, and the conformance case that would catch a front end without it. Wiring a capability into one front end by hand,
-including a diagnostic environment variable, is a review finding.
+Read [the architecture direction](docs/architecture-direction.md). A capability (a load setting such as the
+engine, model files, speaker, device or threads; a render option; an observer; an output form) is defined once, as
+data with a schema, on one shared surface (`render_plan` and the `render_chunk` step it is built from), and every
+front end (`ggtts-render`, `ggtts-book`, the C ABI, Kotlin, Python, the Android app) passes it through or explicitly
+refuses it. An epic or story that adds or exposes a capability states where it enters the shared options value, how
+each front end gets or refuses it, and the conformance case that would catch a front end without it. Wiring a
+capability into one front end by hand is a review finding. A new environment variable that changes or observes a
+render is a spelling of an option; until the options table exists, it needs a filed issue that moves it there.
 
 ## Fixtures and data
 

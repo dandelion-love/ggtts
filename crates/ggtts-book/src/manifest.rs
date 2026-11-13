@@ -41,6 +41,9 @@ pub struct Manifest {
     /// How long each done chunk took to render (generate, decode, trim and encode), in milliseconds. Recorded for
     /// reading back; never checked.
     pub render_ms: Vec<Option<u64>>,
+    /// The chapter FLAC joined from these chunks, once written: its file name in the output directory and its
+    /// SHA-256. `export` checks the file against it. Cleared whenever a chunk is rendered again.
+    pub chapter: Option<Output>,
 }
 
 /// Why a manifest is not trusted.
@@ -91,7 +94,26 @@ impl Manifest {
     pub fn new(plan: ChapterPlan) -> Self {
         let done = vec![None; plan.chunks.len()];
         let render_ms = vec![None; plan.chunks.len()];
-        Manifest { plan, done, render_ms }
+        Manifest {
+            plan,
+            done,
+            render_ms,
+            chapter: None,
+        }
+    }
+
+    /// Record the chapter FLAC joined from a finished chapter: load the manifest in `dir`, set its chapter file and
+    /// SHA-256, save it.
+    pub fn record_chapter(dir: &Path, plan: &ChapterPlan, file: &str, bytes: &[u8]) -> Result<(), String> {
+        let mut m = Manifest::load(dir, plan).map_err(|e| e.to_string())?;
+        if m.done.iter().any(Option::is_none) {
+            return Err("the chapter is not fully rendered".to_string());
+        }
+        m.chapter = Some(Output {
+            file: file.to_string(),
+            sha256: hex(&sha256(bytes)),
+        });
+        m.save(dir).map_err(|e| e.to_string())
     }
 
     fn body(&self) -> Value {
@@ -104,6 +126,7 @@ impl Manifest {
             "profile": p.profile,
             "ceiling": p.ceiling,
             "engine": p.engine,
+            "chapter_file": self.chapter.as_ref().map(|o| json!({"file": o.file, "sha256": o.sha256})),
             "chunks": p.chunks.iter().enumerate().map(|(i, c)| {
                 let done = &self.done[i];
                 json!({
@@ -268,10 +291,17 @@ impl Manifest {
                 index: plan.chunks.len().min(chunks.len()),
             });
         }
+        let chapter = body.get("chapter_file").and_then(|o| {
+            Some(Output {
+                file: o.get("file")?.as_str()?.to_string(),
+                sha256: o.get("sha256")?.as_str()?.to_string(),
+            })
+        });
         Ok(Manifest {
             plan: plan.clone(),
             done,
             render_ms,
+            chapter,
         })
     }
 
@@ -324,6 +354,10 @@ pub fn resume(dir: &Path, plan: &ChapterPlan) -> Resume {
             for &i in &todo {
                 manifest.done[i] = None;
                 manifest.render_ms[i] = None;
+            }
+            if !todo.is_empty() {
+                // A chunk is rendered again, so the chapter file joined from the old chunks no longer stands.
+                manifest.chapter = None;
             }
             Resume {
                 manifest,

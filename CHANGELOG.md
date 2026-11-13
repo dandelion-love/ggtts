@@ -22,9 +22,14 @@ that a merge places under a released heading is caught.
   stripped; so are a file that is not a zip, a missing or malformed `container.xml`, and a spine item whose file
   is absent, each with its own error code. A book is read under limits: 64 MiB per entry, 256 MiB for the whole
   book (`book-too-large`), and 256 levels of element nesting, so a zip bomb or a deeply nested document is refused
-  with a named error rather than exhausting memory or the stack. Rendering a book comes later. See `docs/book.md`.
+  with a named error rather than exhausting memory or the stack. Entities count against that budget as they
+  expand. `ggtts-book` is not yet in the release archives: build it with `cargo build --release -p ggtts-book`.
+  See `docs/book.md`.
 - **An exponent in a book is read.** `ggtts-book` drops a superscript only when it is a note marker: it links
-  somewhere, or holds only digits or note symbols after punctuation or a space. `mc<sup>2</sup>` keeps its 2.
+  somewhere, or holds only digits or note symbols after punctuation or a space. `mc<sup>2</sup>` keeps its 2, and
+  after a digit the exponent is marked so it does not run into the number (`10<sup>6</sup>` reads `10^6`).
+- **A space an author wrote between CJK characters is kept.** `第一章 退潮` keeps its space; only a line break
+  from the source's formatting between two CJK characters is dropped.
 - **`ggtts-book inspect` plans every chunk and its seed.** Chapters are chunked by ggtts's own story chunker at
   the engine profile's ceiling (`--engine`, default `qwen3-tts`), and each chunk gets a seed derived from the
   seed root (`--seed-root`, default `20260905`), the book's identifier, the chapter, paragraph, chunk and draw,
@@ -37,8 +42,7 @@ that a merge places under a released heading is caught.
   joined with the profile's pauses, levelled, and written as one FLAC per chapter. A stopped render resumes on
   the next run with the same `--out`, rendering only what was left. It ends byte-identical to an uninterrupted
   run on the same hardware class with an engine whose output does not depend on what it rendered earlier in the
-  process (see `docs/book.md`). Only the fake engine (no model) renders for now: this is the walking skeleton a real
-  engine plugs into.
+  process (see `docs/book.md`). `--engine fake` (no model) runs the whole path without a model.
 - **`ggtts-book render` renders with the real engines, loaded once per book.** `--engine qwen3-tts` (now the
   default, as for `ggtts-render`) or `kitten-tts-2`, with `ggtts-render`'s model flags (`--model`, `--codec`,
   `--voice`, `--speaker`, `--device`, `--threads`, `--offline`) and its pinned default model files, in a build with
@@ -48,8 +52,10 @@ that a merge places under a released heading is caught.
   output directory holding another book is refused.
 - **`ggtts-book export DIR --out BOOK.flac` joins a rendered book into one chaptered FLAC.** The chapters'
   own samples, 2 s apart, with a chapter mark per chapter as Vorbis comments (`CHAPTER001`,
-  `CHAPTER001NAME`), which mpv and VLC read; written a block at a time, byte-identical for the same render. An
-  unfinished render, or one that mixes seed roots or engines, is refused naming the chapter. Each chapter FLAC
+  `CHAPTER001NAME`), which mpv and VLC read; written a block at a time, byte-identical for the same render. It
+  exports exactly the chapters the last render planned, and checks each chapter file against the SHA-256 its
+  manifest recorded. An unfinished render, a changed chapter file, or one that mixes seed roots, engines or books,
+  is refused naming the chapter. Each chapter FLAC
   now carries `TITLE`, `ALBUM`, `ARTIST` and `TRACKNUMBER` tags, and `render --include-skippable` renders the
   front and back matter too.
 - **`ggtts-book export --out BOOK.m4b` writes an audiobook for audiobook apps.** Lossless ALAC with a chapter

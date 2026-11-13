@@ -35,8 +35,10 @@ that a merge places under a released heading is caught.
 - **`ggtts-book render --engine fake` renders a book end to end.** Each chapter that is not front or back matter
   is rendered chunk by chunk at its planned seeds through one engine, stored per chunk with its manifest, then
   joined with the profile's pauses, levelled, and written as one FLAC per chapter. A stopped render resumes on
-  the next run with the same `--out`, rendering only what was left, and ends byte-identical to an uninterrupted
-  one. Only the fake engine (no model) renders for now: this is the walking skeleton a real engine plugs into.
+  the next run with the same `--out`, rendering only what was left. It ends byte-identical to an uninterrupted
+  run on the same hardware class with an engine whose output does not depend on what it rendered earlier in the
+  process (see `docs/book.md`). Only the fake engine (no model) renders for now: this is the walking skeleton a real
+  engine plugs into.
 - **`ggtts-book render` renders with the real engines, loaded once per book.** `--engine qwen3-tts` (now the
   default, as for `ggtts-render`) or `kitten-tts-2`, with `ggtts-render`'s model flags (`--model`, `--codec`,
   `--voice`, `--speaker`, `--device`, `--threads`, `--offline`) and its pinned default model files, in a build with

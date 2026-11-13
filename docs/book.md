@@ -252,12 +252,24 @@ model file's role and SHA-256, the speaker, and the ggtts version and commit. Ea
 took to render (`render_ms`, generate to encoded FLAC), for reading back; timings are never checked.
 
 A render that stops (a failed chunk, a killed process) keeps what it finished. Run the same command again with the
-same `--out` to resume: only the chunks not recorded as done are rendered, and because chapters are always joined from
-the stored chunk files, a resumed chapter is byte-identical to one rendered in a single run. A resume with another
-engine, backend, model file, speaker or ggtts build does not splice two renders into one chapter: the earlier
-manifest is refused (`for engine ...`) and the chapter is rendered again. The same book, seed root and engine give
-byte-identical chapters with the fake engine; a real engine's identity is bounded by its own guarantees on one
-hardware class. Redraws of chunks the judge rejects are not done yet: every chunk is a first draw.
+same `--out` to resume: only the chunks not recorded as done are rendered. A chunk file the manifest does not record
+as done (a run killed between writing the file and saving the manifest), and any `.partial` file, is not trusted: that
+chunk is rendered again. A resume with another engine, backend, model file, speaker or ggtts build does not splice two
+renders into one chapter: the earlier manifest is refused (`for engine ...`) and the chapter is rendered again.
+
+**When a resumed chapter is byte-identical to one rendered in a single run.** Chapters are always joined from the
+stored chunk files, so a resumed chapter is byte-identical to an uninterrupted one **when two conditions hold**:
+
+* **The same hardware class** (and the same engine, model, backend and ggtts build, which the manifest enforces). The
+  seed fixes a chunk's sampling, not the floating-point results of different hardware.
+* **An engine whose output for a chunk does not depend on what it rendered before in the same process.** A resumed run
+  starts a new process, so its first chunk follows nothing, where in the uninterrupted run it followed the earlier
+  chunks. The tests use an engine without such history and check every kill point. `ggtts-fake` on its own is not
+  such an engine (its output alternates with the number of texts it has seen). For Qwen3-TTS on CPU, a 13-chunk
+  chapter killed after 4 chunks and resumed exported byte-identically to the uninterrupted run; that is evidence for
+  that point on one machine, not a proof for every kill point, engine and device.
+
+Redraws of chunks the judge rejects are not done yet: every chunk is a first draw.
 
 `DIR/book.json` names the book rendered into `DIR`. A `DIR` holding another book, or a non-empty `DIR` with no
 `book.json`, is refused before anything is written, so one book never overwrites another's chunks.

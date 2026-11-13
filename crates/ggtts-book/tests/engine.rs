@@ -119,6 +119,34 @@ fn a_resume_with_another_engine_renders_everything_again() {
     std::fs::remove_dir_all(book.parent().unwrap()).ok();
 }
 
+/// Review finding 211-A: a resume with another model file (same engine, same speaker, a different SHA-256) is not
+/// resumed either; every chunk is rendered again.
+#[test]
+fn a_resume_with_another_model_file_renders_everything_again() {
+    let d = dir("other-model");
+    let book = nested().write_temp("engine-other-model");
+    let out = d.join("out");
+    render_command(&book, &out, "root", || Ok(fake("voice_a"))).unwrap();
+    let mut other = fake("voice_a");
+    other.files[0].1 = "ef".repeat(32);
+    let report = render_command(&book, &out, "root", || Ok(other)).unwrap();
+    for c in report["chapters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["state"] == "written")
+    {
+        assert_eq!(c["resumed"], 0, "{c}");
+        let refused = c["refused_manifest"].as_str().unwrap_or("");
+        assert!(
+            refused.contains("for engine") && refused.contains(&"ab".repeat(32)),
+            "{c}"
+        );
+    }
+    std::fs::remove_dir_all(&d).ok();
+    std::fs::remove_dir_all(book.parent().unwrap()).ok();
+}
+
 /// AC6: an output directory holding another book is refused before anything is rendered or overwritten, and so is a
 /// non-empty directory this tool did not write.
 #[test]

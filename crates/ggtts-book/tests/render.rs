@@ -23,8 +23,14 @@ fn dir(name: &str) -> PathBuf {
 
 /// The fake engine, counting generate calls and failing at the `fail_at`-th one (counted from 0), as a killed
 /// process would stop.
+///
+/// Each chunk is rendered by a fresh fake engine, so a chunk's audio does not depend on what was rendered before it in
+/// the same process. `ggtts-fake` alone keeps history (its output alternates with the number of texts it has seen),
+/// which made a resume compare equal only at even kill points (review finding 212-A). Resuming to identical chapters
+/// holds for an engine without such history; the docs say so.
 struct Counting {
-    inner: FakeEngine,
+    shown: FakeEngine,
+    pending: Option<FakeEngine>,
     calls: usize,
     fail_at: Option<usize>,
     /// Every request's (text, seed), in order.
@@ -34,7 +40,8 @@ struct Counting {
 impl Counting {
     fn new(fail_at: Option<usize>) -> Self {
         Counting {
-            inner: FakeEngine::default(),
+            shown: FakeEngine::default(),
+            pending: None,
             calls: 0,
             fail_at,
             requests: Vec::new(),
@@ -44,10 +51,10 @@ impl Counting {
 
 impl Engine for Counting {
     fn info(&self) -> &EngineInfo {
-        self.inner.info()
+        self.shown.info()
     }
     fn profile(&self) -> &Profile {
-        self.inner.profile()
+        self.shown.profile()
     }
     fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
         let n = self.calls;
@@ -56,10 +63,13 @@ impl Engine for Counting {
         if self.fail_at == Some(n) {
             return Err(EngineError("killed".into()));
         }
-        self.inner.generate(req)
+        let mut fresh = FakeEngine::default();
+        let generated = fresh.generate(req)?;
+        self.pending = Some(fresh);
+        Ok(generated)
     }
     fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
-        self.inner.decode(codes)
+        self.pending.take().expect("decode follows generate").decode(codes)
     }
 }
 
@@ -191,31 +201,62 @@ fn the_planned_seed_reaches_the_engine() {
     assert!(seeds(&a).iter().zip(seeds(&b)).all(|(x, y)| *x != y));
 }
 
-/// A render killed partway resumes, renders only what was left, and ends byte-identical to an uninterrupted one.
+/// A render killed partway resumes, renders only what was left, and ends byte-identical to an uninterrupted one, at
+/// every kill point: the first chunk, odd and even points, either side of the middle, and the last chunk.
 #[test]
 fn a_killed_render_resumes_to_the_same_chapters() {
     let clean = dir("clean");
     let expected = chapter_files(&render(&mut Counting::new(None), &clean).unwrap());
-
-    let out = dir("killed");
     let total = total_chunks();
-    let kill_at = total / 2;
-    let err = render(&mut Counting::new(Some(kill_at)), &out).unwrap_err();
-    assert!(err.contains("killed"), "{err}");
+    assert!(total >= 6, "the fixture should have several chunks, has {total}");
 
-    let mut engine = Counting::new(None);
-    let reports = render(&mut engine, &out).unwrap();
-    // Exactly the chunks the killed run did not finish: a resume that renders a finished chunk again fails here.
-    assert_eq!(engine.calls, total - kill_at);
-    let resumed: usize = reports
-        .iter()
-        .map(|r| match &r.outcome {
-            ChapterOutcome::Written { resumed, .. } => *resumed,
-            ChapterOutcome::Skipped { .. } => 0,
-        })
-        .sum();
-    assert_eq!(resumed, kill_at);
-    assert_eq!(chapter_files(&reports), expected);
+    for kill_at in [0, 1, 2, 3, total / 2 - 1, total / 2, total / 2 + 1, total - 1] {
+        let out = dir(&format!("killed-{kill_at}"));
+        let err = render(&mut Counting::new(Some(kill_at)), &out).unwrap_err();
+        assert!(err.contains("killed"), "{err}");
+
+        let mut engine = Counting::new(None);
+        let reports = render(&mut engine, &out).unwrap();
+        // Exactly the chunks the killed run did not finish: a resume that renders a finished chunk again fails here.
+        assert_eq!(engine.calls, total - kill_at, "kill at {kill_at}");
+        let resumed: usize = reports
+            .iter()
+            .map(|r| match &r.outcome {
+                ChapterOutcome::Written { resumed, .. } => *resumed,
+                ChapterOutcome::Skipped { .. } => 0,
+            })
+            .sum();
+        assert_eq!(resumed, kill_at, "kill at {kill_at}");
+        assert_eq!(chapter_files(&reports), expected, "kill at {kill_at}");
+        std::fs::remove_dir_all(&out).ok();
+    }
     std::fs::remove_dir_all(&clean).ok();
-    std::fs::remove_dir_all(&out).ok();
+}
+
+/// A chunk rendered alone (a fresh engine, nothing rendered before it) is the same file as that chunk rendered in a
+/// full run, for every chunk of a chapter.
+#[test]
+fn a_chunk_rendered_alone_equals_it_in_a_full_run() {
+    let clean = dir("alone");
+    render(&mut Counting::new(None), &clean).unwrap();
+    let book = Book::read(nested().bytes()).unwrap();
+    let plans = plan_book(&PROFILE, &book, DEFAULT_SEED_ROOT).unwrap();
+    let (i, plan) = book
+        .chapters
+        .iter()
+        .zip(&plans)
+        .enumerate()
+        .find(|(_, (c, _))| c.id == "ch1")
+        .map(|(i, (_, p))| (i, p))
+        .unwrap();
+    let stem = ggtts_book::render::chapter_stem(i, &book.chapters[i]);
+    for index in (0..plan.chunks.len()).rev() {
+        let alone = ggtts_book::render::render_chunk(&mut Counting::new(None), plan, index).unwrap();
+        let in_run = std::fs::read(clean.join(&stem).join(ggtts_book::manifest::chunk_file(index))).unwrap();
+        assert!(
+            alone == in_run,
+            "chunk {index} rendered alone differs from the full run"
+        );
+    }
+    std::fs::remove_dir_all(&clean).ok();
 }

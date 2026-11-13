@@ -274,7 +274,7 @@ mod tests {
 
     fn paragraphs(body: &str) -> Vec<String> {
         let doc = format!("<html><body>{body}</body></html>");
-        let root = crate::dom::parse(doc.as_bytes(), crate::archive::MAX_DEPTH).unwrap();
+        let (root, _) = crate::dom::parse(doc.as_bytes(), crate::archive::MAX_DEPTH, u64::MAX).unwrap();
         extract(&root)
             .items
             .into_iter()

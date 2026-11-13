@@ -62,6 +62,30 @@ fn a_book_past_its_total_budget_is_refused() {
     Book::read_with_limits(bytes, Limits::default()).unwrap();
 }
 
+/// Review finding 210-A: an entity referenced many times expands a small file into a large text. The expanded text
+/// counts against the book's budget as it is produced, so the book is refused as `book-too-large` long before the
+/// text fills memory: here a 1,000-byte entity referenced 10,000 times (10 MB of text from a few kilobytes) under a
+/// 2 MB budget.
+#[test]
+fn entity_amplification_is_refused_by_the_budget() {
+    let amplified = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html [<!ENTITY a "{}">]><html xmlns="http://www.w3.org/1999/xhtml"><head><title>x</title></head><body><p>{}</p></body></html>"#,
+        "x".repeat(1000),
+        "&a;".repeat(10_000)
+    );
+    let epub = nested().with("OEBPS/Text/ch1.xhtml", &amplified);
+    let bytes = epub.bytes();
+    assert!(bytes.len() < 20_000, "the zip is {} bytes", bytes.len());
+    let budget = Limits {
+        book_bytes: 2_000_000,
+        ..Limits::default()
+    };
+    let err = Book::read_with_limits(bytes, budget).unwrap_err();
+    assert_eq!(err, BookError::BookTooLarge { limit: 2_000_000 });
+    // The same budget reads the book without the amplified chapter: the refusal is the expansion, not the budget.
+    Book::read_with_limits(nested().bytes(), budget).unwrap();
+}
+
 /// The per-entry cap has its own code.
 #[test]
 fn an_entry_past_its_cap_is_refused() {

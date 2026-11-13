@@ -94,10 +94,22 @@ impl Book {
     /// [`read`](Self::read) under the given resource limits: per entry, for the whole book, and nesting depth.
     pub fn read_with_limits(bytes: Vec<u8>, limits: Limits) -> Result<Book, BookError> {
         let mut zip = Archive::new(bytes, limits)?;
-        check_drm(&mut zip)?;
-        let opf_path = container(&mut zip)?;
+        let read = Book::read_archive(&mut zip);
+        // A document whose expanded text ran past the budget is refused as the budget refusal, whichever document
+        // it was and however its caller reported the parse error.
+        if zip.over_budget {
+            return Err(BookError::BookTooLarge {
+                limit: limits.book_bytes,
+            });
+        }
+        read
+    }
+
+    fn read_archive(zip: &mut Archive) -> Result<Book, BookError> {
+        check_drm(zip)?;
+        let opf_path = container(zip)?;
         let opf = zip.read(&opf_path)?.unwrap_or_default();
-        let pkg = package(&opf_path, &opf, zip.limits.depth)?;
+        let pkg = package(&opf_path, &opf, zip)?;
         let mut warnings = Vec::new();
 
         struct SpineFile {
@@ -142,7 +154,7 @@ impl Book {
             });
         }
 
-        let toc = toc::load(&mut zip, &pkg, &mut warnings)?;
+        let toc = toc::load(zip, &pkg, &mut warnings)?;
         let in_spine: HashSet<&str> = spine.iter().map(|s| s.path.as_str()).collect();
         let mut starts: HashMap<(String, Option<String>), usize> = HashMap::new();
         for (i, entry) in toc.entries.iter().enumerate() {

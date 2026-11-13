@@ -31,7 +31,9 @@ class DemoControllerTest {
         var stops = 0
         /** Runs inside [finish], while the last chunks play out. */
         var duringFinish: () -> Unit = {}
-        override fun begin(rate: Int) { events += "begin $rate" }
+        /** Runs inside [begin], before the stream begins. */
+        var duringBegin: () -> Unit = {}
+        override fun begin(rate: Int) { duringBegin(); events += "begin $rate" }
         override fun play(samples: FloatArray) { played += samples; events += "play ${samples.size}" }
         override fun finish() { events += "finish"; duringFinish() }
         override fun stop() { stops++; events += "stop" }
@@ -104,6 +106,16 @@ class DemoControllerTest {
         assertEquals("Stopped after 1 chunk(s).", view.statuses.last())
         assertFalse(c.busy)
         assertTrue(view.errors.isEmpty())
+    }
+
+    @Test
+    fun aStopJustBeforeTheFirstChunkBeginsItsStreamStillStopsThatStream() {
+        val c = controller(FakeBinding())
+        // The worker has read "not stopped"; the Stop arrives before begin, finds nothing playing, and the chunk plays.
+        audio.duringBegin = { c.stop() }
+        c.speak(request, "Hello.", Ggtts.DEFAULT_SEED)
+        assertEquals(listOf("render chunk 0", "stop", "begin 24000", "play 24000", "render chunk 1", "stop"), events)
+        assertTrue(view.statuses.last(), view.statuses.last().startsWith("Stopped after 1 chunk"))
     }
 
     @Test

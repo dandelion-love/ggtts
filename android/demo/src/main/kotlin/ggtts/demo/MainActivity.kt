@@ -417,10 +417,9 @@ private class TrackSink(rate: Int) : PcmSink {
         .build()
 
     override fun play() = track.play()
-    // A blocking write returns early once the track is paused, which is how a Stop ends it.
-    override fun write(samples: FloatArray) {
-        track.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
-    }
+    // Never a blocking write: one begun just after a Stop's pause would wait for good (see StreamPlayer).
+    override fun write(samples: FloatArray, offset: Int, count: Int): Int =
+        track.write(samples, offset, count, AudioTrack.WRITE_NON_BLOCKING)
     override fun pause() = track.pause()
     override fun flush() = track.flush()
     override fun stop() = track.stop()

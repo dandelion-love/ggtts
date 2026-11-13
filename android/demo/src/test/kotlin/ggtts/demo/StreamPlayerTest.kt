@@ -28,11 +28,16 @@ class StreamPlayerTest {
         }
 
         override fun play() = call("play")
-        override fun write(samples: FloatArray) {
+        /** Runs inside write(), on the player thread, before the write takes anything. */
+        var beforeWrite: () -> Unit = {}
+        @Volatile var isPaused = false
+        override fun write(samples: FloatArray, offset: Int, count: Int): Int {
             call("write")
-            if (blockWrites) paused.await(5, TimeUnit.SECONDS)
+            beforeWrite()
+            // A paused device takes nothing, as a full AudioTrack buffer does; with blockWrites a running one is full too.
+            return if (isPaused || blockWrites) 0 else count
         }
-        override fun pause() { call("pause"); paused.countDown() }
+        override fun pause() { call("pause"); isPaused = true; paused.countDown() }
         override fun flush() = call("flush")
         override fun stop() = call("stop")
         override fun release() {
@@ -109,6 +114,31 @@ class StreamPlayerTest {
         player.finish()
         stopper.join(2000)
         assertTrue("the Stop arrived while the sink was being released", stopWaited)
+        assertEquals(emptyList<String>(), sink.misuse)
+    }
+
+    @Test
+    fun aStopLandingJustBeforeAWriteStillEndsThePlayerThread() {
+        player.begin(24000)
+        val sink = sinks.single()
+        var once = true
+        // The Stop runs whole between the player's check for a Stop and its write. Its interrupt is swallowed here, so
+        // only the player's own check of the stream can end the loop on a device that will take nothing more.
+        sink.beforeWrite = {
+            if (once) {
+                once = false
+                val stopper = Thread({ player.stop() }, "main-stand-in").apply { start() }
+                while (stopper.isAlive) {
+                    try {
+                        stopper.join()
+                    } catch (_: InterruptedException) {
+                    }
+                }
+                Thread.interrupted()
+            }
+        }
+        player.play(FloatArray(10))
+        assertTrue("the player thread released the device", sink.released.await(2, TimeUnit.SECONDS))
         assertEquals(emptyList<String>(), sink.misuse)
     }
 

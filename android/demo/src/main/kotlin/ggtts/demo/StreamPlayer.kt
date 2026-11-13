@@ -9,8 +9,11 @@ import java.util.concurrent.atomic.AtomicReference
 interface PcmSink {
     fun play()
 
-    /** Blocks until [samples] are queued on the device, or returns early once [pause] is called. */
-    fun write(samples: FloatArray)
+    /**
+     * Queue what fits of `samples[offset, offset + count)` without blocking, and return how many were taken (0 when the
+     * device's buffer is full, as it stays once the device is paused), or a negative error code.
+     */
+    fun write(samples: FloatArray, offset: Int, count: Int): Int
 
     fun pause()
     fun flush()
@@ -22,14 +25,19 @@ interface PcmSink {
  * Plays a stream of pieces through one [PcmSink] per stream, on that stream's player thread.
  *
  * The player thread owns its sink: it is the only thread that writes to it, stops it or releases it. [stop] touches the
- * sink only to pause and flush it (pausing also ends a blocking write early), under the stream's lock and only while
- * the sink is not yet released; it then tells the thread to finish and returns without waiting for it, so it is safe
- * on the main thread.
+ * sink only to pause and flush it, under the stream's lock and only while the sink is not yet released; it then tells
+ * the thread to finish and returns without waiting for it, so it is safe on the main thread.
+ *
+ * Writes never block: a paused device takes nothing, and a blocking write begun just after a Stop's pause would wait
+ * for good (pause ends only a write already in progress). The player writes what fits, checks for a Stop, and waits a
+ * few milliseconds when the buffer is full, so a Stop at any moment ends the thread and releases the device.
  */
 class StreamPlayer(
     private val newSink: (rate: Int) -> PcmSink,
     /** How long the last buffer is given to play out after the final write. */
     private val drainMs: Long = 250,
+    /** How long the player waits before trying again when the device's buffer is full. */
+    private val waitMs: Long = 5,
 ) {
     private class Stream(val sink: PcmSink) {
         val queue = LinkedBlockingQueue<FloatArray>()
@@ -57,7 +65,12 @@ class StreamPlayer(
             while (!s.cut) {
                 val piece = s.queue.take()
                 if (piece === end || s.cut) break
-                s.sink.write(piece)
+                var at = 0
+                while (at < piece.size && !s.cut) {
+                    val n = s.sink.write(piece, at, piece.size - at)
+                    if (n < 0) return // the device refused the write: give up this stream (finally releases it)
+                    if (n == 0) Thread.sleep(waitMs) else at += n
+                }
             }
             if (!s.cut) Thread.sleep(drainMs)
         } catch (_: InterruptedException) {

@@ -153,6 +153,9 @@ class DemoController(
         }
         val renderMs = (clock() - t0) / 1_000_000
         if (!finished) {
+            // A Stop can land after the worker read stopRequested and before the first chunk began its stream; that
+            // stream plays on unless it is stopped here (stop is idempotent).
+            audio.stop()
             log("stopped after ${pieces.size} chunks, $renderMs ms")
             return "Stopped after ${pieces.size} chunk(s)."
         }

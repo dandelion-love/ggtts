@@ -6,7 +6,7 @@
 //   adb shell am start -n ggtts.demo/.MainActivity --es engine kitten-tts-2 --es model lm.gguf \
 //       --es codec s3gen.gguf --es voice voice.json --es text "Hello." --ei threads 4 --ez speak true
 //   adb shell am start -n ggtts.demo/.MainActivity --ez stop true      # presses Stop
-// A file name is looked up in the models directory; an absolute path is used as it is.
+// Model, codec and voice extras are file names in the models directory; a path is refused (ModelImport.isPlainName).
 package ggtts.demo
 
 import android.app.Activity
@@ -271,19 +271,27 @@ class MainActivity : Activity(), DemoView {
 
     private fun pick(s: Spinner, name: String?) {
         if (name == null) return
+        // Only a file name inside the models directory: another app can send this exported activity extras too, and
+        // a path it chose would be loaded and then saved as the system engine's model.
+        if (!ModelImport.isPlainName(name)) {
+            Log.w(TAG, "adb extra refused: \"$name\" is not a file name in the models directory")
+            showError("Refused \"$name\": scripted model files must be names in the models directory, not paths.")
+            return
+        }
         @Suppress("UNCHECKED_CAST")
         val adapter = s.adapter as ArrayAdapter<String>
         var i = (0 until adapter.count).firstOrNull { adapter.getItem(it) == name }
         if (i == null) {
-            adapter.add(name) // an absolute path, or a name not (yet) in the directory: the binding will say
+            adapter.add(name) // a name not (yet) in the directory: the binding will say
             i = adapter.count - 1
         }
         s.setSelection(i)
     }
 
     private fun applyIntent(intent: Intent?) {
-        // The scripted extras (any path, and Speak pressed for you) are for testing a debug build from adb. Another
-        // app can send this exported activity an intent too, so a release build ignores them.
+        // The scripted extras (file names in the models directory, and Speak pressed for you) are for testing a debug
+        // build from adb. Another app can send this exported activity an intent too, so a release build ignores them,
+        // and a debug build takes only names of files already in the models directory (pick).
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) return
         val extras = intent?.extras ?: return
         extras.getString("engine")?.let { e -> ENGINES.indexOf(e).takeIf { it >= 0 }?.let { engines.check(100 + it) } }
@@ -303,7 +311,7 @@ class MainActivity : Activity(), DemoView {
     private fun path(s: Spinner): String? {
         val name = s.selectedItem as String? ?: return null
         if (name == NONE) return null
-        return if (name.startsWith("/")) name else File(modelsDir, name).path
+        return File(modelsDir, name).path
     }
 
     /**

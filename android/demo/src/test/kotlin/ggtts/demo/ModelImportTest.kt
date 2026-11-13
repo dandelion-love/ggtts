@@ -16,6 +16,16 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 class ModelImportTest {
+    @Test
+    fun scriptedModelExtrasMustBePlainNamesInTheModelsDirectory() {
+        for (ok in listOf("kitten-lm.gguf", "voice.json", "a b.gguf", ".hidden.gguf")) {
+            assertTrue(ok, ModelImport.isPlainName(ok))
+        }
+        for (bad in listOf("", ".", "..", "/sdcard/x.gguf", "../x.gguf", "sub/x.gguf", "..\\x.gguf", "x\u0000.gguf")) {
+            assertFalse(bad, ModelImport.isPlainName(bad))
+        }
+    }
+
     private val dir: File = Files.createTempDirectory("ggtts-import").toFile()
     private val gguf = "GGUF".toByteArray() + ByteArray(64) { it.toByte() }
 

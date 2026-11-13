@@ -166,9 +166,12 @@ user picks it in the phone's text-to-speech settings. The app does not change th
 
 ## Driving the demo from adb
 
-For a scripted check, a **debug build** of the activity takes its settings as extras; `speak` presses Speak. A file
-name is looked up in the models directory, an absolute path is used as it is. The activity is exported (it is the
-launcher), so any app on the phone could send it these extras; a release build ignores them.
+For a scripted check, a **debug build** of the activity takes its settings as extras; `speak` presses Speak. The
+`model`, `codec` and `voice` extras are file names in the models directory (put the files there first, with Import or
+`adb push`); a path, or a name with `/` or `..`, is refused with a message. The activity is exported (it is the
+launcher), so any app on the phone could send it these extras: limiting them to files already in the models
+directory means another app cannot point the demo, or the system engine that remembers its files, at a file of its
+own. A release build ignores the extras.
 
 Pass `--activity-single-top`. Without it, when the app is in the background, Android may only bring its task to the
 front ("its current task has been brought to the front") and drop the extras.

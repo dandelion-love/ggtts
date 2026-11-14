@@ -4,7 +4,9 @@ Every option a ggtts front end takes is defined once, in `ggtts_core::options`: 
 five sections, and a table (`options::TABLE`) with one row per option. The schema,
 [`schemas/ggtts-options-1.schema.json`](../schemas/ggtts-options-1.schema.json), is generated from the table, and a test
 fails when the committed file differs (`GGTTS_BLESS=1` rewrites it). This is the first step of the
-[one render surface](architecture-direction.md): no front end reads the value yet, so nothing it renders has changed.
+[one render surface](architecture-direction.md). `ggtts-render` reads its command line and its environment through it
+([#289](https://github.com/dandelion-love/ggtts/issues/289)): `Options::from_args` over `Options::from_env`, a flag
+winning over its variable. Its output, its `--help` and the words of its refusals did not change.
 
 ## The document
 
@@ -95,4 +97,6 @@ steering file is read first, with `Options::read_steering`.
 `options::record(&options, &engine_info)` is the provenance record: the engine, backend and parity; the instruction
 (when not empty) and the steering record (`sha256`, `layers`, `scale`), as `ggtts-render`'s trace header and reports
 write them; the seed keys given; the speaker given; the device; the trace level (0 when untraced); and the
-environment values the engine ignored.
+environment values the engine ignored. `options::reported(&record)` is the part every `ggtts-render` report (timing,
+duration, each instrument's inputs) and its trace header carry (`options::REPORTED`: the instruction and the steering),
+so they are written from the record and cannot disagree with it.

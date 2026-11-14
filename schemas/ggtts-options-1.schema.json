@@ -388,10 +388,11 @@
           "x-ggtts-phase": "render"
         },
         "stream_format": {
-          "description": "wav (plays as it arrives) or s16le after a one-line header; unset is wav.",
+          "description": "wav (plays as it arrives) or s16le after a one-line header (raw is s16le too); unset is wav.",
           "enum": [
             "wav",
-            "s16le"
+            "s16le",
+            "raw"
           ],
           "x-ggtts-flags": [
             "--stream-format"

@@ -393,6 +393,7 @@ dependencies = [
  "flate2",
  "ggtts-core",
  "ggtts-fake",
+ "ggtts-instruments",
  "ggtts-load",
  "ggtts-qwen3-tts",
  "quick-xml",

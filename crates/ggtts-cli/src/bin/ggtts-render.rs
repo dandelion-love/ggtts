@@ -313,32 +313,6 @@ fn refusal_settings(args: &[String], env: &dyn Fn(&str) -> Option<String>) -> Lo
     }
 }
 
-/// The instrument options as `ggtts_instruments` takes them: the file, then each option's values, every list in its
-/// order. `Flags::resolve` checks them and applies them over the file.
-fn instrument_flags(a: &Options) -> ggtts_instruments::Flags {
-    let o = &a.observe;
-    let mut f = ggtts_instruments::Flags::default();
-    if let Some(p) = &o.instruments {
-        f.take("--instruments", p.to_string_lossy().into_owned());
-    }
-    for v in &o.instrument {
-        f.take("--instrument", v.clone());
-    }
-    for v in &o.require {
-        f.take("--require", v.clone());
-    }
-    if let Some(v) = &o.on_instrument_error {
-        f.take("--on-instrument-error", v.clone());
-    }
-    if let Some(v) = o.instrument_timeout {
-        f.take("--instrument-timeout", v.to_string());
-    }
-    if let Some(v) = &o.instrument_device {
-        f.take("--instrument-device", v.clone());
-    }
-    f
-}
-
 /// The model engines this binary can carry, by architecture name: `load_engine` has an arm for each, and
 /// `engine_lines` lists them when the build has them. `every_engine_has_a_load_arm` holds the two together.
 const ENGINES: &[&str] = &["qwen3-tts", "kitten-tts-2"];
@@ -640,13 +614,11 @@ fn render_with_models(
         _ => return Err("give exactly one of --text or --story".into()),
     };
     // Refuse a bad instrument config before spending the render on it.
-    let instruments = if instrument_flags(&a).any() {
+    let instruments = if ggtts_instruments::options::flags(&a).any() {
         if a.output.out.is_none() {
             return Err("instruments measure the --out FLAC: give --out".into());
         }
-        let c = resolve_instrument_config(&a)?;
-        ggtts_instruments::runner::check(&c)?;
-        Some(c)
+        ggtts_instruments::options::config(&a)?
     } else {
         None
     };
@@ -1109,20 +1081,9 @@ fn render_with_models(
         .and_then(|s| s.to_str())
         .unwrap_or("render")
         .to_string();
-    let run_id = a.observe.run.clone().unwrap_or_else(|| {
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        format!("{render_id}-{secs}")
-    });
-    let inputs = ggtts_instruments::Inputs {
-        run: run_id,
+    let finished = ggtts_instruments::options::Finished {
+        run: ggtts_instruments::options::run_id(&a, &render_id),
         render: render_id,
-        report_dir: a
-            .observe
-            .report
-            .clone()
-            .unwrap_or_else(|| path.with_extension("report")),
         audio: path.clone(),
         audio_state: if a.render.story.is_some() {
             ggtts_core::report::AudioState::Trimmed
@@ -1131,16 +1092,11 @@ fn render_with_models(
         },
         audio_seconds: (rate > 0).then(|| samples.len() as f64 / f64::from(rate)),
         events: a.observe.trace.clone(),
-        bin_dir: None,
-        instruments_dir: None,
         models: Some(model_files.clone()),
-        instruction: reported
-            .get("instruction")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string),
-        steer: reported.get("steer").cloned(),
+        reported: reported.clone(),
+        default_report_dir: path.with_extension("report"),
     };
-    let summary = ggtts_instruments::runner::run_with_logging(&config, &inputs, log)?;
+    let (inputs, summary) = ggtts_instruments::options::run(&config, &finished, a.observe.report.as_deref(), log)?;
     if let Some(data) = &duration_data {
         // The report directory's own files are replaced on a rerun, as the runner replaces its run log and
         // instrument reports there. Only an explicit --duration-report must be a new file.
@@ -1207,14 +1163,6 @@ fn render_with_models(
     }
     write_timing(Some(summary.overhead.total_ms))?;
     Ok(summary.exit_code())
-}
-
-fn resolve_instrument_config(a: &Options) -> Result<ggtts_instruments::Config, String> {
-    let mut config = instrument_flags(a).resolve()?;
-    if config.device.is_none() {
-        config.set_device(a.load.device.as_deref().unwrap_or("cpu"))?;
-    }
-    Ok(config)
 }
 
 /// The model engines compiled into this binary, one line each, with the backends each can run on. Read from the
@@ -1330,7 +1278,7 @@ mod tests {
 
     #[test]
     fn instrument_device_inherits_render_and_respects_override() {
-        let device = |args: &[&str]| resolve_instrument_config(&opts(args)).unwrap().device;
+        let device = |args: &[&str]| ggtts_instruments::options::resolve(&opts(args)).unwrap().device;
         assert_eq!(device(&["--device", "cuda"]).as_deref(), Some("cuda"));
         assert_eq!(
             device(&["--device", "cuda", "--instrument-device", "cpu"]).as_deref(),

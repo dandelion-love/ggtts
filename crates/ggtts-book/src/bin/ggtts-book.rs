@@ -8,6 +8,9 @@
 //!                  [--device cpu|cuda] [--threads N] [--offline]
 //!                  [--instruction TEXT] [--steer FILE [--steer-scale X] [--steer-layers L,L]]
 //!                  [--trace FILE [--trace-level 1|2]] [--redraw N] [--include-skippable]
+//!                  [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE.yaml] [--require NAME]...
+//!                  [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort]
+//!                  [--instrument-timeout S] [--report DIR] [--run ID]
 //!                                   render every chapter into DIR, resuming what an earlier run finished
 //! ggtts-book export DIR --out BOOK.flac|BOOK.m4b
 //!                                   join a finished render into one FLAC with a chapter mark per chapter
@@ -31,15 +34,19 @@
 //! in `ggtts-render`: `--instruction`, `--steer` and its scale and layers reach every chunk's request, and `--trace`
 //! writes one ggtts-trace/2 stream for the chunks this run renders. Each chunk is judged, and one the judge rejects is
 //! redrawn up to `--redraw` times (unset: the engine profile's), as in a story; each chunk's manifest entry records
-//! the kept draw and the number of draws. A table option a book does not take (`--text`,
-//! `--story`, `--seed`, `--stream`, the reports and instruments) is refused by name with the reason. A chapter's
+//! the kept draw and the number of draws. The instrument flags are ggtts-render's: the instruments run on each
+//! chapter FLAC this run wrote (not on a chapter an earlier run finished), with one report per chapter beside its
+//! FLAC (`NNN-<chapter id>.report`, or `--report DIR/NNN-<chapter id>`). An unknown instrument is refused before
+//! anything is rendered. A table option a book does not take (`--text`, `--story`, `--seed`, `--stream`, the
+//! timing and duration reports, the log) is refused by name with the reason. A chapter's
 //! manifest records the instruction and steering, and a resume under different ones starts the chapter again, naming
 //! the difference.
 //!
 //! `export` refuses a render that is not finished, or that mixes seed roots or engines, naming the chapter.
 //!
-//! Exit 0 on success; 2 when the book or the engine is refused (the reason on stderr), a render fails (what was
-//! finished is kept), or the command line is wrong.
+//! Exit 0 on success; 3 when every chapter is written but a `--require`d instrument is not ok on some chapter (the
+//! measurement is INCOMPLETE, as for ggtts-render); 2 when the book or the engine is refused (the reason on stderr),
+//! a render fails (what was finished is kept), or the command line is wrong.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -54,7 +61,10 @@ const USAGE: &str = "usage: ggtts-book inspect BOOK.epub [--engine qwen3-tts|fak
 ggtts-book render BOOK.epub --out DIR [--engine qwen3-tts|kitten-tts-2|fake] [--seed-root R]\n                  \
 [--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME] [--device cpu|cuda] [--threads N] [--offline]\n                  \
 [--instruction TEXT] [--steer FILE [--steer-scale X] [--steer-layers L,L]] [--trace FILE [--trace-level 1|2]]\n                  \
-[--redraw N] [--include-skippable]\n       \
+[--redraw N] [--include-skippable]\n                  \
+[--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]...\n                  \
+[--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] \
+[--report DIR] [--run ID]\n       \
 ggtts-book export DIR --out BOOK.flac|BOOK.m4b\n       \
 ggtts-book --version";
 
@@ -169,6 +179,10 @@ fn render(book_path: &Path, o: Options) -> ExitCode {
                 "{}",
                 serde_json::to_string_pretty(&report).expect("JSON values serialize")
             );
+            if report["measurement"] == "incomplete" {
+                eprintln!("ggtts-book: measurement INCOMPLETE: a required instrument is not ok (see each chapter's instruments)");
+                return ExitCode::from(ggtts_instruments::runner::EXIT_INCOMPLETE);
+            }
             ExitCode::SUCCESS
         }
         Err(e) => fail(&e),

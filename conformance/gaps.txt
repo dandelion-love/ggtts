@@ -17,14 +17,6 @@ android	render.redraw	#282
 android	render.steer	#282
 android	render.steer_layers	#282
 android	render.steer_scale	#282
-book	observe.instrument	#295
-book	observe.instrument_device	#295
-book	observe.instrument_timeout	#295
-book	observe.instruments	#295
-book	observe.on_instrument_error	#295
-book	observe.report	#295
-book	observe.require	#295
-book	observe.run	#295
 book	render.edge_s	#283
 c-abi	observe.duration_report	#280
 c-abi	observe.log_format	#280

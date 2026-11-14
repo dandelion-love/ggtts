@@ -76,20 +76,15 @@ fn seed_is_refused_by_name() {
     refused_by_name("refuse-seed", &["--seed", "7"], "render.seed", "--seed-root");
 }
 
-/// The other options of the table a book does not take are refused the same way: a report, an instrument, the log.
+/// The other options of the table a book does not take are refused the same way: a report and the log. (The
+/// instruments are a book's since they run on each chapter written: `tests/instruments.rs`.)
 #[test]
-fn reports_instruments_and_log_flags_are_refused_by_name() {
+fn report_and_log_flags_are_refused_by_name() {
     refused_by_name(
         "refuse-timing",
         &["--timing-report", "t.json"],
         "observe.timing_report",
         "no timing or duration report",
-    );
-    refused_by_name(
-        "refuse-instrument",
-        &["--instrument", "loudness"],
-        "observe.instrument",
-        "no instruments",
     );
     refused_by_name("refuse-log", &["--log-level", "debug"], "observe.log_level", "no log");
 }

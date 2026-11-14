@@ -2,7 +2,8 @@
 //!
 //! `ggtts-book inspect` and `render` take their flags from the one options table, so a flag means in a book what it
 //! means in `ggtts-render`. The book takes the load section (the engine and its files), the style instruction, the
-//! steering, the trace, the output directory (`--out`) and the book section (`--seed-root`, `--include-skippable`).
+//! steering, the trace, the instruments (run on each chapter written), the output directory (`--out`) and the book
+//! section (`--seed-root`, `--include-skippable`).
 //! Every other option in the table is refused by name, with the reason a book does not take it ([`refusal`]). The
 //! positional argument is the book.
 //!
@@ -31,6 +32,14 @@ pub const RENDER_TAKES: &[&str] = &[
     "render.redraw",
     "observe.trace",
     "observe.trace_level",
+    "observe.instruments",
+    "observe.instrument",
+    "observe.require",
+    "observe.on_instrument_error",
+    "observe.instrument_timeout",
+    "observe.instrument_device",
+    "observe.report",
+    "observe.run",
     "output.out",
     "book.seed_root",
     "book.include_skippable",
@@ -52,14 +61,6 @@ pub fn refusal(key: &str) -> &'static str {
         }
         "observe.timing_report" | "observe.duration_report" => "a book writes no timing or duration report",
         "observe.log_level" | "observe.log_format" => "a book writes no log",
-        "observe.instruments"
-        | "observe.instrument"
-        | "observe.require"
-        | "observe.on_instrument_error"
-        | "observe.instrument_timeout"
-        | "observe.instrument_device"
-        | "observe.report"
-        | "observe.run" => "a book runs no instruments",
         _ => "a book does not take it",
     }
 }

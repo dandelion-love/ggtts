@@ -79,7 +79,7 @@ fixed means the front end hard-codes one value, and `?` is not confirmed from th
 | edge trim | Y | N ([#180](https://github.com/dandelion-love/ggtts/issues/180)) | Y | Y | Y | Y | Y |
 | trace and level | Y | qwen3-tts only, the engine's step file; accepted and ignored on kitten-tts-2 and fake | Y (since #279) | N | N | N | N |
 | tensor hooks | N | N | N | N | N | N | N |
-| instruments, report | Y | Y | N | N | N | N | N |
+| instruments, report | Y | Y | Y, per chapter written ([#295](https://github.com/dandelion-love/ggtts/issues/295)) | N | N | N | N |
 | timing and duration reports, log settings | Y | Y | N | N | N | N | ? |
 | stream | Y: levelled by default, `--stream-raw` | one unlevelled piece; `--stream-raw` and `--stream-level-seconds` accepted and ignored | N | Y: unlevelled pieces only | as C | as C | as C |
 | output | FLAC, WAV or s16le stream | same | FLAC per chapter, export | PCM | PCM | PCM, FLAC | played, saved |
@@ -118,7 +118,8 @@ An epic or story that adds or exposes a capability says, in its acceptance crite
 2. **How each front end gets it or refuses it**: one line per front end in the table above. "Carried through the
    options value" or "refused: reason" are the only answers; "not yet" is a gap and is listed as one. The expected
    answers for the bindings: the trace is carried by the desktop bindings (C ABI, Python) and refused on Android;
-   instruments are refused by every binding (they are out-of-process programs the CLI runs on a finished file).
+   instruments are refused by every binding (they are programs run on a finished file; run them with
+   `ggtts-render` or on the file).
 3. **The conformance test that would catch a front end without it**: the case in the conformance test, and a planted
    front end that drops the option and turns it red.
 4. **No per-front-end wiring.** A flag, a binding parameter, a struct field or an environment variable that exposes a

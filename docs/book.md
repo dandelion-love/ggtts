@@ -224,16 +224,20 @@ ggtts-book render BOOK.epub --out DIR [--engine qwen3-tts|kitten-tts-2|fake] [--
                  [--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME]
                  [--device cpu|cuda] [--threads N] [--offline]
                  [--instruction TEXT] [--steer FILE [--steer-scale X] [--steer-layers L,L]]
-                 [--trace FILE [--trace-level 1|2]] [--include-skippable]
+                 [--trace FILE [--trace-level 1|2]] [--redraw N] [--include-skippable]
+                 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE.yaml] [--require NAME]...
+                 [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort]
+                 [--instrument-timeout S] [--report DIR] [--run ID]
 ```
 
 **The flags are the shared options table's** (`ggtts_core::options`, described in `docs/options.md`), read by its
 parser, so each means in a book what it means in `ggtts-render`. A book takes the load section (the engine and its
 files), the style instruction (`--instruction`), steering (`--steer` and its scale and layers), the trace (`--trace`,
-`--trace-level`), `--out`, and the book's own `--seed-root` and `--include-skippable`. Any other option of the table is
-refused by its flag and schema name with the reason, before anything is read or written: `--text` and `--story` (a book
-renders its chapters), `--seed` (a book's seeds come from `--seed-root`), `--stream` and its settings (a book is one
-FLAC per chapter), the timing and duration reports, the log settings and the instruments. An option a book does not
+`--trace-level`), the instruments, `--out`, and the book's own `--seed-root` and `--include-skippable`. Any other
+option of the table is refused by its flag and schema name with the reason, before anything is read or written:
+`--text` and `--story` (a book renders its chapters), `--seed` (a book's seeds come from `--seed-root`), `--stream`
+and its settings (a book is one FLAC per chapter), the timing and duration reports and the log settings. An option a
+book does not
 take that is set only in the environment (`GGTTS_LOG_LEVEL`, for example) is ambient and is dropped, not refused.
 
 The instruction and the steering reach every chunk's request, as they reach a story's. An engine that cannot take
@@ -242,6 +246,31 @@ render stops at the first chunk with the engine's reason and no chunk file is wr
 read is refused before the engine is loaded. `--trace` writes one ggtts-trace/2 stream for the chunks this run renders
 (a header naming the engine, instruction and steering, then each chunk's events); chunks taken from an earlier run
 are not in it. Chunk numbers in it restart at each chapter, and it replays with `ggtts_core::trace::replay`.
+
+**Instruments** are `ggtts-render`'s, run by the same library call (`ggtts_instruments::options`) on each chapter
+FLAC, after every chapter is rendered and the engine is released. A chapter is measured unless its report directory
+holds a `measured.json` from an earlier run with the same chapter FLAC (by SHA-256) and the same instrument settings:
+a resumed book measures the chapters an earlier, interrupted run never measured, and a re-run with other instruments
+measures every chapter again. Each chapter is one render of the run, named by its directory (`NNN-<chapter id>`), with
+its report beside its FLAC
+(`NNN-<chapter id>.report/`: the envelopes, `report.json`, `.md`, `.html` and `run.log`), or in
+`--report DIR/NNN-<chapter id>/`. The run is `--run`, else `book-<unix seconds>`, one for the whole book. The
+render report gives each written chapter an `instruments` entry: its report directory, `measured` (`this run`,
+`earlier run` or `no`, with the reason), each instrument's status, and why the measurement is incomplete. The book
+gets a `measurement` of `complete` or `incomplete`. A `--require`d instrument that is not ok on any chapter, or a
+chapter left unmeasured while an instrument is required, makes the measurement incomplete and the exit 3, with every
+chapter FLAC written, as for `ggtts-render`. An unknown instrument is refused before the engine loads.
+
+* **Reference text.** An instrument that compares the audio with a reference (`asr-qwen`, `asr-sensevoice`) is given
+  each chapter's own text: the book writes it to `reference.txt` in the chapter's report directory and passes it as
+  `arg.reference_file`. A `reference_file` given on the command line or in the instruments file is refused in a book,
+  before anything is rendered: one file cannot be every chapter's text.
+* **`--on-instrument-error abort`** skips the rest of the instruments on the chapter where one failed, and every
+  chapter after it: they are reported `measured: no`, and are measured by the next run.
+* **Timeouts are per instrument, per chapter.** `--instrument-timeout` (or an entry's `timeout_s`; 60 s when
+  unset) bounds one instrument on one chapter FLAC. An ASR instrument on a long chapter needs more: set it.
+* **No event stream.** The book's trace covers every chapter, so no chapter is handed one: an instrument that needs
+  it is recorded as `skipped` with that reason (#341 would give each chapter its own).
 
 The engine is `qwen3-tts` by default, as for `ggtts-render`, and the model flags mean what they mean there: a file
 not given is the engine's pinned default, taken from the per-user cache (`GGTTS_CACHE_DIR` overrides where) and

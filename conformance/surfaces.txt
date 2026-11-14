@@ -14,6 +14,8 @@ c ggtts_render_stream: handle, text, seed, on_piece, user
 c ggtts_pcm_free: pcm, len
 c ggtts_free: handle
 c ggtts_last_error:
+c ggtts_load_opts: options_json, handle
+c ggtts_render_opts: handle, text, options_json, on_piece, user, pcm, len, rate
 kotlin load: engine, model, codec, voice, threads
 kotlin loadWith: engine, model, codec, voice, threads, speaker, instruction
 kotlin loadWithModels: engine, model, codec, voice, threads, speaker, instruction, cacheDir, allowDownload

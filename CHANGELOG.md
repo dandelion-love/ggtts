@@ -23,6 +23,14 @@ that a merge places under a released heading is caught.
   characters with one simplified form reads as correct; a chunk of fewer than 4 compared characters is never
   rejected; text with no CJK characters or numbers has nothing to compare. No front
   end uses it yet, and every render is unchanged; `ggtts-trace/2` allows the two new verdicts.
+- **The C ABI takes options documents (ABI version 4): `ggtts_load_opts(json, &handle)` and
+  `ggtts_render_opts(handle, text, json, on_piece, user, &pcm, &len, &rate)`.** Every option of the shared options
+  table reaches C as JSON, so a new option needs no new struct field, function or ABI version. A render document
+  takes the seed salt, an instruction, steering, redraws, the edge trim and a trace file; `{"output": {"stream":
+  "raw"}}` streams to `on_piece`. A malformed document, an unknown key, a load key in a render document and an option
+  the engine does not support are `GGTTS_ERR_ARG` before anything renders. **`ggtts_settings` is frozen at version
+  3**; the struct functions keep working unchanged and now render through the same path, sample for sample. See
+  [docs/bindings/c.md](docs/bindings/c.md#options-documents).
 - **One render entry point in the `ggtts-core` library: `pipeline::render_plan`.** It renders a plan with any trace
   level, tensor hooks and output (the whole read, or a stream raw or levelled) in one call, so combinations that had
   no function before, such as hooks with a stream, now work. It is built from a public step, `pipeline::render_chunk`,

@@ -19,6 +19,18 @@ that a merge places under a released heading is caught.
   which renders one chunk (draws at the caller's seeds, the judge, redraws, edge trim) for a caller with its own plan.
   `render_story`, `render_story_traced`, `render_story_hooked` and `render_story_streamed` keep working unchanged, and
   no output changes.
+- **`ggtts-book render` takes `--instruction`, `--steer` (with `--steer-scale` and `--steer-layers`) and `--trace`
+  (with `--trace-level`)**, meaning what they mean in `ggtts-render`: its flags are read by the shared options table,
+  and every chunk is rendered by the core chunk step. A book rendered without them is byte-identical to before. Each
+  chapter manifest records the instruction and steering, and a resume under different ones renders the chapter again,
+  naming the difference; a manifest written before this resumes as "no instruction, no steering".
+
+### Changed
+
+- **`ggtts-book` refuses the options of the shared table it does not take by name, with the reason**: `--text`,
+  `--story`, `--seed`, `--stream` and its settings, the timing and duration reports, the log settings and the
+  instruments. An engine name the table does not list is refused as `load.engine` rather than "unknown engine", and
+  `--threads` also takes the table's spelling `-j`.
 
 ## v0.1.0-rc.12 (2026-11-13)
 

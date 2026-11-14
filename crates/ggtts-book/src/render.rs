@@ -1,25 +1,29 @@
 //! Rendering a book through one engine, chapter by chapter, resumable.
 //!
 //! The engine is passed in already loaded and is used for every chunk of every chapter, so a book loads its model
-//! once. Each chunk is generated at its planned seed ([`ChapterPlan::seed_at`], draw 0), decoded, trimmed at its
-//! edges by the profile's rule, and stored as FLAC through [`run_chapter`], so a killed render resumes where it
-//! stopped. A finished chapter is then joined from the stored chunks with the profile's pauses, levelled by the
-//! story path's level step, and written as one FLAC.
+//! once. Each chunk is rendered by the core chunk step ([`ggtts_core::pipeline::render_chunk`], the step every
+//! render is made of) at its planned seeds ([`ChapterPlan::seed_at`]) with the render options (instruction,
+//! steering, edge trim) and the observers (the trace), and stored as FLAC through [`run_chapter`], so a killed render
+//! resumes where it stopped. A finished chapter is then joined from the stored chunks with the profile's pauses,
+//! levelled by the story path's level step, and written as one FLAC.
 //!
 //! Chunks are joined from the stored files, never from memory, so a chapter rendered in one run and a chapter
 //! resumed after a kill are built from the same bytes and come out identical.
 
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use ggtts_core::audio::trim_edges_f32;
-use ggtts_core::engine::{ChunkRequest, Engine};
+use ggtts_core::engine::{Engine, EngineInfo};
 use ggtts_core::flac::encode_flac;
-use ggtts_core::pipeline::{gap_samples, level};
+use ggtts_core::hooks::Hooks;
+use ggtts_core::options::Options;
+use ggtts_core::pipeline::{gap_samples, level, DurationJudge, Observers, RenderOptions};
 use ggtts_core::profile::Profile;
+use ggtts_core::trace::{emit_header, Events, Header, JsonlEvents, NullEvents};
 
 use crate::book::{Book, Chapter};
 use crate::manifest::{chunk_file, run_chapter, Resume, RunError};
-use crate::plan::ChapterPlan;
+use crate::plan::{ChapterPlan, DEFAULT_SEED_ROOT};
 
 /// What happened to one chapter.
 #[derive(Debug, Clone, PartialEq)]
@@ -46,27 +50,53 @@ pub struct ChapterReport {
     pub outcome: ChapterOutcome,
 }
 
-/// Generate, decode and edge-trim one planned chunk at its first draw's seed; the FLAC bytes to store.
-pub fn render_chunk(engine: &mut dyn Engine, plan: &ChapterPlan, index: usize) -> Result<Vec<u8>, String> {
-    let chunk = &plan.chunks[index];
-    let profile = *engine.profile();
-    let req = ChunkRequest {
-        text: &chunk.text,
-        seed: u64::from(plan.seed_at(index, 0)),
-        chunk: index as u32,
-        draw: 0,
-        instruction: None,
-        // A book render takes no steering: `None` renders exactly as without the field.
-        steer: None,
-    };
-    let generated = engine.generate(&req).map_err(|e| e.to_string())?;
-    let pcm = engine.decode(&generated.codes).map_err(|e| e.to_string())?;
-    let t = trim_edges_f32(&profile, &pcm.samples, pcm.sample_rate, profile.edge_s);
-    let kept: Vec<i16> = pcm.samples[t.start_sample..t.end_sample]
-        .iter()
-        .map(|&x| to_i16(x))
-        .collect();
-    encode_flac(&kept, pcm.sample_rate).map_err(|e| e.to_string())
+/// How a book renders its chunks: the core step's options, and whether front and back matter are rendered.
+#[derive(Debug, Clone)]
+pub struct BookRender {
+    /// Render front and back matter too.
+    pub include_skippable: bool,
+    /// The core step's options: instruction, steering, edge trim, redraws ([`book_render_options`]).
+    pub opts: RenderOptions,
+}
+
+impl BookRender {
+    /// The profile's defaults, with no instruction and no steering, leaving front and back matter out.
+    pub fn for_profile(profile: &Profile) -> Self {
+        Self {
+            include_skippable: false,
+            opts: book_render_options(RenderOptions::for_profile(profile)),
+        }
+    }
+}
+
+/// The core step's options as a book uses them: `opts`, keeping each chunk's first draw (redraw 0), as a book always
+/// has. Redraws for a book are a separate change, since they change the audio.
+pub fn book_render_options(opts: RenderOptions) -> RenderOptions {
+    RenderOptions { redraw: 0, ..opts }
+}
+
+/// Render one planned chunk through the core chunk step ([`ggtts_core::pipeline::render_chunk`]) at the plan's seeds
+/// ([`ChapterPlan::seed_at`]) with the render spec's judge, `opts` and the observers `obs`; the FLAC bytes to store.
+pub fn render_chunk(
+    engine: &mut dyn Engine,
+    plan: &ChapterPlan,
+    index: usize,
+    opts: &RenderOptions,
+    obs: &mut Observers<'_>,
+) -> Result<Vec<u8>, String> {
+    let seeds = |i: usize, _: &str, draw: u32| plan.seed_at(i, draw);
+    let kept = ggtts_core::pipeline::render_chunk(
+        engine,
+        &plan.chunks[index].text,
+        index,
+        &seeds,
+        &mut DurationJudge,
+        opts,
+        obs,
+    )
+    .map_err(|e| e.to_string())?;
+    let pcm: Vec<i16> = kept.samples.iter().map(|&x| to_i16(x)).collect();
+    encode_flac(&pcm, kept.sample_rate).map_err(|e| e.to_string())
 }
 
 fn to_i16(x: f32) -> i16 {
@@ -236,19 +266,85 @@ pub fn render_command_with(
     include_skippable: bool,
     load: impl FnOnce() -> Result<LoadedEngine, String>,
 ) -> Result<serde_json::Value, String> {
+    let mut options = Options::default();
+    options.output.out = Some(out.to_path_buf());
+    options.book.seed_root = Some(seed_root.to_string());
+    options.book.include_skippable = include_skippable;
+    render_command_options(book_path, &options, load)
+}
+
+/// The render options that change the audio, from the provenance record ([`ggtts_core::options::record`]): the
+/// style instruction (when not empty) and the steering. `Null` when there are neither. Every chapter manifest records
+/// it, and a resume under other render options is refused ([`crate::manifest::ManifestError::Mismatch`]).
+pub fn render_identity(options: &Options, info: &EngineInfo) -> serde_json::Value {
+    let record = ggtts_core::options::record(options, info);
+    let kept: serde_json::Map<String, serde_json::Value> = ["instruction", "steer"]
+        .into_iter()
+        .filter_map(|k| record.get(k).map(|v| (k.to_string(), v.clone())))
+        .collect();
+    if kept.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::Object(kept)
+    }
+}
+
+/// [`render_command`] with the shared options value ([`ggtts_core::options`]): the output directory
+/// (`output.out`), the book section (`book.seed_root`, else [`DEFAULT_SEED_ROOT`]; `book.include_skippable`), the
+/// render section's instruction and steering, and the trace (`observe.trace`, `observe.trace_level`). The load
+/// section is the caller's: `load` opens the engine. The steering file is read before the engine is loaded, so a bad
+/// one costs no model load. Options that do not apply to a book are refused by the command line before this
+/// ([`crate::options`]).
+pub fn render_command_options(
+    book_path: &Path,
+    options: &Options,
+    load: impl FnOnce() -> Result<LoadedEngine, String>,
+) -> Result<serde_json::Value, String> {
+    let out = options.output.out.as_deref().ok_or("render needs --out DIR")?;
+    let seed_root = options.book.seed_root.as_deref().unwrap_or(DEFAULT_SEED_ROOT);
     let book = Book::open(book_path).map_err(|e| e.to_string())?;
+    let mut options = options.clone();
+    options.read_steering().map_err(|e| e.to_string())?;
     let LoadedEngine {
         mut engine,
         files,
         speaker,
     } = load()?;
     let profile = *engine.profile();
+    let settings = BookRender {
+        include_skippable: options.book.include_skippable,
+        opts: book_render_options(options.render_options(&profile).map_err(|e| e.to_string())?),
+    };
     let mut plans = crate::plan::plan_book(&profile, &book, seed_root)?;
     let engine_record = provenance(engine.as_ref(), &files, speaker.as_deref());
+    let identity = render_identity(&options, engine.info());
     for plan in &mut plans {
         plan.engine = engine_record.clone();
+        plan.render = identity.clone();
     }
-    let reports = render_book_with(engine.as_mut(), &book, &plans, out, include_skippable)?;
+    let trace_level = options.observe.trace_level.unwrap_or(1);
+    let mut trace = match &options.observe.trace {
+        Some(path) => Some(
+            std::fs::File::create(path)
+                .map(|f| JsonlEvents::new(BufWriter::new(f), trace_level))
+                .map_err(|e| format!("--trace {}: {e}", path.display()))?,
+        ),
+        None => None,
+    };
+    let reports = {
+        let events: &mut dyn Events = match trace.as_mut() {
+            Some(t) => t,
+            None => &mut NullEvents,
+        };
+        let mut header = Header::for_engine(engine.as_ref(), trace_level);
+        header.instruction = settings.opts.instruction.clone().filter(|i| !i.is_empty());
+        header.steer = settings.opts.steer.as_ref().map(|s| s.record());
+        emit_header(events, &header);
+        render_book_observed(engine.as_mut(), &book, &plans, out, &settings, events)?
+    };
+    if let Some(t) = trace {
+        t.finish().map_err(|e| format!("--trace: {e}"))?;
+    }
     let chapters: Vec<_> = reports
         .iter()
         .map(|r| match &r.outcome {
@@ -268,13 +364,17 @@ pub fn render_command_with(
             ChapterOutcome::Skipped { reason } => serde_json::json!({"id": r.id, "state": "skipped", "reason": reason}),
         })
         .collect();
-    Ok(serde_json::json!({
+    let mut report = serde_json::json!({
         "format": "ggtts-book-render/1",
         "book_id": book.book_id(),
         "engine": engine_record,
         "seed_root": seed_root,
         "chapters": chapters,
-    }))
+    });
+    if !identity.is_null() {
+        report["render"] = identity;
+    }
+    Ok(report)
 }
 
 /// Render every chapter of `book` into `out`, with `engine` loaded once for all of them.
@@ -298,6 +398,26 @@ pub fn render_book_with(
     out: &Path,
     include_skippable: bool,
 ) -> Result<Vec<ChapterReport>, String> {
+    let settings = BookRender {
+        include_skippable,
+        ..BookRender::for_profile(engine.profile())
+    };
+    render_book_observed(engine, book, plans, out, &settings, &mut NullEvents)
+}
+
+/// [`render_book`] with `settings` (the core step's options and whether front and back matter are rendered), feeding
+/// every rendered chunk's trace events into `events`. Chunks resumed from an earlier run are not rendered, so they are
+/// not traced.
+pub fn render_book_observed(
+    engine: &mut dyn Engine,
+    book: &Book,
+    plans: &[ChapterPlan],
+    out: &Path,
+    settings: &BookRender,
+    events: &mut dyn Events,
+) -> Result<Vec<ChapterReport>, String> {
+    let include_skippable = settings.include_skippable;
+    let mut hooks = Hooks::new();
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     claim_output(out, &book.book_id())?;
     // Record which chapters this render plans, before rendering any: `export` takes exactly these, so a directory a
@@ -338,7 +458,13 @@ pub fn render_book_with(
         let mut rendered = Vec::new();
         let start: Resume = run_chapter(&dir, plan, |p, index| {
             rendered.push(index);
-            render_chunk(engine, p, index)
+            render_chunk(
+                engine,
+                p,
+                index,
+                &settings.opts,
+                &mut Observers::new(&mut *events, &mut hooks),
+            )
         })
         .map_err(|e| match e {
             RunError::Render { index, reason } => format!(

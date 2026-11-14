@@ -251,7 +251,12 @@ fn a_chunk_rendered_alone_equals_it_in_a_full_run() {
         .unwrap();
     let stem = ggtts_book::render::chapter_stem(i, &book.chapters[i]);
     for index in (0..plan.chunks.len()).rev() {
-        let alone = ggtts_book::render::render_chunk(&mut Counting::new(None), plan, index).unwrap();
+        let mut engine = Counting::new(None);
+        let opts = ggtts_book::render::BookRender::for_profile(engine.profile()).opts;
+        let mut hooks = ggtts_core::hooks::Hooks::new();
+        let mut events = ggtts_core::trace::NullEvents;
+        let mut obs = ggtts_core::pipeline::Observers::new(&mut events, &mut hooks);
+        let alone = ggtts_book::render::render_chunk(&mut engine, plan, index, &opts, &mut obs).unwrap();
         let in_run = std::fs::read(clean.join(&stem).join(ggtts_book::manifest::chunk_file(index))).unwrap();
         assert!(
             alone == in_run,

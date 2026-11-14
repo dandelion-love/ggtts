@@ -46,7 +46,7 @@ A **front end** is anything a person or a program renders through:
 |---|---|---|
 | `ggtts-render --story` | `crates/ggtts-cli` | `render_plan`, with its stream mode as the output |
 | `ggtts-render --text` | `crates/ggtts-cli` | its own `engine.generate` and `decode`: no trim, no level, no judge |
-| `ggtts-book render` | `crates/ggtts-book`, on `track/epub` | its own `render_chunk`: `engine.generate` at draw 0, no judge |
+| `ggtts-book render` | `crates/ggtts-book` | the core `render_chunk` per chunk at draw 0, its flags read by the shared options parser ([#279](https://github.com/dandelion-love/ggtts/issues/279)) |
 | C ABI (`libggtts_ffi`, `ggtts.h`) | `crates/ggtts-ffi` | `render_story`, `render_story_streamed` |
 | Kotlin (`ggtts.Ggtts`, over JNI) | `android/ggtts`, `crates/ggtts-ffi/src/jni.rs` | the C ABI |
 | Python (`import ggtts`) | `crates/ggtts-py` | `render_story`, `render_story_streamed` (its own copy of the C ABI's glue) |
@@ -73,11 +73,11 @@ fixed means the front end hard-codes one value, and `?` is not confirmed from th
 | device | Y | Y | Y | Y (settings v3) | N (documented: CPU only) | Y | N |
 | threads | Y | Y | Y | Y | Y | Y | Y |
 | seed | N: ignored ([#215](https://github.com/dandelion-love/ggtts/issues/215)) | Y: the sampler seed | own: `--seed-root` | Y: as the story's seed salt | as C | as C | as C |
-| style instruction | Y | Y | N: hard-coded `None` ([#262](https://github.com/dandelion-love/ggtts/issues/262)) | Y, fixed at load (v2) | Y, at load | Y, at load | N |
-| steering | Y | Y | N: hard-coded `None` | N | N | N | N |
+| style instruction | Y | Y | Y (since [#279](https://github.com/dandelion-love/ggtts/issues/279)) | Y, fixed at load (v2) | Y, at load | Y, at load | N |
+| steering | Y | Y | Y (since #279) | N | N | N | N |
 | redraws, chunk ceiling, sampler | N (profile only) | N | N | N | N | N | N |
 | edge trim | Y | N ([#180](https://github.com/dandelion-love/ggtts/issues/180)) | Y | Y | Y | Y | Y |
-| trace and level | Y | qwen3-tts only, the engine's step file; accepted and ignored on kitten-tts-2 and fake | N | N | N | N | N |
+| trace and level | Y | qwen3-tts only, the engine's step file; accepted and ignored on kitten-tts-2 and fake | Y (since #279) | N | N | N | N |
 | tensor hooks | N | N | N | N | N | N | N |
 | instruments, report | Y | Y | N | N | N | N | N |
 | timing and duration reports, log settings | Y | Y | N | N | N | N | ? |
@@ -102,9 +102,9 @@ observers (`Observers { events, hooks }`) and any output (`Output::Whole`, or `O
 the public step `render_chunk` per chunk (draws at a caller's `SeedSource`, a pluggable `Judge`, redraws, trim), then
 join, output and level. `render_story`, `render_story_traced`, `render_story_hooked` and `render_story_streamed` are
 wrappers over it. Before #276 they shared a private loop but each fixed its observers and output, so a caller could
-not have hooks and a stream together. The paths that still diverge are outside them: `ggtts-render --text`,
-`ggtts-book`'s `render_chunk` (moved onto the core step by [#279](https://github.com/dandelion-love/ggtts/issues/279))
-and `ggtts-kitten render` each call the engine directly.
+not have hooks and a stream together. The paths that still diverge are outside them: `ggtts-render --text` and `ggtts-kitten render` each call the engine
+directly. `ggtts-book` renders each chunk through `render_chunk` since
+[#279](https://github.com/dandelion-love/ggtts/issues/279).
 
 ## What every epic and story states
 

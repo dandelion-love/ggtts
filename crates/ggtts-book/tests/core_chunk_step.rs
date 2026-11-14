@@ -74,10 +74,86 @@ fn the_core_step_renders_a_book_chunk_as_the_book_does() {
             assert_eq!(kept.kept().seed, plan.seed_at(i, 0));
             let pcm: Vec<i16> = kept.samples.iter().map(|&x| to_i16(x)).collect();
             let flac = encode_flac(&pcm, kept.sample_rate).unwrap();
-            let book_flac = ggtts_book::render::render_chunk(&mut live, plan, i).unwrap();
+            // The book's renderer, on the core step since it moved, with the options a book renders with by default.
+            let book_opts = ggtts_book::render::BookRender::for_profile(live.profile()).opts;
+            let mut live_hooks = Hooks::new();
+            let book_flac = ggtts_book::render::render_chunk(
+                &mut live,
+                plan,
+                i,
+                &book_opts,
+                &mut Observers::new(&mut NullEvents, &mut live_hooks),
+            )
+            .unwrap();
             assert_eq!(flac, book_flac, "{} chunk {i}: the book's stored FLAC", plan.chapter_id);
             n += 1;
         }
     }
     assert!(n > 3, "the fixture book has chunks to compare");
+}
+
+/// The fake engine with audio that depends on the request's seed and chunk number: the fake's own tone depends only
+/// on the text, so a wrong seed or chunk number would pass the comparison above unseen.
+struct SeedScaled {
+    inner: FakeEngine,
+    scale: f32,
+}
+
+impl Engine for SeedScaled {
+    fn info(&self) -> &ggtts_core::engine::EngineInfo {
+        self.inner.info()
+    }
+    fn profile(&self) -> &ggtts_core::profile::Profile {
+        self.inner.profile()
+    }
+    fn generate(
+        &mut self,
+        req: &ChunkRequest<'_>,
+    ) -> Result<ggtts_core::engine::Generated, ggtts_core::engine::EngineError> {
+        self.scale = 0.25 + ((req.seed ^ u64::from(req.chunk) << 7) % 97) as f32 / 160.0;
+        self.inner.generate(req)
+    }
+    fn decode(
+        &mut self,
+        codes: &ggtts_core::engine::Codes,
+    ) -> Result<ggtts_core::engine::Pcm, ggtts_core::engine::EngineError> {
+        let mut pcm = self.inner.decode(codes)?;
+        pcm.samples.iter_mut().for_each(|x| *x *= self.scale);
+        Ok(pcm)
+    }
+}
+
+/// The book's renderer on the core step stores the same FLAC bytes as its renderer before the move, on an engine
+/// whose audio moves with the seed and the chunk number.
+#[test]
+fn the_book_stores_the_same_chunk_bytes_on_a_seed_sensitive_engine() {
+    let book = Book::read(nested().bytes()).unwrap();
+    let plans = plan_book(&PROFILE, &book, DEFAULT_SEED_ROOT).unwrap();
+    let engine = || SeedScaled {
+        inner: FakeEngine::default(),
+        scale: 1.0,
+    };
+    let (mut copy, mut live) = (engine(), engine());
+    let opts = ggtts_book::render::BookRender::for_profile(live.profile()).opts;
+    let mut distinct = std::collections::BTreeSet::new();
+    for plan in &plans {
+        for i in 0..plan.chunks.len() {
+            let (want, rate) = book_chunk_samples(&mut copy, plan, i);
+            let pcm: Vec<i16> = want.iter().map(|&x| to_i16(x)).collect();
+            let want = encode_flac(&pcm, rate).unwrap();
+            let mut hooks = Hooks::new();
+            let got = ggtts_book::render::render_chunk(
+                &mut live,
+                plan,
+                i,
+                &opts,
+                &mut Observers::new(&mut NullEvents, &mut hooks),
+            )
+            .unwrap();
+            assert_eq!(got, want, "{} chunk {i}", plan.chapter_id);
+            distinct.insert(want);
+        }
+    }
+    // The engine does tell the chunks apart, so the comparison above can fail.
+    assert!(distinct.len() > 4, "only {} distinct chunk files", distinct.len());
 }

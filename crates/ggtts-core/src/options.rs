@@ -13,7 +13,7 @@
 //! value always wins over the environment ([`Options::layer`]).
 //!
 //! [`Options::render_options`] turns the render section into the pipeline's [`RenderOptions`], and [`record`] writes
-//! the provenance record. No front end uses this module yet. `docs/options.md` describes the sections, the phases, the
+//! the provenance record. `ggtts-book` reads its command line through it. `docs/options.md` describes the sections, the phases, the
 //! seed keys and the environment rule.
 
 use std::collections::BTreeMap;

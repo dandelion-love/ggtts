@@ -251,10 +251,16 @@ impl AsrRecogniser {
                 ))
             }
             Err(RecvTimeoutError::Disconnected) => {
-                let status = self.child.wait().ok();
+                // Its output closed. A worker that closed it and lives on is stopped, never waited on: a blocking wait
+                // would hang the render with no deadline.
+                let status = self.child.try_wait().ok().flatten();
+                if status.is_none() {
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                }
                 Err(match status {
                     Some(s) => format!("the ASR exited ({s})"),
-                    None => "the ASR closed its output".into(),
+                    None => "the ASR closed its output, and was stopped".into(),
                 })
             }
         }

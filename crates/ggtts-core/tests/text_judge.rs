@@ -347,3 +347,27 @@ fn the_documented_limits_hold() {
     let (verdict, c) = verdict_of("Hello there, keeper.", "");
     assert_eq!((verdict, c.compared), (None, 0));
 }
+
+/// Review of #342, second round: a number mixing digits and units (3萬, 1萬1千) is one number, the same as written out
+/// or in digits, in either direction; and a misheard unit (一萬 heard as 一晚) is one misread token, kept.
+#[test]
+fn a_mixed_number_is_the_number_and_a_misheard_unit_is_one_slip() {
+    let forms: &[&[&str]] = &[
+        &["一萬一千", "11000", "1萬1千", "1万1千"],
+        &["三萬", "30000", "3萬"],
+        &["三十五萬", "350000", "35萬"],
+        &["三百五十六", "356", "3百5十6"],
+        &["一億五千萬", "150000000", "1億5千萬"],
+    ];
+    for row in forms {
+        for a in *row {
+            for b in *row {
+                let (verdict, c) = verdict_of(&format!("我哋要俾{a}蚊先得。"), &format!("我哋要俾{b}蚊先得。"));
+                assert_eq!((verdict, c.lost, c.wrong, c.extra), (None, 0, 0, 0), "{a} / {b}: {c:?}");
+            }
+        }
+    }
+    let (verdict, c) = verdict_of("佢借咗一萬蚊俾我。", "佢借咗一晚蚊俾我。");
+    assert_eq!(verdict, None, "{c:?}");
+    assert!(c.lost + c.wrong + c.extra <= 2, "{c:?}");
+}

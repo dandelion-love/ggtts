@@ -5,7 +5,8 @@
 last repeating. A text it does not list is read back as itself, except that `{"first_read_loses": N}` drops N
 characters from the first read of every text. `{"never_ready": "why"}` in the file makes it refuse to start with
 that reason; `{"hang_at_start": true}` makes it never say it is ready. `{"exit_after": N}` makes it exit, unasked,
-on request N + 1, and `{"hang_after": N}` stop answering there: a worker that dies or hangs mid-render. Each request is appended to `DIR/requests.jsonl`, so a test can see what was asked.
+on request N + 1, `{"hang_after": N}` stop answering there, and `{"close_after": N}` close its output there
+and stay alive: a worker that dies, hangs, or goes quiet mid-render. Each request is appended to `DIR/requests.jsonl`, so a test can see what was asked.
 """
 import argparse
 import json
@@ -38,6 +39,10 @@ with open(os.path.join(a.model, "requests.jsonl"), "a", encoding="utf-8") as log
         if "exit_after" in answers and served >= answers["exit_after"]:
             sys.exit(3)
         if "hang_after" in answers and served >= answers["hang_after"]:
+            time.sleep(3600)
+        if "close_after" in answers and served >= answers["close_after"]:
+            # Close stdout and stay alive: a worker ggtts must stop, not wait on.
+            sys.stdout.close()
             time.sleep(3600)
         served += 1
         log.write(json.dumps({"text": req.get("text"), "device": a.device, "audio_exists": os.path.isfile(req["audio"])},

@@ -43,7 +43,14 @@ pub const NOT_OPTIONS: &[(Surface, &str, &str)] = &[
     (Surface::C, "size", "the struct's own size, its version"),
     (Surface::C, "settings", "the struct the settings are in"),
     (Surface::C, "handle", "the engine handle"),
+    (
+        Surface::C,
+        "options_json",
+        "the options document: every option, by its schema key",
+    ),
     (Surface::C, "pcm", "an out-parameter"),
+    (Surface::C, "on_piece", "the stream's callback, not a value"),
+    (Surface::C, "user", "the callback's own pointer, passed through"),
     (Surface::C, "len", "an out-parameter"),
     (Surface::C, "rate", "an out-parameter"),
 ];
@@ -199,6 +206,8 @@ pub fn c_names() -> Vec<String> {
         .collect();
     out.extend(names(between(&h, "int32_t ggtts_load_with(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_render(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_load_opts(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_render_opts(", ");")));
     out.sort();
     out.dedup();
     out

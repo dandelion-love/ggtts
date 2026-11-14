@@ -357,7 +357,7 @@ that reads every draw the duration judge keeps back and compares it with the chu
 * It is refused, by `--judge (render.judge)`, before the engine loads or anything is drawn: without `--redraw N` (a
   rejection is for redrawing), when the spec does not read, and when the ASR does not start (no model, no Python, no
   `qwen-asr`), with the ASR's reason. `ggtts-render --text` refuses it (one draw, nothing to redraw), and so do the
-  bindings, which take no redraws yet.
+  bindings' options documents, by name (`render.judge`): the judge starts a Python process beside the render.
 * The ASR runs as one process for the whole render: `instruments/examples/python/asr-qwen/judge_worker.py`, which
   loads a local Qwen3-ASR snapshot once (Python 3 with `qwen-asr` and PyTorch; ggtts never downloads it; see that
   directory's README). `device=cuda` runs it on the GPU beside the engine.

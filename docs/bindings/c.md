@@ -378,7 +378,9 @@ starts from:
  "render": {"instruction": "Speak slowly and softly."}}
 ```
 
-A document with no `model` loads the engine's default files, as `ggtts-render` does. A missing one is downloaded
+`"engine"` may be `"auto"`, the default: the model's architecture, read from its GGUF, and with no model
+`"qwen3-tts"`. The struct loads take no `"auto"`. A document with no `model` loads the engine's default files, as
+`ggtts-render` does. A missing one is downloaded
 unless `"offline": true`, which is the struct's `allow_download = 0`.
 
 `ggtts_render_opts(handle, text, json, on_piece, user, &pcm, &len, &rate)` renders `text` with a render document,
@@ -387,7 +389,8 @@ laid over the load's defaults. NULL is the empty document.
 * **A whole read** has no `output.stream`: `on_piece` must be NULL, and `pcm`, `len` and `rate` get the samples, as
   `ggtts_render` gives them.
 * **A stream** is `{"output": {"stream": "raw"}}`: each kept chunk goes to `on_piece` before the level step, as
-  `ggtts_render_stream` hands it. `on_piece` is required, and `pcm`, `len` and `rate` may be NULL.
+  `ggtts_render_stream` hands it. `on_piece` is required, and `pcm`, `len` and `rate` are all NULL or all set (then
+  they also get the whole read).
 * **What a render document takes:**
   * `render`: `seed_salt` (`ggtts_render`'s seed, as a string), `instruction`, `steer` with `steer_scale` and
     `steer_layers`, `redraw` and `edge_s`.

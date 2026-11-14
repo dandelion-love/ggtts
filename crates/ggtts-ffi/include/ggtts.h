@@ -102,14 +102,17 @@ const char *ggtts_last_error(void);
  *
  * ggtts_load_opts: the load section ({"load": {"engine": "qwen3-tts", "model": ..., "speaker": ..., "device": ...,
  * "threads": ..., "offline": ..., "cache_dir": ...}}), and render defaults every render on the handle starts from
- * (for example {"render": {"instruction": "Speak slowly."}}). A document with no model loads the engine's default
- * files, downloading a missing one unless "offline" is true (the struct's allow_download, negated). */
+ * (for example {"render": {"instruction": "Speak slowly."}}). "engine" may be "auto" (the default): the model's
+ * architecture, read from its GGUF, and with no model "qwen3-tts" (the struct loads take no "auto"). A document with no
+ * model loads the engine's default files, downloading a missing one unless "offline" is true (the struct's
+ * allow_download, negated). */
 int32_t ggtts_load_opts(const char *options_json, uint64_t *handle);
 
 /* ggtts_render_opts: render text with a render document, laid over the load's render defaults; NULL is the empty
  * document. Without "output": {"stream": "raw"} it is a whole read: on_piece must be NULL, and pcm, len and rate get
  * the samples (free them with ggtts_pcm_free). With it, each kept chunk goes to on_piece before the level step, as
- * ggtts_render_stream; on_piece is required and pcm, len and rate may be NULL. A load option in a render document is
+ * ggtts_render_stream; on_piece is required, and pcm, len and rate are all NULL or all set (then they also get the
+ * whole read). A load option in a render document is
  * GGTTS_ERR_ARG. The seed of ggtts_render is "seed_salt" (a string) here. */
 int32_t ggtts_render_opts(uint64_t handle, const char *text, const char *options_json, ggtts_piece_fn on_piece,
                           void *user, float **pcm, size_t *len, uint32_t *rate);

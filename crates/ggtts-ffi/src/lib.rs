@@ -311,6 +311,16 @@ const WORDING: binding::Wording = binding::Wording {
     file_checks: binding::FileChecks::InTurn,
 };
 
+/// How a load document words the same refusals: by the document's keys.
+const DOCUMENT_WORDING: binding::Wording = binding::Wording {
+    choose_speaker: ". Choose one with load.speaker",
+    device_setting: "load.device",
+    cpu_only,
+    no_engines_for_defaults: "",
+    offline_hint: " (downloading is off: set load.offline to false to allow it)",
+    file_checks: binding::FileChecks::InTurn,
+};
+
 fn cpu_only(engine: &str, _: binding::Device) -> String {
     format!("the {engine} engine runs on the CPU only")
 }
@@ -335,6 +345,7 @@ fn open_engine(
     voice: Option<&str>,
     threads: i32,
     settings: Settings<'_>,
+    wording: &binding::Wording,
 ) -> Result<Held, Fail> {
     // The C-ABI refuses a setting the engine does not take before it reads the device; `binding::open` checks again.
     if engine != "qwen3-tts" {
@@ -361,7 +372,7 @@ fn open_engine(
             threads,
             models,
         },
-        &WORDING,
+        wording,
         &mut |_| {},
     )?;
     Ok(opened.held)
@@ -466,10 +477,11 @@ unsafe fn load(
 fn load_options(o: &Options, default_files: bool, document: bool) -> Result<u64, Fail> {
     let path = |p: &Option<PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned());
     let (model, codec, voice) = (path(&o.load.model), path(&o.load.codec), path(&o.load.voice));
+    // "auto" is a document's engine only: a struct load names its engine, and "auto" is no engine there.
     let engine = match (o.load.engine.as_str(), &model) {
-        ("auto", Some(m)) => gguf_arch::architecture(std::path::Path::new(m))
+        ("auto", Some(m)) if document => gguf_arch::architecture(std::path::Path::new(m))
             .map_err(|e| (GGTTS_ERR_ENGINE, format!("load.model {m}: {e}")))?,
-        ("auto", None) => "qwen3-tts".to_string(),
+        ("auto", None) if document => "qwen3-tts".to_string(),
         (e, _) => e.to_string(),
     };
     if document {
@@ -494,6 +506,7 @@ fn load_options(o: &Options, default_files: bool, document: bool) -> Result<u64,
         voice.as_deref(),
         o.load.threads.unwrap_or(0),
         settings,
+        if document { &DOCUMENT_WORDING } else { &WORDING },
     )?;
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     registry().get_or_insert_with(HashMap::new).insert(id, binding::slot(e));
@@ -652,7 +665,14 @@ pub unsafe extern "C" fn ggtts_render_opts(
             Some(json) => Options::from_render_json(json).map_err(refused)?,
         };
         binding::check_document(&doc, false)?;
-        let outputs = !(pcm.is_null() || len.is_null() || rate.is_null());
+        let given = [pcm.is_null(), len.is_null(), rate.is_null()];
+        let outputs = given.iter().all(|null| !null);
+        if !outputs && given.iter().any(|null| !null) {
+            return Err((
+                GGTTS_ERR_ARG,
+                "pcm, len and rate are all set or all NULL: one of them alone has nowhere to write".into(),
+            ));
+        }
         let result =
             match (doc.output.stream.is_some(), on_piece) {
                 (true, None) => {

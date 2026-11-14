@@ -749,10 +749,19 @@ fn c_abi_document_probes(plain: usize) -> Vec<Probe> {
     };
     let mut out = Vec::new();
     let mut push = |key: &str, seen| out.push(("c-abi", key.to_string(), seen));
-    // Steering reaches the engine's capabilities, which refuse it on the fake engine under its key.
+    // Steering reaches the engine's capabilities, which refuse it on the fake engine: carried only when the refusal
+    // is exactly that one, not a binding's own refusal of the key.
+    let capability = ggtts_core::capabilities::Capabilities::of("fake")
+        .unwrap()
+        .refusal("render.steer", None)
+        .to_string();
     push(
         "render.steer",
-        named(r#"{"render": {"steer": "s.safetensors"}}"#, "render.steer", true),
+        match render(r#"{"render": {"steer": "s.safetensors"}}"#) {
+            (GGTTS_ERR_ARG, _) if last_error() == capability => Seen::Carried,
+            (GGTTS_ERR_ARG, _) if last_error().starts_with("render.steer: ") => Seen::Refused,
+            (code, _) => panic!("c-abi: steering gave {code}: {}", last_error()),
+        },
     );
     // The edge kept at each chunk changes the read's length.
     let (code, n) = render(r#"{"render": {"edge_s": 1.5}}"#);

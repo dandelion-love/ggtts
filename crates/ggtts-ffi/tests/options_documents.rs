@@ -189,34 +189,15 @@ fn a_load_document_gives_what_its_struct_gives_field_by_field() {
         pcm
     };
     let base = render_of(load_struct("fake", None, None, None, None, None, None, 0));
-    // engine, device, cache_dir and allow_download (offline): samples.
-    for (field, doc, st) in [
-        (
-            "engine",
-            r#"{"load": {"engine": "fake"}}"#,
-            load_struct("fake", None, None, None, None, None, None, 0),
-        ),
-        (
-            "device",
-            r#"{"load": {"engine": "fake", "device": "cpu"}}"#,
-            load_struct("fake", None, None, None, None, Some("cpu"), None, 0),
-        ),
-        (
-            "cache_dir",
-            r#"{"load": {"engine": "fake", "cache_dir": "/tmp/ggtts-doc-cache"}}"#,
-            load_struct("fake", None, None, None, None, None, Some("/tmp/ggtts-doc-cache"), 0),
-        ),
-        (
-            "allow_download",
-            r#"{"load": {"engine": "fake", "offline": false}}"#,
-            load_struct("fake", None, None, None, None, None, None, 1),
-        ),
-    ] {
-        let by_struct = render_of(st);
-        let by_doc = render_of(load_doc(doc));
-        assert_eq!(by_doc, by_struct, "{field}");
-        assert_eq!(by_doc, base, "{field}: the fake engine renders the same");
-    }
+    // engine: samples.
+    let by_doc = render_of(load_doc(r#"{"load": {"engine": "fake"}}"#));
+    assert_eq!(by_doc, base, "engine");
+    // device: the fake engine runs on the CPU only, so a document's "cuda" reaches it and is refused, as the struct's is.
+    let (code, h) = load_struct("fake", None, None, None, None, Some("cuda"), None, 0);
+    assert_eq!((code, h), (GGTTS_ERR_ARG, 0), "struct device: {}", last_error());
+    let (code, h) = load_doc(r#"{"load": {"engine": "fake", "device": "cuda"}}"#);
+    assert_eq!((code, h), (GGTTS_ERR_ARG, 0), "document device: {}", last_error());
+    assert!(last_error().contains("cuda"), "{}", last_error());
     // speaker and instruction: the fake engine refuses both, in the same words either way.
     for (field, doc, st) in [
         (
@@ -301,6 +282,127 @@ fn a_bad_document_is_an_argument_error_before_anything_renders() {
         let (code, h) = load_doc(doc);
         assert_eq!((code, h), (GGTTS_ERR_ARG, 0), "{doc}: {}", last_error());
     }
+}
+
+/// AC3 of #280, the default model files: a document's `cache_dir` and `offline` reach the resolution as the struct's
+/// `cache_dir` and `allow_download` do. An empty cache with downloading off is refused naming a file under that cache,
+/// in each caller's own words.
+#[cfg(feature = "ggml")]
+#[test]
+fn a_documents_cache_dir_and_offline_reach_the_default_files() {
+    let dir = std::env::temp_dir().join(format!("ggtts-doc-empty-cache-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cache = dir.to_string_lossy().into_owned();
+    let (code, h) = load_struct("qwen3-tts", None, None, None, None, None, Some(&cache), 0);
+    assert_eq!((code, h), (GGTTS_ERR_ENGINE, 0), "{}", last_error());
+    let by_struct = last_error();
+    assert!(
+        by_struct.contains(&cache) && by_struct.contains("allow_download"),
+        "{by_struct}"
+    );
+    let doc = format!(
+        r#"{{"load": {{"engine": "qwen3-tts", "cache_dir": {}, "offline": true}}}}"#,
+        serde_json::to_string(&cache).unwrap()
+    );
+    let (code, h) = load_doc(&doc);
+    assert_eq!((code, h), (GGTTS_ERR_ENGINE, 0), "{}", last_error());
+    let by_doc = last_error();
+    assert!(by_doc.contains(&cache), "the document's cache_dir: {by_doc}");
+    assert!(
+        by_doc.contains("load.offline") && !by_doc.contains("allow_download"),
+        "{by_doc}"
+    );
+    assert_eq!(
+        by_doc.replace(
+            "set load.offline to false to allow it",
+            "allow it with the allow_download setting"
+        ),
+        by_struct,
+        "the same refusal, in the document's words"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// AC3 of #280, the device: a document's `load.device` reaches the load as the struct's `device` does. A build without
+/// the CUDA backend refuses "cuda" before reading any file, naming the setting in each caller's words.
+#[cfg(all(feature = "ggml", not(feature = "cuda")))]
+#[test]
+fn a_documents_device_reaches_the_load() {
+    let dir = std::env::temp_dir().join(format!("ggtts-doc-device-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cache = dir.to_string_lossy().into_owned();
+    let (code, h) = load_struct("qwen3-tts", None, None, None, None, Some("cuda"), Some(&cache), 0);
+    assert_eq!((code, h), (GGTTS_ERR_ENGINE, 0), "{}", last_error());
+    let by_struct = last_error();
+    assert!(
+        by_struct.contains("settings.device cuda is not available"),
+        "{by_struct}"
+    );
+    let doc = format!(
+        r#"{{"load": {{"engine": "qwen3-tts", "device": "cuda", "cache_dir": {}, "offline": true}}}}"#,
+        serde_json::to_string(&cache).unwrap()
+    );
+    let (code, h) = load_doc(&doc);
+    assert_eq!((code, h), (GGTTS_ERR_ENGINE, 0), "{}", last_error());
+    assert_eq!(last_error(), by_struct.replace("settings.device", "load.device"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A struct load names its engine: "auto" is a document's only, and the struct loads refuse it as they always have.
+#[test]
+fn auto_is_a_documents_engine_and_the_struct_loads_still_refuse_it() {
+    let mut h = 0u64;
+    let auto = c("auto");
+    let null = ptr::null();
+    let code = unsafe { ggtts_load(auto.as_ptr(), null, null, null, 0, &mut h) };
+    assert_eq!((code, h), (GGTTS_ERR_ENGINE, 0), "{}", last_error());
+    assert!(last_error().contains(r#"no engine named "auto""#), "{}", last_error());
+    let (code, h) = load_struct("auto", None, None, None, None, None, None, 0);
+    assert_eq!((code, h), (GGTTS_ERR_ENGINE, 0), "{}", last_error());
+    assert!(last_error().contains(r#"no engine named "auto""#), "{}", last_error());
+}
+
+/// A stream's outputs are all three or none: one alone has nowhere to write, and is refused.
+#[test]
+fn a_streams_outputs_are_all_set_or_all_null() {
+    let h = fresh();
+    let text = c(TEXT);
+    let doc = c(r#"{"output": {"stream": "raw"}}"#);
+    let mut p = ptr::null_mut();
+    let mut got: Vec<u32> = Vec::new();
+    let user = &mut got as *mut Vec<u32> as *mut c_void;
+    let code = unsafe {
+        ggtts_render_opts(
+            h,
+            text.as_ptr(),
+            doc.as_ptr(),
+            Some(collect),
+            user,
+            &mut p,
+            ptr::null_mut(),
+            ptr::null_mut(),
+        )
+    };
+    assert_eq!(code, GGTTS_ERR_ARG, "{}", last_error());
+    assert!(got.is_empty(), "refused before anything rendered");
+    // All three set: the pieces and the whole read.
+    let (mut n, mut r) = (0usize, 0u32);
+    let code = unsafe {
+        ggtts_render_opts(
+            h,
+            text.as_ptr(),
+            doc.as_ptr(),
+            Some(collect),
+            user,
+            &mut p,
+            &mut n,
+            &mut r,
+        )
+    };
+    assert_eq!(code, GGTTS_OK, "{}", last_error());
+    assert!(!got.is_empty() && n > 0);
+    unsafe { ggtts_pcm_free(p, n) };
+    ggtts_free(h);
 }
 
 /// AC2 of #280, the refusal half: steering for kitten-tts-2 is refused before any file is read.

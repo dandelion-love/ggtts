@@ -1,5 +1,11 @@
 # Log
 
+## 2026-11-13
+
+- The app read as a store listing would be: eight gaps, ranked. The first, no stated purpose, is closed: the screen
+  opens with what the app does, what it costs and what it is not for, held to the manifest and the measured costs by
+  a test. Getting a voice inside the app and choosing a named voice come next.
+
 ## 2026-11-12
 
 - A Kitten-TTS 2 step profiled in the engine's own graph (desktop): layer products about 27 to 30 ms, the head 16 ms,

@@ -13,6 +13,9 @@ that a merge places under a released heading is caught.
 
 ### Changed
 
+- **The Android app says what it is for before anything technical**: it reads text aloud in Cantonese or English,
+  on the phone only, slowly, and is not for screen readers. A fresh install also lists the steps to a first read.
+  A test fails if the app gains the internet permission while the screen says it has none.
 - **The Android app and its text-to-speech engine are named "ggtts Text-to-Speech"** in the launcher and in the phone's
   text-to-speech settings, where they were "ggtts demo" and "ggtts (on-device, slow)". The speed warning is unchanged
   on the app's screen before a load.

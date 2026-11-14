@@ -5,12 +5,24 @@ Two Gradle modules:
 * **`ggtts`**, the Android library (AAR): the Kotlin binding [`Ggtts.kt`](ggtts/src/main/kotlin/ggtts/Ggtts.kt) and
   `libggtts_ffi.so` for `arm64-v8a` (the C-ABI with its JNI entry points, over ggml), with the NDK's
   `libc++_shared.so` beside it. How to call it: [ggtts from Kotlin and Android](../docs/bindings/kotlin-android.md).
-* **`demo`**, a one-screen app (package `ggtts.demo`) that loads the model files you pick and speaks one line with
+* **`demo`**, the app "ggtts Text-to-Speech": a one-screen app (package `ggtts.demo`) that loads the model files you pick and speaks one line with
   Qwen3-TTS or Kitten-TTS 2, through the library.
 
 **No model ships with the app.** The APK holds code only; you bring the model files. The build refuses an APK that
 carries a weights file, by name (`.gguf`, `.safetensors`, `.bin`, `.pt`, `.onnx`) or by content (any entry starting
 with GGUF's magic bytes), and checks both refusals on planted APKs every time it runs.
+
+## What the app is for
+
+**Reads text aloud in Cantonese or English, entirely on this phone.** You type or paste a passage and listen to it
+in a neural voice; nothing you type leaves the phone, because the app has no permission to use the internet. It is
+slow: a sentence takes 30 to 60 seconds before it starts on a recent phone, so it suits listening to a passage you
+have chosen, not reading the screen as you go, and it is not for screen readers. Other apps can use it as a
+text-to-speech engine in Android's settings.
+
+The app's screen opens with these words, and with the steps still ahead when no model files are present yet. They
+live in `About.kt`, and `AboutTest` holds them to the app: adding the `INTERNET` permission, or measuring a wait
+outside 30 to 60 seconds, fails the test until the words change too.
 
 ## Build
 

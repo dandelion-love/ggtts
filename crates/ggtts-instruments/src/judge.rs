@@ -158,6 +158,8 @@ impl AsrRecogniser {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            // The protocol is UTF-8 JSON lines; a Python on Windows otherwise reads and writes its console code page.
+            .env("PYTHONIOENCODING", "utf-8")
             .spawn()
             .map_err(|e| format!("{program}: {e}"))?;
         let stdin = child.stdin.take().expect("piped");

@@ -11,6 +11,11 @@ import json
 import os
 import sys
 
+# The protocol is UTF-8 JSON lines whatever the platform's default: Windows starts Python with its console code
+# page on stdin and stdout, which cannot carry Chinese.
+sys.stdin.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8")
+
 p = argparse.ArgumentParser()
 p.add_argument("--model", required=True)
 p.add_argument("--device", default="cpu")

@@ -37,6 +37,11 @@ pub fn engines_built() -> bool {
     cfg!(feature = "ggml")
 }
 
+/// Whether this build carries the CUDA backend.
+pub fn cuda_built() -> bool {
+    cfg!(feature = "cuda")
+}
+
 /// What to load. The paths are in the order an engine takes them: model (the talker or LM), codec, voice.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Request {

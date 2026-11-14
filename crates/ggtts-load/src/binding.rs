@@ -294,6 +294,9 @@ pub fn document_refusal(key: &str, at_load: bool) -> Option<&'static str> {
         ("output", "stream") if at_load => "a stream is per render: give it in the render document",
         ("output", "stream") => return None,
         ("book", _) => "ggtts-book's own options",
+        ("render", "judge") => {
+            "the ASR judge starts a Python process beside the render: judge with ggtts-render --story or ggtts-book"
+        }
         ("render", _) => return None,
         _ => "not an option of a binding",
     };

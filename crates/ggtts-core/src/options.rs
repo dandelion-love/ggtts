@@ -342,6 +342,12 @@ pub const TABLE: &[Descriptor] = &[
         )
     },
     Descriptor {
+        flags: &["--judge"],
+        help: "An ASR that reads each draw back; a draw that lost or repeated a run of its text is redrawn: \
+               asr-qwen,model=DIR[,device=cpu|cuda][,min_run=N]. Needs --redraw. Unset: the duration judge alone.",
+        ..row("judge", SR, R, named(), "null")
+    },
+    Descriptor {
         help: "Seconds of silence kept at each edge of a chunk; unset is the engine profile's.",
         ..row("edge_s", SR, R, seconds(), "null")
     },
@@ -600,6 +606,9 @@ pub struct Render {
     pub steer_layers: Option<Vec<u32>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redraw: Option<u32>,
+    /// The ASR judge's spec (`ggtts_instruments::judge`); unset is the duration judge alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judge: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edge_s: Option<f64>,
     #[serde(skip_serializing_if = "is_false")]

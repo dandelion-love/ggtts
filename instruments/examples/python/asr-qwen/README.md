@@ -40,3 +40,13 @@ Synthetic unit tests use a fake recognizer. A real-model CPU smoke and a
 validated omission-sensitive comparison remain required before making claims
 about this engine's behavior on a corpus. An empty recognition against a
 nonempty reference fails rather than reporting a zero error rate.
+
+## As a render's judge
+
+`judge_worker.py` runs the same model as a render's judge (`--judge asr-qwen,model=DIR[,device=cpu|cuda]`, with
+`--redraw N`, for `ggtts-render --story` and `ggtts-book render`). ggtts starts it once per render; it loads the
+model once and reads back every draw the duration judge keeps, so a chunk that lost or repeated a run of its text is
+redrawn. It speaks JSON lines on stdin and stdout: `{"ready": true}` (or `{"error": ...}`) once loaded, then one
+`{"text": ...}` (or `{"error": ...}`) per `{"audio": PATH, "text": ...}` request. It writes nothing else to stdout,
+and ggtts discards its stderr, since either could carry the speech it heard. ggtts compares the transcript with the
+chunk's text itself (`ggtts_core::textjudge`); the worker only transcribes.

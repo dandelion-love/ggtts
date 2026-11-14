@@ -75,6 +75,7 @@ fixed means the front end hard-codes one value, and `?` is not confirmed from th
 | seed | N: ignored ([#215](https://github.com/dandelion-love/ggtts/issues/215)) | Y: the sampler seed | own: `--seed-root` | Y: as the story's seed salt | as C | as C | as C |
 | style instruction | Y | Y | Y (since [#279](https://github.com/dandelion-love/ggtts/issues/279)) | Y, fixed at load (v2) | Y, at load | Y, at load | N |
 | steering | Y | Y | Y (since #279) | N | N | N | N |
+| ASR judge (redraw a chunk that lost or repeated text, `--judge`) | Y ([#306](https://github.com/dandelion-love/ggtts/issues/306)) | refused: one draw | Y (#306) | refused: no redraws yet | refused | refused | refused |
 | redraws, chunk ceiling, sampler | N (profile only) | N | redraws: Y, `--redraw` ([#305](https://github.com/dandelion-love/ggtts/issues/305)); ceiling and sampler N | N | N | N | N |
 | edge trim | Y | N ([#180](https://github.com/dandelion-love/ggtts/issues/180)) | Y | Y | Y | Y | Y |
 | trace and level | Y | qwen3-tts only, the engine's step file; accepted and ignored on kitten-tts-2 and fake | Y (since #279) | N | N | N | N |

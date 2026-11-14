@@ -141,6 +141,9 @@ pub enum RenderError {
     ///
     /// [`Capabilities::check_render`]: crate::capabilities::Capabilities::check_render
     Refused(crate::options::Refusal),
+    /// The judge cannot judge any more draws ([`Judge::fault`]): an ASR that died or stopped answering. The chunk
+    /// being drawn is not kept; the render stops there.
+    Judge(String),
 }
 
 impl std::fmt::Display for RenderError {
@@ -150,6 +153,7 @@ impl std::fmt::Display for RenderError {
             RenderError::Engine(e) => write!(f, "engine: {e}"),
             RenderError::Sink(e) => write!(f, "stream: {e}"),
             RenderError::Refused(r) => write!(f, "{r}"),
+            RenderError::Judge(e) => write!(f, "judge: {e}"),
         }
     }
 }
@@ -208,6 +212,21 @@ impl SeedSource for Given {
 pub trait Judge {
     /// Judge one draw of `text`, decoded to `samples` at `sample_rate`. A verdict of `None` keeps the draw.
     fn judge(&mut self, profile: &Profile, samples: &[f32], sample_rate: u32, text: &str) -> Judgement;
+
+    /// What the judge read in the draw it judged last, beyond its verdict (a text judge's transcript and counts), as
+    /// a JSON object for the trace's `read` event and the caller's record. The pipeline asks once per
+    /// draw, right after judging it.
+    /// `None` for a judge that reads nothing, the duration judge included.
+    fn take_reading(&mut self) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// Why the judge cannot judge any more draws (a recogniser process that died or stopped answering), or `None`.
+    /// The pipeline asks after every draw and stops the render with [`RenderError::Judge`]: a draw it could not judge
+    /// is never kept as if it had passed.
+    fn fault(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// The render spec's judge: [`judge_f32`].
@@ -288,6 +307,9 @@ pub struct KeptChunk {
     pub decoded_samples: usize,
     /// Every draw in order; the last is the kept one.
     pub draws: Vec<DrawRecord>,
+    /// What the judge read in each draw that it read ([`Judge::take_reading`]), by draw number. Empty for the duration
+    /// judge.
+    pub readings: Vec<(u32, serde_json::Value)>,
     /// Stage totals for this chunk's draws, when [`RenderOptions::measure_timings`] is set.
     pub timings: Option<StageTimings>,
 }
@@ -416,6 +438,7 @@ pub fn render_chunk(
     let mut timings = opts.measure_timings.then(StageTimings::default);
     let profile = *engine.profile();
     let mut draws = Vec::new();
+    let mut readings = Vec::new();
     let mut kept = None;
     for k in 0..=opts.redraw {
         let seed = seeds.seed(index, text, k);
@@ -458,6 +481,10 @@ pub fn render_chunk(
         );
         let stage_start = (tracing || timings.is_some()).then(std::time::Instant::now);
         let j = judge.judge(&profile, &pcm.samples, pcm.sample_rate, text);
+        let reading = judge.take_reading();
+        if let Some(e) = judge.fault() {
+            return Err(RenderError::Judge(e));
+        }
         stage_end(
             stage_start,
             "judge",
@@ -476,6 +503,16 @@ pub fn render_chunk(
                 verdict: j.verdict.map(|v| v.as_str()),
                 ms: t0.elapsed().as_millis() as u64,
             });
+            if let Some(r) = &reading {
+                events.emit(Event::Read {
+                    chunk: req.chunk,
+                    draw: k,
+                    reading: r,
+                });
+            }
+        }
+        if let Some(r) = reading {
+            readings.push((k, r));
         }
         draws.push(DrawRecord {
             draw: k,
@@ -512,6 +549,7 @@ pub fn render_chunk(
         sample_rate: pcm.sample_rate,
         decoded_samples,
         draws,
+        readings,
         timings,
     })
 }

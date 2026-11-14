@@ -224,7 +224,7 @@ ggtts-book render BOOK.epub --out DIR [--engine qwen3-tts|kitten-tts-2|fake] [--
                  [--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME]
                  [--device cpu|cuda] [--threads N] [--offline]
                  [--instruction TEXT] [--steer FILE [--steer-scale X] [--steer-layers L,L]]
-                 [--trace FILE [--trace-level 1|2]] [--redraw N] [--include-skippable]
+                 [--trace FILE [--trace-level 1|2]] [--redraw N [--judge asr-qwen,model=DIR[,device=cpu|cuda][,min_run=N]]] [--include-skippable]
                  [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE.yaml] [--require NAME]...
                  [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort]
                  [--instrument-timeout S] [--report DIR] [--run ID]
@@ -328,6 +328,47 @@ judge and is within the new setting, or it is the new setting's last draw. Any o
 the new setting and rendered again, counted as `rejudged` in the report. So raising `--redraw` gives the chunks the
 judge rejected their further draws, a chunk recorded without draws (rendered at redraw 0) is judged again once
 redraws are on, and lowering it renders again the chunks kept at a draw the new setting does not reach.
+
+**The ASR judge.** The duration judge cannot hear a skipped clause: a chunk that drops one gets shorter, not longer.
+`--judge asr-qwen,model=DIR[,device=cpu|cuda][,min_run=N][,timeout=S][,start_timeout=S]` (the shared table's
+`render.judge`, which `ggtts-render --story` takes too) adds an ASR
+that reads every draw the duration judge keeps back and compares it with the chunk's text
+(`ggtts_core::textjudge`, `ggtts_instruments::judge`):
+
+* Both texts are compared as tokens: CJK characters folded to simplified (OpenCC's character table, vendored), and
+  numbers, written out or in digits, as the digits of their value. A recogniser writing a traditional sentence in
+  simplified characters, or 三百五十六 as 356, is not losing text. A chunk with no CJK characters or numbers gives
+  the judge nothing to compare, and is kept; one of fewer than `min_run` tokens can never be rejected.
+* A draw is rejected as `lost-text` when its read-back lost a run of at least `min_run` tokens (4 unless set), a
+  quarter of a chunk of 8 tokens or more, or 8 tokens in a row lost or misread; and as `repeated-text` when it said a
+  stretch of `min_run` tokens twice, found through a misread token or a filler at the join. It is redrawn at the chunk's next seed, up to `--redraw`, like any
+  rejection. A single misread or missing character is counted, never a rejection. A draw the ASR answers with an
+  error is kept, with the error in its read.
+* **A worker that dies or stops answering stops the render** (exit 2, `judge: ...`), as a failed chunk does: no
+  draw it could not read is kept as passed, what was finished is kept, and running the same command again resumes
+  and reads what it renders. Each answer has a deadline, `timeout=S` per draw (120 s unless set) and
+  `start_timeout=S` for the model to load (600 s); a worker that misses one is stopped.
+* Each chunk's manifest entry records `reads`: for every draw read back, its `draw`, the `transcript`, the counts
+  (`compared`, `lost`, `longest_lost`, `wrong`, `longest_damaged`, `extra`, `longest_repeat`), the reading's `read_verdict` and any `error`. The trace
+  records the same in a `read` event after each draw's `chunk_end`.
+* The judge is part of what a chapter's manifest records as its render: a resume under another judge, or none,
+  starts the chapter again, naming the difference. The model's path and the device are where the ASR runs, not what
+  it decides, and are not.
+* It is refused, by `--judge (render.judge)`, before the engine loads or anything is drawn: without `--redraw N` (a
+  rejection is for redrawing), when the spec does not read, and when the ASR does not start (no model, no Python, no
+  `qwen-asr`), with the ASR's reason. `ggtts-render --text` refuses it (one draw, nothing to redraw), and so do the
+  bindings' options documents, by name (`render.judge`): the judge starts a Python process beside the render.
+* The ASR runs as one process for the whole render: `instruments/examples/python/asr-qwen/judge_worker.py`, which
+  loads a local Qwen3-ASR snapshot once (Python 3 with `qwen-asr` and PyTorch; ggtts never downloads it; see that
+  directory's README). `device=cuda` runs it on the GPU beside the engine.
+* Known limit: the fold is many-to-one, so a swap between two traditional characters that share a simplified form
+  (乾 and 幹) reads as correct.
+
+**The default is off, on every front end.** Decided in #306: the judge needs a local ASR model and a Python with
+`qwen-asr`, which ggtts does not ship or fetch; it adds an ASR read to every kept draw (seconds per chunk on a CPU);
+and it only acts with redraws, which are off by default for `qwen3-tts` (#317). A book is where an unheard skipped
+line costs the most, so a Cantonese book is best rendered with it on:
+`ggtts-book render BOOK.epub --out DIR --redraw 2 --judge asr-qwen,model=DIR`.
 
 **What a resume can match, and what has been observed.** Chapters are always joined from the stored chunk files, so
 a resumed chapter can match an uninterrupted one byte for byte only when both of these hold:

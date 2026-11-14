@@ -35,7 +35,7 @@ pub struct Output {
 
 /// The draws the core chunk step made for a done chunk: which one was kept, how many were made, and the judge's verdict
 /// on the kept one (`None` when it passed).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Draws {
     /// The kept draw: 0 for the first, `n` for the `n`th redraw.
     pub kept: u32,
@@ -43,6 +43,9 @@ pub struct Draws {
     pub count: u32,
     /// The judge's verdict on the kept draw (`runaway`, `truncated`, ...), or `None` when it passed.
     pub verdict: Option<String>,
+    /// What a judge that reads back (`--judge`) read in each draw it read, with the draw's number: the transcript, the
+    /// counts and the verdict the reading gave. Empty for the duration judge, and then not written.
+    pub reads: Vec<Value>,
 }
 
 impl Draws {
@@ -58,7 +61,7 @@ impl Draws {
 }
 
 /// What a chunk renderer returns to [`run_chapter`]: the file's bytes and, when it judges its draws, the draws it made.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ChunkOutput {
     pub bytes: Vec<u8>,
     pub draws: Option<Draws>,
@@ -71,7 +74,7 @@ impl From<Vec<u8>> for ChunkOutput {
 }
 
 /// A chapter's manifest.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Manifest {
     pub plan: ChapterPlan,
     /// One entry per planned chunk: `Some` once it is done.
@@ -187,6 +190,9 @@ impl Manifest {
                     chunk["kept_draw"] = d.kept.into();
                     chunk["draws"] = d.count.into();
                     chunk["verdict"] = d.verdict.clone().into();
+                    if !d.reads.is_empty() {
+                        chunk["reads"] = d.reads.clone().into();
+                    }
                 }
                 chunk
             }).collect::<Vec<_>>(),
@@ -358,6 +364,7 @@ impl Manifest {
                     kept,
                     count,
                     verdict: c.get("verdict").and_then(Value::as_str).map(String::from),
+                    reads: c.get("reads").and_then(Value::as_array).cloned().unwrap_or_default(),
                 }),
                 _ => None,
             });
@@ -435,7 +442,7 @@ fn output_intact(dir: &Path, o: &Output) -> bool {
 }
 
 /// Where a chapter's render stands before it starts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Resume {
     pub manifest: Manifest,
     /// The chunks to render, in order.

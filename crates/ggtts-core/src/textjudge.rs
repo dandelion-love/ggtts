@@ -227,6 +227,13 @@ pub trait Recogniser {
     /// The text heard in `samples` at `sample_rate`. `text` is what the draw was asked to say, for a recogniser that
     /// uses it as context; the judge compares against it either way.
     fn recognise(&mut self, samples: &[f32], sample_rate: u32, text: &str) -> Result<String, String>;
+
+    /// Why the recogniser cannot read any more draws (its process died, or stopped answering), or `None`. An `Err`
+    /// from [`Recogniser::recognise`] with no fault is one draw it could not read; a fault ends the render
+    /// ([`crate::pipeline::Judge::fault`]).
+    fn fault(&self) -> Option<String> {
+        None
+    }
 }
 
 /// How a transcript compares with its reference, both as tokens ([`compare`]).
@@ -533,7 +540,35 @@ impl<R: Recogniser> TextJudge<R> {
     }
 }
 
+impl Reading {
+    /// The reading as the trace's `read` event and a book manifest carry it: the transcript, the counts, the verdict
+    /// it gave, and the recogniser's error.
+    pub fn to_json(&self) -> serde_json::Value {
+        let c = &self.comparison;
+        serde_json::json!({
+            "transcript": self.transcript,
+            "compared": c.compared,
+            "lost": c.lost,
+            "longest_lost": c.longest_lost,
+            "wrong": c.wrong,
+            "longest_damaged": c.longest_damaged,
+            "extra": c.extra,
+            "longest_repeat": c.longest_repeat,
+            "read_verdict": self.verdict.map(Verdict::as_str),
+            "error": self.error,
+        })
+    }
+}
+
 impl<R: Recogniser> Judge for TextJudge<R> {
+    fn take_reading(&mut self) -> Option<serde_json::Value> {
+        self.last.as_ref().map(Reading::to_json)
+    }
+
+    fn fault(&mut self) -> Option<String> {
+        self.recogniser.fault()
+    }
+
     fn judge(&mut self, profile: &Profile, samples: &[f32], sample_rate: u32, text: &str) -> Judgement {
         let duration = judge_f32(profile, samples, sample_rate, text);
         if duration.verdict.is_some() {

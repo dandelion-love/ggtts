@@ -104,6 +104,9 @@ const ANDROID_TRACE: &str = "the trace is a desktop observer: refused on Android
 const CPU_ONLY: &str = "the Android build is CPU only";
 const NEVER_DOWNLOADS: &str = "the app never downloads: its models are installed with it";
 const PARITY_TOOL: &str = "an engine parity tool; render with ggtts-render --engine kitten-tts-2";
+const TEXT_JUDGE: &str = "--text renders one draw and keeps it; the judge redraws a story's chunks (--story)";
+const NO_JUDGE: &str =
+    "the ASR judge starts a Python process beside the render: judge with ggtts-render --story or ggtts-book";
 // `ggtts_book::options::refusal`'s reasons, word for word (checked by `book_refusals_are_the_books_own`).
 const BOOK_TEXT: &str = "a book renders its chapters, not a text or a story file";
 const BOOK_SEED: &str = "a book's seeds come from --seed-root and each chunk's place in the book";
@@ -124,6 +127,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
                     "render.story",
                     "render.instruction",
                     "render.redraw",
+                    "render.judge",
                     "render.measure_timings",
                 ],
                 Carried,
@@ -157,6 +161,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (STEER, Carried),
             (&["render.story"], Refused(ONE_OF)),
             (&["render.seed_salt"], Refused(TEXT_SALT)),
+            (&["render.judge"], Refused(TEXT_JUDGE)),
             (&["render.redraw"], Gap(294)),
             (&["render.edge_s"], Gap(180)),
             (TRACE, Gap(294)),
@@ -172,7 +177,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
         id: "book",
         cells: &[
             (LOAD, Carried),
-            (&["render.instruction", "render.redraw"], Carried),
+            (&["render.instruction", "render.redraw", "render.judge"], Carried),
             (STEER, Carried),
             (&["render.text", "render.story"], Refused(BOOK_TEXT)),
             (&["render.seed", "render.seed_salt"], Refused(BOOK_SEED)),
@@ -194,6 +199,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
+            (&["render.judge"], Refused(NO_JUDGE)),
             (STEER, Carried),
             (&["render.redraw", "render.edge_s"], Carried),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
@@ -227,6 +233,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
+            (&["render.judge"], Refused(NO_JUDGE)),
             (STEER, Gap(291)),
             (&["render.redraw", "render.edge_s", "render.measure_timings"], Gap(291)),
             (TRACE, Gap(291)),
@@ -258,6 +265,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
+            (&["render.judge"], Refused(NO_JUDGE)),
             (STEER, Gap(292)),
             (&["render.redraw", "render.edge_s", "render.measure_timings"], Gap(292)),
             (TRACE, Refused(ANDROID_TRACE)),
@@ -290,6 +298,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.instruction"], Gap(282)),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
+            (&["render.judge"], Refused(NO_JUDGE)),
             (STEER, Gap(282)),
             (&["render.redraw", "render.edge_s", "render.measure_timings"], Gap(282)),
             (TRACE, Refused(ANDROID_TRACE)),
@@ -313,6 +322,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
                     "render.seed_salt",
                     "render.instruction",
                     "render.redraw",
+                    "render.judge",
                     "render.edge_s",
                     "render.measure_timings",
                 ],
@@ -579,6 +589,30 @@ fn render_probes() -> Vec<Probe> {
         let r = render(&p("stream"), mode, &["--stream", "st.wav"]);
         push("output.stream", by_file(&r, "st.wav", "--stream"));
 
+        // The judge, through the stand-in ASR worker: carried when the trace records what it read back.
+        let model = scratch(&p("judge-model"));
+        let spec = format!(
+            "asr-qwen,model={},command={},interpreter=python",
+            model.display(),
+            root().join("fixtures/judge/fake_judge_worker.py").display()
+        );
+        let r = render(
+            &p("judge"),
+            mode,
+            &["--judge", &spec, "--redraw", "1", "--trace", "t.jsonl"],
+        );
+        let trace = std::fs::read_to_string(r.dir.join("t.jsonl")).unwrap_or_default();
+        push(
+            "render.judge",
+            if !r.ok {
+                by_front_end_refusal(&r, "--judge")
+            } else if trace.contains("\"ev\":\"read\"") {
+                Seen::Carried
+            } else {
+                Seen::Dropped
+            },
+        );
+
         // The seed: two renders with the trace, at two seeds. Carried when the chunks' recorded seeds differ.
         let seeds = |n: &str| {
             let r = render(&p(&format!("seed{n}")), mode, &["--seed", n, "--trace", "t.jsonl"]);
@@ -824,6 +858,7 @@ fn c_abi_document_probes(plain: usize) -> Vec<Probe> {
         ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
         ("observe.log_format", r#"{"observe": {"log_format": "json"}}"#),
         ("output.out", r#"{"output": {"out": "o.flac"}}"#),
+        ("render.judge", r#"{"render": {"judge": "asr-qwen,model=m"}}"#),
     ] {
         push(key, named(doc, key, false));
     }

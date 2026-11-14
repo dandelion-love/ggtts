@@ -84,9 +84,10 @@ Then pick the files in the three lists, and press Speak.
 | Qwen3-TTS | the talker GGUF | the 12 Hz codec GGUF | (none) | one the talker has |
 | Kitten-TTS 2 | the LM GGUF | the S3Gen GGUF | the prepared voice JSON | (none) |
 
-A Qwen3-TTS talker picked as a file uses the speaker `hk_cantonese_speaker` when the Speaker box is empty. The default
-model's talker has `hk_voice_343` and `hk_voice_777` instead, so type one of those; with an unknown speaker the screen
-shows the library's error, which lists the talker's speakers.
+A Qwen3-TTS talker picked as a file uses its default speaker when the Speaker box is empty: `hk_cantonese_speaker` if
+it has one, otherwise the first of its speakers in alphabetical order (`hk_voice_343` for the released talkers, which
+also have `hk_voice_777`). With an unknown speaker the screen shows the library's error, which lists the talker's
+speakers.
 
 * **Qwen3-TTS.** The default model's two files are
   [`qwen-talker-hk-cantonese-cc0-v0.0.5-q8_0.gguf` and `qwen-tokenizer-12hz-q8_0.gguf`](https://huggingface.co/jmtl/hk-cantonese-cc0-qwen3-tts-GGUF)

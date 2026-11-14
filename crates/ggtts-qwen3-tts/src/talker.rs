@@ -45,6 +45,21 @@ fn speaker_names(speakers: &HashMap<String, i32>) -> Vec<String> {
     names
 }
 
+/// The speaker older single-speaker checkpoints carry, kept as the default wherever a model has it, so those
+/// render exactly as they did.
+pub const LEGACY_SPEAKER: &str = "hk_cantonese_speaker";
+
+/// The speaker used when none is named: [`LEGACY_SPEAKER`] when the model has it, otherwise the first of the model's
+/// speakers in alphabetical order (`hk_voice_343` for the released models, the same speaker the pinned default model
+/// is given, so a file speaks with the same voice whether it is the default or given by path). `None` for a model
+/// with no named speakers.
+fn default_speaker(speakers: &HashMap<String, i32>) -> Option<String> {
+    if speakers.contains_key(LEGACY_SPEAKER) {
+        return Some(LEGACY_SPEAKER.to_string());
+    }
+    speaker_names(speakers).into_iter().next()
+}
+
 /// Looks a speaker up by name, ignoring case. An unknown name is an error that lists every speaker the model has,
 /// in alphabetical order, and names the flag that chooses one; a model with no named speakers gets neither.
 fn find_speaker(speakers: &HashMap<String, i32>, name: &str) -> Result<i32, EngineError> {
@@ -722,6 +737,11 @@ impl Talker {
     /// The speaker's id, or the error a user sees for a name the model does not have ([`find_speaker`]).
     pub fn speaker(&self, name: &str) -> Result<i32, EngineError> {
         find_speaker(&self.speakers, name)
+    }
+
+    /// The speaker used when none is named ([`default_speaker`]); `None` for a model with no named speakers.
+    pub fn default_speaker(&self) -> Option<String> {
+        default_speaker(&self.speakers)
     }
 
     /// The model's speaker names, lower-cased as they are matched, in alphabetical order.
@@ -1982,6 +2002,27 @@ mod tests {
         let s = speakers(&["hk_voice_777", "hk_voice_343"]);
         assert_eq!(find_speaker(&s, "hk_voice_343").unwrap(), 3001);
         assert_eq!(find_speaker(&s, "HK_Voice_777").unwrap(), 3000);
+    }
+
+    #[test]
+    fn an_unnamed_speaker_is_the_legacy_one_if_present_else_the_first_alphabetically() {
+        let map = |names: &[(&str, i32)]| {
+            names
+                .iter()
+                .map(|(n, i)| (n.to_string(), *i))
+                .collect::<HashMap<_, _>>()
+        };
+        // The released models: two speakers, no legacy one. The lower id is not what decides.
+        assert_eq!(
+            default_speaker(&map(&[("hk_voice_777", 3000), ("hk_voice_343", 3001)])).as_deref(),
+            Some("hk_voice_343")
+        );
+        // An older checkpoint keeps its speaker even when another sorts first.
+        assert_eq!(
+            default_speaker(&map(&[("a_speaker", 1), (LEGACY_SPEAKER, 2)])).as_deref(),
+            Some(LEGACY_SPEAKER)
+        );
+        assert_eq!(default_speaker(&HashMap::new()), None);
     }
 
     #[test]

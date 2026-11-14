@@ -100,9 +100,16 @@ target/release/ggtts-render --model "$GGTTS_TALKER" --codec "$GGTTS_CODEC" --out
 ```
 
 `ggtts-render` picks the engine from the model's `general.architecture`; `--engine` overrides it.
-Use `--speaker hk_voice_343` with the published Cantonese v0.0.5 talker, or select another speaker named in
-the model card explicitly. Without `--speaker`, the legacy `hk_cantonese_speaker` default is retained for v0.0.1.
-An unknown speaker fails, and the error lists the model's speaker names; the renderer does not choose an arbitrary speaker from a multi-speaker model.
+Without `--speaker`, the speaker is the model's default: `hk_cantonese_speaker` when the model has it (the v0.0.1
+talker, which renders as before), otherwise the first of its speakers in alphabetical order. For the published
+Cantonese v0.0.5 talker that is `hk_voice_343`, the speaker the pinned default model is given, so the same file
+speaks with the same voice whether it is the default or given by path. Name another with `--speaker`. An unknown
+speaker fails, and the error lists the model's speaker names.
+
+Until 2026-11-13 the default was always `hk_cantonese_speaker`, and the renderer refused to choose from a
+multi-speaker model. Every v0.0.5 talker given by path then failed without `--speaker`, in the CLI, the C API,
+Python and the Android app. The rule above is deterministic and matches the default model, which is why it replaced
+the refusal; to go back, restore the refusal in `Qwen3Tts::with_talker`.
 
 The story path, on `fixtures/story/outing.txt` (five paragraphs written for the purpose): 8 chunks at the profile's
 ceiling of 45, a seed per chunk from the story, no first-draw defects, joined, trimmed and levelled into 66.44 s of

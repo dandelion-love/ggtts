@@ -45,8 +45,10 @@ int32_t ggtts_load(const char *engine, const char *model, const char *codec, con
  * know is GGTTS_ERR_ARG. Strings are UTF-8 and NUL-terminated, owned by the caller and read only during the call. A
  * NULL or empty string is no setting.
  * Version 2, Qwen3-TTS settings (another engine refuses either one with GGTTS_ERR_ARG):
- *   speaker         a speaker the model has, case ignored (for example "hk_voice_777"); NULL: the model's default
- *                   ("hk_cantonese_speaker" for a given model, the default model's own for the default model, below).
+ *   speaker         a speaker the model has, case ignored (for example "hk_voice_777"); NULL: the model's default,
+ *                   "hk_cantonese_speaker" if it has one, else the first of its speakers in alphabetical order
+ *                   ("hk_voice_343" for the released models, given or default). A model with no named speakers
+ *                   refuses with GGTTS_ERR_ENGINE.
  *                   An unknown speaker is GGTTS_ERR_ENGINE, and the message lists the model's speakers.
  *   instruction     a style instruction for every chunk (for example "Speak slowly and softly."); NULL: none. A
  *                   checkpoint that takes none (Base, or custom_voice below 1.7B) refuses it with GGTTS_ERR_ENGINE.

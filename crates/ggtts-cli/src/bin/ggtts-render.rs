@@ -16,8 +16,8 @@
 //!
 //! `--voice` is a reference voice for an engine that clones one; an engine that does not ignores it.
 //! `--speaker` selects a named Qwen3-TTS speaker (for example `hk_voice_343`); it is refused for other engines.
-//! Without it the default talker uses its default speaker (`hk_voice_343`), and a given talker retains the legacy
-//! `hk_cantonese_speaker` default; an absent or unknown speaker is an error.
+//! Without it the speaker is the model's default: `hk_cantonese_speaker` for a model that has it, otherwise the first
+//! of its speakers in alphabetical order (`hk_voice_343` for the released models). An unknown speaker is an error.
 //! `--instruction` is a natural-language style instruction (for example "Speak slowly and softly"), placed before the
 //! prompt as the reference runtime places it. A Qwen3-TTS custom_voice checkpoint of 1.7B or a voice_design
 //! checkpoint takes one; any other checkpoint, and any other engine, refuses it before rendering. An empty
@@ -1329,8 +1329,9 @@ mod tests {
 
     #[cfg(feature = "ggml")]
     #[test]
-    fn qwen_voice_uses_explicit_speaker_or_legacy_default() {
-        assert_eq!(qwen_voice(&Args::default()).unwrap().speaker, "hk_cantonese_speaker");
+    fn qwen_voice_uses_explicit_speaker_or_leaves_it_to_the_model() {
+        // Empty: the engine resolves the model's default speaker at load.
+        assert_eq!(qwen_voice(&Args::default()).unwrap().speaker, "");
         let args = Args {
             speaker: Some("hk_voice_343".into()),
             ..Args::default()

@@ -18,6 +18,8 @@ ggtts-core.workspace = true
 ggtts-qwen3-tts.workspace = true
 # Loads the engine `render` uses, once per book: the fake engine always, the model engines with `ggml`.
 ggtts-load.workspace = true
+# The instrument run on each chapter written (`ggtts_instruments::options`), as ggtts-render runs it on a render.
+ggtts-instruments.workspace = true
 # Reads the stored chunk FLACs back when a chapter is joined.
 claxon.workspace = true
 serde_json.workspace = true

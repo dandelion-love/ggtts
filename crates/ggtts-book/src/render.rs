@@ -9,6 +9,10 @@
 //!
 //! Chunks are joined from the stored files, never from memory, so a chapter rendered in one run and a chapter
 //! resumed after a kill are built from the same bytes and come out identical.
+//!
+//! Instruments run on each chapter FLAC this run wrote, through the same call as `ggtts-render`'s
+//! ([`ggtts_instruments::options`]), after every chapter is rendered and the engine is released
+//! ([`render_command_options`]).
 
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -313,6 +317,8 @@ pub fn render_command_options(
     let book = Book::open(book_path).map_err(|e| e.to_string())?;
     let mut options = options.clone();
     options.read_steering().map_err(|e| e.to_string())?;
+    // An instrument that cannot be found is refused before the engine loads or any chapter is rendered.
+    let instruments = ggtts_instruments::options::config(&options)?;
     let LoadedEngine {
         mut engine,
         files,
@@ -326,6 +332,7 @@ pub fn render_command_options(
     let mut plans = crate::plan::plan_book(&profile, &book, seed_root)?;
     let engine_record = provenance(engine.as_ref(), &files, speaker.as_deref());
     let identity = render_identity(&options, engine.info());
+    let reported = ggtts_core::options::reported(&ggtts_core::options::record(&options, engine.info()));
     for plan in &mut plans {
         plan.engine = engine_record.clone();
         plan.render = identity.clone();
@@ -353,6 +360,19 @@ pub fn render_command_options(
     if let Some(t) = trace {
         t.finish().map_err(|e| format!("--trace: {e}"))?;
     }
+    // The engine is released before any instrument runs, as in ggtts-render: an instrument may load a model of its
+    // own on the same device.
+    drop(engine);
+    let measured = match &instruments {
+        Some(config) => {
+            let models: Vec<serde_json::Value> = files
+                .iter()
+                .map(|(role, sha)| serde_json::json!({"role": role, "sha256": sha}))
+                .collect();
+            measure_chapters(config, &options, &reports, &models, &reported)?
+        }
+        None => Vec::new(),
+    };
     let chapters: Vec<_> = reports
         .iter()
         .map(|r| match &r.outcome {
@@ -374,6 +394,9 @@ pub fn render_command_options(
                 if *rejudged > 0 {
                     c["rejudged"] = (*rejudged).into();
                 }
+                if let Some(m) = measured.iter().find(|m| m.id == r.id) {
+                    c["instruments"] = m.to_json(out);
+                }
                 c
             }
             ChapterOutcome::Skipped { reason } => serde_json::json!({"id": r.id, "state": "skipped", "reason": reason}),
@@ -389,7 +412,95 @@ pub fn render_command_options(
     if !identity.is_null() {
         report["render"] = identity;
     }
+    if instruments.is_some() {
+        let complete = measured.iter().all(|m| m.summary.complete());
+        report["measurement"] = if complete { "complete" } else { "incomplete" }.into();
+    }
     Ok(report)
+}
+
+/// One chapter's instrument run: its id, its report directory and the runner's summary.
+pub struct ChapterMeasurement {
+    pub id: String,
+    pub report_dir: PathBuf,
+    pub summary: ggtts_instruments::RunSummary,
+}
+
+impl ChapterMeasurement {
+    /// The chapter's `instruments` entry in the render report: the report directory (relative to `out` when inside
+    /// it), each instrument's status, and why the measurement is incomplete, if it is.
+    pub fn to_json(&self, out: &Path) -> serde_json::Value {
+        let statuses: serde_json::Map<String, serde_json::Value> = self
+            .summary
+            .envelopes
+            .iter()
+            .map(|e| (e.name.clone(), e.status.as_str().into()))
+            .collect();
+        serde_json::json!({
+            "report": self.report_dir.strip_prefix(out).unwrap_or(&self.report_dir).to_string_lossy(),
+            "status": statuses,
+            "complete": self.summary.complete(),
+            "incomplete": self.summary.incomplete,
+        })
+    }
+}
+
+/// The chapter's length in seconds, from its FLAC's stream info.
+fn flac_seconds(path: &Path) -> Option<f64> {
+    let info = claxon::FlacReader::open(path).ok()?.streaminfo();
+    let samples = info.samples?;
+    (info.sample_rate > 0).then(|| samples as f64 / f64::from(info.sample_rate))
+}
+
+/// Run `config`'s instruments on every chapter FLAC this run wrote: a chapter with at least one chunk rendered in
+/// this run. A chapter whose chunks were all finished by an earlier run is not measured again. Each chapter is one
+/// render of the run (its id is the chapter's directory name), with its report beside its FLAC
+/// (`NNN-<id>.report`), or under `observe.report` when given (`<report>/NNN-<id>`). The run is `observe.run`, else
+/// `book-<unix seconds>`, one for the whole book. The book's trace covers every chapter, so no chapter is given an
+/// event stream, and an instrument that needs one is `skipped` with that reason.
+pub fn measure_chapters(
+    config: &ggtts_instruments::Config,
+    options: &Options,
+    reports: &[ChapterReport],
+    models: &[serde_json::Value],
+    reported: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<ChapterMeasurement>, String> {
+    let run = ggtts_instruments::options::run_id(options, "book");
+    let mut measured = Vec::new();
+    for r in reports {
+        let ChapterOutcome::Written { file, rendered, .. } = &r.outcome else {
+            continue;
+        };
+        if rendered.is_empty() {
+            continue;
+        }
+        let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or(&r.id).to_string();
+        let report_dir = options.observe.report.as_ref().map(|d| d.join(&stem));
+        let finished = ggtts_instruments::options::Finished {
+            run: run.clone(),
+            render: stem,
+            audio: file.clone(),
+            audio_state: ggtts_core::report::AudioState::Trimmed,
+            audio_seconds: flac_seconds(file),
+            events: None,
+            models: Some(models.to_vec()),
+            reported: reported.clone(),
+            default_report_dir: file.with_extension("report"),
+        };
+        let (inputs, summary) = ggtts_instruments::options::run(
+            config,
+            &finished,
+            report_dir.as_deref(),
+            ggtts_core::logging::Settings::default(),
+        )
+        .map_err(|e| format!("chapter {}: instruments: {e}", r.id))?;
+        measured.push(ChapterMeasurement {
+            id: r.id.clone(),
+            report_dir: inputs.report_dir,
+            summary,
+        });
+    }
+    Ok(measured)
 }
 
 /// Render every chapter of `book` into `out`, with `engine` loaded once for all of them.

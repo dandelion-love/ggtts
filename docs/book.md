@@ -224,16 +224,20 @@ ggtts-book render BOOK.epub --out DIR [--engine qwen3-tts|kitten-tts-2|fake] [--
                  [--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME]
                  [--device cpu|cuda] [--threads N] [--offline]
                  [--instruction TEXT] [--steer FILE [--steer-scale X] [--steer-layers L,L]]
-                 [--trace FILE [--trace-level 1|2]] [--include-skippable]
+                 [--trace FILE [--trace-level 1|2]] [--redraw N] [--include-skippable]
+                 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE.yaml] [--require NAME]...
+                 [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort]
+                 [--instrument-timeout S] [--report DIR] [--run ID]
 ```
 
 **The flags are the shared options table's** (`ggtts_core::options`, described in `docs/options.md`), read by its
 parser, so each means in a book what it means in `ggtts-render`. A book takes the load section (the engine and its
 files), the style instruction (`--instruction`), steering (`--steer` and its scale and layers), the trace (`--trace`,
-`--trace-level`), `--out`, and the book's own `--seed-root` and `--include-skippable`. Any other option of the table is
-refused by its flag and schema name with the reason, before anything is read or written: `--text` and `--story` (a book
-renders its chapters), `--seed` (a book's seeds come from `--seed-root`), `--stream` and its settings (a book is one
-FLAC per chapter), the timing and duration reports, the log settings and the instruments. An option a book does not
+`--trace-level`), the instruments, `--out`, and the book's own `--seed-root` and `--include-skippable`. Any other
+option of the table is refused by its flag and schema name with the reason, before anything is read or written:
+`--text` and `--story` (a book renders its chapters), `--seed` (a book's seeds come from `--seed-root`), `--stream`
+and its settings (a book is one FLAC per chapter), the timing and duration reports and the log settings. An option a
+book does not
 take that is set only in the environment (`GGTTS_LOG_LEVEL`, for example) is ambient and is dropped, not refused.
 
 The instruction and the steering reach every chunk's request, as they reach a story's. An engine that cannot take
@@ -242,6 +246,18 @@ render stops at the first chunk with the engine's reason and no chunk file is wr
 read is refused before the engine is loaded. `--trace` writes one ggtts-trace/2 stream for the chunks this run renders
 (a header naming the engine, instruction and steering, then each chunk's events); chunks taken from an earlier run
 are not in it. Chunk numbers in it restart at each chapter, and it replays with `ggtts_core::trace::replay`.
+
+**Instruments** are `ggtts-render`'s, run by the same library call (`ggtts_instruments::options`) once per chapter
+FLAC this run wrote, after every chapter is rendered and the engine is released. A chapter is measured when at least
+one of its chunks was rendered in this run; a chapter an earlier run finished is not measured again. Each chapter is
+one render of the run, named by its directory (`NNN-<chapter id>`), with its report beside its FLAC
+(`NNN-<chapter id>.report/`: the envelopes, `report.json`, `.md`, `.html` and `run.log`), or in
+`--report DIR/NNN-<chapter id>/`. The run is `--run`, else `book-<unix seconds>`, one for the whole book. The
+render report gives each measured chapter an `instruments` entry (its report directory, each instrument's status,
+and why the measurement is incomplete) and the book a `measurement` of `complete` or `incomplete`. An unknown
+instrument is refused before the engine loads. A `--require`d instrument that is not ok on any chapter makes the
+exit 3, with every chapter FLAC written, as for `ggtts-render`. The book's trace covers every chapter, so no chapter
+is handed an event stream: an instrument that needs one is recorded as `skipped` with that reason.
 
 The engine is `qwen3-tts` by default, as for `ggtts-render`, and the model flags mean what they mean there: a file
 not given is the engine's pinned default, taken from the per-user cache (`GGTTS_CACHE_DIR` overrides where) and

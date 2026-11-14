@@ -11,9 +11,11 @@
 //! * [`catalogue`]: the instruments this build ships, and the template config generated from them.
 //! * [`runner`]: runs them, isolated, merges the report, logs what ran and what it cost, and decides whether the
 //!   measurement is complete.
+//! * [`options`]: the instrument run from the shared options value, the one call every front end makes.
 
 pub mod catalogue;
 pub mod config;
+pub mod options;
 pub mod runner;
 
 pub use config::{Config, Entry, Flags, OnError};

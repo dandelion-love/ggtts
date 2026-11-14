@@ -97,6 +97,8 @@ const NO_FILE: &str = "a binding hands the PCM to its caller and writes no file"
 const BINDING_SEED: &str = "a binding's seed is the story seed's salt (render.seed_salt); render.seed is the sampler seed of ggtts-render --text";
 const NO_STORY_FILE: &str = "a binding renders the text it is given; a story file is ggtts-render --story's";
 const NOT_BOOK_FRONT: &str = "ggtts-book's own options";
+const NO_TIMINGS: &str = "a binding returns the samples, not timings or reports";
+const NO_LOG: &str = "a binding writes no log: its errors are its codes and messages";
 const ANDROID_TRACE: &str = "the trace is a desktop observer: refused on Android";
 const CPU_ONLY: &str = "the Android build is CPU only";
 const NEVER_DOWNLOADS: &str = "the app never downloads: its models are installed with it";
@@ -191,13 +193,15 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
-            (STEER, Gap(280)),
-            (&["render.redraw", "render.edge_s", "render.measure_timings"], Gap(280)),
-            (TRACE, Gap(280)),
-            (REPORTS, Gap(280)),
-            (LOG, Gap(280)),
+            (STEER, Carried),
+            (&["render.redraw", "render.edge_s"], Carried),
+            (&["render.measure_timings"], Refused(NO_TIMINGS)),
+            (TRACE, Carried),
+            (REPORTS, Refused(NO_TIMINGS)),
+            (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
-            (FILES_OUT, Refused(NO_FILE)),
+            (&["output.out", "output.stream_format"], Refused(NO_FILE)),
+            (&["output.stream"], Carried),
             (STREAM_LEVEL, Gap(284)),
             (BOOK, Refused(NOT_BOOK_FRONT)),
         ],
@@ -691,6 +695,130 @@ fn c_abi_probes() -> Vec<Probe> {
         "render.text".to_string(),
         if n > 0 { Seen::Carried } else { Seen::Dropped },
     ));
+    out.extend(c_abi_document_probes(n));
+    out
+}
+
+/// The C ABI's options documents (`ggtts_load_opts`, `ggtts_render_opts`) on the fake engine: each option where it
+/// is read, or its refusal by name. `plain` is the sample count of the same text rendered with no document.
+fn c_abi_document_probes(plain: usize) -> Vec<Probe> {
+    use ggtts_ffi::{ggtts_free, ggtts_load_opts, ggtts_pcm_free, ggtts_render_opts, GGTTS_ERR_ARG, GGTTS_OK};
+    let dir = std::env::temp_dir().join(format!("ggtts-conformance-c-abi-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut h = 0u64;
+    let load = CString::new(r#"{"load": {"engine": "fake"}}"#).unwrap();
+    assert_eq!(
+        unsafe { ggtts_load_opts(load.as_ptr(), &mut h) },
+        GGTTS_OK,
+        "{}",
+        last_error()
+    );
+    let text = CString::new("你好。").unwrap();
+    // A whole read with `doc`: its code and sample count.
+    let render = |doc: &str| {
+        let doc = CString::new(doc).unwrap();
+        let (mut p, mut n, mut r) = (std::ptr::null_mut(), 0usize, 0u32);
+        let code = unsafe {
+            ggtts_render_opts(
+                h,
+                text.as_ptr(),
+                doc.as_ptr(),
+                None,
+                std::ptr::null_mut(),
+                &mut p,
+                &mut n,
+                &mut r,
+            )
+        };
+        if !p.is_null() {
+            unsafe { ggtts_pcm_free(p, n) };
+        }
+        (code, n)
+    };
+    // Refused by name, or carried to where the engine refuses it by name.
+    let named = |doc: &str, key: &str, carried: bool| match render(doc) {
+        (GGTTS_ERR_ARG, _) if last_error().starts_with(&format!("{key}: ")) => {
+            if carried {
+                Seen::Carried
+            } else {
+                Seen::Refused
+            }
+        }
+        (code, _) => panic!("c-abi: {doc} gave {code}: {}", last_error()),
+    };
+    let mut out = Vec::new();
+    let mut push = |key: &str, seen| out.push(("c-abi", key.to_string(), seen));
+    // Steering reaches the engine's capabilities, which refuse it on the fake engine under its key.
+    push(
+        "render.steer",
+        named(r#"{"render": {"steer": "s.safetensors"}}"#, "render.steer", true),
+    );
+    // The edge kept at each chunk changes the read's length.
+    let (code, n) = render(r#"{"render": {"edge_s": 1.5}}"#);
+    assert_eq!(code, GGTTS_OK, "{}", last_error());
+    push("render.edge_s", if n != plain { Seen::Carried } else { Seen::Dropped });
+    // The trace file, and its level in the header.
+    let trace = dir.join("t.jsonl");
+    let doc = format!(
+        r#"{{"observe": {{"trace": {}, "trace_level": 2}}}}"#,
+        serde_json::to_string(&trace.to_string_lossy()).unwrap()
+    );
+    assert_eq!(render(&doc).0, GGTTS_OK, "{}", last_error());
+    let header = std::fs::read_to_string(&trace).unwrap_or_default();
+    push(
+        "observe.trace",
+        if header.lines().count() > 1 {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        },
+    );
+    push(
+        "observe.trace_level",
+        if header.lines().next().is_some_and(|l| l.contains("\"trace_level\":2")) {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        },
+    );
+    // The stream: pieces reach the callback.
+    extern "C" fn count(user: *mut std::ffi::c_void, _: *const f32, _: usize, _: u32) -> i32 {
+        unsafe { *(user as *mut usize) += 1 };
+        0
+    }
+    let mut pieces = 0usize;
+    let doc = CString::new(r#"{"output": {"stream": "raw"}}"#).unwrap();
+    let null = std::ptr::null_mut();
+    let code = unsafe {
+        ggtts_render_opts(
+            h,
+            text.as_ptr(),
+            doc.as_ptr(),
+            Some(count),
+            &mut pieces as *mut usize as *mut std::ffi::c_void,
+            null,
+            null as *mut usize,
+            null as *mut u32,
+        )
+    };
+    assert_eq!(code, GGTTS_OK, "{}", last_error());
+    push("output.stream", if pieces > 0 { Seen::Carried } else { Seen::Dropped });
+    // The options a binding does not take, refused by name.
+    for (key, doc) in [
+        ("render.measure_timings", r#"{"render": {"measure_timings": true}}"#),
+        ("observe.timing_report", r#"{"observe": {"timing_report": "t.json"}}"#),
+        (
+            "observe.duration_report",
+            r#"{"observe": {"duration_report": "d.json"}}"#,
+        ),
+        ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
+        ("observe.log_format", r#"{"observe": {"log_format": "json"}}"#),
+        ("output.out", r#"{"output": {"out": "o.flac"}}"#),
+    ] {
+        push(key, named(doc, key, false));
+    }
+    ggtts_free(h);
+    let _ = std::fs::remove_dir_all(dir);
     out
 }
 
@@ -804,12 +932,12 @@ fn a_new_option_entered_as_a_gap_fails_naming_it() {
 #[test]
 fn a_closed_gap_still_listed_fails() {
     let mut cells = cells(TABLE, FRONT_ENDS).unwrap();
-    let key = ("c-abi".to_string(), "observe.trace".to_string());
-    assert_eq!(cells[&key], Gap(280));
+    let key = ("c-abi".to_string(), "output.stream_raw".to_string());
+    assert_eq!(cells[&key], Gap(284));
     cells.insert(key, Carried);
     let errors = check_gaps(&cells, &read(GAPS));
     assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(errors[0].contains("c-abi\\tobserve.trace\\t#280"), "{errors:?}");
+    assert!(errors[0].contains("c-abi\\toutput.stream_raw\\t#284"), "{errors:?}");
 }
 
 /// AC3: a front end that drops an option its cell says it carries fails, and a gap a probe sees carried is closed.

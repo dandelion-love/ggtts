@@ -2,7 +2,7 @@
 //!
 //! The four surfaces are read from their source: `ggtts-render`'s flags (its usage line and the instrument flags it
 //! hands on; since #289 it has no parser of its own, only the table's), the Python binding's `ggtts.load` and render methods, the C ABI's `ggtts_load_with`,
-//! `ggtts_settings` (version 3) and `ggtts_render`, and Kotlin's `Ggtts.load` and render methods. A spelling there that
+//! `ggtts_settings` (version 3), `ggtts_render` and the options-document functions, and Kotlin's `Ggtts.load` and render methods. A spelling there that
 //! is not in the table fails, unless it is listed as not an option (`surfaces::NOT_OPTIONS`), with why. The readers
 //! are in `surfaces/mod.rs`, shared with `ggtts-cli`'s conformance test.
 

@@ -231,11 +231,11 @@ fn the_header_reads_the_same_with_lf_and_crlf_endings() {
 }
 
 #[test]
-fn the_abi_version_is_3_in_the_library_and_the_header() {
-    assert_eq!(ggtts_abi_version(), 3);
-    assert_eq!(GGTTS_ABI_VERSION, 3);
+fn the_abi_version_is_4_in_the_library_and_the_header() {
+    assert_eq!(ggtts_abi_version(), 4);
+    assert_eq!(GGTTS_ABI_VERSION, 4);
     let header = include_str!("../include/ggtts.h");
-    assert_eq!(header_version(header), Some(3), "the header's version");
+    assert_eq!(header_version(header), Some(4), "the header's version");
     // The header's struct is the library's: version 2's three fields, size first, then version 3's.
     let joined = header_lines(header).join("\n");
     assert!(

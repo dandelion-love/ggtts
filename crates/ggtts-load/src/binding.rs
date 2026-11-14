@@ -19,9 +19,13 @@ use std::sync::{Arc, Mutex, TryLockError};
 
 use ggtts_core::capabilities::Capabilities;
 use ggtts_core::engine::Engine;
+use ggtts_core::hooks::Hooks;
 use ggtts_core::options::{self, Options};
-use ggtts_core::pipeline::{plan_story, render_story, render_story_streamed, RenderError, RenderOptions};
-use ggtts_core::trace::NullEvents;
+use ggtts_core::pipeline::{
+    plan_story, render_plan, render_story, render_story_streamed, DurationJudge, Observers, Output, RenderError,
+    RenderOptions, StorySeeds, StreamMode, StreamPiece,
+};
+use ggtts_core::trace::{emit_header, Events, Header, JsonlEvents, NullEvents};
 use ggtts_models::{Cache, Fetch, ModelFile};
 
 /// The codes, the C-ABI's (`ggtts.h`): success.
@@ -263,6 +267,129 @@ pub fn render_stream(
     render_story_streamed(engine, STORY, &chunks, &opts, &mut NullEvents, &mut sink)
         .map(|_| ())
         .map_err(render_error)
+}
+
+// ── options documents ──
+
+/// Why a binding refuses the option `key` in a document, or `None` when it takes it: in a load document (`at_load`)
+/// the load section and the render defaults; in a render document the render, the trace and the stream.
+pub fn document_refusal(key: &str, at_load: bool) -> Option<&'static str> {
+    let (section, name) = key.split_once('.').unwrap_or((key, ""));
+    let why = match (section, name) {
+        ("load", _) if at_load => return None,
+        ("load", _) => "a load option: it is fixed when the engine loads, so give it in the load document",
+        ("render", "text" | "story") => "the text is the render's own argument",
+        ("render", "seed") => "a binding's seed is the story seed's salt: give render.seed_salt",
+        ("render", "measure_timings") | ("observe", "timing_report" | "duration_report") => {
+            "a binding returns the samples, not timings or reports"
+        }
+        ("observe", "log_level" | "log_format") => "a binding writes no log: its errors are its codes and messages",
+        ("observe", "trace" | "trace_level") if at_load => "a trace is per render: give it in the render document",
+        ("observe", "trace" | "trace_level") => return None,
+        ("observe", _) => "instruments are out-of-process programs the CLI runs on a finished file",
+        ("output", "out" | "stream_format") => "a binding hands the PCM to its caller and writes no file",
+        ("output", "stream_raw" | "stream_level_seconds") => {
+            "a levelled stream is not taken yet: output.stream \"raw\" streams the pieces before the level step"
+        }
+        ("output", "stream") if at_load => "a stream is per render: give it in the render document",
+        ("output", "stream") => return None,
+        ("book", _) => "ggtts-book's own options",
+        ("render", _) => return None,
+        _ => "not an option of a binding",
+    };
+    Some(why)
+}
+
+/// Refuses an option a binding does not take in this document ([`document_refusal`]), and a stream other than
+/// `"raw"`, as [`ERR_ARG`] naming the option.
+pub fn check_document(o: &Options, at_load: bool) -> Result<(), Fail> {
+    for key in o.marks.sources.keys() {
+        if let Some(why) = document_refusal(key, at_load) {
+            return Err(arg_err(format!("{key}: {why}")));
+        }
+    }
+    match o.output.stream.as_deref() {
+        None | Some("raw") => Ok(()),
+        Some(other) => Err(arg_err(format!(
+            "output.stream: a binding streams to its callback: \"raw\" hands it the pieces before the level step \
+             (a levelled stream is not taken yet), not {other:?}"
+        ))),
+    }
+}
+
+/// Render `text` with an options value: the whole read, or, with `on_piece`, each kept chunk handed to it before the
+/// level step (returning false stops the render with [`ERR_STOPPED`]); the whole read's samples and rate either way.
+/// An option the engine does not support is refused ([`options::check`]) as [`ERR_ARG`] before anything is
+/// rendered, and so is steering it cannot read. `observe.trace` writes the event stream, as `ggtts-render` does.
+/// With only `render.seed_salt` and `render.instruction` set, this is [`render`] (and with `on_piece`,
+/// [`render_stream`]) sample for sample.
+pub fn render_document(
+    engine: &mut dyn Engine,
+    text: &str,
+    options: &Options,
+    on_piece: Option<&mut dyn FnMut(&[f32], u32) -> bool>,
+) -> Result<(Vec<f32>, u32), Fail> {
+    let chunks = plan(engine, text)?;
+    let mut o = options::check(options, &engine.capabilities())
+        .map_err(|r| arg_err(r.to_string()))?
+        .options;
+    o.read_steering().map_err(|r| arg_err(r.to_string()))?;
+    let opts = o.render_options(engine.profile()).map_err(|r| arg_err(r.to_string()))?;
+    let level = o.observe.trace_level.unwrap_or(1);
+    let mut trace = match &o.observe.trace {
+        Some(path) => Some(JsonlEvents::new(
+            std::fs::File::create(path).map_err(|e| arg_err(format!("observe.trace {}: {e}", path.display())))?,
+            level,
+        )),
+        None => None,
+    };
+    let mut null = NullEvents;
+    let events: &mut dyn Events = match trace.as_mut() {
+        Some(w) => w,
+        None => &mut null,
+    };
+    if events.level() > 0 {
+        let mut header = Header::for_engine(engine, level);
+        header.set_reported(&options::record(&o, engine.info()));
+        emit_header(events, &header);
+    }
+    let mut hooks = Hooks::new();
+    let mut obs = Observers::new(events, &mut hooks);
+    let seeds = StorySeeds {
+        story_id: STORY,
+        salt: &opts.seed_salt,
+    };
+    let read = match on_piece {
+        None => render_plan(
+            engine,
+            &chunks,
+            &seeds,
+            &mut DurationJudge,
+            &opts,
+            &mut obs,
+            Output::Whole,
+        ),
+        Some(f) => {
+            let mut sink = |p: StreamPiece<'_>| {
+                if f(p.samples, p.sample_rate) {
+                    Ok(())
+                } else {
+                    Err(STOPPED.to_string())
+                }
+            };
+            let output = Output::Stream {
+                sink: &mut sink,
+                level: StreamMode::Raw,
+            };
+            render_plan(engine, &chunks, &seeds, &mut DurationJudge, &opts, &mut obs, output)
+        }
+    }
+    .map_err(render_error)?;
+    if let Some(w) = trace {
+        w.finish_with_stats()
+            .map_err(|e| engine_err(format!("observe.trace: {e}")))?;
+    }
+    Ok((read.samples, read.sample_rate))
 }
 
 /// A speaker or an instruction the engine does not take is refused before any file is read, rather than ignored, as

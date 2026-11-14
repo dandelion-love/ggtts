@@ -202,10 +202,8 @@ name = "ggtts-ffi"
 version = "0.0.1"
 dependencies = [
  "ggtts-core",
- "ggtts-fake",
- "ggtts-kitten",
+ "ggtts-load",
  "ggtts-models",
- "ggtts-qwen3-tts",
 ]
 
 [[package]]
@@ -227,6 +225,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ggtts-load"
+version = "0.0.1"
+dependencies = [
+ "ggtts-core",
+ "ggtts-fake",
+ "ggtts-kitten",
+ "ggtts-models",
+ "ggtts-qwen3-tts",
+]
+
+[[package]]
 name = "ggtts-models"
 version = "0.0.1"
 dependencies = [
@@ -243,7 +252,7 @@ dependencies = [
  "ggtts-core",
  "ggtts-fake",
  "ggtts-ffi",
- "ggtts-kitten",
+ "ggtts-load",
  "ggtts-models",
  "ggtts-qwen3-tts",
  "pyo3",

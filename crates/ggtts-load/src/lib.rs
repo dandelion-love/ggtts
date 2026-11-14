@@ -11,6 +11,11 @@
 //!
 //! Without the `ggml` feature only the fake engine loads; `qwen3-tts` and `kitten-tts-2` are refused with a named
 //! reason, and nothing is downloaded for a build that cannot render it.
+//!
+//! [`binding`] is the engine glue the bindings share: the C-ABI (`ggtts-ffi`, and Kotlin over it) and Python
+//! (`ggtts-py`) load, refuse, render and guard against panics through it, with the codes and messages they give.
+
+pub mod binding;
 
 use std::path::PathBuf;
 

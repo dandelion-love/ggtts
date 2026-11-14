@@ -18,14 +18,16 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 ggtts-core = { path = "../ggtts-core" }
-ggtts-fake = { path = "../ggtts-fake" }
+# The engine glue the binding shares with the C-ABI: loading, refusals, rendering and the panic guard.
+ggtts-load = { path = "../ggtts-load" }
 ggtts-models = { path = "../ggtts-models" }
+# Named only to pass the bindgen feature through (ggtts-load carries the engines).
 ggtts-qwen3-tts = { path = "../ggtts-qwen3-tts" }
-ggtts-kitten = { path = "../ggtts-kitten" }
 # The stable ABI from Python 3.9 on: one wheel per platform serves every later Python.
 pyo3 = { version = "0.25.1", features = ["abi3-py39"], optional = true }
 
 [dev-dependencies]
+ggtts-fake = { path = "../ggtts-fake" }
 # The error codes are the C-ABI's; a test holds them equal.
 ggtts-ffi = { path = "../ggtts-ffi" }
 
@@ -35,11 +37,11 @@ default = []
 # which `cargo test` runs with no Python at all.
 python = ["dep:pyo3"]
 # The engines over ggml; without it only the fake engine loads, and the others report that the build has none.
-ggml = ["ggtts-qwen3-tts/ggml", "ggtts-kitten/ggml"]
+ggml = ["ggtts-load/ggml"]
 # The CUDA backend as well, for device="cuda".
-cuda = ["ggml", "ggtts-qwen3-tts/cuda", "ggtts-kitten/cuda"]
+cuda = ["ggml", "ggtts-load/cuda"]
 # The ggml bindings generated at build time, for targets with no committed bindings (Windows). Needs libclang.
 bindgen = ["ggml", "ggtts-qwen3-tts/bindgen"]
-# Test-only engines: `panic` (generating panics) and `slow` (each chunk takes a quarter second), for the panic and
-# GIL tests.
-plant = []
+# Test-only engines (`ggtts-load`'s): `panic` (generating panics), `slow` (each chunk takes a quarter second) and
+# `panic-load`, for the panic and GIL tests.
+plant = ["ggtts-load/plant"]

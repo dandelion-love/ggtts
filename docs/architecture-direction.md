@@ -49,7 +49,7 @@ A **front end** is anything a person or a program renders through:
 | `ggtts-book render` | `crates/ggtts-book`, on `track/epub` | its own `render_chunk`: `engine.generate` at draw 0, no judge |
 | C ABI (`libggtts_ffi`, `ggtts.h`) | `crates/ggtts-ffi` | `render_story`, `render_story_streamed` |
 | Kotlin (`ggtts.Ggtts`, over JNI) | `android/ggtts`, `crates/ggtts-ffi/src/jni.rs` | the C ABI |
-| Python (`import ggtts`) | `crates/ggtts-py` | `render_story`, `render_story_streamed` (its own copy of the C ABI's glue) |
+| Python (`import ggtts`) | `crates/ggtts-py` | `render_story`, `render_story_streamed`, through the engine glue it shares with the C ABI (`ggtts_load::binding`, [#281](https://github.com/dandelion-love/ggtts/issues/281)) |
 | Android demo and system TTS engine | `android/demo`, on `track/android` | Kotlin |
 | `ggtts-kitten render` | `crates/ggtts-kitten`, shipped in the release archive | its own loop: one seed per line (`--seed` plus the line index), its own `--max-tokens`, Kitten only |
 

@@ -134,8 +134,9 @@ a capability. Adding the option to the binding is.
 
 An environment variable that changes or observes a render is a spelling of an option, like a flag: it is a column in
 the schema's table, read by the one parser, and recorded in provenance like any other option. That covers
-`GGTTS_LOG_LEVEL`, `GGTTS_LOG_FORMAT` and `GGTTS_CACHE_DIR` today, which become table entries in
-[#274](https://github.com/dandelion-love/ggtts/issues/274).
+`GGTTS_LOG_LEVEL`, `GGTTS_LOG_FORMAT` and `GGTTS_CACHE_DIR` today, which became table entries in
+[#274](https://github.com/dandelion-love/ggtts/issues/274). `ggtts-render` reads all three through the table since
+[#289](https://github.com/dandelion-love/ggtts/issues/289).
 
 Until #274 lands, a new variable of this kind is allowed only with a filed issue that moves it into the table once the
 table exists, linked from the pull request. The reason: the alternative, holding a diagnostic switch on an engine

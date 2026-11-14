@@ -1,7 +1,7 @@
 //! Every option a front end takes today is a row of the options table (`ggtts_core::options::TABLE`), with its phase.
 //!
-//! The four surfaces are read from their source: `ggtts-render`'s flags (its usage line, its parser and the instrument
-//! flags it hands on), the Python binding's `ggtts.load` and render methods, the C ABI's `ggtts_load_with`,
+//! The four surfaces are read from their source: `ggtts-render`'s flags (its usage line and the instrument flags it
+//! hands on; since #289 it has no parser of its own, only the table's), the Python binding's `ggtts.load` and render methods, the C ABI's `ggtts_load_with`,
 //! `ggtts_settings` (version 3) and `ggtts_render`, and Kotlin's `Ggtts.load` and render methods. A spelling there that
 //! is not in the table fails, unless it is listed below as not an option, with why.
 
@@ -150,18 +150,9 @@ fn flags(text: &str) -> Vec<String> {
 fn render_flags() -> Vec<String> {
     let src = read("crates/ggtts-cli/src/bin/ggtts-render.rs");
     let usage = between(&src, "const USAGE: &str = \"", "\";");
-    let parse = between(&src, "fn parse(args: &[String]) -> Result<Args, String> {", "\n}\n");
     let instruments = read("crates/ggtts-instruments/src/config.rs");
     let names = between(&instruments, "pub const NAMES", "];");
     let mut out = flags(usage);
-    // Only the parser's quoted flags: its error messages name flags too, and those are in the list already.
-    for quoted in all_between(parse, "\"-", "\"") {
-        for f in flags(&format!("-{quoted}")) {
-            if !out.contains(&f) {
-                out.push(f);
-            }
-        }
-    }
     for f in flags(names) {
         if !out.contains(&f) {
             out.push(f);
@@ -240,7 +231,6 @@ fn each_surface_is_read_from_its_source() {
         "--stream-raw",
         "--instrument-timeout",
         "--log-format",
-        "-j",
         "--seed",
         "--version",
     ] {

@@ -22,6 +22,15 @@ that a merge places under a released heading is caught.
   field by field instead of from `RenderOptions::for_profile` must set them. `ggtts-render --text` now renders
   through the same entry point, with both off, and its output is unchanged.
 
+### Changed
+
+- **`ggtts-render` reads its flags, `GGTTS_LOG_LEVEL`, `GGTTS_LOG_FORMAT` and `GGTTS_CACHE_DIR` through the options
+  table** (`ggtts_core::options`), a flag winning over its variable as before. Its output, `--help` and reports are
+  unchanged, and the refusals it had words for keep them. A few command lines it used to accept, or refuse later, are
+  now refused as they are read: `--threads` below 1, an `--engine` other than `auto`, `qwen3-tts`, `kitten-tts-2` or `fake`, and
+  an `--on-instrument-error`, `--instrument-device` or `--instrument-timeout` value the instruments would refuse, even
+  with no instrument asked for. An empty `GGTTS_LOG_LEVEL` or `GGTTS_LOG_FORMAT` is now unset rather than an error.
+
 ## v0.1.0-rc.12 (2026-11-13)
 
 ### Added

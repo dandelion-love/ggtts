@@ -72,9 +72,9 @@ use ggtts_core::engine::Engine;
 use ggtts_core::flac::write_flac;
 use ggtts_core::hooks::Hooks;
 use ggtts_core::logging::{Format as LogFormat, Level as LogLevel, Settings as LogSettings};
+use ggtts_core::options::{self, Descriptor, Options, Refusal, Section};
 use ggtts_core::pipeline::{
-    plan_story, render_plan, DurationJudge, Given, Observers, Output, RenderError, RenderOptions, StorySeeds,
-    StreamMode, StreamPiece,
+    plan_story, render_plan, DurationJudge, Given, Observers, Output, RenderError, StorySeeds, StreamMode, StreamPiece,
 };
 use ggtts_core::stream::{Container, StreamWriter};
 use ggtts_core::text::read_text;
@@ -168,115 +168,149 @@ const INSTRUMENTS_HELP: &str = "\ninstruments: --instrument NAME runs a shipped 
 ggtts-render (a release archive), or the nearest one above it (a source checkout); GGTTS_INSTRUMENTS_DIR overrides \
 that.\nThey need Python 3.8 or later: GGTTS_PYTHON, else python3 (python on Windows) on PATH.";
 
-#[derive(Default)]
-struct Args {
-    model: Option<PathBuf>,
-    codec: Option<PathBuf>,
-    out: Option<PathBuf>,
-    engine: Option<String>,
-    text: Option<String>,
-    story: Option<PathBuf>,
-    seed: Option<u64>,
-    threads: Option<i32>,
-    device: Option<String>,
-    trace: Option<PathBuf>,
-    trace_level: Option<u8>,
-    timing_report: Option<PathBuf>,
-    duration_report: Option<PathBuf>,
-    /// A reference voice, for engines that clone one (kitten-tts-2: a `ggtts-kitten prepare` JSON). Others ignore it.
-    voice: Option<PathBuf>,
-    /// Named speaker in a Qwen talker; distinct from a cloned reference voice.
-    speaker: Option<String>,
-    /// A style instruction, for a Qwen3-TTS checkpoint that takes one. Empty is no instruction.
-    instruction: Option<String>,
-    /// A steering file (`--steer`), its scale (`--steer-scale`) and the layers of it to apply (`--steer-layers`).
-    steer: Option<PathBuf>,
-    steer_scale: Option<f64>,
-    steer_layers: Option<Vec<u32>>,
-    /// The steering read from `steer`, set by [`load_steering`] before the engine is loaded.
-    steering: Option<ggtts_core::steer::Steering>,
-    stream: Option<String>,
-    stream_format: Option<String>,
-    stream_raw: bool,
-    stream_level_seconds: Option<f64>,
-    instruments: ggtts_instruments::Flags,
-    /// Where the instruments' report goes.
-    report: Option<PathBuf>,
-    /// The run's identity, for every envelope.
-    run: Option<String>,
-    /// Never download a default model file.
-    offline: bool,
+/// Whether `ggtts-render` takes a row's flags: every row but the book section's, which are `ggtts-book`'s.
+fn accepts(d: &Descriptor) -> bool {
+    d.section != Section::Book
 }
 
-fn parse(args: &[String]) -> Result<Args, String> {
-    let mut a = Args::default();
-    let mut it = args.iter();
-    while let Some(flag) = it.next() {
-        let mut value = || it.next().cloned().ok_or(format!("{flag} needs a value"));
-        if ggtts_instruments::Flags::NAMES.contains(&flag.as_str()) {
-            a.instruments.take(flag, value()?);
-            continue;
-        }
-        match flag.as_str() {
-            "--report" => a.report = Some(value()?.into()),
-            "--run" => a.run = Some(value()?),
-            "--model" => a.model = Some(value()?.into()),
-            "--codec" => a.codec = Some(value()?.into()),
-            "--offline" => a.offline = true,
-            "--out" | "-o" => a.out = Some(value()?.into()),
-            "--engine" => a.engine = Some(value()?),
-            "--text" | "-t" => a.text = Some(value()?),
-            "--story" => a.story = Some(value()?.into()),
-            "--seed" => a.seed = Some(value()?.parse().map_err(|_| "--seed needs an integer")?),
-            "--device" => a.device = Some(value()?),
-            "--trace" => a.trace = Some(value()?.into()),
-            "--timing-report" => a.timing_report = Some(value()?.into()),
-            "--duration-report" => a.duration_report = Some(value()?.into()),
-            "--trace-level" => {
-                let level = value()?.parse::<u8>().map_err(|_| "--trace-level must be 1 or 2")?;
-                if !(1..=2).contains(&level) {
-                    return Err("--trace-level must be 1 or 2".into());
-                }
-                a.trace_level = Some(level);
-            }
-            "--voice" => a.voice = Some(value()?.into()),
-            "--speaker" => {
-                let speaker = value()?;
-                if speaker.trim().is_empty() {
-                    return Err("--speaker must not be empty".into());
-                }
-                a.speaker = Some(speaker);
-            }
-            "--instruction" => a.instruction = Some(value()?),
-            "--steer" => a.steer = Some(value()?.into()),
-            "--steer-scale" => {
-                let v: f64 = value()?.parse().map_err(|_| "--steer-scale needs a number")?;
-                if !v.is_finite() {
-                    return Err("--steer-scale must be a finite number".into());
-                }
-                a.steer_scale = Some(v);
-            }
-            "--steer-layers" => {
-                a.steer_layers =
-                    Some(ggtts_core::steer::parse_layers(&value()?).map_err(|e| format!("--steer-layers: {e}"))?)
-            }
-            "--stream" => a.stream = Some(value()?),
-            "--stream-format" => a.stream_format = Some(value()?),
-            "--stream-raw" => a.stream_raw = true,
-            "--stream-level-seconds" => {
-                let v: f64 = value()?
-                    .parse()
-                    .map_err(|_| "--stream-level-seconds needs a number of seconds")?;
-                if !(v.is_finite() && v >= 0.0) {
-                    return Err("--stream-level-seconds must be 0 or more".into());
-                }
-                a.stream_level_seconds = Some(v);
-            }
-            "--threads" | "-j" => a.threads = Some(value()?.parse().map_err(|_| "--threads needs an integer")?),
-            other => return Err(format!("invalid argument: {other}")),
-        }
+/// The options a command line gives, over the environment's: [`Options::from_args`] laid on [`Options::from_env`]
+/// (`env` reads one variable), so a flag wins over its variable, and a variable whose flag is given is not read at all
+/// (an unusable `GGTTS_LOG_LEVEL` does not stop `--log-level info`). Every flag is the table's (`options::TABLE`): a
+/// spelling it does not have, or a `ggtts-book` flag, is refused as not an option.
+fn options_from(args: &[String], env: &dyn Fn(&str) -> Option<String>) -> Result<Options, Refusal> {
+    let first_refused = options::walk_args(args)
+        .into_iter()
+        .find(|a| !a.row.is_some_and(accepts));
+    if let Some(a) = first_refused {
+        return Err(Refusal {
+            key: a.flag.to_string(),
+            message: "is not an option".into(),
+        });
     }
-    Ok(a)
+    let flags = Options::from_args(args)?;
+    let given = |name: &str| {
+        options::TABLE
+            .iter()
+            .any(|d| d.env == Some(name) && flags.marks.sources.contains_key(&d.key()))
+    };
+    let environment = Options::from_env(&|name| if given(name) { None } else { env(name) })?;
+    environment.layer(flags)
+}
+
+/// The value given for the option `key` on the command line: the last of its flags' values, unchecked.
+fn given_text<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
+    options::walk_args(args)
+        .into_iter()
+        .rev()
+        .filter(|a| a.row.is_some_and(|d| d.key() == key))
+        .find_map(|a| a.value)
+}
+
+/// Whether a refusal is about the logging options, which `ggtts-render` reports as a logging configuration error.
+fn is_logging(r: &Refusal) -> bool {
+    r.key == "observe.log_level" || r.key == "observe.log_format"
+}
+
+/// A refusal in the words `ggtts-render` has always used for it, so a script matching an error still matches.
+/// Anything it had no words for reads as the flag and the table's reason.
+fn refusal_message(r: &Refusal, args: &[String]) -> String {
+    let Some(d) = options::descriptor(&r.key) else {
+        return format!("invalid argument: {}", r.key);
+    };
+    let flag = d.flags.first().copied().unwrap_or(d.name);
+    if r.message.ends_with(" needs a value") {
+        return r.message.clone();
+    }
+    if let Some(needed) = r.message.strip_prefix("needs ") {
+        return match d.name {
+            "steer_scale" | "steer_layers" => "--steer-scale and --steer-layers need --steer".into(),
+            "trace_level" => "--trace-level requires a story and --trace".into(),
+            _ => {
+                let spelled = options::descriptor(needed).and_then(|n| n.flags.first().copied());
+                format!("{flag} needs {}", spelled.unwrap_or(needed))
+            }
+        };
+    }
+    let text = given_text(args, &r.key).unwrap_or_default();
+    let number = text.parse::<f64>().is_ok();
+    match d.name {
+        "seed" => "--seed needs an integer".into(),
+        "trace_level" => "--trace-level must be 1 or 2".into(),
+        "speaker" => "--speaker must not be empty".into(),
+        "threads" if text.parse::<i64>().is_err() => "--threads needs an integer".into(),
+        "steer_scale" if number => "--steer-scale must be a finite number".into(),
+        "steer_scale" => "--steer-scale needs a number".into(),
+        "steer_layers" => format!("--steer-layers: {}", r.message),
+        "stream_level_seconds" if number => "--stream-level-seconds must be 0 or more".into(),
+        "stream_level_seconds" => "--stream-level-seconds needs a number of seconds".into(),
+        "device" => format!("--device must be cpu or cuda, not {text}"),
+        "stream_format" => format!("--stream-format must be wav or s16le, not {text}"),
+        "log_level" => "log level must be error, warn, info, debug or trace".into(),
+        "log_format" => "log format must be text or json".into(),
+        "on_instrument_error" => format!("--on-instrument-error: {text:?} is not continue or abort"),
+        "instrument_device" => format!("instrument device must be cpu, cuda or auto, not {text:?}"),
+        _ => format!("{flag}: {}", r.message),
+    }
+}
+
+/// The log settings the options ask for: `observe.log_level` (unset is info) and `observe.log_format` (unset is
+/// text). Both are values the table has already checked.
+fn log_settings(o: &Options) -> LogSettings {
+    LogSettings {
+        level: o
+            .observe
+            .log_level
+            .as_deref()
+            .and_then(LogLevel::parse)
+            .unwrap_or(LogLevel::Info),
+        format: match o.observe.log_format.as_deref() {
+            Some("json") => LogFormat::Json,
+            _ => LogFormat::Text,
+        },
+    }
+}
+
+/// The settings to report a refused command line in: the log format it asked for (its last `--log-format`, else
+/// `GGTTS_LOG_FORMAT`) when that is json, else text.
+fn refusal_settings(args: &[String], env: &dyn Fn(&str) -> Option<String>) -> LogSettings {
+    let variable = options::descriptor("observe.log_format").and_then(|d| d.env);
+    let format = given_text(args, "observe.log_format")
+        .map(str::to_string)
+        .or_else(|| variable.and_then(env));
+    LogSettings {
+        level: LogLevel::Error,
+        format: if format.as_deref() == Some("json") {
+            LogFormat::Json
+        } else {
+            LogFormat::Text
+        },
+    }
+}
+
+/// The instrument options as `ggtts_instruments` takes them: the file, then each option's values, every list in its
+/// order. `Flags::resolve` checks them and applies them over the file.
+fn instrument_flags(a: &Options) -> ggtts_instruments::Flags {
+    let o = &a.observe;
+    let mut f = ggtts_instruments::Flags::default();
+    if let Some(p) = &o.instruments {
+        f.take("--instruments", p.to_string_lossy().into_owned());
+    }
+    for v in &o.instrument {
+        f.take("--instrument", v.clone());
+    }
+    for v in &o.require {
+        f.take("--require", v.clone());
+    }
+    if let Some(v) = &o.on_instrument_error {
+        f.take("--on-instrument-error", v.clone());
+    }
+    if let Some(v) = o.instrument_timeout {
+        f.take("--instrument-timeout", v.to_string());
+    }
+    if let Some(v) = &o.instrument_device {
+        f.take("--instrument-device", v.clone());
+    }
+    f
 }
 
 /// The model engines this binary can carry, by architecture name: `load_engine` has an arm for each, and
@@ -284,16 +318,20 @@ fn parse(args: &[String]) -> Result<Args, String> {
 const ENGINES: &[&str] = &["qwen3-tts", "kitten-tts-2"];
 
 #[cfg(feature = "ggml")]
-fn qwen_voice(a: &Args) -> Result<ggtts_qwen3_tts::engine::Voice, String> {
-    let device = a.device.as_deref().unwrap_or("cpu");
+fn qwen_voice(a: &Options) -> Result<ggtts_qwen3_tts::engine::Voice, String> {
+    let device = a.load.device.as_deref().unwrap_or("cpu");
     let mut voice = ggtts_qwen3_tts::engine::Voice {
         device: ggtts_qwen3_tts::cpu::Device::parse(device)
             .ok_or(format!("--device must be cpu or cuda, not {device}"))?,
         // A story's --trace is the pipeline event stream, not the engine's legacy step-only file.
-        trace: if a.story.is_some() { None } else { a.trace.clone() },
+        trace: if a.render.story.is_some() {
+            None
+        } else {
+            a.observe.trace.clone()
+        },
         ..Default::default()
     };
-    if let Some(speaker) = &a.speaker {
+    if let Some(speaker) = &a.load.speaker {
         voice.speaker.clone_from(speaker);
     }
     Ok(voice)
@@ -301,19 +339,25 @@ fn qwen_voice(a: &Args) -> Result<ggtts_qwen3_tts::engine::Voice, String> {
 
 /// The engine for a model, by architecture name. One arm per engine; an engine left out of the build is reported,
 /// not hidden.
-fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, String> {
-    let threads = a.threads.unwrap_or(4);
+fn load_engine(name: &str, a: &Options, model: &Path) -> Result<Box<dyn Engine>, String> {
+    let threads = a.load.threads.unwrap_or(4);
     match name {
         #[cfg(feature = "ggml")]
         "qwen3-tts" => {
-            let codec = a.codec.as_ref().ok_or("the qwen3-tts engine needs --codec")?;
+            let codec = a.load.codec.as_ref().ok_or("the qwen3-tts engine needs --codec")?;
             let voice = qwen_voice(a)?;
             // A checkpoint that takes no instruction refuses one while loading, before anything is rendered.
-            let e = ggtts_qwen3_tts::engine::Qwen3Tts::load_for(model, codec, threads, voice, a.instruction.as_deref())
-                .map_err(|e| e.to_string())?;
+            let e = ggtts_qwen3_tts::engine::Qwen3Tts::load_for(
+                model,
+                codec,
+                threads,
+                voice,
+                a.render.instruction.as_deref(),
+            )
+            .map_err(|e| e.to_string())?;
             // Steering the talker cannot take (a layer out of range, a vector of the wrong length) is refused here,
             // before anything is rendered.
-            if let Some(s) = &a.steering {
+            if let Some(s) = &a.render.steering {
                 e.check_steer(s).map_err(|e| format!("--steer: {e}"))?;
             }
             Ok(Box::new(e))
@@ -321,13 +365,13 @@ fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, St
         // Kitten-TTS 2: --model is the LM GGUF, --codec the S3Gen GGUF, --voice the reference (`ggtts-kitten prepare`).
         #[cfg(feature = "ggml")]
         "kitten-tts-2" => {
-            let codec = a.codec.as_ref().ok_or(
+            let codec = a.load.codec.as_ref().ok_or(
                 "the kitten-tts-2 engine needs --codec, the S3Gen GGUF that ggtts-kitten-convert --s3gen writes",
             )?;
-            let voice = a.voice.as_ref().ok_or(
+            let voice = a.load.voice.as_ref().ok_or(
                 "the kitten-tts-2 engine needs --voice, a reference voice JSON that ggtts-kitten prepare writes",
             )?;
-            let device = match a.device.as_deref().unwrap_or("cpu") {
+            let device = match a.load.device.as_deref().unwrap_or("cpu") {
                 "cuda" => ggtts_kitten::backend::Device::Cuda,
                 _ => ggtts_kitten::backend::Device::Cpu,
             };
@@ -336,7 +380,7 @@ fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, St
         }
         #[cfg(not(feature = "ggml"))]
         name if ENGINES.contains(&name) => {
-            let _ = (threads, model, &a.voice);
+            let _ = (threads, model, &a.load.voice);
             Err("this build has no engines: rebuild with --features ggml".into())
         }
         "fake" => Ok(Box::new(ggtts_fake::FakeEngine::default())),
@@ -348,16 +392,26 @@ fn load_engine(name: &str, a: &Args, model: &Path) -> Result<Box<dyn Engine>, St
 /// `--voice`). A given path is used as it is. A path not given is the engine's pinned default, from the cache,
 /// downloaded first when missing (never with `--offline`). Fills the paths in `a`, and the default speaker when the
 /// talker is the default one and no `--speaker` was given.
-fn resolve_models(a: &mut Args, name: &str, log: LogSettings) -> Result<Vec<ggtts_models::ModelFile>, String> {
+fn resolve_models(a: &mut Options, name: &str, log: LogSettings) -> Result<Vec<ggtts_models::ModelFile>, String> {
+    let options = a.clone();
     resolve_models_with(
         a,
         name,
         log,
         cfg!(feature = "ggml"),
-        &|| ggtts_models::Cache::default_root().map(ggtts_models::Cache::new),
+        &|| cache_for(&options),
         &ggtts_models::Http::default(),
         &mut std::io::stderr(),
     )
+}
+
+/// The model cache: `load.cache_dir` (`GGTTS_CACHE_DIR`, read through the table) when set, else the platform's
+/// per-user cache.
+fn cache_for(a: &Options) -> Result<ggtts_models::Cache, String> {
+    match &a.load.cache_dir {
+        Some(root) => Ok(ggtts_models::Cache::new(root.clone())),
+        None => ggtts_models::Cache::default_root().map(ggtts_models::Cache::new),
+    }
 }
 
 /// The download notice and progress, on `out`: at every log level, because a download of gigabytes is never silent.
@@ -376,7 +430,7 @@ fn model_notice(log: LogSettings, out: &mut dyn std::io::Write, message: &str) {
 /// [`resolve_models`] with its environment passed in: whether this build has engines, the cache, the fetcher, and
 /// where the download notice goes.
 fn resolve_models_with(
-    a: &mut Args,
+    a: &mut Options,
     name: &str,
     log: LogSettings,
     engines_built: bool,
@@ -384,6 +438,7 @@ fn resolve_models_with(
     fetch: &dyn ggtts_models::Fetch,
     notice: &mut dyn std::io::Write,
 ) -> Result<Vec<ggtts_models::ModelFile>, String> {
+    let a = &mut a.load;
     let given = [a.model.clone(), a.codec.clone(), a.voice.clone()];
     let Some(defaults) = ggtts_models::defaults_for(name) else {
         if a.model.is_none() && name != "fake" {
@@ -424,39 +479,23 @@ fn resolve_models_with(
     Ok(files)
 }
 
-/// The steering `--steer`, `--steer-scale` and `--steer-layers` name, read and checked: `None` without `--steer`.
-/// Refuses the other two without `--steer`, an engine other than qwen3-tts, and every defect of the file or the
-/// selection ([`ggtts_core::steer`]). Needs no model: the talker's own check follows when it is loaded.
-fn load_steering(a: &Args, engine: &str) -> Result<Option<ggtts_core::steer::Steering>, String> {
-    let Some(path) = &a.steer else {
-        if a.steer_scale.is_some() || a.steer_layers.is_some() {
-            return Err("--steer-scale and --steer-layers need --steer".into());
-        }
-        return Ok(None);
-    };
-    if engine != "qwen3-tts" {
+/// Reads the steering `--steer`, `--steer-scale` and `--steer-layers` name into the options
+/// ([`Options::read_steering`]); nothing without `--steer` (the table refuses the other two without it). Refuses an
+/// engine other than qwen3-tts, and every defect of the file or the selection ([`ggtts_core::steer`]). Needs no
+/// model: the talker's own check follows when it is loaded.
+fn load_steering(a: &mut Options, engine: &str) -> Result<(), String> {
+    if a.render.steer.is_some() && engine != "qwen3-tts" {
         return Err(format!(
             "--steer is only supported by the qwen3-tts engine, not {engine}"
         ));
     }
-    let file = ggtts_core::steer::SteerFile::read(path).map_err(|e| format!("--steer: {e}"))?;
-    file.select(a.steer_layers.as_deref(), a.steer_scale.unwrap_or(1.0))
-        .map(Some)
-        .map_err(|e| format!("--steer: {e}"))
+    a.read_steering().map_err(|r| format!("--steer: {}", r.message))
 }
 
-/// Where `--stream` writes: a file, or stdout for `-`.
-fn open_stream(a: &Args) -> Result<Option<StreamWriter<Box<dyn std::io::Write>>>, String> {
+/// Where `--stream` writes: a file, or stdout for `-`. The table refuses the stream's other options without it.
+fn open_stream(a: &Options) -> Result<Option<StreamWriter<Box<dyn std::io::Write>>>, String> {
+    let a = &a.output;
     let Some(dest) = a.stream.as_deref() else {
-        if a.stream_format.is_some() {
-            return Err("--stream-format needs --stream".into());
-        }
-        if a.stream_raw {
-            return Err("--stream-raw needs --stream".into());
-        }
-        if a.stream_level_seconds.is_some() {
-            return Err("--stream-level-seconds needs --stream".into());
-        }
         return Ok(None);
     };
     if a.stream_raw && a.stream_level_seconds.is_some() {
@@ -474,16 +513,16 @@ fn open_stream(a: &Args) -> Result<Option<StreamWriter<Box<dyn std::io::Write>>>
 
 /// Render, then run the instruments. The exit code: 0, or 3 when a required instrument is not ok (the measurement is
 /// INCOMPLETE; the FLAC is written).
-fn render(a: Args, log: LogSettings) -> Result<u8, String> {
+fn render(a: Options, log: LogSettings) -> Result<u8, String> {
     #[cfg(feature = "ggml")]
     ggtts_qwen3_tts::native_logging::install(log).map_err(str::to_string)?;
     render_with_loader(a, log, load_engine)
 }
 
 fn render_with_loader(
-    a: Args,
+    a: Options,
     log: LogSettings,
-    loader: impl FnOnce(&str, &Args, &Path) -> Result<Box<dyn Engine>, String>,
+    loader: impl FnOnce(&str, &Options, &Path) -> Result<Box<dyn Engine>, String>,
 ) -> Result<u8, String> {
     render_with_story_reader(a, log, loader, |path| {
         std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
@@ -511,20 +550,20 @@ fn lexical_absolute(path: &Path) -> PathBuf {
 }
 
 fn render_with_story_reader(
-    a: Args,
+    a: Options,
     log: LogSettings,
-    loader: impl FnOnce(&str, &Args, &Path) -> Result<Box<dyn Engine>, String>,
+    loader: impl FnOnce(&str, &Options, &Path) -> Result<Box<dyn Engine>, String>,
     read_story: impl FnOnce(&Path) -> Result<String, String>,
 ) -> Result<u8, String> {
     render_with_stream_opener(a, log, loader, read_story, open_stream)
 }
 
 fn render_with_stream_opener(
-    a: Args,
+    a: Options,
     log: LogSettings,
-    loader: impl FnOnce(&str, &Args, &Path) -> Result<Box<dyn Engine>, String>,
+    loader: impl FnOnce(&str, &Options, &Path) -> Result<Box<dyn Engine>, String>,
     read_story: impl FnOnce(&Path) -> Result<String, String>,
-    stream_opener: impl FnOnce(&Args) -> Result<Option<StreamWriter<Box<dyn std::io::Write>>>, String>,
+    stream_opener: impl FnOnce(&Options) -> Result<Option<StreamWriter<Box<dyn std::io::Write>>>, String>,
 ) -> Result<u8, String> {
     render_with_models(a, log, loader, read_story, stream_opener, resolve_models)
 }
@@ -532,31 +571,33 @@ fn render_with_stream_opener(
 /// [`render_with_stream_opener`] with the model resolution passed in, so a test can resolve the default files from a
 /// prepared cache without the network.
 fn render_with_models(
-    mut a: Args,
+    mut a: Options,
     log: LogSettings,
-    loader: impl FnOnce(&str, &Args, &Path) -> Result<Box<dyn Engine>, String>,
+    loader: impl FnOnce(&str, &Options, &Path) -> Result<Box<dyn Engine>, String>,
     read_story: impl FnOnce(&Path) -> Result<String, String>,
-    stream_opener: impl FnOnce(&Args) -> Result<Option<StreamWriter<Box<dyn std::io::Write>>>, String>,
-    resolve: impl FnOnce(&mut Args, &str, LogSettings) -> Result<Vec<ggtts_models::ModelFile>, String>,
+    stream_opener: impl FnOnce(&Options) -> Result<Option<StreamWriter<Box<dyn std::io::Write>>>, String>,
+    resolve: impl FnOnce(&mut Options, &str, LogSettings) -> Result<Vec<ggtts_models::ModelFile>, String>,
 ) -> Result<u8, String> {
-    if a.trace_level.is_some() && (a.trace.is_none() || a.story.is_none()) {
+    // The table refuses --trace-level without --trace; a trace level is a story's only.
+    if a.observe.trace_level.is_some() && a.render.story.is_none() {
         return Err("--trace-level requires a story and --trace".into());
     }
-    if a.timing_report.as_ref().is_some_and(|p| p.exists()) {
+    if a.observe.timing_report.as_ref().is_some_and(|p| p.exists()) {
         return Err("--timing-report must be a new file".into());
     }
-    if a.duration_report
+    if a.observe
+        .duration_report
         .as_ref()
         .is_some_and(|p| std::fs::symlink_metadata(p).is_ok())
     {
         return Err("--duration-report must be a new file".into());
     }
-    if a.out.is_none() && a.stream.is_none() {
+    if a.output.out.is_none() && a.output.stream.is_none() {
         return Err("--out is required (or --stream)".into());
     }
     // Reject universally invalid input before probing the model's architecture.
     // Ceiling-dependent validation follows once the engine profile is known.
-    let story_input = match (&a.text, &a.story) {
+    let story_input = match (&a.render.text, &a.render.story) {
         (Some(text), None) => {
             if text.chars().all(ggtts_core::text::is_strip_space) {
                 return Err("text is empty".into());
@@ -578,8 +619,8 @@ fn render_with_models(
         _ => return Err("give exactly one of --text or --story".into()),
     };
     // Refuse a bad instrument config before spending the render on it.
-    let instruments = if a.instruments.any() {
-        if a.out.is_none() {
+    let instruments = if instrument_flags(&a).any() {
+        if a.output.out.is_none() {
             return Err("instruments measure the --out FLAC: give --out".into());
         }
         let c = resolve_instrument_config(&a)?;
@@ -591,13 +632,15 @@ fn render_with_models(
     // Refuse a duration report that cannot be written before spending the render on it. The instrument report
     // directory is the one parent that may not exist yet: the runner creates it.
     if let Some(parent) = a
+        .observe
         .duration_report
         .as_ref()
         .and_then(|p| p.parent())
         .filter(|d| !d.as_os_str().is_empty() && !d.is_dir())
     {
-        let report_dir = instruments.as_ref().and(a.out.as_ref()).map(|out| {
-            a.report
+        let report_dir = instruments.as_ref().and(a.output.out.as_ref()).map(|out| {
+            a.observe
+                .report
                 .clone()
                 .unwrap_or_else(|| out.with_extension("flac").with_extension("report"))
         });
@@ -605,21 +648,19 @@ fn render_with_models(
             return Err(format!("--duration-report: {} is not a directory", parent.display()));
         }
     }
-    let name = match (a.engine.as_deref(), &a.model) {
-        (None | Some("auto"), Some(model)) => {
-            gguf_arch::architecture(model).map_err(|e| format!("{}: {e}", model.display()))?
-        }
+    let name = match (a.load.engine.as_str(), &a.load.model) {
+        ("auto", Some(model)) => gguf_arch::architecture(model).map_err(|e| format!("{}: {e}", model.display()))?,
         // No model: the default engine, on its default files.
-        (None | Some("auto"), None) => DEFAULT_ENGINE.to_string(),
-        (Some(e), _) => e.to_string(),
+        ("auto", None) => DEFAULT_ENGINE.to_string(),
+        (e, _) => e.to_string(),
     };
-    if a.speaker.is_some() && name != "qwen3-tts" {
+    if a.load.speaker.is_some() && name != "qwen3-tts" {
         return Err("--speaker is only supported by the qwen3-tts engine".into());
     }
-    if a.instruction.as_deref().is_some_and(|i| !i.is_empty()) && name != "qwen3-tts" {
+    if a.render.instruction.as_deref().is_some_and(|i| !i.is_empty()) && name != "qwen3-tts" {
         return Err("--instruction is only supported by the qwen3-tts engine".into());
     }
-    a.steering = load_steering(&a, &name)?;
+    load_steering(&mut a, &name)?;
     // Validate and plan before opening output files or loading model weights.
     let preplanned = if let Some((title, paragraphs)) = story_input {
         let profile = match name.as_str() {
@@ -639,7 +680,7 @@ fn render_with_models(
     };
     // Every check that needs no model has passed: only now is anything downloaded.
     let mut models = resolve(&mut a, &name, log)?;
-    let model = a.model.clone().unwrap_or_default();
+    let model = a.load.model.clone().unwrap_or_default();
     let mut stream = stream_opener(&a)?;
     let t0 = Instant::now();
     let mut engine = loader(&name, &a, &model)?;
@@ -666,16 +707,14 @@ fn render_with_models(
         .iter()
         .map(ggtts_models::ModelFile::report)
         .collect::<Result<Vec<_>, _>>()?;
-    // The instruction goes beside the model files in every report, when there is one: an empty one is none.
-    let instruction = a.instruction.clone().filter(|i| !i.is_empty());
-    // So does the steering: the file's sha256, the layers applied and the scale. An unsteered render records none.
-    let steer_record = a.steering.as_ref().map(ggtts_core::steer::Steering::record);
-    let with_instruction = |mut doc: serde_json::Value| {
-        if let Some(i) = &instruction {
-            doc["instruction"] = i.as_str().into();
-        }
-        if let Some(s) = &steer_record {
-            doc["steer"] = s.clone();
+    // Beside the model files, every report and the trace header carry what the render was asked to do differently,
+    // as the provenance record writes it (`options::REPORTED`): the instruction when not empty, and the steering's
+    // record (the file's sha256, the layers applied and the scale). One record, so they cannot disagree.
+    let record = options::record(&a, engine.info());
+    let reported = options::reported(&record);
+    let with_reported = |mut doc: serde_json::Value| {
+        if let Some(fields) = doc.as_object_mut() {
+            fields.extend(reported.clone());
         }
         doc
     };
@@ -692,7 +731,7 @@ fn render_with_models(
     let mut trace_stats = None;
     let mut stream_stats = None;
     let mut duration_chunks = None;
-    let (samples, rate) = match (&a.text, &a.story) {
+    let (samples, rate) = match (&a.render.text, &a.render.story) {
         (Some(text), None) => {
             // A one-chunk plan at the given seed, through the same entry point as a story: no redraw, no trim and
             // no level, so the output is the decoded draw as it always was (#180 and #294 change that, not this).
@@ -702,13 +741,11 @@ fn render_with_models(
                 punct: String::new(),
                 last_in_para: true,
             };
-            let mut options = RenderOptions::for_profile(engine.profile());
+            let mut options = a.render_options(engine.profile()).map_err(|r| r.to_string())?;
             options.redraw = 0;
             options.trim = false;
             options.level = false;
             options.measure_timings = true;
-            options.instruction.clone_from(&a.instruction);
-            options.steer.clone_from(&a.steering);
             let mut timing = StreamTiming::default();
             let streaming = stream.is_some();
             let mut sink = |p: StreamPiece<'_>| match stream.as_mut() {
@@ -727,7 +764,7 @@ fn render_with_models(
             let read = render_plan(
                 engine.as_mut(),
                 std::slice::from_ref(&chunk),
-                &Given(a.seed.unwrap_or(20260905)),
+                &Given(a.render.seed.unwrap_or(options::DEFAULT_SEED)),
                 &mut DurationJudge,
                 &options,
                 &mut Observers::new(&mut NullEvents, &mut hooks),
@@ -739,7 +776,7 @@ fn render_with_models(
             })?;
             frames_generated = read.frames_generated;
             let t = read.timings.unwrap_or_default();
-            if a.timing_report.is_some() {
+            if a.observe.timing_report.is_some() {
                 stage_times = read.timings;
             }
             if streaming {
@@ -764,15 +801,19 @@ fn render_with_models(
             let (title, chunks) = preplanned.expect("story was planned before loading");
             let profile = *engine.profile();
             let mut timing = StreamTiming::default();
-            let hold_s = a.stream_level_seconds.unwrap_or(ggtts_core::stream::DEFAULT_HOLD_S);
-            let raw = a.stream_raw;
+            let hold_s = a
+                .output
+                .stream_level_seconds
+                .unwrap_or(ggtts_core::stream::DEFAULT_HOLD_S);
+            let raw = a.output.stream_raw;
             let stream_mode = if raw {
                 StreamMode::Raw
             } else {
                 StreamMode::Levelled { hold_s }
             };
-            let trace_level = a.trace_level.unwrap_or(1);
+            let trace_level = a.observe.trace_level.unwrap_or(1);
             let mut trace = a
+                .observe
                 .trace
                 .as_ref()
                 .map(|path| {
@@ -794,13 +835,9 @@ fn render_with_models(
             header.model_sha256 = sha_of(&["talker", "model"]);
             header.codec_sha256 = sha_of(&["codec"]);
             header.models = model_files.clone();
-            header.instruction.clone_from(&instruction);
-            header.steer.clone_from(&steer_record);
+            header.set_reported(&record);
             emit_header(&mut events, &header);
-            let mut options = RenderOptions::for_profile(&profile);
-            options.measure_timings = a.timing_report.is_some();
-            options.instruction.clone_from(&a.instruction);
-            options.steer.clone_from(&a.steering);
+            let options = a.render_options(&profile).map_err(|r| r.to_string())?;
             let seeds = StorySeeds {
                 story_id: &title,
                 salt: &options.seed_salt,
@@ -909,7 +946,7 @@ fn render_with_models(
                     read.seconds()
                 ),
             );
-            if a.duration_report.is_some() || instruments.is_some() {
+            if a.observe.duration_report.is_some() || instruments.is_some() {
                 duration_chunks = Some(
                     read.chunks
                         .iter()
@@ -931,13 +968,13 @@ fn render_with_models(
         _ => return Err("give exactly one of --text and --story".into()),
     };
     let render_ms = measured_render_ms;
-    let duration_data = if a.duration_report.is_some() || instruments.is_some() {
-        let story = a.story.is_some();
+    let duration_data = if a.observe.duration_report.is_some() || instruments.is_some() {
+        let story = a.render.story.is_some();
         let chunk_samples = duration_chunks
             .as_ref()
             .map(|chunks| chunks.iter().filter_map(|c| c["trimmed_samples"].as_u64()).sum::<u64>());
         let joins = chunk_samples.and_then(|n| (samples.len() as u64).checked_sub(n));
-        Some(with_instruction(serde_json::json!({
+        Some(with_reported(serde_json::json!({
             "format": "ggtts-duration/1", "path": if story { "story" } else { "text" },
             "models": model_files,
             "chunks": duration_chunks,
@@ -959,7 +996,7 @@ fn render_with_models(
     drop(engine);
     let mut written = None;
     let mut artifact_write_ns = None;
-    if let Some(out) = &a.out {
+    if let Some(out) = &a.output.out {
         let started = Instant::now();
         let path = write_flac(out, &samples, rate).map_err(|e| format!("{}: {e}", out.display()))?;
         artifact_write_ns = Some(started.elapsed().as_nanos());
@@ -993,14 +1030,14 @@ fn render_with_models(
         writeln!(file, "{data}").map_err(|e| format!("duration report {}: {e}", path.display()))
     };
     let write_timing = |instrument_ms: Option<u128>| -> Result<(), String> {
-        let Some(path) = &a.timing_report else {
+        let Some(path) = &a.observe.timing_report else {
             return Ok(());
         };
         use std::io::Write;
         let (log_records, log_sink_ns, log_lock_wait_ns) = ggtts_core::logging::stats();
         let stage = stage_times.map(|t| serde_json::json!({
             "generate_ns": t.generate_ns as u64, "decode_ns": t.decode_ns as u64,
-            "judge_ns": a.story.as_ref().map(|_| t.judge_ns as u64),
+            "judge_ns": a.render.story.as_ref().map(|_| t.judge_ns as u64),
             "generated_frames_per_second": (t.generate_ns > 0).then(|| frames_generated as f64 * 1e9 / t.generate_ns as f64)
         }));
         let trace = trace_stats.map(|(level, s): (u8, ggtts_core::trace::TraceSinkStats)| {
@@ -1017,7 +1054,7 @@ fn render_with_models(
             },
         );
         let audio_seconds = (rate > 0).then(|| samples.len() as f64 / f64::from(rate));
-        let report = with_instruction(serde_json::json!({
+        let report = with_reported(serde_json::json!({
             "models": model_files,
             "format": "ggtts-timing/1", "engine": engine_info.family, "backend": engine_info.backend,
             "parity": engine_info.parity, "load_ms": load_ms as u64, "render_ms": render_ms as u64,
@@ -1037,7 +1074,7 @@ fn render_with_models(
         writeln!(file, "{report}").map_err(|e| format!("--timing-report {}: {e}", path.display()))
     };
     let (Some(config), Some(path)) = (instruments, written) else {
-        if let (Some(path), Some(data)) = (&a.duration_report, &duration_data) {
+        if let (Some(path), Some(data)) = (&a.observe.duration_report, &duration_data) {
             write_duration(path, data)?;
         }
         write_timing(None)?;
@@ -1048,7 +1085,7 @@ fn render_with_models(
         .and_then(|s| s.to_str())
         .unwrap_or("render")
         .to_string();
-    let run_id = a.run.clone().unwrap_or_else(|| {
+    let run_id = a.observe.run.clone().unwrap_or_else(|| {
         let secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
@@ -1057,20 +1094,27 @@ fn render_with_models(
     let inputs = ggtts_instruments::Inputs {
         run: run_id,
         render: render_id,
-        report_dir: a.report.clone().unwrap_or_else(|| path.with_extension("report")),
+        report_dir: a
+            .observe
+            .report
+            .clone()
+            .unwrap_or_else(|| path.with_extension("report")),
         audio: path.clone(),
-        audio_state: if a.story.is_some() {
+        audio_state: if a.render.story.is_some() {
             ggtts_core::report::AudioState::Trimmed
         } else {
             ggtts_core::report::AudioState::Raw
         },
         audio_seconds: (rate > 0).then(|| samples.len() as f64 / f64::from(rate)),
-        events: a.trace.clone(),
+        events: a.observe.trace.clone(),
         bin_dir: None,
         instruments_dir: None,
         models: Some(model_files.clone()),
-        instruction: instruction.clone(),
-        steer: steer_record.clone(),
+        instruction: reported
+            .get("instruction")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        steer: reported.get("steer").cloned(),
     };
     let summary = ggtts_instruments::runner::run_with_logging(&config, &inputs, log)?;
     if let Some(data) = &duration_data {
@@ -1079,7 +1123,7 @@ fn render_with_models(
         let file = inputs.report_dir.join("duration.json");
         std::fs::write(&file, format!("{data}\n")).map_err(|e| format!("duration report {}: {e}", file.display()))?;
         // Resolve after the runner creates its directory, including path aliases.
-        if let Some(explicit) = &a.duration_report {
+        if let Some(explicit) = &a.observe.duration_report {
             let same_file = std::fs::canonicalize(explicit)
                 .ok()
                 .zip(std::fs::canonicalize(&file).ok())
@@ -1141,10 +1185,10 @@ fn render_with_models(
     Ok(summary.exit_code())
 }
 
-fn resolve_instrument_config(a: &Args) -> Result<ggtts_instruments::Config, String> {
-    let mut config = a.instruments.resolve()?;
+fn resolve_instrument_config(a: &Options) -> Result<ggtts_instruments::Config, String> {
+    let mut config = instrument_flags(a).resolve()?;
     if config.device.is_none() {
-        config.set_device(a.device.as_deref().unwrap_or("cpu"))?;
+        config.set_device(a.load.device.as_deref().unwrap_or("cpu"))?;
     }
     Ok(config)
 }
@@ -1172,20 +1216,29 @@ fn engine_lines() -> Vec<String> {
 }
 
 fn main() -> ExitCode {
-    let raw: Vec<String> = std::env::args().skip(1).collect();
-    let (log, args) = match LogSettings::from_args(&raw) {
-        Ok(parsed) => parsed,
-        Err(e) => {
-            e.settings.stderr(
-                LogLevel::Error,
-                "error",
-                "logging_config",
-                format_args!("{}", e.message),
-            );
-            return ExitCode::from(ggtts_instruments::runner::EXIT_RENDER_FAILED);
-        }
-    };
-    match args.first().map(String::as_str) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let env = |name: &str| std::env::var(name).ok();
+    // One parser, the table's: every flag and the environment variables it spells (GGTTS_LOG_LEVEL and
+    // GGTTS_LOG_FORMAT among them), flags winning.
+    let parsed = options_from(&args, &env);
+    if let Some(r) = parsed.as_ref().err().filter(|r| is_logging(r)) {
+        refusal_settings(&args, &env).stderr(
+            LogLevel::Error,
+            "error",
+            "logging_config",
+            format_args!("{}", refusal_message(r, &args)),
+        );
+        return ExitCode::from(ggtts_instruments::runner::EXIT_RENDER_FAILED);
+    }
+    // `--version` and `--help` stand alone, after any logging flags.
+    let first = options::walk_args(&args)
+        .into_iter()
+        .find(|a| {
+            !a.row
+                .is_some_and(|d| d.key() == "observe.log_level" || d.key() == "observe.log_format")
+        })
+        .map(|a| a.flag);
+    match first {
         None | Some("--version") | Some("-V") => {
             for line in ggtts_core::version_lines(BINARY) {
                 println!("{line}");
@@ -1204,9 +1257,12 @@ fn main() -> ExitCode {
         Some(_) => {
             // The usage helps after a command line that did not parse; after a refused model, voice or render it
             // only buries the reason.
-            let (result, bad_arguments) = match parse(&args) {
-                Ok(a) => (render(a, log), false),
-                Err(e) => (Err(e), true),
+            let (log, result, bad_arguments) = match parsed {
+                Ok(a) => {
+                    let log = log_settings(&a);
+                    (log, render(a, log), false)
+                }
+                Err(r) => (refusal_settings(&args, &env), Err(refusal_message(&r, &args)), true),
             };
             match result {
                 Ok(code) => ExitCode::from(code),
@@ -1224,28 +1280,184 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn instrument_device_inherits_render_and_respects_override() {
-        let args = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let parsed = super::parse(&args(&["--device", "cuda"])).unwrap();
-        assert_eq!(
-            super::resolve_instrument_config(&parsed).unwrap().device.as_deref(),
-            Some("cuda")
-        );
-        let parsed = super::parse(&args(&["--device", "cuda", "--instrument-device", "cpu"])).unwrap();
-        assert_eq!(
-            super::resolve_instrument_config(&parsed).unwrap().device.as_deref(),
-            Some("cpu")
-        );
-        let parsed = super::parse(&args(&[])).unwrap();
-        assert_eq!(
-            super::resolve_instrument_config(&parsed).unwrap().device.as_deref(),
-            Some("cpu")
-        );
-    }
     use super::*;
     use ggtts_core::engine::{ChunkRequest, Codes, EngineError, EngineInfo, Generated, Pcm};
     use ggtts_core::profile::Profile;
+
+    /// A command line as `ggtts-render` reads it, with no environment, refused in its own words.
+    fn parse<S: AsRef<str>>(args: &[S]) -> Result<Options, String> {
+        let args: Vec<String> = args.iter().map(|s| s.as_ref().to_string()).collect();
+        options_from(&args, &|_| None).map_err(|r| refusal_message(&r, &args))
+    }
+
+    /// The options of a command line `ggtts-render` takes.
+    fn opts<S: AsRef<str>>(args: &[S]) -> Options {
+        parse(args).unwrap()
+    }
+
+    /// A path as a command-line argument.
+    fn arg(p: &Path) -> String {
+        p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn instrument_device_inherits_render_and_respects_override() {
+        let device = |args: &[&str]| resolve_instrument_config(&opts(args)).unwrap().device;
+        assert_eq!(device(&["--device", "cuda"]).as_deref(), Some("cuda"));
+        assert_eq!(
+            device(&["--device", "cuda", "--instrument-device", "cpu"]).as_deref(),
+            Some("cpu")
+        );
+        assert_eq!(device(&[]).as_deref(), Some("cpu"));
+    }
+
+    /// AC1 of #289: the flags `USAGE` names are the table's flags of every section `ggtts-render` takes (each row by
+    /// its first spelling), and every spelling of those rows is accepted. A `ggtts-book` flag is refused.
+    #[test]
+    fn usage_names_every_table_flag_ggtts_render_takes_and_no_other() {
+        use std::collections::BTreeSet;
+        let usage: BTreeSet<&str> = USAGE
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .filter(|w| w.starts_with("--") && *w != "--version")
+            .collect();
+        let table: BTreeSet<&str> = options::TABLE
+            .iter()
+            .filter(|d| accepts(d))
+            .filter_map(|d| d.flags.first().copied())
+            .collect();
+        assert_eq!(usage, table, "USAGE and the table's ggtts-render flags differ");
+        for d in options::TABLE.iter().filter(|d| !d.flags.is_empty()) {
+            let value = match d.kind {
+                options::Kind::Bool => None,
+                options::Kind::Int { min, .. } => Some(min.max(1).to_string()),
+                options::Kind::Seed | options::Kind::Number { .. } => Some("1".into()),
+                options::Kind::Choice(list) => Some(list[0].into()),
+                options::Kind::Layers => Some("3".into()),
+                _ => Some("x".into()),
+            };
+            let needed = d
+                .requires
+                .and_then(|r| options::TABLE.iter().find(|n| n.section == d.section && n.name == r))
+                .map(|n| vec![n.flags[0].to_string(), "x".to_string()])
+                .unwrap_or_default();
+            for f in d.flags {
+                let mut line = vec![f.to_string()];
+                line.extend(value.clone());
+                line.extend(needed.clone());
+                let got = parse(&line);
+                if accepts(d) {
+                    assert!(got.is_ok(), "{line:?}: {got:?}");
+                } else {
+                    assert_eq!(got.err(), Some(format!("invalid argument: {f}")), "{line:?}");
+                }
+            }
+        }
+    }
+
+    /// AC4 of #289: each is refused while the command line is read, before any model file is touched, with the
+    /// message `ggtts-render` has always given.
+    #[test]
+    fn bad_command_lines_are_refused_with_the_messages_they_always_had() {
+        for (line, want) in [
+            (&["--bogus"][..], "invalid argument: --bogus"),
+            (&["--steer-scale", "nan"][..], "--steer-scale must be a finite number"),
+            (&["--steer-scale", "x"][..], "--steer-scale needs a number"),
+            (&["--trace-level", "3"][..], "--trace-level must be 1 or 2"),
+            (
+                &["--trace-level", "2"][..],
+                "--trace-level requires a story and --trace",
+            ),
+            (&["--stream-raw"][..], "--stream-raw needs --stream"),
+            (&["--stream-format", "s16le"][..], "--stream-format needs --stream"),
+            (
+                &["--stream-level-seconds", "2"][..],
+                "--stream-level-seconds needs --stream",
+            ),
+            (
+                &["--stream", "-", "--stream-level-seconds", "-1"][..],
+                "--stream-level-seconds must be 0 or more",
+            ),
+            (
+                &["--steer-scale", "0.5"][..],
+                "--steer-scale and --steer-layers need --steer",
+            ),
+            (
+                &["--steer-layers", "3"][..],
+                "--steer-scale and --steer-layers need --steer",
+            ),
+            (&["--seed", "-1"][..], "--seed needs an integer"),
+            (&["--threads", "four"][..], "--threads needs an integer"),
+            (&["--speaker", " "][..], "--speaker must not be empty"),
+            (&["--device", "tpu"][..], "--device must be cpu or cuda, not tpu"),
+            (
+                &["--stream", "-", "--stream-format", "mp3"][..],
+                "--stream-format must be wav or s16le, not mp3",
+            ),
+            (
+                &["--log-level", "loud"][..],
+                "log level must be error, warn, info, debug or trace",
+            ),
+            (&["--out"][..], "--out needs a value"),
+        ] {
+            // A model that does not exist, so any attempt to read it would fail differently.
+            let mut full: Vec<&str> = vec!["--model", "/no/such/model.gguf"];
+            full.extend(line);
+            assert_eq!(parse(&full).err().as_deref(), Some(want), "{line:?}");
+        }
+    }
+
+    /// AC6 of #289: `GGTTS_LOG_LEVEL` and `GGTTS_LOG_FORMAT` are read through the table, and a flag wins over its
+    /// variable, which is then not read at all.
+    #[test]
+    fn the_logging_variables_are_read_through_the_table_and_a_flag_wins() {
+        fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+            move |name| pairs.iter().find(|(k, _)| *k == name).map(|(_, v)| v.to_string())
+        }
+        let settings = |args: &[&str], vars: &'static [(&'static str, &'static str)]| {
+            let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            options_from(&args, &env(vars)).map(|o| log_settings(&o))
+        };
+        let both = &[("GGTTS_LOG_LEVEL", "debug"), ("GGTTS_LOG_FORMAT", "json")];
+        assert_eq!(
+            settings(&[], both).unwrap(),
+            LogSettings {
+                level: LogLevel::Debug,
+                format: LogFormat::Json
+            }
+        );
+        assert_eq!(
+            settings(&["--log-level", "error", "--log-format", "text"], both).unwrap(),
+            LogSettings {
+                level: LogLevel::Error,
+                format: LogFormat::Text
+            }
+        );
+        assert_eq!(settings(&[], &[]).unwrap(), LogSettings::default());
+        // The model cache's variable is read through the table too, and is where the cache is.
+        let o = options_from(&[], &env(&[("GGTTS_CACHE_DIR", "/tmp/ggtts-cache-from-env")])).unwrap();
+        assert_eq!(cache_for(&o).unwrap().root(), Path::new("/tmp/ggtts-cache-from-env"));
+        // An unusable variable is never read under its flag, and is refused, in the logging words, without it.
+        let unusable = &[("GGTTS_LOG_FORMAT", "yaml")];
+        assert_eq!(
+            settings(&["--log-format", "json"], unusable).unwrap().format,
+            LogFormat::Json
+        );
+        let r = options_from(&[], &env(unusable)).unwrap_err();
+        assert!(is_logging(&r));
+        assert_eq!(refusal_message(&r, &[]), "log format must be text or json");
+        // A refusal is reported in the format asked for, by the flag over the variable.
+        let line = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let format = |a: &[&str], vars| refusal_settings(&line(a), &env(vars)).format;
+        assert_eq!(
+            format(&["--log-level", "loud", "--log-format", "json"], &[]),
+            LogFormat::Json
+        );
+        assert_eq!(format(&["--bogus"], &[("GGTTS_LOG_FORMAT", "json")]), LogFormat::Json);
+        assert_eq!(
+            format(&["--log-format", "text", "--bogus"], &[("GGTTS_LOG_FORMAT", "json")]),
+            LogFormat::Text
+        );
+    }
 
     #[test]
     fn engine_is_dropped_before_instrument_child_and_timing_keeps_metadata() {
@@ -1293,23 +1505,27 @@ mod tests {
             }
         });
         let timing = root.join("timing.json");
-        let mut args = Args {
-            engine: Some("fake".into()),
-            text: Some("hello".into()),
-            out: Some(root.join("out.flac")),
-            report: Some(root.join("report")),
-            timing_report: Some(timing.clone()),
-            ..Args::default()
-        };
-        args.instruments.take(
-            "--instrument",
-            format!(
-                "lifecycle,command={},interpreter={python},version=1,arg.marker={}",
-                script.display(),
-                marker.display()
-            ),
+        let spec = format!(
+            "lifecycle,command={},interpreter={python},version=1,arg.marker={}",
+            script.display(),
+            marker.display()
         );
-        args.instruments.take("--require", "lifecycle".into());
+        let args = opts(&[
+            "--engine",
+            "fake",
+            "--text",
+            "hello",
+            "--out",
+            &arg(&root.join("out.flac")),
+            "--report",
+            &arg(&root.join("report")),
+            "--timing-report",
+            &arg(&timing),
+            "--instrument",
+            &spec,
+            "--require",
+            "lifecycle",
+        ]);
         let log = LogSettings {
             level: LogLevel::Error,
             format: LogFormat::Text,
@@ -1330,54 +1546,55 @@ mod tests {
     #[cfg(feature = "ggml")]
     #[test]
     fn qwen_voice_uses_explicit_speaker_or_legacy_default() {
-        assert_eq!(qwen_voice(&Args::default()).unwrap().speaker, "hk_cantonese_speaker");
-        let args = Args {
-            speaker: Some("hk_voice_343".into()),
-            ..Args::default()
-        };
+        assert_eq!(qwen_voice(&Options::default()).unwrap().speaker, "hk_cantonese_speaker");
+        let args = opts(&["--speaker", "hk_voice_343"]);
         assert_eq!(qwen_voice(&args).unwrap().speaker, "hk_voice_343");
-        let args = Args {
-            speaker: Some("hk_voice_777".into()),
-            story: Some("story".into()),
-            ..Args::default()
-        };
+        let args = opts(&["--speaker", "hk_voice_777", "--story", "story"]);
         assert_eq!(qwen_voice(&args).unwrap().speaker, "hk_voice_777");
     }
 
     #[test]
     fn speaker_selection_is_qwen_only_and_reaches_the_loader() {
-        let a = parse(&["--speaker".into(), "hk_voice_343".into()]).unwrap();
-        assert_eq!(a.speaker.as_deref(), Some("hk_voice_343"));
-        assert!(parse(&["--speaker".into(), "  ".into()]).is_err());
-        assert!(parse(&["--speaker".into()]).is_err());
+        let a = opts(&["--speaker", "hk_voice_343"]);
+        assert_eq!(a.load.speaker.as_deref(), Some("hk_voice_343"));
+        assert!(parse(&["--speaker", "  "]).is_err());
+        assert!(parse(&["--speaker"]).is_err());
         let log = LogSettings {
             level: LogLevel::Error,
             format: LogFormat::Text,
         };
-        let args = Args {
-            engine: Some("qwen3-tts".into()),
-            model: Some("unused".into()),
-            // Both paths given, so nothing is resolved from the cache.
-            codec: Some("unused-codec".into()),
-            text: Some("hello".into()),
-            out: Some("unused.flac".into()),
-            speaker: a.speaker,
-            ..Args::default()
-        };
+        // Both paths given, so nothing is resolved from the cache.
+        let args = opts(&[
+            "--engine",
+            "qwen3-tts",
+            "--model",
+            "unused",
+            "--codec",
+            "unused-codec",
+            "--text",
+            "hello",
+            "--out",
+            "unused.flac",
+            "--speaker",
+            "hk_voice_343",
+        ]);
         let err = render_with_loader(args, log, |name, a, _| {
             assert_eq!(name, "qwen3-tts");
-            assert_eq!(a.speaker.as_deref(), Some("hk_voice_343"));
+            assert_eq!(a.load.speaker.as_deref(), Some("hk_voice_343"));
             Err("loader reached".into())
         })
         .unwrap_err();
         assert_eq!(err, "loader reached");
-        let args = Args {
-            engine: Some("fake".into()),
-            text: Some("hello".into()),
-            out: Some("unused.flac".into()),
-            speaker: Some("hk_voice_343".into()),
-            ..Args::default()
-        };
+        let args = opts(&[
+            "--engine",
+            "fake",
+            "--text",
+            "hello",
+            "--out",
+            "unused.flac",
+            "--speaker",
+            "hk_voice_343",
+        ]);
         let err = render_with_loader(args, log, |_, _, _| panic!("must reject before loading")).unwrap_err();
         assert!(err.contains("only supported by the qwen3-tts engine"));
     }
@@ -1409,16 +1626,10 @@ mod tests {
 
     #[test]
     fn instruction_is_one_flag_that_reaches_every_request_and_only_qwen() {
-        let a = parse(&["--instruction".into(), "Speak slowly.".into()]).unwrap();
-        assert_eq!(a.instruction.as_deref(), Some("Speak slowly."));
-        assert_eq!(
-            parse(&["--instruction".into(), "".into()])
-                .unwrap()
-                .instruction
-                .as_deref(),
-            Some("")
-        );
-        assert!(parse(&["--instruction".into()]).is_err());
+        let a = opts(&["--instruction", "Speak slowly."]);
+        assert_eq!(a.render.instruction.as_deref(), Some("Speak slowly."));
+        assert_eq!(opts(&["--instruction", ""]).render.instruction.as_deref(), Some(""));
+        assert!(parse(&["--instruction"]).is_err());
         let log = LogSettings {
             level: LogLevel::Error,
             format: LogFormat::Text,
@@ -1428,22 +1639,30 @@ mod tests {
         // The text path and the story path both hand the instruction to every request, as given.
         for story in [false, true] {
             let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-            let args = Args {
-                engine: Some("qwen3-tts".into()),
-                offline: true,
-                text: (!story).then(|| "今日天氣好好。".into()),
-                story: story.then(|| "story.txt".into()),
-                out: Some(dir.join(format!("{story}.flac"))),
-                instruction: Some("Speak slowly.".into()),
-                ..Args::default()
+            let input = if story {
+                ["--story", "story.txt"]
+            } else {
+                ["--text", "今日天氣好好。"]
             };
+            let out = arg(&dir.join(format!("{story}.flac")));
+            let args = opts(&[
+                "--engine",
+                "qwen3-tts",
+                "--offline",
+                input[0],
+                input[1],
+                "--out",
+                &out,
+                "--instruction",
+                "Speak slowly.",
+            ]);
             let s = seen.clone();
             render_with_models(
                 args,
                 log,
                 move |name, a, _| {
                     assert_eq!(name, "qwen3-tts");
-                    assert_eq!(a.instruction.as_deref(), Some("Speak slowly."));
+                    assert_eq!(a.render.instruction.as_deref(), Some("Speak slowly."));
                     Ok(Box::new(Instructed {
                         inner: ggtts_fake::FakeEngine::default(),
                         seen: s,
@@ -1464,12 +1683,17 @@ mod tests {
             );
         }
         // Another engine refuses a non-empty instruction before loading; an empty one is no instruction.
-        let fake = |instruction: &str| Args {
-            engine: Some("fake".into()),
-            text: Some("今日天氣好好。".into()),
-            out: Some(dir.join("fake.flac")),
-            instruction: Some(instruction.into()),
-            ..Args::default()
+        let fake = |instruction: &str| {
+            opts(&[
+                "--engine",
+                "fake",
+                "--text",
+                "今日天氣好好。",
+                "--out",
+                &arg(&dir.join("fake.flac")),
+                "--instruction",
+                instruction,
+            ])
         };
         let err = render_with_loader(fake("Speak slowly."), log, |_, _, _| {
             panic!("must reject before loading")
@@ -1540,14 +1764,17 @@ mod tests {
         let story = root.join("story.txt");
         std::fs::write(&story, "Title\nA short sentence.\n").unwrap();
         let report = root.join("timing.json");
-        let args = Args {
-            engine: Some("fake".into()),
-            story: Some(story),
-            stream: Some(root.join("stream.wav").to_string_lossy().into_owned()),
-            stream_raw: true,
-            timing_report: Some(report.clone()),
-            ..Args::default()
-        };
+        let args = opts(&[
+            "--engine",
+            "fake",
+            "--story",
+            &arg(&story),
+            "--stream",
+            &arg(&root.join("stream.wav")),
+            "--stream-raw",
+            "--timing-report",
+            &arg(&report),
+        ]);
         let log = LogSettings {
             level: LogLevel::Error,
             format: LogFormat::Text,
@@ -1602,16 +1829,21 @@ mod tests {
         let run = |name: &str, delay: Option<Duration>| {
             let timing_path = root.join(format!("{name}-timing.json"));
             let trace_path = root.join(format!("{name}-trace.jsonl"));
-            let args = Args {
-                engine: Some("fake".into()),
-                story: Some(root.join("story.txt")),
-                stream: Some("in-memory".into()),
-                stream_raw: true,
-                timing_report: Some(timing_path.clone()),
-                trace: Some(trace_path.clone()),
-                trace_level: Some(2),
-                ..Args::default()
-            };
+            let args = opts(&[
+                "--engine",
+                "fake",
+                "--story",
+                &arg(&root.join("story.txt")),
+                "--stream",
+                "in-memory",
+                "--stream-raw",
+                "--timing-report",
+                &arg(&timing_path),
+                "--trace",
+                &arg(&trace_path),
+                "--trace-level",
+                "2",
+            ]);
             let log = LogSettings {
                 level: LogLevel::Error,
                 format: LogFormat::Text,
@@ -1705,23 +1937,26 @@ mod tests {
             let report = root.join(format!("{mode}.json"));
             let trace = root.join(format!("{mode}.jsonl"));
             let story = root.join(format!("{mode}.txt"));
-            let mut args = Args {
-                engine: Some("fake".into()),
-                stream: Some(stream.to_string_lossy().into_owned()),
-                timing_report: Some(report.clone()),
-                ..Args::default()
-            };
+            let mut line = vec![
+                "--engine".to_string(),
+                "fake".into(),
+                "--stream".into(),
+                arg(&stream),
+                "--timing-report".into(),
+                arg(&report),
+            ];
             if mode == "text" {
-                args.text = Some("A test.".into());
+                line.extend(["--text".into(), "A test.".into()]);
             } else {
                 std::fs::write(&story, "Title\nFirst sentence.\nSecond sentence.\n").unwrap();
-                args.story = Some(story);
-                args.trace = Some(trace.clone());
-                args.stream_raw = mode == "raw-story" || mode == "mixed-story";
-                if !args.stream_raw {
-                    args.stream_level_seconds = Some(60.0);
+                line.extend(["--story".into(), arg(&story), "--trace".into(), arg(&trace)]);
+                if mode == "raw-story" || mode == "mixed-story" {
+                    line.push("--stream-raw".into());
+                } else {
+                    line.extend(["--stream-level-seconds".into(), "60".into()]);
                 }
             }
+            let args = opts(&line);
             let all_empty = mode != "mixed-story";
             let code =
                 render_with_loader(args, log, move |_, _, _| Ok(Box::new(EmptyThenAudio::new(all_empty)))).unwrap();
@@ -1759,17 +1994,24 @@ mod tests {
         std::fs::write(&story, "Title\nA short sentence.\n").unwrap();
         let trace = root.join("trace.jsonl");
         let report = root.join("report");
-        let mut args = Args {
-            engine: Some("fake".into()),
-            story: Some(story),
-            out: Some(root.join("out.flac")),
-            stream: Some(root.join("stream.wav").to_string_lossy().into_owned()),
-            trace: Some(trace.clone()),
-            report: Some(report.clone()),
-            ..Args::default()
-        };
-        args.instruments.take("--instrument", "render-timing".into());
-        args.instruments.take("--require", "render-timing".into());
+        let args = opts(&[
+            "--engine",
+            "fake",
+            "--story",
+            &arg(&story),
+            "--out",
+            &arg(&root.join("out.flac")),
+            "--stream",
+            &arg(&root.join("stream.wav")),
+            "--trace",
+            &arg(&trace),
+            "--report",
+            &arg(&report),
+            "--instrument",
+            "render-timing",
+            "--require",
+            "render-timing",
+        ]);
         let log = LogSettings {
             level: LogLevel::Error,
             format: LogFormat::Text,
@@ -1798,17 +2040,24 @@ mod tests {
         );
 
         // The same instrument configuration must complete when a normal decoder supplies audio.
-        let mut control = Args {
-            engine: Some("fake".into()),
-            story: Some(root.join("story.txt")),
-            out: Some(root.join("control.flac")),
-            stream: Some(root.join("control.wav").to_string_lossy().into_owned()),
-            trace: Some(root.join("control.jsonl")),
-            report: Some(root.join("control-report")),
-            ..Args::default()
-        };
-        control.instruments.take("--instrument", "render-timing".into());
-        control.instruments.take("--require", "render-timing".into());
+        let control = opts(&[
+            "--engine",
+            "fake",
+            "--story",
+            &arg(&root.join("story.txt")),
+            "--out",
+            &arg(&root.join("control.flac")),
+            "--stream",
+            &arg(&root.join("control.wav")),
+            "--trace",
+            &arg(&root.join("control.jsonl")),
+            "--report",
+            &arg(&root.join("control-report")),
+            "--instrument",
+            "render-timing",
+            "--require",
+            "render-timing",
+        ]);
         let log = LogSettings {
             level: LogLevel::Error,
             format: LogFormat::Text,
@@ -1830,28 +2079,20 @@ mod tests {
             format: LogFormat::Text,
         };
         // The fake engine needs no model; a given one is still recorded.
-        let mut a = Args::default();
+        let mut a = Options::default();
         assert!(resolve_models(&mut a, "fake", log).unwrap().is_empty());
-        let mut a = Args {
-            model: Some("m.bin".into()),
-            ..Args::default()
-        };
+        let mut a = opts(&["--model", "m.bin"]);
         let files = resolve_models(&mut a, "fake", log).unwrap();
         assert_eq!(
             (files[0].role.as_str(), files[0].source),
             ("model", ggtts_models::Source::Path)
         );
         // An engine with no default files needs its paths.
-        let mut a = Args::default();
+        let mut a = Options::default();
         let err = resolve_models(&mut a, "kitten-tts-2", log).unwrap_err();
         assert!(err.contains("--model is required"), "{err}");
         // Both Qwen paths given: used as they are, in the table's roles, with nothing downloaded or hashed.
-        let mut a = Args {
-            model: Some("talker.gguf".into()),
-            codec: Some("codec.gguf".into()),
-            offline: true,
-            ..Args::default()
-        };
+        let mut a = opts(&["--model", "talker.gguf", "--codec", "codec.gguf", "--offline"]);
         let files = resolve_models(&mut a, "qwen3-tts", log).unwrap();
         let got: Vec<_> = files
             .iter()
@@ -1864,10 +2105,10 @@ mod tests {
                 ("codec", PathBuf::from("codec.gguf"), None)
             ]
         );
-        assert_eq!(a.speaker, None, "a given talker keeps its own default speaker");
+        assert_eq!(a.load.speaker, None, "a given talker keeps its own default speaker");
         // A build without engines downloads nothing for a render it cannot run.
         if !cfg!(feature = "ggml") {
-            let mut a = Args::default();
+            let mut a = Options::default();
             let err = resolve_models(&mut a, "qwen3-tts", log).unwrap_err();
             assert!(err.contains("no engines"), "{err}");
         }
@@ -1937,23 +2178,27 @@ mod tests {
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let s = seen.clone();
         let talker = cache.path_for(&ggtts_models::QWEN3_TTS.files[0]);
-        let args = Args {
-            text: Some("今日天氣好好。".into()),
-            out: Some(root.join("out.flac")),
-            timing_report: Some(root.join("timing.json")),
-            duration_report: Some(root.join("duration.json")),
-            offline: true,
-            instruction: Some("Speak slowly and softly.".into()),
-            ..Args::default()
-        };
+        let args = opts(&[
+            "--text",
+            "今日天氣好好。",
+            "--out",
+            &arg(&root.join("out.flac")),
+            "--timing-report",
+            &arg(&root.join("timing.json")),
+            "--duration-report",
+            &arg(&root.join("duration.json")),
+            "--offline",
+            "--instruction",
+            "Speak slowly and softly.",
+        ]);
         let code = render_with_models(
             args,
             log,
             move |name, a, model| {
                 assert_eq!(name, "qwen3-tts");
                 assert_eq!(model, talker.as_path());
-                assert_eq!(a.speaker.as_deref(), Some("hk_voice_343"));
-                assert_eq!(a.instruction.as_deref(), Some("Speak slowly and softly."));
+                assert_eq!(a.load.speaker.as_deref(), Some("hk_voice_343"));
+                assert_eq!(a.render.instruction.as_deref(), Some("Speak slowly and softly."));
                 Ok(Box::new(Instructed {
                     inner: ggtts_fake::FakeEngine::default(),
                     seen: s,
@@ -1981,7 +2226,7 @@ mod tests {
             level: LogLevel::Error,
             format: LogFormat::Text,
         };
-        let resolve = |a: &mut Args| {
+        let resolve = |a: &mut Options| {
             let mut notice = Vec::new();
             resolve_models_with(
                 a,
@@ -1993,30 +2238,19 @@ mod tests {
                 &mut notice,
             )
         };
-        let mut a = Args {
-            offline: true,
-            ..Args::default()
-        };
+        let mut a = opts(&["--offline"]);
         let files = resolve(&mut a).unwrap();
-        assert_eq!(a.speaker.as_deref(), Some("hk_voice_343"));
-        assert_eq!(a.model.as_deref(), Some(files[0].path.as_path()));
-        assert_eq!(a.codec.as_deref(), Some(files[1].path.as_path()));
+        assert_eq!(a.load.speaker.as_deref(), Some("hk_voice_343"));
+        assert_eq!(a.load.model.as_deref(), Some(files[0].path.as_path()));
+        assert_eq!(a.load.codec.as_deref(), Some(files[1].path.as_path()));
         // A speaker asked for is kept.
-        let mut a = Args {
-            offline: true,
-            speaker: Some("hk_voice_777".into()),
-            ..Args::default()
-        };
+        let mut a = opts(&["--offline", "--speaker", "hk_voice_777"]);
         resolve(&mut a).unwrap();
-        assert_eq!(a.speaker.as_deref(), Some("hk_voice_777"));
+        assert_eq!(a.load.speaker.as_deref(), Some("hk_voice_777"));
         // A given talker with the default codec keeps the talker's own default.
-        let mut a = Args {
-            offline: true,
-            model: Some("my-talker.gguf".into()),
-            ..Args::default()
-        };
+        let mut a = opts(&["--offline", "--model", "my-talker.gguf"]);
         let files = resolve(&mut a).unwrap();
-        assert_eq!(a.speaker, None);
+        assert_eq!(a.load.speaker, None);
         assert_eq!(files[0].source, ggtts_models::Source::Path);
         assert_eq!(files[1].source, ggtts_models::Source::Cache);
         let _ = std::fs::remove_dir_all(root);
@@ -2025,7 +2259,7 @@ mod tests {
     /// Every engine `--version` can list reaches its own arm in `load_engine`, never the unknown-architecture refusal.
     #[test]
     fn every_engine_has_a_load_arm() {
-        let a = Args::default();
+        let a = Options::default();
         let refused = |name: &str| {
             load_engine(name, &a, Path::new("no-such-model.gguf"))
                 .err()
@@ -2057,7 +2291,11 @@ mod tests {
             self.seen
                 .borrow_mut()
                 .push(req.steer.map(ggtts_core::steer::Steering::record));
-            self.inner.generate(&ChunkRequest { steer: None, ..*req })
+            self.inner.generate(&ChunkRequest {
+                steer: None,
+                instruction: None,
+                ..*req
+            })
         }
         fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
             self.inner.decode(codes)
@@ -2082,7 +2320,7 @@ mod tests {
 
     #[test]
     fn the_steering_flags_parse_and_refuse_bad_values() {
-        let p = |args: &[&str]| parse(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let p = |args: &[&str]| parse(args);
         let a = p(&[
             "--steer",
             "s.safetensors",
@@ -2092,9 +2330,9 @@ mod tests {
             "23,24,25",
         ])
         .unwrap();
-        assert_eq!(a.steer.as_deref(), Some(Path::new("s.safetensors")));
-        assert_eq!(a.steer_scale, Some(0.25));
-        assert_eq!(a.steer_layers.as_deref(), Some(&[23, 24, 25][..]));
+        assert_eq!(a.render.steer.as_deref(), Some(Path::new("s.safetensors")));
+        assert_eq!(a.render.steer_scale, Some(0.25));
+        assert_eq!(a.render.steer_layers.as_deref(), Some(&[23, 24, 25][..]));
         for (args, want) in [
             (&["--steer-scale", "x"][..], "--steer-scale needs a number"),
             (&["--steer-scale", "inf"][..], "finite"),
@@ -2122,23 +2360,35 @@ mod tests {
         let named = steer_file(&dir, "named.safetensors", &[("model.layers.3", &[1.0, 2.0])]);
         let big = steer_file(&dir, "big.safetensors", &[("talker.layer.3", &[1.0, 1e10])]);
         let out = dir.join("out.flac");
-        let args = |engine: &str, steer: Option<&Path>, scale: Option<f64>, layers: Option<Vec<u32>>| Args {
-            engine: Some(engine.into()),
-            model: Some(dir.join("model.gguf")),
-            text: Some("今日天氣好好。".into()),
-            out: Some(out.clone()),
-            steer: steer.map(Path::to_path_buf),
-            steer_scale: scale,
-            steer_layers: layers,
-            ..Args::default()
+        let args = |engine: &str, steer: Option<&Path>, scale: Option<&str>, layers: Option<&str>| {
+            let mut line = vec![
+                "--engine".to_string(),
+                engine.into(),
+                "--model".into(),
+                arg(&dir.join("model.gguf")),
+                "--text".into(),
+                "今日天氣好好。".into(),
+                "--out".into(),
+                arg(&out),
+            ];
+            if let Some(s) = steer {
+                line.extend(["--steer".into(), arg(s)]);
+            }
+            if let Some(s) = scale {
+                line.extend(["--steer-scale".into(), s.into()]);
+            }
+            if let Some(l) = layers {
+                line.extend(["--steer-layers".into(), l.into()]);
+            }
+            line
         };
         let cases = [
             (
-                args("qwen3-tts", None, Some(0.5), None),
+                args("qwen3-tts", None, Some("0.5"), None),
                 "--steer-scale and --steer-layers need --steer",
             ),
             (
-                args("qwen3-tts", None, None, Some(vec![3])),
+                args("qwen3-tts", None, None, Some("3")),
                 "--steer-scale and --steer-layers need --steer",
             ),
             (
@@ -2159,29 +2409,32 @@ mod tests {
                 "is not named talker.layer.<i>",
             ),
             (
-                args("qwen3-tts", Some(&good), None, Some(vec![4])),
+                args("qwen3-tts", Some(&good), None, Some("4")),
                 "layer 4 is not in the steering file",
             ),
             // 1e39 parses as a finite f64 and is infinite in f32, the precision the vectors are added in.
             (
-                args("qwen3-tts", Some(&good), Some(1e39), None),
+                args("qwen3-tts", Some(&good), Some("1e39"), None),
                 "not a finite number in f32",
             ),
             (
-                args("qwen3-tts", Some(&big), Some(1e30), None),
+                args("qwen3-tts", Some(&big), Some("1e30"), None),
                 "times element 1 of layer 3",
             ),
         ];
-        for (a, want) in cases {
-            let err = render_with_models(
-                a,
-                log,
-                |_, _, _| panic!("must refuse before loading"),
-                |_| unreachable!("no story"),
-                open_stream,
-                |_, _, _| panic!("must refuse before resolving the model files"),
-            )
-            .unwrap_err();
+        for (line, want) in cases {
+            // Refused while the command line is read, or by the render before it loads or resolves anything.
+            let err = parse(&line).and_then(|a| {
+                render_with_models(
+                    a,
+                    log,
+                    |_, _, _| panic!("must refuse before loading"),
+                    |_| unreachable!("no story"),
+                    open_stream,
+                    |_, _, _| panic!("must refuse before resolving the model files"),
+                )
+            });
+            let err = err.unwrap_err();
             assert!(err.contains(want), "want {want:?}: {err}");
             assert!(!out.exists(), "a refused render wrote {}", out.display());
         }
@@ -2191,6 +2444,10 @@ mod tests {
     /// A steered render records the file's sha256, the layers applied and the scale in the timing and duration
     /// reports, the trace header, and on every request; an unsteered render records none of them. Every document
     /// validates against its schema.
+    ///
+    /// AC7 of #289: the timing report, the duration report and the trace header carry exactly the provenance
+    /// record's reported fields (`options::REPORTED`) for the same options, field for field, and the record has the
+    /// steering and the instruction it was given.
     #[test]
     fn a_steered_render_is_recorded_in_every_report_and_the_trace_header() {
         let log = LogSettings {
@@ -2206,23 +2463,52 @@ mod tests {
         let bytes = std::fs::read(&file).unwrap();
         let sha = ggtts_core::seed::hex(&ggtts_core::seed::sha256(&bytes));
         let want = serde_json::json!({"sha256": sha, "layers": [5], "scale": 0.25});
+        let expect_of = |steered: bool| steered.then(|| want.clone());
         for (tag, steered) in [("steered", true), ("plain", false)] {
             let dir = root.join(tag);
             std::fs::create_dir_all(&dir).unwrap();
             let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let s = seen.clone();
-            let args = Args {
-                story: Some(dir.join("story.txt")),
-                out: Some(dir.join("out.flac")),
-                trace: Some(dir.join("trace.jsonl")),
-                timing_report: Some(dir.join("timing.json")),
-                duration_report: Some(dir.join("duration.json")),
-                offline: true,
-                steer: steered.then(|| file.clone()),
-                steer_scale: steered.then_some(0.25),
-                steer_layers: steered.then(|| vec![5]),
-                ..Args::default()
-            };
+            let mut line = vec![
+                "--story".to_string(),
+                arg(&dir.join("story.txt")),
+                "--out".into(),
+                arg(&dir.join("out.flac")),
+                "--trace".into(),
+                arg(&dir.join("trace.jsonl")),
+                "--timing-report".into(),
+                arg(&dir.join("timing.json")),
+                "--duration-report".into(),
+                arg(&dir.join("duration.json")),
+                "--offline".into(),
+            ];
+            if steered {
+                line.extend([
+                    "--steer".into(),
+                    arg(&file),
+                    "--steer-scale".into(),
+                    "0.25".into(),
+                    "--steer-layers".into(),
+                    "5".into(),
+                    "--instruction".into(),
+                    "Speak slowly.".into(),
+                ]);
+            }
+            let args = opts(&line);
+            // The provenance record of the same options, on the engine the loader hands back.
+            let mut same = args.clone();
+            same.read_steering().unwrap();
+            let record = options::record(&same, ggtts_fake::FakeEngine::default().info());
+            assert_eq!(
+                record.get("steer"),
+                expect_of(steered).as_ref(),
+                "{tag}: the record's steer"
+            );
+            assert_eq!(
+                record.get("instruction").and_then(serde_json::Value::as_str),
+                steered.then_some("Speak slowly."),
+                "{tag}: the record's instruction"
+            );
             let code = render_with_models(
                 args,
                 log,
@@ -2251,6 +2537,9 @@ mod tests {
             ] {
                 let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(report)).unwrap()).unwrap();
                 assert_eq!(doc.get("steer"), expect.as_ref(), "{tag} {report}");
+                for k in options::REPORTED {
+                    assert_eq!(doc.get(k), record.get(k), "{tag} {report}: {k} is not the record's");
+                }
                 let errors: Vec<String> = schema(schema_name).iter_errors(&doc).map(|e| e.to_string()).collect();
                 assert!(errors.is_empty(), "{tag} {report}: {errors:?}");
             }
@@ -2260,6 +2549,9 @@ mod tests {
                 let doc: serde_json::Value = serde_json::from_str(line).unwrap();
                 if i == 0 {
                     assert_eq!(doc.get("steer"), expect.as_ref(), "{tag} trace header");
+                    for k in options::REPORTED {
+                        assert_eq!(doc.get(k), record.get(k), "{tag} trace header: {k} is not the record's");
+                    }
                 } else {
                     assert!(doc.get("steer").is_none(), "{tag}: steer outside the header: {line}");
                 }
@@ -2328,16 +2620,23 @@ mod text_path {
             let decoded = Rc::new(RefCell::new(Vec::new()));
             let stream = dir.join(format!("{seed:?}.s16"));
             let out = dir.join(format!("{seed:?}.flac"));
-            let args = Args {
-                engine: Some("fake".into()),
-                text: Some(text.into()),
-                seed,
-                out: Some(out.clone()),
-                stream: Some(stream.to_str().unwrap().into()),
-                stream_format: Some("s16le".into()),
-                stream_raw: true,
-                ..Args::default()
-            };
+            let mut line = vec![
+                "--engine".to_string(),
+                "fake".into(),
+                "--text".into(),
+                text.into(),
+                "--out".into(),
+                out.to_string_lossy().into_owned(),
+                "--stream".into(),
+                stream.to_string_lossy().into_owned(),
+                "--stream-format".into(),
+                "s16le".into(),
+                "--stream-raw".into(),
+            ];
+            if let Some(s) = seed {
+                line.extend(["--seed".into(), s.to_string()]);
+            }
+            let args = options_from(&line, &|_| None).unwrap();
             let (r, d) = (requests.clone(), decoded.clone());
             let code = render_with_loader(args, log, move |_, _, _| {
                 Ok(Box::new(Recording {

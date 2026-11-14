@@ -45,7 +45,7 @@ A **front end** is anything a person or a program renders through:
 | Front end | Where | Render path today |
 |---|---|---|
 | `ggtts-render --story` | `crates/ggtts-cli` | `render_plan`, with its stream mode as the output |
-| `ggtts-render --text` | `crates/ggtts-cli` | its own `engine.generate` and `decode`: no trim, no level, no judge |
+| `ggtts-render --text` | `crates/ggtts-cli` | `render_plan` on a one-chunk plan at `Given(seed)`, with no redraw, no trim and no level ([#278](https://github.com/dandelion-love/ggtts/issues/278)) |
 | `ggtts-book render` | `crates/ggtts-book`, on `track/epub` | its own `render_chunk`: `engine.generate` at draw 0, no judge |
 | C ABI (`libggtts_ffi`, `ggtts.h`) | `crates/ggtts-ffi` | `render_story`, `render_story_streamed` |
 | Kotlin (`ggtts.Ggtts`, over JNI) | `android/ggtts`, `crates/ggtts-ffi/src/jni.rs` | the C ABI |
@@ -102,9 +102,10 @@ observers (`Observers { events, hooks }`) and any output (`Output::Whole`, or `O
 the public step `render_chunk` per chunk (draws at a caller's `SeedSource`, a pluggable `Judge`, redraws, trim), then
 join, output and level. `render_story`, `render_story_traced`, `render_story_hooked` and `render_story_streamed` are
 wrappers over it. Before #276 they shared a private loop but each fixed its observers and output, so a caller could
-not have hooks and a stream together. The paths that still diverge are outside them: `ggtts-render --text`,
-`ggtts-book`'s `render_chunk` (moved onto the core step by [#279](https://github.com/dandelion-love/ggtts/issues/279))
-and `ggtts-kitten render` each call the engine directly.
+not have hooks and a stream together. `ggtts-render --text` renders through `render_plan` too since
+[#278](https://github.com/dandelion-love/ggtts/issues/278), with `RenderOptions::trim` and `RenderOptions::level` off.
+The paths that still diverge are outside them: `ggtts-book`'s `render_chunk` (moved onto the core step by
+[#279](https://github.com/dandelion-love/ggtts/issues/279)) and `ggtts-kitten render` each call the engine directly.
 
 ## What every epic and story states
 

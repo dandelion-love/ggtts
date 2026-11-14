@@ -139,6 +139,7 @@ fn a_book_renders_end_to_end_through_the_fake_engine() {
             rendered,
             resumed,
             refused,
+            ..
         } = &r.outcome
         {
             assert_eq!(*resumed, 0);
@@ -256,7 +257,9 @@ fn a_chunk_rendered_alone_equals_it_in_a_full_run() {
         let mut hooks = ggtts_core::hooks::Hooks::new();
         let mut events = ggtts_core::trace::NullEvents;
         let mut obs = ggtts_core::pipeline::Observers::new(&mut events, &mut hooks);
-        let alone = ggtts_book::render::render_chunk(&mut engine, plan, index, &opts, &mut obs).unwrap();
+        let alone = ggtts_book::render::render_chunk(&mut engine, plan, index, &opts, &mut obs)
+            .unwrap()
+            .bytes;
         let in_run = std::fs::read(clean.join(&stem).join(ggtts_book::manifest::chunk_file(index))).unwrap();
         assert!(
             alone == in_run,

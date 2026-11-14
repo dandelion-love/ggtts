@@ -28,6 +28,7 @@ pub const RENDER_TAKES: &[&str] = &[
     "render.steer",
     "render.steer_scale",
     "render.steer_layers",
+    "render.redraw",
     "observe.trace",
     "observe.trace_level",
     "output.out",

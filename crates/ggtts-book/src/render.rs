@@ -22,7 +22,7 @@ use ggtts_core::profile::Profile;
 use ggtts_core::trace::{emit_header, Events, Header, JsonlEvents, NullEvents};
 
 use crate::book::{Book, Chapter};
-use crate::manifest::{chunk_file, run_chapter, Resume, RunError};
+use crate::manifest::{chunk_file, run_chapter, ChunkOutput, Draws, Resume, RunError};
 use crate::plan::{ChapterPlan, DEFAULT_SEED_ROOT};
 
 /// What happened to one chapter.
@@ -38,6 +38,8 @@ pub enum ChapterOutcome {
         resumed: usize,
         /// Why an earlier manifest was not used, if one was refused.
         refused: Option<String>,
+        /// Done chunks rendered again because the redraw setting changed what a render keeps.
+        rejudged: usize,
     },
     /// Front or back matter, left out.
     Skipped { reason: String },
@@ -55,35 +57,32 @@ pub struct ChapterReport {
 pub struct BookRender {
     /// Render front and back matter too.
     pub include_skippable: bool,
-    /// The core step's options: instruction, steering, edge trim, redraws ([`book_render_options`]).
+    /// The core step's options: instruction, steering, edge trim, and the redraws a chunk the judge rejects gets.
     pub opts: RenderOptions,
 }
 
 impl BookRender {
-    /// The profile's defaults, with no instruction and no steering, leaving front and back matter out.
+    /// The profile's defaults (its redraws and edge trim), with no instruction and no steering, leaving front and
+    /// back matter out.
     pub fn for_profile(profile: &Profile) -> Self {
         Self {
             include_skippable: false,
-            opts: book_render_options(RenderOptions::for_profile(profile)),
+            opts: RenderOptions::for_profile(profile),
         }
     }
 }
 
-/// The core step's options as a book uses them: `opts`, keeping each chunk's first draw (redraw 0), as a book always
-/// has. Redraws for a book are a separate change, since they change the audio.
-pub fn book_render_options(opts: RenderOptions) -> RenderOptions {
-    RenderOptions { redraw: 0, ..opts }
-}
-
 /// Render one planned chunk through the core chunk step ([`ggtts_core::pipeline::render_chunk`]) at the plan's seeds
-/// ([`ChapterPlan::seed_at`]) with the render spec's judge, `opts` and the observers `obs`; the FLAC bytes to store.
+/// ([`ChapterPlan::seed_at`], draw 0, then 1, 2, ... for each redraw) with the render spec's judge, `opts` and the
+/// observers `obs`: a draw the judge rejects is redrawn up to `opts.redraw` times, as in a story. The FLAC bytes to
+/// store, and the draws made.
 pub fn render_chunk(
     engine: &mut dyn Engine,
     plan: &ChapterPlan,
     index: usize,
     opts: &RenderOptions,
     obs: &mut Observers<'_>,
-) -> Result<Vec<u8>, String> {
+) -> Result<ChunkOutput, String> {
     let seeds = |i: usize, _: &str, draw: u32| plan.seed_at(i, draw);
     let kept = ggtts_core::pipeline::render_chunk(
         engine,
@@ -96,7 +95,16 @@ pub fn render_chunk(
     )
     .map_err(|e| e.to_string())?;
     let pcm: Vec<i16> = kept.samples.iter().map(|&x| to_i16(x)).collect();
-    encode_flac(&pcm, kept.sample_rate).map_err(|e| e.to_string())
+    let bytes = encode_flac(&pcm, kept.sample_rate).map_err(|e| e.to_string())?;
+    let last = kept.kept();
+    Ok(ChunkOutput {
+        bytes,
+        draws: Some(Draws {
+            kept: last.draw,
+            count: kept.draws.len() as u32,
+            verdict: last.judgement.verdict.map(|v| v.as_str().to_string()),
+        }),
+    })
 }
 
 fn to_i16(x: f32) -> i16 {
@@ -313,7 +321,7 @@ pub fn render_command_options(
     let profile = *engine.profile();
     let settings = BookRender {
         include_skippable: options.book.include_skippable,
-        opts: book_render_options(options.render_options(&profile).map_err(|e| e.to_string())?),
+        opts: options.render_options(&profile).map_err(|e| e.to_string())?,
     };
     let mut plans = crate::plan::plan_book(&profile, &book, seed_root)?;
     let engine_record = provenance(engine.as_ref(), &files, speaker.as_deref());
@@ -353,14 +361,21 @@ pub fn render_command_options(
                 rendered,
                 resumed,
                 refused,
-            } => serde_json::json!({
-                "id": r.id,
-                "state": "written",
-                "file": file.strip_prefix(out).unwrap_or(file).to_string_lossy(),
-                "rendered": rendered.len(),
-                "resumed": resumed,
-                "refused_manifest": refused,
-            }),
+                rejudged,
+            } => {
+                let mut c = serde_json::json!({
+                    "id": r.id,
+                    "state": "written",
+                    "file": file.strip_prefix(out).unwrap_or(file).to_string_lossy(),
+                    "rendered": rendered.len(),
+                    "resumed": resumed,
+                    "refused_manifest": refused,
+                });
+                if *rejudged > 0 {
+                    c["rejudged"] = (*rejudged).into();
+                }
+                c
+            }
             ChapterOutcome::Skipped { reason } => serde_json::json!({"id": r.id, "state": "skipped", "reason": reason}),
         })
         .collect();
@@ -418,6 +433,15 @@ pub fn render_book_observed(
 ) -> Result<Vec<ChapterReport>, String> {
     let include_skippable = settings.include_skippable;
     let mut hooks = Hooks::new();
+    // A chapter's manifest records the redraws its chunks were rendered with, whoever planned it.
+    let plans: Vec<ChapterPlan> = plans
+        .iter()
+        .map(|p| ChapterPlan {
+            redraw: settings.opts.redraw,
+            ..p.clone()
+        })
+        .collect();
+    let plans = &plans[..];
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     claim_output(out, &book.book_id())?;
     // Record which chapters this render plans, before rendering any: `export` takes exactly these, so a directory a
@@ -488,6 +512,7 @@ pub fn render_book_observed(
                 resumed: plan.chunks.len() - start.todo.len(),
                 rendered,
                 refused: start.refused.map(|e| e.to_string()),
+                rejudged: start.rejudged.len(),
             },
         });
     }

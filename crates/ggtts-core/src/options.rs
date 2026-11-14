@@ -326,6 +326,7 @@ pub const TABLE: &[Descriptor] = &[
         ..row("steer_layers", SR, R, Kind::Layers, "null")
     },
     Descriptor {
+        flags: &["--redraw"],
         help: "Redraws allowed for a chunk the judge rejects; unset is the engine profile's.",
         ..row(
             "redraw",

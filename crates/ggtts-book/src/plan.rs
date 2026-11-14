@@ -113,6 +113,10 @@ pub struct ChapterPlan {
     /// records them: the style instruction and the steering. `Null` for a render with neither, which is also what a
     /// manifest written without the field reads as. A manifest written with other render options is not resumed.
     pub render: Value,
+    /// Redraws allowed for a chunk the judge rejects (the render option `redraw`). Not a reason to refuse a manifest:
+    /// a done chunk whose recorded draws a render at this setting would not end at is rendered again
+    /// ([`Draws::holds_at`](crate::manifest::Draws::holds_at)).
+    pub redraw: u32,
 }
 
 impl ChapterPlan {
@@ -187,6 +191,7 @@ pub fn plan_chapter(
         chunks,
         engine: Value::Null,
         render: Value::Null,
+        redraw: 0,
     })
 }
 

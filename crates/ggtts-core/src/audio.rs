@@ -110,6 +110,10 @@ pub enum Verdict {
     Runaway,
     /// Speech under the profile's [`silent_spc`](Profile::silent_spc) seconds per character.
     Silent,
+    /// The read-back lost a run of the chunk's text ([`crate::textjudge`]).
+    LostText,
+    /// The read-back said a run of the chunk's text twice ([`crate::textjudge`]).
+    RepeatedText,
 }
 
 impl Verdict {
@@ -117,6 +121,8 @@ impl Verdict {
         match self {
             Verdict::Runaway => "runaway",
             Verdict::Silent => "silent",
+            Verdict::LostText => "lost-text",
+            Verdict::RepeatedText => "repeated-text",
         }
     }
 }

@@ -13,6 +13,14 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **A text judge in the `ggtts-core` library: `textjudge::TextJudge`.** It judges a draw for duration as before,
+  then reads it back with a recogniser the caller supplies (`textjudge::Recogniser`) and rejects a draw that lost
+  a run of the chunk's text (`lost-text`) or said one twice (`repeated-text`), at 4 characters by default. Both
+  texts are folded to simplified characters with OpenCC's character table, vendored in the crate, and only CJK
+  characters are compared, so a recogniser that writes a traditional sentence in simplified characters does not
+  read as lost text. A single wrong or missing character is counted, not rejected. Known limit: the fold is
+  many-to-one, so a swap between two traditional characters with one simplified form reads as correct. No front
+  end uses it yet, and every render is unchanged; `ggtts-trace/2` allows the two new verdicts.
 - **One render entry point in the `ggtts-core` library: `pipeline::render_plan`.** It renders a plan with any trace
   level, tensor hooks and output (the whole read, or a stream raw or levelled) in one call, so combinations that had
   no function before, such as hooks with a stream, now work. It is built from a public step, `pipeline::render_chunk`,

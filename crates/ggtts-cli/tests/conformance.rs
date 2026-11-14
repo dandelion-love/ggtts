@@ -92,7 +92,8 @@ const BOOK: &[&str] = &["book.seed_root", "book.include_skippable"];
 const NOT_A_BOOK: &str = "ggtts-book's own options: ggtts-render renders a text or a story, not a book";
 const ONE_OF: &str = "--text and --story are one or the other";
 const TEXT_SALT: &str = "a one-chunk plan renders at --seed: there is no story seed to salt";
-const NO_INSTRUMENTS: &str = "instruments are out-of-process programs the CLI runs on a finished file";
+const NO_INSTRUMENTS: &str =
+    "instruments are programs run on a finished file; run them with `ggtts-render` or on the file";
 const NO_FILE: &str = "a binding hands the PCM to its caller and writes no file";
 const BINDING_SEED: &str = "a binding's seed is the story seed's salt (render.seed_salt); render.seed is the sampler seed of ggtts-render --text";
 const NO_STORY_FILE: &str = "a binding renders the text it is given; a story file is ggtts-render --story's";
@@ -180,7 +181,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (TRACE, Carried),
             (REPORTS, Refused(BOOK_REPORTS)),
             (LOG, Refused(BOOK_LOG)),
-            (INSTRUMENTS, Gap(295)),
+            (INSTRUMENTS, Carried),
             (&["output.out"], Carried),
             (STREAM, Refused(BOOK_STREAM)),
             (BOOK, Carried),

@@ -17,7 +17,8 @@ that a merge places under a released heading is caught.
   --story` and `ggtts-book render`, from one shared option (`render.judge`). An ASR (a local Qwen3-ASR, run as
   one Python process per render) reads every draw the duration judge keeps back; a draw that lost a run of 4
   characters or more (`min_run=N`), or said one twice, is rejected and redrawn at the chunk's next seed, up to
-  `--redraw`. Only CJK characters are compared, both folded to simplified. The trace records each reading in a new
+  `--redraw`. Only CJK characters are compared, both folded to simplified. An ASR that dies or misses its deadline
+  (`timeout=S`, 120 s per draw; `start_timeout=S`, 600 s to load) stops the render, which a rerun resumes. The trace records each reading in a new
   `read` event, and a book's chapter manifest in each chunk's `reads`. Off by default. It needs `--redraw N`, and is
   refused before anything is drawn when its ASR cannot start; `--text` and the bindings refuse it. A trace with
   text verdicts replays, taking them as recorded.

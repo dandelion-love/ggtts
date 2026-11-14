@@ -186,3 +186,77 @@ fn a_resume_under_another_judge_starts_the_chapter_again() {
     }
     std::fs::remove_dir_all(root).ok();
 }
+
+/// Review of #306: a worker that dies mid-render stops the render (exit 2, naming the judge), so no chunk is kept as
+/// passed without a read; the next run, with a working worker, resumes and reads every chunk it renders. No chunk's
+/// recorded read carries the dead worker's error.
+#[test]
+fn a_worker_that_dies_mid_render_stops_it_and_the_resume_reads_what_it_renders() {
+    let book = nested().write_temp("judge-dies");
+    let root = book.parent().unwrap();
+    let (model, spec) = asr(root, r#"{"exit_after": 2}"#);
+    let out = root.join("out");
+    let o = render(&book, &out, &["--judge", &spec, "--redraw", "1"]);
+    assert_eq!(o.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        stderr.contains("judge: the ASR exited") && stderr.contains("resume"),
+        "{stderr}"
+    );
+    let before = chunks(&out).iter().filter(|c| c["state"] == "done").count();
+    // The worker works again: the same command resumes and finishes.
+    std::fs::write(model.join("answers.json"), "{}").unwrap();
+    let report = ok(&render(&book, &out, &["--judge", &spec, "--redraw", "1"]));
+    let all = chunks(&out);
+    assert!(all.iter().all(|c| c["state"] == "done"));
+    assert!(
+        all.len() > before,
+        "the run stopped before the end: {before} of {}",
+        all.len()
+    );
+    for c in &all {
+        for r in c["reads"].as_array().into_iter().flatten() {
+            assert_eq!(r["error"], serde_json::Value::Null, "{c}");
+        }
+    }
+    assert!(report["chapters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["resumed"].as_u64() > Some(0)));
+    std::fs::remove_dir_all(root).ok();
+}
+
+/// Review of #306: a worker that stops answering is stopped at its deadline (`timeout=S`), and the render with it;
+/// one that never says it is ready is refused at `start_timeout`, before anything is rendered.
+#[test]
+fn a_worker_that_hangs_is_stopped_at_its_deadline() {
+    let book = nested().write_temp("judge-hangs");
+    let root = book.parent().unwrap();
+    let (_, spec) = asr(root, r#"{"hang_after": 1}"#);
+    let out = root.join("out");
+    let t = std::time::Instant::now();
+    let o = render(&book, &out, &["--judge", &format!("{spec},timeout=1"), "--redraw", "1"]);
+    assert_eq!(o.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(stderr.contains("judge: the ASR did not answer within 1 s"), "{stderr}");
+    assert!(t.elapsed().as_secs() < 60, "took {:?}", t.elapsed());
+
+    let starts = root.join("starts");
+    std::fs::create_dir_all(&starts).unwrap();
+    let (_, spec) = asr(&starts, r#"{"hang_at_start": true}"#);
+    let out = root.join("out-start");
+    let o = render(
+        &book,
+        &out,
+        &["--judge", &format!("{spec},start_timeout=1"), "--redraw", "1"],
+    );
+    assert_eq!(o.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        stderr.contains("asr-qwen did not start: the ASR did not answer within 1 s"),
+        "{stderr}"
+    );
+    assert!(!out.exists());
+    std::fs::remove_dir_all(root).ok();
+}

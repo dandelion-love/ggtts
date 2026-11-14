@@ -96,6 +96,13 @@ pub trait Recogniser {
     /// The text heard in `samples` at `sample_rate`. `text` is what the draw was asked to say, for a recogniser that
     /// uses it as context; the judge compares against it either way.
     fn recognise(&mut self, samples: &[f32], sample_rate: u32, text: &str) -> Result<String, String>;
+
+    /// Why the recogniser cannot read any more draws (its process died, or stopped answering), or `None`. An `Err`
+    /// from [`Recogniser::recognise`] with no fault is one draw it could not read; a fault ends the render
+    /// ([`crate::pipeline::Judge::fault`]).
+    fn fault(&self) -> Option<String> {
+        None
+    }
 }
 
 /// How a transcript compares with its reference, both folded ([`compare`]).
@@ -280,6 +287,10 @@ impl Reading {
 impl<R: Recogniser> Judge for TextJudge<R> {
     fn take_reading(&mut self) -> Option<serde_json::Value> {
         self.last.as_ref().map(Reading::to_json)
+    }
+
+    fn fault(&mut self) -> Option<String> {
+        self.recogniser.fault()
     }
 
     fn judge(&mut self, profile: &Profile, samples: &[f32], sample_rate: u32, text: &str) -> Judgement {

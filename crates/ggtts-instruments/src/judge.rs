@@ -11,10 +11,19 @@
 //! Each draw is written to a FLAC file in a temporary directory, its path sent on the worker's stdin as a JSON line,
 //! and the transcript read back from its stdout. `command=` and `interpreter=` run another program speaking the same
 //! protocol.
+//!
+//! **A worker that dies or stops answering ends the render.** Each answer has a deadline: `timeout=S` per draw (120 s
+//! unless set) and `start_timeout=S` for the model to load (600 s). A worker that exits, closes its output, writes
+//! something that is not a JSON line, or misses a deadline (it is then killed) is a fault
+//! ([`ggtts_core::textjudge::Recogniser::fault`]): the pipeline stops the render there, so no draw it could not judge
+//! is kept as passed, and a book's resume renders that chunk again. A worker that answers `{"error": ...}` for one
+//! draw is not a fault: that draw is kept, with the error in its reading.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::Duration;
 
 use ggtts_core::options::Options;
 use ggtts_core::pipeline::{DurationJudge, Judge};
@@ -39,9 +48,19 @@ pub struct JudgeSpec {
     pub command: Option<String>,
     /// What runs `command` (`python` means [`crate::runner::default_python`]).
     pub interpreter: Option<String>,
+    /// Seconds the ASR may take to read one draw back.
+    pub timeout_s: f64,
+    /// Seconds the ASR may take to say it is ready (its model loaded).
+    pub start_timeout_s: f64,
 }
 
-/// Read `render.judge`: `NAME,model=DIR[,device=cpu|cuda][,min_run=N][,command=PROGRAM][,interpreter=PROGRAM]`.
+/// [`JudgeSpec::timeout_s`] unless set.
+pub const DEFAULT_TIMEOUT_S: f64 = 120.0;
+/// [`JudgeSpec::start_timeout_s`] unless set.
+pub const DEFAULT_START_TIMEOUT_S: f64 = 600.0;
+
+/// Read `render.judge`: `NAME,model=DIR[,device=cpu|cuda][,min_run=N][,timeout=S][,start_timeout=S]
+/// [,command=PROGRAM][,interpreter=PROGRAM]`.
 pub fn parse(spec: &str) -> Result<JudgeSpec, String> {
     let bad = |why: String| format!("--judge (render.judge): {why}");
     let mut parts = spec.split(',');
@@ -53,6 +72,13 @@ pub fn parse(spec: &str) -> Result<JudgeSpec, String> {
     let mut device = "cpu".to_string();
     let mut min_run = DEFAULT_MIN_RUN;
     let (mut command, mut interpreter) = (None, None);
+    let (mut timeout_s, mut start_timeout_s) = (DEFAULT_TIMEOUT_S, DEFAULT_START_TIMEOUT_S);
+    let seconds = |k: &str, v: &str| {
+        v.parse::<f64>()
+            .ok()
+            .filter(|x| x.is_finite() && *x > 0.0)
+            .ok_or_else(|| bad(format!("{k} must be a number of seconds above 0, not {v:?}")))
+    };
     for p in parts {
         let (k, v) = p
             .split_once('=')
@@ -68,11 +94,13 @@ pub fn parse(spec: &str) -> Result<JudgeSpec, String> {
                     .filter(|n| *n > 0)
                     .ok_or_else(|| bad(format!("min_run must be a whole number above 0, not {v:?}")))?
             }
+            "timeout" => timeout_s = seconds(k, v)?,
+            "start_timeout" => start_timeout_s = seconds(k, v)?,
             "command" if !v.is_empty() => command = Some(v.to_string()),
             "interpreter" if !v.is_empty() => interpreter = Some(v.to_string()),
             _ => {
                 return Err(bad(format!(
-                    "unknown or empty key {k:?} (keys: model, device, min_run, command, interpreter)"
+                    "unknown or empty key {k:?} (keys: model, device, min_run, timeout, start_timeout, command, interpreter)"
                 )))
             }
         }
@@ -85,6 +113,8 @@ pub fn parse(spec: &str) -> Result<JudgeSpec, String> {
         min_run,
         command,
         interpreter,
+        timeout_s,
+        start_timeout_s,
     })
 }
 
@@ -120,14 +150,18 @@ fn worker_script(name: &str) -> String {
 pub struct AsrRecogniser {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    /// The worker's stdout, a line at a time, from a reader thread, so a read can have a deadline.
+    lines: Receiver<std::io::Result<String>>,
     dir: PathBuf,
     n: u64,
+    timeout: Duration,
+    /// Why the worker cannot read any more draws, once it cannot.
+    fault: Option<String>,
 }
 
 impl AsrRecogniser {
-    /// Start the ASR `spec` names and wait for it to say it is ready (its model loaded). Its stderr is discarded:
-    /// an ASR's own messages can contain the speech it heard.
+    /// Start the ASR `spec` names and wait, up to its `start_timeout`, for it to say it is ready (its model loaded).
+    /// Its stderr is discarded: an ASR's own messages can contain the speech it heard.
     pub fn start(spec: &JudgeSpec) -> Result<Self, String> {
         let (program, mut args) = match (&spec.command, &spec.interpreter) {
             (Some(c), Some(i)) => (interpreter(i), vec![c.clone()]),
@@ -164,14 +198,35 @@ impl AsrRecogniser {
             .map_err(|e| format!("{program}: {e}"))?;
         let stdin = child.stdin.take().expect("piped");
         let stdout = BufReader::new(child.stdout.take().expect("piped"));
+        let (tx, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut stdout = stdout;
+            loop {
+                let mut line = String::new();
+                match stdout.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if tx.send(Ok(line)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        break;
+                    }
+                }
+            }
+        });
         let mut asr = Self {
             child,
             stdin,
-            stdout,
+            lines,
             dir,
             n: 0,
+            timeout: Duration::from_secs_f64(spec.timeout_s),
+            fault: None,
         };
-        let first = asr.read_line()?;
+        let first = asr.read_line(Duration::from_secs_f64(spec.start_timeout_s))?;
         match first.get("ready") {
             Some(Value::Bool(true)) => Ok(asr),
             _ => Err(first
@@ -181,25 +236,36 @@ impl AsrRecogniser {
         }
     }
 
-    fn read_line(&mut self) -> Result<Value, String> {
-        let mut line = String::new();
-        let n = self
-            .stdout
-            .read_line(&mut line)
-            .map_err(|e| format!("reading the ASR: {e}"))?;
-        if n == 0 {
-            let status = self.child.try_wait().ok().flatten();
-            return Err(match status {
-                Some(s) => format!("the ASR exited ({s})"),
-                None => "the ASR closed its output".into(),
-            });
+    /// The worker's next line, within `deadline`. A worker that misses it is killed.
+    fn read_line(&mut self, deadline: Duration) -> Result<Value, String> {
+        match self.lines.recv_timeout(deadline) {
+            Ok(Ok(line)) => {
+                serde_json::from_str(&line).map_err(|e| format!("the ASR wrote a line that is not JSON: {e}"))
+            }
+            Ok(Err(e)) => Err(format!("reading the ASR: {e}")),
+            Err(RecvTimeoutError::Timeout) => {
+                let _ = self.child.kill();
+                Err(format!(
+                    "the ASR did not answer within {} s, and was stopped",
+                    deadline.as_secs_f64()
+                ))
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                let status = self.child.wait().ok();
+                Err(match status {
+                    Some(s) => format!("the ASR exited ({s})"),
+                    None => "the ASR closed its output".into(),
+                })
+            }
         }
-        serde_json::from_str(&line).map_err(|e| format!("the ASR wrote a line that is not JSON: {e}"))
     }
 }
 
 impl Recogniser for AsrRecogniser {
     fn recognise(&mut self, samples: &[f32], sample_rate: u32, text: &str) -> Result<String, String> {
+        if let Some(f) = &self.fault {
+            return Err(f.clone());
+        }
         self.n += 1;
         let path = self.dir.join(format!("draw-{}.flac", self.n));
         let path = ggtts_core::flac::write_flac(&path, samples, sample_rate).map_err(|e| e.to_string())?;
@@ -207,14 +273,19 @@ impl Recogniser for AsrRecogniser {
         let sent = writeln!(self.stdin, "{request}").and_then(|()| self.stdin.flush());
         let answer = sent
             .map_err(|e| format!("writing to the ASR: {e}"))
-            .and_then(|()| self.read_line());
+            .and_then(|()| self.read_line(self.timeout));
         let _ = std::fs::remove_file(&path);
-        let answer = answer?;
+        // Anything but an answer is a worker that cannot read another draw.
+        let answer = answer.inspect_err(|e| self.fault = Some(e.clone()))?;
         match (answer.get("text").and_then(Value::as_str), answer.get("error")) {
             (Some(t), _) => Ok(t.to_string()),
             (None, Some(e)) => Err(e.as_str().map_or_else(|| e.to_string(), str::to_string)),
             (None, None) => Err(format!("the ASR answered {answer}")),
         }
+    }
+
+    fn fault(&self) -> Option<String> {
+        self.fault.clone()
     }
 }
 
@@ -253,7 +324,13 @@ mod tests {
             (s.model.as_path(), s.device.as_str(), s.min_run),
             (Path::new("/m"), "cuda", 6)
         );
+        let s = parse("asr-qwen,model=/m,timeout=5,start_timeout=9").unwrap();
+        assert_eq!((s.timeout_s, s.start_timeout_s), (5.0, 9.0));
         let s = parse("asr-qwen,model=/m").unwrap();
+        assert_eq!(
+            (s.timeout_s, s.start_timeout_s),
+            (DEFAULT_TIMEOUT_S, DEFAULT_START_TIMEOUT_S)
+        );
         assert_eq!((s.device.as_str(), s.min_run), ("cpu", DEFAULT_MIN_RUN));
         for (spec, says) in [
             ("whisper,model=/m", "is not a judge"),
@@ -262,6 +339,11 @@ mod tests {
             ("asr-qwen,model=/m,min_run=0", "min_run must be"),
             ("asr-qwen,model=/m,colour=red", "unknown or empty key"),
             ("asr-qwen,model", "is not KEY=VALUE"),
+            ("asr-qwen,model=/m,timeout=0", "timeout must be a number of seconds"),
+            (
+                "asr-qwen,model=/m,start_timeout=x",
+                "start_timeout must be a number of seconds",
+            ),
         ] {
             let e = parse(spec).unwrap_err();
             assert!(

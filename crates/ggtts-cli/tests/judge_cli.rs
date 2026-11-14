@@ -160,3 +160,20 @@ fn the_judge_is_refused_where_it_cannot_work() {
     }
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Review of #306: a worker that dies mid-story (on its first read: the story has one chunk, its first paragraph
+/// being the title) stops the render with the judge's reason, and nothing is written.
+#[test]
+fn a_worker_that_dies_mid_story_stops_the_render() {
+    let dir = scratch("dies");
+    let spec = asr(&dir, r#"{"exit_after": 0}"#);
+    let o = render(
+        &dir,
+        &["--story", "s.txt", "--out", "o.flac", "--judge", &spec, "--redraw", "1"],
+    );
+    assert_eq!(o.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(stderr.contains("judge: the ASR exited"), "{stderr}");
+    assert!(!dir.join("o.flac").exists());
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -141,6 +141,9 @@ pub enum RenderError {
     ///
     /// [`Capabilities::check_render`]: crate::capabilities::Capabilities::check_render
     Refused(crate::options::Refusal),
+    /// The judge cannot judge any more draws ([`Judge::fault`]): an ASR that died or stopped answering. The chunk
+    /// being drawn is not kept; the render stops there.
+    Judge(String),
 }
 
 impl std::fmt::Display for RenderError {
@@ -150,6 +153,7 @@ impl std::fmt::Display for RenderError {
             RenderError::Engine(e) => write!(f, "engine: {e}"),
             RenderError::Sink(e) => write!(f, "stream: {e}"),
             RenderError::Refused(r) => write!(f, "{r}"),
+            RenderError::Judge(e) => write!(f, "judge: {e}"),
         }
     }
 }
@@ -214,6 +218,13 @@ pub trait Judge {
     /// draw, right after judging it.
     /// `None` for a judge that reads nothing, the duration judge included.
     fn take_reading(&mut self) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// Why the judge cannot judge any more draws (a recogniser process that died or stopped answering), or `None`.
+    /// The pipeline asks after every draw and stops the render with [`RenderError::Judge`]: a draw it could not judge
+    /// is never kept as if it had passed.
+    fn fault(&mut self) -> Option<String> {
         None
     }
 }
@@ -471,6 +482,9 @@ pub fn render_chunk(
         let stage_start = (tracing || timings.is_some()).then(std::time::Instant::now);
         let j = judge.judge(&profile, &pcm.samples, pcm.sample_rate, text);
         let reading = judge.take_reading();
+        if let Some(e) = judge.fault() {
+            return Err(RenderError::Judge(e));
+        }
         stage_end(
             stage_start,
             "judge",

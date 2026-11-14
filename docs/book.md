@@ -330,7 +330,8 @@ judge rejected their further draws, a chunk recorded without draws (rendered at 
 redraws are on, and lowering it renders again the chunks kept at a draw the new setting does not reach.
 
 **The ASR judge.** The duration judge cannot hear a skipped clause: a chunk that drops one gets shorter, not longer.
-`--judge asr-qwen,model=DIR` (the shared table's `render.judge`, which `ggtts-render --story` takes too) adds an ASR
+`--judge asr-qwen,model=DIR[,device=cpu|cuda][,min_run=N][,timeout=S][,start_timeout=S]` (the shared table's
+`render.judge`, which `ggtts-render --story` takes too) adds an ASR
 that reads every draw the duration judge keeps back and compares it with the chunk's text
 (`ggtts_core::textjudge`, `ggtts_instruments::judge`):
 
@@ -339,8 +340,12 @@ that reads every draw the duration judge keeps back and compares it with the chu
   no CJK characters gives the judge nothing to compare, and is kept.
 * A draw whose read-back lost a run of at least `min_run` characters (4 unless set) is rejected as `lost-text`; one
   that said such a run twice, as `repeated-text`. It is redrawn at the chunk's next seed, up to `--redraw`, like any
-  rejection. A single misread or missing character is counted, never a rejection. A read that fails keeps the draw
-  and records the error.
+  rejection. A single misread or missing character is counted, never a rejection. A draw the ASR answers with an
+  error is kept, with the error in its read.
+* **A worker that dies or stops answering stops the render** (exit 2, `judge: ...`), as a failed chunk does: no
+  draw it could not read is kept as passed, what was finished is kept, and running the same command again resumes
+  and reads what it renders. Each answer has a deadline, `timeout=S` per draw (120 s unless set) and
+  `start_timeout=S` for the model to load (600 s); a worker that misses one is stopped.
 * Each chunk's manifest entry records `reads`: for every draw read back, its `draw`, the `transcript`, the counts
   (`lost`, `longest_lost`, `wrong`, `extra`, `longest_repeat`), the reading's `read_verdict` and any `error`. The trace
   records the same in a `read` event after each draw's `chunk_end`.

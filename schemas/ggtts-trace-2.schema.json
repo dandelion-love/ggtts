@@ -129,9 +129,9 @@
       }
     },
     "read": {
-      "description": "What a text judge read back in one draw (--judge): the transcript; what it lost, misread, added and repeated against the chunk's text (CJK characters, folded to simplified); the verdict the reading gave; and the recogniser's error. Follows the draw's chunk_end; only a judge that reads back emits it. Added within this format version: a document without it is still valid.",
+      "description": "What a text judge read back in one draw (--judge): the transcript; what it lost, misread, added and repeated against the chunk's text (CJK characters folded to simplified, numbers as digits); the verdict the reading gave; and the recogniser's error. Follows the draw's chunk_end; only a judge that reads back emits it. Added within this format version: a document without it is still valid.",
       "type": "object",
-      "required": ["ev", "t_ms", "chunk", "draw", "transcript", "lost", "longest_lost", "wrong", "extra", "longest_repeat", "read_verdict", "error"],
+      "required": ["ev", "t_ms", "chunk", "draw", "transcript", "compared", "lost", "longest_lost", "wrong", "longest_damaged", "extra", "longest_repeat", "read_verdict", "error"],
       "additionalProperties": false,
       "properties": {
         "ev": { "const": "read" },
@@ -139,9 +139,11 @@
         "chunk": { "$ref": "#/$defs/u32" },
         "draw": { "$ref": "#/$defs/u32" },
         "transcript": { "type": "string" },
+        "compared": { "description": "Reference tokens compared: CJK characters, and numbers as digits.", "$ref": "#/$defs/u64" },
         "lost": { "$ref": "#/$defs/u64" },
         "longest_lost": { "$ref": "#/$defs/u64" },
         "wrong": { "$ref": "#/$defs/u64" },
+        "longest_damaged": { "description": "The longest run of reference tokens each lost or misread.", "$ref": "#/$defs/u64" },
         "extra": { "$ref": "#/$defs/u64" },
         "longest_repeat": { "$ref": "#/$defs/u64" },
         "read_verdict": { "enum": [null, "lost-text", "repeated-text"] },

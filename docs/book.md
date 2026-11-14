@@ -335,11 +335,13 @@ redraws are on, and lowering it renders again the chunks kept at a draw the new 
 that reads every draw the duration judge keeps back and compares it with the chunk's text
 (`ggtts_core::textjudge`, `ggtts_instruments::judge`):
 
-* Both texts are folded to simplified characters (OpenCC's character table, vendored), and only CJK characters are
-  compared, so a recogniser writing a traditional sentence in simplified characters is not losing text. A chunk with
-  no CJK characters gives the judge nothing to compare, and is kept.
-* A draw whose read-back lost a run of at least `min_run` characters (4 unless set) is rejected as `lost-text`; one
-  that said such a run twice, as `repeated-text`. It is redrawn at the chunk's next seed, up to `--redraw`, like any
+* Both texts are compared as tokens: CJK characters folded to simplified (OpenCC's character table, vendored), and
+  numbers, written out or in digits, as the digits of their value. A recogniser writing a traditional sentence in
+  simplified characters, or 三百五十六 as 356, is not losing text. A chunk with no CJK characters or numbers gives
+  the judge nothing to compare, and is kept; one of fewer than `min_run` tokens can never be rejected.
+* A draw is rejected as `lost-text` when its read-back lost a run of at least `min_run` tokens (4 unless set), a
+  quarter of a chunk of 8 tokens or more, or 8 tokens in a row lost or misread; and as `repeated-text` when it said a
+  stretch of `min_run` tokens twice, found through a misread token or a filler at the join. It is redrawn at the chunk's next seed, up to `--redraw`, like any
   rejection. A single misread or missing character is counted, never a rejection. A draw the ASR answers with an
   error is kept, with the error in its read.
 * **A worker that dies or stops answering stops the render** (exit 2, `judge: ...`), as a failed chunk does: no
@@ -347,7 +349,7 @@ that reads every draw the duration judge keeps back and compares it with the chu
   and reads what it renders. Each answer has a deadline, `timeout=S` per draw (120 s unless set) and
   `start_timeout=S` for the model to load (600 s); a worker that misses one is stopped.
 * Each chunk's manifest entry records `reads`: for every draw read back, its `draw`, the `transcript`, the counts
-  (`lost`, `longest_lost`, `wrong`, `extra`, `longest_repeat`), the reading's `read_verdict` and any `error`. The trace
+  (`compared`, `lost`, `longest_lost`, `wrong`, `longest_damaged`, `extra`, `longest_repeat`), the reading's `read_verdict` and any `error`. The trace
   records the same in a `read` event after each draw's `chunk_end`.
 * The judge is part of what a chapter's manifest records as its render: a resume under another judge, or none,
   starts the chapter again, naming the difference. The model's path and the device are where the ASR runs, not what

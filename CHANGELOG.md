@@ -24,11 +24,13 @@ that a merge places under a released heading is caught.
   text verdicts replays, taking them as recorded.
 - **A text judge in the `ggtts-core` library: `textjudge::TextJudge`.** It judges a draw for duration as before,
   then reads it back with a recogniser the caller supplies (`textjudge::Recogniser`) and rejects a draw that lost
-  a run of the chunk's text (`lost-text`) or said one twice (`repeated-text`), at 4 characters by default. Both
-  texts are folded to simplified characters with OpenCC's character table, vendored in the crate, and only CJK
-  characters are compared, so a recogniser that writes a traditional sentence in simplified characters does not
-  read as lost text. A single wrong or missing character is counted, not rejected. Known limit: the fold is
-  many-to-one, so a swap between two traditional characters with one simplified form reads as correct. No front
+  text (`lost-text`: a run of 4 characters or more, a quarter of a chunk of 8 or more, or 8 in a row lost or
+  misread) or said a stretch twice (`repeated-text`, found through a misread character or a filler at the join).
+  Both texts are compared as CJK characters folded to simplified with OpenCC's character table, vendored in the
+  crate, and numbers as their value, so 三百五十六 read back as 356 is not lost text. A single misread or missing
+  character is counted, not rejected. Known limits: the fold is many-to-one, so a swap between two traditional
+  characters with one simplified form reads as correct; a chunk of fewer than 4 compared characters is never
+  rejected; text with no CJK characters or numbers has nothing to compare. No front
   end uses it yet, and every render is unchanged; `ggtts-trace/2` allows the two new verdicts.
 - **One render entry point in the `ggtts-core` library: `pipeline::render_plan`.** It renders a plan with any trace
   level, tensor hooks and output (the whole read, or a stream raw or levelled) in one call, so combinations that had

@@ -99,7 +99,7 @@ fn the_reference_in_either_script_scores_zero() {
         );
         assert_eq!(r.transcript, transcript);
     }
-    // The control: compared without the fold, the simplified transcript differs in 8 characters.
+    // The control: compared without the fold, the simplified transcript differs in 5 characters.
     let identity = Fold::from_table("a\ta\n").unwrap();
     let unfolded = TextJudge::new(Scripted::new(&[Ok("")]), identity).read(TEXT, TEXT_SIMPLIFIED);
     assert_eq!(unfolded.comparison.wrong, 5, "{unfolded:?}");
@@ -211,4 +211,139 @@ fn the_duration_judge_keeps_what_the_text_judge_would_on_a_clean_read() {
     assert_eq!(a.samples, b.samples);
     assert_eq!(a.draws.len(), b.draws.len());
     assert_eq!(a.kept().judgement, b.kept().judgement);
+}
+
+/// Review of #342: what the judge says on one transcript of `text`, at the default bars.
+fn verdict_of(text: &str, transcript: &str) -> (Option<Verdict>, ggtts_core::textjudge::Comparison) {
+    let j = TextJudge::new(Scripted::new(&[Ok("")]), Fold::t2s().unwrap());
+    let r = j.read(text, transcript);
+    (r.verdict, r.comparison)
+}
+
+/// `text` with the `len` characters from `at` (character positions) removed.
+fn drop_at(text: &[char], at: usize, len: usize) -> String {
+    text[..at].iter().chain(&text[at + len..]).collect()
+}
+
+/// Review of #342, point 2: a dropped run stays one run where characters repeat. The review's case (好我哋一 dropped
+/// from the test text aligned as KLKLLL, a longest run of 3) is lost text, and so is every drop of 4 to 8 characters
+/// at every place of a text with 好好好 in it.
+#[test]
+fn a_dropped_run_is_one_run_where_characters_repeat() {
+    // The comma between 好好 and 我哋 is not compared, so the drop is four tokens.
+    let (verdict, c) = verdict_of(TEXT, &TEXT.replace("好，我哋一", ""));
+    assert_eq!((verdict, c.longest_lost), (Some(Verdict::LostText), 4), "{c:?}");
+    let text: Vec<char> = "我哋今日好好好開心一齊去公園散步食雪糕".chars().collect();
+    let mut missed = Vec::new();
+    for len in 4..=8 {
+        for at in 0..=text.len() - len {
+            let t = drop_at(&text, at, len);
+            let (verdict, c) = verdict_of(&text.iter().collect::<String>(), &t);
+            if verdict != Some(Verdict::LostText) || c.longest_lost < len.min(c.lost) {
+                missed.push((at, len, c.longest_lost));
+            }
+        }
+    }
+    assert!(missed.is_empty(), "drops not seen as one lost run: {missed:?}");
+}
+
+/// Review of #342, point 1: a clause said twice is found when the second saying has a misread character or a filler
+/// at the join, not only when it is an exact copy. Every stretch of 5 to 8 characters, doubled at its place, with
+/// each of its characters misread in turn, and with 呃 at the join.
+#[test]
+fn a_clause_said_twice_is_found_through_a_misread_or_a_filler() {
+    let text: Vec<char> = "今日天氣好好我哋一齊去公園散步順便買啲嘢食".chars().collect();
+    let reference: String = text.iter().collect();
+    let mut missed = Vec::new();
+    for len in 5..=8 {
+        for at in 0..=text.len() - len {
+            let clause = &text[at..at + len];
+            let mut variants: Vec<(String, Vec<char>)> = vec![("exact".into(), clause.to_vec())];
+            variants.push((
+                "filler".into(),
+                std::iter::once('呃').chain(clause.iter().copied()).collect(),
+            ));
+            for k in 0..len {
+                let mut misread = clause.to_vec();
+                misread[k] = '嗰';
+                variants.push((format!("misread {k}"), misread));
+            }
+            for (what, again) in variants {
+                let t: String = text[..at + len].iter().chain(&again).chain(&text[at + len..]).collect();
+                let (verdict, c) = verdict_of(&reference, &t);
+                if verdict != Some(Verdict::RepeatedText) {
+                    missed.push(format!("{at}+{len} {what}: {c:?}"));
+                }
+            }
+        }
+    }
+    assert!(
+        missed.is_empty(),
+        "{} repeats missed: {:?}",
+        missed.len(),
+        &missed[..missed.len().min(5)]
+    );
+    // A control: extra words that are not the text are extra, never a repeat.
+    let (verdict, c) = verdict_of(&reference, &format!("{reference}唔該晒啦喂"));
+    assert_eq!((verdict, c.longest_repeat), (None, 0));
+}
+
+/// Review of #342, point 3: a number written out in the text and read back in digits (or the other way) is the same
+/// number, so it is neither lost nor misread.
+#[test]
+fn a_number_in_digits_reads_as_the_number_written_out() {
+    for (text, read) in [
+        ("佢今年三百五十六歲。", "佢今年356歲。"),
+        ("我哋有兩萬蚊。", "我哋有20000蚊。"),
+        ("一九九七年。", "1997年。"),
+        ("佢今年356歲。", "佢今年三百五十六歲。"),
+    ] {
+        let (verdict, c) = verdict_of(text, read);
+        assert_eq!((verdict, c.lost, c.wrong), (None, 0, 0), "{text} / {read}: {c:?}");
+    }
+}
+
+/// Review of #342, point 4: losses spread through a chunk, and a garbled stretch, are rejected though no single lost
+/// run reaches `min_run`; two misread characters in a long chunk are not.
+#[test]
+fn spread_losses_and_a_garbled_stretch_are_lost_text() {
+    let text: Vec<char> = "今日天氣好好我哋一齊去公園散步順便買啲嘢食啦".chars().collect();
+    let reference: String = text.iter().collect();
+    // Every third character lost: 7 of 22, no run longer than 1.
+    let every_third: String = text
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| i % 3 != 2)
+        .map(|(_, c)| c)
+        .collect();
+    let (verdict, c) = verdict_of(&reference, &every_third);
+    assert_eq!((verdict, c.longest_lost), (Some(Verdict::LostText), 1), "{c:?}");
+    // Nine characters in a row garbled (each read as another), none lost.
+    let garbled: String = text
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| if (5..14).contains(&i) { '嗰' } else { c })
+        .collect();
+    let (verdict, c) = verdict_of(&reference, &garbled);
+    assert_eq!(
+        (verdict, c.lost, c.longest_damaged),
+        (Some(Verdict::LostText), 0, 9),
+        "{c:?}"
+    );
+    // Two misread characters far apart: a recogniser's slips, kept.
+    let slips: String = text
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| if i == 3 || i == 15 { '嗰' } else { c })
+        .collect();
+    assert_eq!(verdict_of(&reference, &slips).0, None);
+}
+
+/// Review of #342, point 5: the documented limits hold as documented. A chunk of fewer than `min_run` tokens is never
+/// rejected, even by an empty read-back; a chunk with no CJK characters or numbers has nothing to compare.
+#[test]
+fn the_documented_limits_hold() {
+    assert_eq!(verdict_of("你好嗎", "").0, None);
+    let (verdict, c) = verdict_of("Hello there, keeper.", "");
+    assert_eq!((verdict, c.compared), (None, 0));
 }

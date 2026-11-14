@@ -5,23 +5,35 @@
 //! longer, so it is never a runaway. This judge reads the draw back. It needs a recogniser ([`Recogniser`]); this
 //! module has none of its own, so it is tested with a stand-in and any speech recogniser can be put behind it.
 //!
-//! **The script is folded before comparing.** A Cantonese recogniser often writes a traditional-Chinese sentence in
-//! simplified characters. Compared unfolded, every such character would count as lost and good draws would be
-//! redrawn. Both texts are folded to simplified characters with OpenCC's character table ([`Fold::t2s`]), and only
-//! CJK characters ([`crate::text::is_cjk`]) are compared. There is no fallback: a judge cannot be built without a
-//! [`Fold`], and a table that does not read is refused.
+//! **What is compared** ([`Fold::fold`]). A Cantonese recogniser often writes a traditional-Chinese sentence in
+//! simplified characters, and a number as digits. Compared as written, every such character would count as lost and
+//! good draws would be redrawn. So both texts become the same kind of tokens first:
+//! * CJK characters ([`crate::text::is_cjk`]), folded to simplified with OpenCC's character table ([`Fold::t2s`]);
+//! * numbers, written out (三百五十六, 兩千) or in digits (356, ３５６), as the digits of their value, so 三百五十六
+//!   and 356 are the same three tokens;
+//! * nothing else: punctuation, spaces and Latin letters are left out.
 //!
-//! **Known limit:** the fold is many-to-one. A swap between two traditional characters that share a simplified form
-//! (乾 and 幹 both fold to 干) reads as correct.
+//! There is no fallback: a judge cannot be built without a [`Fold`], and a table that does not read is refused.
 //!
-//! **How a run is found.** The folded reference and transcript are aligned by edit distance (a match, then a
-//! substitution, then a deletion, then an insertion, on ties), and the alignment's runs are counted:
-//! * *lost*: reference characters with nothing in the transcript (deletions). A run of at least
-//!   [`TextJudge::min_run`] is [`Verdict::LostText`].
-//! * *repeated*: transcript characters with nothing in the reference (insertions) whose run, at least `min_run` long,
-//!   is a stretch of the reference: something said twice. [`Verdict::RepeatedText`].
-//! * *wrong*: substitutions. Counted, never a rejection on their own: a recogniser's misreading of one character is
-//!   not a defect of the draw.
+//! **How a defect is found.** The tokens are aligned with affine gap costs (a substitution 2, a gap 1 to open and 2 per
+//! token), so a dropped or added stretch stays one run even where characters repeat (好好好), and on ties a gap is
+//! extended rather than broken. Then:
+//! * *lost text* ([`Verdict::LostText`]) is any of: a run of at least [`TextJudge::min_run`] reference tokens with
+//!   nothing in the transcript; a quarter or more of the reference lost ([`TextJudge::max_lost_rate`]), when the
+//!   reference has at least 8 tokens and 2 are lost; or a run of [`TextJudge::damaged_run`] reference tokens each lost
+//!   or misread (8 unless set): a garbled stretch.
+//! * *repeated text* ([`Verdict::RepeatedText`]): a run of transcript tokens with nothing in the reference that holds
+//!   at least `min_run` tokens of the reference, found by local alignment, so one misread token or a filler (呃) at
+//!   the join does not hide a clause said twice.
+//! * *wrong*: a single misread token. Counted, never a rejection on its own.
+//!
+//! **Known limits.**
+//! * The fold is many-to-one: a swap between two traditional characters that share a simplified form (乾 and 幹 both
+//!   fold to 干) reads as correct.
+//! * A chunk with fewer than `min_run` tokens can never be rejected, even by an empty transcript: none of the bars can
+//!   be reached. A chunk with no CJK characters and no numbers has no tokens and always passes.
+//! * A repeated clause shorter than `min_run`, or one so misread that no `min_run` of its tokens survive in order,
+//!   reads as extra text, not as a repeat.
 //!
 //! A draw the duration judge rejects keeps its verdict and is not read back. A recogniser that fails keeps the draw
 //! (it cannot be judged), and the reading records the error.
@@ -36,13 +48,84 @@ use crate::text::is_cjk;
 /// OpenCC's traditional-to-simplified character table (`TSCharacters.txt`), vendored with its licence beside it.
 const TS_CHARACTERS: &str = include_str!("../data/opencc/TSCharacters.txt");
 
-/// The shortest run of lost or repeated characters that rejects a draw, unless the caller sets another.
+/// The shortest run of lost or repeated tokens that rejects a draw, unless the caller sets another.
 pub const DEFAULT_MIN_RUN: usize = 4;
+/// The share of the reference lost that rejects a draw, unless the caller sets another.
+pub const DEFAULT_MAX_LOST_RATE: f64 = 0.25;
+/// The fewest reference tokens, and lost tokens, the lost-rate bar applies to: a short chunk is judged by its runs.
+pub const LOST_RATE_MIN_TOKENS: usize = 8;
+pub const LOST_RATE_MIN_LOST: usize = 2;
 
 /// A script fold: each character to its simplified form.
 #[derive(Debug, Clone)]
 pub struct Fold {
     map: HashMap<char, char>,
+}
+
+/// The value of one written-out digit or zero, by character.
+fn numeral_digit(c: char) -> Option<u32> {
+    Some(match c {
+        '零' | '〇' => 0,
+        '一' => 1,
+        '二' | '兩' | '两' => 2,
+        '三' => 3,
+        '四' => 4,
+        '五' => 5,
+        '六' => 6,
+        '七' => 7,
+        '八' => 8,
+        '九' => 9,
+        _ => return None,
+    })
+}
+
+/// The multiplier of one written-out unit, by character.
+fn numeral_unit(c: char) -> Option<u128> {
+    Some(match c {
+        '十' => 10,
+        '百' => 100,
+        '千' => 1_000,
+        '萬' | '万' => 10_000,
+        '億' | '亿' => 100_000_000,
+        _ => return None,
+    })
+}
+
+/// A digit written as a digit, ASCII or full-width.
+fn digit(c: char) -> Option<u32> {
+    match c {
+        '0'..='9' => c.to_digit(10),
+        '０'..='９' => Some(c as u32 - '０' as u32),
+        _ => None,
+    }
+}
+
+/// A run of written-out numerals as the digits of its value. Without a unit (三五, 一九九七) it is read digit by
+/// digit, as it is spoken; with units (三百五十六, 兩萬) as a number.
+fn numeral_value(run: &[char]) -> String {
+    if !run.iter().any(|&c| numeral_unit(c).is_some()) {
+        return run
+            .iter()
+            .filter_map(|&c| numeral_digit(c))
+            .map(|d| char::from(b'0' + d as u8))
+            .collect();
+    }
+    let (mut total, mut section, mut num) = (0u128, 0u128, 0u128);
+    for &c in run {
+        if let Some(d) = numeral_digit(c) {
+            num = u128::from(d);
+        } else if let Some(u) = numeral_unit(c) {
+            if u >= 10_000 {
+                section += num;
+                total = total.saturating_add(section.max(1).saturating_mul(u));
+                section = 0;
+            } else {
+                section += num.max(1) * u;
+            }
+            num = 0;
+        }
+    }
+    total.saturating_add(section).saturating_add(num).to_string()
 }
 
 impl Fold {
@@ -82,12 +165,43 @@ impl Fold {
         Self::from_table(TS_CHARACTERS)
     }
 
-    /// The CJK characters of `text`, folded. Everything else (punctuation, Latin, digits, space) is left out.
+    /// The tokens of `text` the judge compares: CJK characters folded, and numbers (written out, or in ASCII or
+    /// full-width digits) as the digits of their value. Punctuation, spaces and Latin letters are left out, and end a
+    /// number.
     pub fn fold(&self, text: &str) -> Vec<char> {
-        text.chars()
-            .filter(|&c| is_cjk(c))
-            .map(|c| *self.map.get(&c).unwrap_or(&c))
-            .collect()
+        let mut out = Vec::new();
+        let mut written: Vec<char> = Vec::new();
+        let mut digits = String::new();
+        let flush = |written: &mut Vec<char>, digits: &mut String, out: &mut Vec<char>| {
+            if !written.is_empty() {
+                out.extend(numeral_value(written).chars());
+                written.clear();
+            }
+            if !digits.is_empty() {
+                out.extend(digits.chars());
+                digits.clear();
+            }
+        };
+        for c in text.chars() {
+            if let Some(d) = digit(c) {
+                if !written.is_empty() {
+                    flush(&mut written, &mut digits, &mut out);
+                }
+                digits.push(char::from(b'0' + d as u8));
+            } else if numeral_digit(c).is_some() || numeral_unit(c).is_some() {
+                if !digits.is_empty() {
+                    flush(&mut written, &mut digits, &mut out);
+                }
+                written.push(c);
+            } else {
+                flush(&mut written, &mut digits, &mut out);
+                if is_cjk(c) {
+                    out.push(*self.map.get(&c).unwrap_or(&c));
+                }
+            }
+        }
+        flush(&mut written, &mut digits, &mut out);
+        out
     }
 }
 
@@ -105,115 +219,243 @@ pub trait Recogniser {
     }
 }
 
-/// How a transcript compares with its reference, both folded ([`compare`]).
+/// How a transcript compares with its reference, both as tokens ([`compare`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Comparison {
-    /// Reference characters the transcript does not have.
+    /// Reference tokens compared.
+    pub compared: usize,
+    /// Reference tokens the transcript does not have.
     pub lost: usize,
     /// The longest run of them.
     pub longest_lost: usize,
-    /// Reference characters read as another character.
+    /// Reference tokens read as another token.
     pub wrong: usize,
-    /// Transcript characters the reference does not have.
+    /// The longest run of reference tokens each lost or misread.
+    pub longest_damaged: usize,
+    /// Transcript tokens the reference does not have.
     pub extra: usize,
-    /// The longest run of extra characters that is a stretch of the reference: said twice.
+    /// The most reference tokens found, by local alignment, in one run of extra tokens: a stretch said twice.
     pub longest_repeat: usize,
 }
 
-/// Align `hyp` to `reference` by edit distance and count what was lost, wrong, extra and repeated.
-pub fn compare(reference: &[char], hyp: &[char]) -> Comparison {
+/// Alignment costs, doubled to stay whole: a substitution, a gap's opening, and each token of a gap.
+const SUB: u32 = 2;
+const OPEN: u32 = 1;
+const EXTEND: u32 = 2;
+const INF: u32 = u32::MAX / 4;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Op {
+    Keep,
+    Wrong,
+    Lost,
+    Extra,
+}
+
+/// Align `hyp` to `reference` with affine gap costs (Gotoh), extending a gap rather than breaking it on ties.
+fn align(reference: &[char], hyp: &[char]) -> Vec<Op> {
     let (n, m) = (reference.len(), hyp.len());
-    // d[i][j]: the distance between reference[..i] and hyp[..j].
-    let mut d = vec![vec![0usize; m + 1]; n + 1];
-    for (i, row) in d.iter_mut().enumerate() {
-        row[0] = i;
+    // m_[i][j]: best cost ending in a match or substitution; d[i][j]: ending in a lost token (a gap in the
+    // transcript); x[i][j]: ending in an extra token.
+    let mut m_ = vec![vec![INF; m + 1]; n + 1];
+    let mut d = vec![vec![INF; m + 1]; n + 1];
+    let mut x = vec![vec![INF; m + 1]; n + 1];
+    m_[0][0] = 0;
+    for (i, row) in d.iter_mut().enumerate().skip(1) {
+        row[0] = OPEN + EXTEND * i as u32;
     }
-    for j in 0..=m {
-        d[0][j] = j;
+    for (j, cell) in x[0].iter_mut().enumerate().skip(1) {
+        *cell = OPEN + EXTEND * j as u32;
     }
     for i in 1..=n {
         for j in 1..=m {
-            let sub = d[i - 1][j - 1] + usize::from(reference[i - 1] != hyp[j - 1]);
-            d[i][j] = sub.min(d[i - 1][j] + 1).min(d[i][j - 1] + 1);
+            let s = if reference[i - 1] == hyp[j - 1] { 0 } else { SUB };
+            m_[i][j] = m_[i - 1][j - 1].min(d[i - 1][j - 1]).min(x[i - 1][j - 1]) + s;
+            d[i][j] = (d[i - 1][j] + EXTEND)
+                .min(m_[i - 1][j] + OPEN + EXTEND)
+                .min(x[i - 1][j] + OPEN + EXTEND);
+            x[i][j] = (x[i][j - 1] + EXTEND)
+                .min(m_[i][j - 1] + OPEN + EXTEND)
+                .min(d[i][j - 1] + OPEN + EXTEND);
         }
     }
-    // Walk back: a match or substitution first, then a deletion (lost), then an insertion (extra).
     #[derive(Clone, Copy, PartialEq)]
-    enum Op {
-        Keep,
-        Wrong,
-        Lost,
-        Extra,
+    enum State {
+        M,
+        D,
+        X,
     }
-    let mut ops = Vec::with_capacity(n + m);
+    let at = |s: State, i: usize, j: usize| match s {
+        State::M => m_[i][j],
+        State::D => d[i][j],
+        State::X => x[i][j],
+    };
     let (mut i, mut j) = (n, m);
+    let end = [State::M, State::D, State::X];
+    let mut state = *end.iter().min_by_key(|&&s| at(s, n, m)).expect("three states");
+    let mut ops = Vec::with_capacity(n + m);
     while i > 0 || j > 0 {
-        if i > 0 && j > 0 && d[i][j] == d[i - 1][j - 1] + usize::from(reference[i - 1] != hyp[j - 1]) {
-            ops.push(if reference[i - 1] == hyp[j - 1] {
-                Op::Keep
-            } else {
-                Op::Wrong
-            });
-            i -= 1;
-            j -= 1;
-        } else if i > 0 && d[i][j] == d[i - 1][j] + 1 {
-            ops.push(Op::Lost);
-            i -= 1;
-        } else {
-            ops.push(Op::Extra);
-            j -= 1;
+        let here = at(state, i, j);
+        match state {
+            State::M => {
+                ops.push(if reference[i - 1] == hyp[j - 1] {
+                    Op::Keep
+                } else {
+                    Op::Wrong
+                });
+                let s = if reference[i - 1] == hyp[j - 1] { 0 } else { SUB };
+                let prev = [State::M, State::D, State::X];
+                state = *prev
+                    .iter()
+                    .find(|&&p| at(p, i - 1, j - 1) + s == here)
+                    .expect("a predecessor");
+                i -= 1;
+                j -= 1;
+            }
+            State::D => {
+                ops.push(Op::Lost);
+                // Extend the gap first.
+                state = if d[i - 1][j] + EXTEND == here {
+                    State::D
+                } else if m_[i - 1][j] + OPEN + EXTEND == here {
+                    State::M
+                } else {
+                    State::X
+                };
+                i -= 1;
+            }
+            State::X => {
+                ops.push(Op::Extra);
+                state = if x[i][j - 1] + EXTEND == here {
+                    State::X
+                } else if m_[i][j - 1] + OPEN + EXTEND == here {
+                    State::M
+                } else {
+                    State::D
+                };
+                j -= 1;
+            }
+        }
+        if i == 0 && j > 0 {
+            state = State::X;
+        } else if j == 0 && i > 0 {
+            state = State::D;
         }
     }
     ops.reverse();
-    let mut c = Comparison::default();
-    let (mut lost_run, mut extra_run) = (0usize, Vec::new());
-    let mut j = 0;
-    let close_extra = |run: &mut Vec<char>, c: &mut Comparison| {
-        if !run.is_empty() && is_stretch_of(reference, run) {
-            c.longest_repeat = c.longest_repeat.max(run.len());
+    ops
+}
+
+/// The most tokens of `run` that match `reference` in one local alignment (Smith-Waterman: a match +2, a mismatch
+/// or a gap -1 and -2), so a stretch of the reference said again with a misread token or a filler is still found.
+fn repeated_in(reference: &[char], run: &[char]) -> usize {
+    let (n, m) = (reference.len(), run.len());
+    // (score, matched tokens) per cell; the best cell's matched count is the answer.
+    let mut prev = vec![(0i32, 0usize); m + 1];
+    let mut best = (0i32, 0usize);
+    for i in 1..=n {
+        let mut cur = vec![(0i32, 0usize); m + 1];
+        for j in 1..=m {
+            let (s, k) = prev[j - 1];
+            let diag = if reference[i - 1] == run[j - 1] {
+                (s + 2, k + 1)
+            } else {
+                (s - 1, k)
+            };
+            let up = (prev[j].0 - 2, prev[j].1);
+            let left = (cur[j - 1].0 - 2, cur[j - 1].1);
+            let mut c = (0, 0);
+            for cand in [diag, up, left] {
+                if cand.0 > c.0 || (cand.0 == c.0 && cand.0 > 0 && cand.1 > c.1) {
+                    c = cand;
+                }
+            }
+            cur[j] = c;
+            if c.0 > best.0 || (c.0 == best.0 && c.1 > best.1) {
+                best = c;
+            }
         }
-        run.clear();
+        prev = cur;
+    }
+    best.1
+}
+
+/// Align `hyp` to `reference` (both tokens, [`Fold::fold`]) and count what was lost, misread, garbled, added and
+/// repeated.
+pub fn compare(reference: &[char], hyp: &[char]) -> Comparison {
+    let ops = align(reference, hyp);
+    let mut c = Comparison {
+        compared: reference.len(),
+        ..Comparison::default()
+    };
+    let (mut lost_run, mut damaged_run) = (0usize, 0usize);
+    // The extra run being read: where it starts in `hyp`, if one is open.
+    let mut extra_from: Option<usize> = None;
+    let mut j = 0;
+    // An inserted run can slide along the transcript where the token leaving it equals the token entering it (the
+    // alignment is as cheap either way), so the aligner may report a rotation of what was said twice. The repeat is
+    // read at every place it can slide to, and the most found is kept.
+    let repeat_at = |s: usize, e: usize| -> usize {
+        let mut best = repeated_in(reference, &hyp[s..e]);
+        let (mut a, mut b) = (s, e);
+        while b < hyp.len() && hyp[a] == hyp[b] {
+            a += 1;
+            b += 1;
+            best = best.max(repeated_in(reference, &hyp[a..b]));
+        }
+        let (mut a, mut b) = (s, e);
+        while a > 0 && hyp[a - 1] == hyp[b - 1] {
+            a -= 1;
+            b -= 1;
+            best = best.max(repeated_in(reference, &hyp[a..b]));
+        }
+        best
     };
     for op in ops {
         if op != Op::Lost {
             lost_run = 0;
         }
+        if op == Op::Keep {
+            damaged_run = 0;
+        }
         if op != Op::Extra {
-            close_extra(&mut extra_run, &mut c);
+            if let Some(s) = extra_from.take() {
+                c.longest_repeat = c.longest_repeat.max(repeat_at(s, j));
+            }
         }
         match op {
             Op::Keep => j += 1,
             Op::Wrong => {
                 c.wrong += 1;
+                damaged_run += 1;
                 j += 1;
             }
             Op::Lost => {
                 c.lost += 1;
                 lost_run += 1;
+                damaged_run += 1;
                 c.longest_lost = c.longest_lost.max(lost_run);
             }
             Op::Extra => {
                 c.extra += 1;
-                extra_run.push(hyp[j]);
+                extra_from.get_or_insert(j);
                 j += 1;
             }
         }
+        c.longest_damaged = c.longest_damaged.max(damaged_run);
     }
-    close_extra(&mut extra_run, &mut c);
+    if let Some(s) = extra_from {
+        c.longest_repeat = c.longest_repeat.max(repeat_at(s, j));
+    }
     c
-}
-
-/// `run` occurs in `reference` as a contiguous stretch.
-fn is_stretch_of(reference: &[char], run: &[char]) -> bool {
-    run.len() <= reference.len() && reference.windows(run.len()).any(|w| w == run)
 }
 
 /// What the text judge read in one draw.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reading {
-    /// The recogniser's transcript, unfolded, as it came back. Empty when the recogniser failed.
+    /// The recogniser's transcript, as it came back. Empty when the recogniser failed.
     pub transcript: String,
-    /// The comparison of the folded texts.
+    /// The comparison of the two texts' tokens.
     pub comparison: Comparison,
     /// The verdict this reading gave: [`Verdict::LostText`], [`Verdict::RepeatedText`] or none.
     pub verdict: Option<Verdict>,
@@ -227,6 +469,11 @@ pub struct TextJudge<R: Recogniser> {
     fold: Fold,
     /// The shortest lost or repeated run that rejects a draw ([`DEFAULT_MIN_RUN`] unless set).
     pub min_run: usize,
+    /// The share of the reference lost that rejects a draw ([`DEFAULT_MAX_LOST_RATE`] unless set), when the reference
+    /// has at least [`LOST_RATE_MIN_TOKENS`] tokens and [`LOST_RATE_MIN_LOST`] are lost.
+    pub max_lost_rate: f64,
+    /// The run of lost or misread reference tokens that rejects a draw; `None` is twice [`TextJudge::min_run`].
+    pub damaged_run: Option<usize>,
     last: Option<Reading>,
 }
 
@@ -238,6 +485,8 @@ impl<R: Recogniser> TextJudge<R> {
             recogniser,
             fold,
             min_run: DEFAULT_MIN_RUN,
+            max_lost_rate: DEFAULT_MAX_LOST_RATE,
+            damaged_run: None,
             last: None,
         }
     }
@@ -247,20 +496,28 @@ impl<R: Recogniser> TextJudge<R> {
         self.last.as_ref()
     }
 
-    /// Read `transcript` against `text`: the comparison and the verdict.
-    pub fn read(&self, text: &str, transcript: &str) -> Reading {
-        let comparison = compare(&self.fold.fold(text), &self.fold.fold(transcript));
-        let verdict = if comparison.longest_lost >= self.min_run {
+    /// The verdict a comparison gives under this judge's bars.
+    pub fn verdict(&self, c: &Comparison) -> Option<Verdict> {
+        let damaged_bar = self.damaged_run.unwrap_or(2 * self.min_run);
+        let lost_rate = c.compared >= LOST_RATE_MIN_TOKENS
+            && c.lost >= LOST_RATE_MIN_LOST
+            && c.lost as f64 >= self.max_lost_rate * c.compared as f64;
+        if c.longest_lost >= self.min_run || lost_rate || c.longest_damaged >= damaged_bar {
             Some(Verdict::LostText)
-        } else if comparison.longest_repeat >= self.min_run {
+        } else if c.longest_repeat >= self.min_run {
             Some(Verdict::RepeatedText)
         } else {
             None
-        };
+        }
+    }
+
+    /// Read `transcript` against `text`: the comparison and the verdict.
+    pub fn read(&self, text: &str, transcript: &str) -> Reading {
+        let comparison = compare(&self.fold.fold(text), &self.fold.fold(transcript));
         Reading {
             transcript: transcript.to_string(),
+            verdict: self.verdict(&comparison),
             comparison,
-            verdict,
             error: None,
         }
     }
@@ -273,9 +530,11 @@ impl Reading {
         let c = &self.comparison;
         serde_json::json!({
             "transcript": self.transcript,
+            "compared": c.compared,
             "lost": c.lost,
             "longest_lost": c.longest_lost,
             "wrong": c.wrong,
+            "longest_damaged": c.longest_damaged,
             "extra": c.extra,
             "longest_repeat": c.longest_repeat,
             "read_verdict": self.verdict.map(Verdict::as_str),
@@ -328,8 +587,29 @@ mod tests {
         assert_eq!(f.fold("說話為裡裏"), chars("说话为里里"));
         // Characters the table does not list (shared by both scripts, and Cantonese ones) are kept.
         assert_eq!(f.fold("嘅喺佢"), chars("嘅喺佢"));
-        // Only CJK is compared.
-        assert_eq!(f.fold("Hi, 你好！ 1 2"), chars("你好"));
+        // Punctuation, spaces and Latin letters are left out; digits are kept.
+        assert_eq!(f.fold("Hi, 你好！ 1 2"), chars("你好12"));
+    }
+
+    #[test]
+    fn numbers_become_the_digits_of_their_value_however_written() {
+        let f = Fold::t2s().unwrap();
+        for (written, digits) in [
+            ("三百五十六", "356"),
+            ("356", "356"),
+            ("３５６", "356"),
+            ("兩萬", "20000"),
+            ("两万", "20000"),
+            ("十", "10"),
+            ("十五", "15"),
+            ("三百零五", "305"),
+            ("一億五千萬", "150000000"),
+            ("一九九七", "1997"),
+        ] {
+            assert_eq!(f.fold(written), chars(digits), "{written}");
+        }
+        // In a sentence, the number becomes its digits and the words around it stay.
+        assert_eq!(f.fold("我有三百五十六蚊"), f.fold("我有356蚊"));
     }
 
     #[test]
@@ -344,16 +624,22 @@ mod tests {
     }
 
     #[test]
-    fn compare_counts_lost_wrong_extra_and_repeated_runs() {
+    fn compare_counts_lost_wrong_extra_damaged_and_repeated_runs() {
         let r = chars("今日天氣好好我哋去公園");
-        assert_eq!(compare(&r, &r), Comparison::default());
+        assert_eq!(
+            compare(&r, &r),
+            Comparison {
+                compared: r.len(),
+                ..Comparison::default()
+            }
+        );
         let c = compare(&r, &chars("今日天氣好好去公園"));
         assert_eq!((c.lost, c.longest_lost, c.wrong, c.extra), (2, 2, 0, 0));
         let c = compare(&r, &chars("今日天氣好好我哋去公圓"));
-        assert_eq!((c.lost, c.wrong), (0, 1));
+        assert_eq!((c.lost, c.wrong, c.longest_damaged), (0, 1, 1));
         let c = compare(&r, &chars("今日天氣好好我哋去公園我哋去公園"));
         assert_eq!((c.extra, c.longest_repeat), (5, 5));
-        // Extra text that is not a stretch of the reference is extra, not a repeat.
+        // Extra text that holds no stretch of the reference is extra, not a repeat.
         let c = compare(&r, &chars("今日天氣好好我哋去公園唔該晒啦喂"));
         assert_eq!((c.extra, c.longest_repeat), (5, 0));
     }

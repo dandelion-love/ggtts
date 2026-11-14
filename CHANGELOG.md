@@ -18,7 +18,8 @@ that a merge places under a released heading is caught.
   text (`lost-text`: a run of 4 characters or more, a quarter of a chunk of 8 or more, or 8 in a row lost or
   misread) or said a stretch twice (`repeated-text`, found through a misread character or a filler at the join).
   Both texts are compared as CJK characters folded to simplified with OpenCC's character table, vendored in the
-  crate, and numbers as their value, so 三百五十六 read back as 356 is not lost text. A single misread or missing
+  crate, and each number (written out, in digits or mixed, as in 3萬) as one token for its value, so 三百五十六
+  read back as 356 is not lost text and a misheard number is one slip. A single misread or missing
   character is counted, not rejected. Known limits: the fold is many-to-one, so a swap between two traditional
   characters with one simplified form reads as correct; a chunk of fewer than 4 compared characters is never
   rejected; text with no CJK characters or numbers has nothing to compare. No front

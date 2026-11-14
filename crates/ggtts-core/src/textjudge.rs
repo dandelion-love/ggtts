@@ -9,8 +9,9 @@
 //! simplified characters, and a number as digits. Compared as written, every such character would count as lost and
 //! good draws would be redrawn. So both texts become the same kind of tokens first:
 //! * CJK characters ([`crate::text::is_cjk`]), folded to simplified with OpenCC's character table ([`Fold::t2s`]);
-//! * numbers, written out (三百五十六, 兩千) or in digits (356, ３５６), as the digits of their value, so 三百五十六
-//!   and 356 are the same three tokens;
+//! * numbers, written out (三百五十六, 兩萬), in digits (356, ３５６) or mixed (3萬, 1萬1千), as one token for their
+//!   value, so 三百五十六 and 356 are the same token, and a misheard number or unit is one misread token, not several
+//!   lost ones;
 //! * nothing else: punctuation, spaces and Latin letters are left out.
 //!
 //! There is no fallback: a judge cannot be built without a [`Fold`], and a table that does not read is refused.
@@ -100,32 +101,62 @@ fn digit(c: char) -> Option<u32> {
     }
 }
 
-/// A run of written-out numerals as the digits of its value. Without a unit (三五, 一九九七) it is read digit by
-/// digit, as it is spoken; with units (三百五十六, 兩萬) as a number.
+/// A run of numerals (digits ASCII or full-width, written-out digits, units) as the digits of its value. A run of
+/// digits is one number (35, ３５). Without a unit the run is read digit by digit, as it is spoken (一九九七 is 1997,
+/// 19九7 too); with units it is a number, a digit run counting as one digit place (3萬, 35萬, 1萬1千, 三百五十六).
 fn numeral_value(run: &[char]) -> String {
     if !run.iter().any(|&c| numeral_unit(c).is_some()) {
         return run
             .iter()
-            .filter_map(|&c| numeral_digit(c))
+            .filter_map(|&c| digit(c).or_else(|| numeral_digit(c)))
             .map(|d| char::from(b'0' + d as u8))
             .collect();
     }
     let (mut total, mut section, mut num) = (0u128, 0u128, 0u128);
+    let mut in_digits = false;
     for &c in run {
+        if let Some(d) = digit(c) {
+            // Consecutive digits are one number: 35 before a unit is thirty-five of it.
+            num = if in_digits {
+                num.saturating_mul(10).saturating_add(u128::from(d))
+            } else {
+                u128::from(d)
+            };
+            in_digits = true;
+            continue;
+        }
+        in_digits = false;
         if let Some(d) = numeral_digit(c) {
             num = u128::from(d);
         } else if let Some(u) = numeral_unit(c) {
             if u >= 10_000 {
-                section += num;
+                section = section.saturating_add(num);
                 total = total.saturating_add(section.max(1).saturating_mul(u));
                 section = 0;
             } else {
-                section += num.max(1) * u;
+                section = section.saturating_add(num.max(1).saturating_mul(u));
             }
             num = 0;
         }
     }
     total.saturating_add(section).saturating_add(num).to_string()
+}
+
+/// The one token a number is compared as: a character in the Supplementary Private Use Area-A chosen by its value
+/// (FNV-1a), so the same number is the same token in both texts and a number counts as one token, whatever its
+/// length. Two different numbers share a token with odds of 1 in 65,534.
+fn number_token(value: &str) -> char {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in value.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    char::from_u32(0xF_0000 + (h % 65_534) as u32).expect("a private-use code point")
+}
+
+/// The token for the number `text` names (written out, in digits, or mixed), as [`Fold::fold`] compares it.
+pub fn number(text: &str) -> char {
+    number_token(&numeral_value(&text.chars().collect::<Vec<_>>()))
 }
 
 impl Fold {
@@ -165,42 +196,28 @@ impl Fold {
         Self::from_table(TS_CHARACTERS)
     }
 
-    /// The tokens of `text` the judge compares: CJK characters folded, and numbers (written out, or in ASCII or
-    /// full-width digits) as the digits of their value. Punctuation, spaces and Latin letters are left out, and end a
-    /// number.
+    /// The tokens of `text` the judge compares: CJK characters folded, and each number (a run of written-out or
+    /// ASCII or full-width digits and units, in any mix) as one token for its value ([`number`]). Punctuation, spaces
+    /// and Latin letters are left out, and end a number.
     pub fn fold(&self, text: &str) -> Vec<char> {
         let mut out = Vec::new();
-        let mut written: Vec<char> = Vec::new();
-        let mut digits = String::new();
-        let flush = |written: &mut Vec<char>, digits: &mut String, out: &mut Vec<char>| {
-            if !written.is_empty() {
-                out.extend(numeral_value(written).chars());
-                written.clear();
-            }
-            if !digits.is_empty() {
-                out.extend(digits.chars());
-                digits.clear();
-            }
-        };
+        let mut run: Vec<char> = Vec::new();
         for c in text.chars() {
-            if let Some(d) = digit(c) {
-                if !written.is_empty() {
-                    flush(&mut written, &mut digits, &mut out);
-                }
-                digits.push(char::from(b'0' + d as u8));
-            } else if numeral_digit(c).is_some() || numeral_unit(c).is_some() {
-                if !digits.is_empty() {
-                    flush(&mut written, &mut digits, &mut out);
-                }
-                written.push(c);
-            } else {
-                flush(&mut written, &mut digits, &mut out);
-                if is_cjk(c) {
-                    out.push(*self.map.get(&c).unwrap_or(&c));
-                }
+            if digit(c).is_some() || numeral_digit(c).is_some() || numeral_unit(c).is_some() {
+                run.push(c);
+                continue;
+            }
+            if !run.is_empty() {
+                out.push(number_token(&numeral_value(&run)));
+                run.clear();
+            }
+            if is_cjk(c) {
+                out.push(*self.map.get(&c).unwrap_or(&c));
             }
         }
-        flush(&mut written, &mut digits, &mut out);
+        if !run.is_empty() {
+            out.push(number_token(&numeral_value(&run)));
+        }
         out
     }
 }
@@ -553,28 +570,37 @@ mod tests {
         // Characters the table does not list (shared by both scripts, and Cantonese ones) are kept.
         assert_eq!(f.fold("嘅喺佢"), chars("嘅喺佢"));
         // Punctuation, spaces and Latin letters are left out; digits are kept.
-        assert_eq!(f.fold("Hi, 你好！ 1 2"), chars("你好12"));
+        assert_eq!(f.fold("Hi, 你好！ 1 2"), vec!['你', '好', number("1"), number("2")]);
     }
 
     #[test]
-    fn numbers_become_the_digits_of_their_value_however_written() {
+    fn a_number_is_one_token_for_its_value_however_written() {
         let f = Fold::t2s().unwrap();
-        for (written, digits) in [
-            ("三百五十六", "356"),
-            ("356", "356"),
-            ("３５６", "356"),
-            ("兩萬", "20000"),
-            ("两万", "20000"),
-            ("十", "10"),
-            ("十五", "15"),
-            ("三百零五", "305"),
-            ("一億五千萬", "150000000"),
-            ("一九九七", "1997"),
+        // Each row: one value, written out, in digits (ASCII and full-width), and mixed with units.
+        for forms in [
+            &["三百五十六", "356", "３５６", "3百5十6"][..],
+            &["兩萬", "两万", "20000", "2萬"],
+            &["三萬", "30000", "3萬", "3万"],
+            &["三十五萬", "350000", "35萬"],
+            &["一萬一千", "11000", "1萬1千", "1万1千", "一萬1千"],
+            &["三萬五千", "35000", "3萬5千"],
+            &["一億五千萬", "150000000", "1億5千萬"],
+            &["三百零五", "305", "3百零5"],
+            &["十", "10"],
+            &["十五", "15"],
+            &["一九九七", "1997", "19九7"],
         ] {
-            assert_eq!(f.fold(written), chars(digits), "{written}");
+            let tokens: Vec<Vec<char>> = forms.iter().map(|w| f.fold(w)).collect();
+            assert!(tokens.iter().all(|t| t.len() == 1), "{forms:?}: {tokens:?}");
+            assert!(tokens.iter().all(|t| *t == tokens[0]), "{forms:?}: {tokens:?}");
+            assert_eq!(tokens[0][0], number(forms[0]));
         }
-        // In a sentence, the number becomes its digits and the words around it stay.
+        // Different values are different tokens.
+        assert_ne!(number("一萬"), number("一千"));
+        assert_ne!(number("356"), number("365"));
+        // In a sentence, the number is one token and the words around it stay.
         assert_eq!(f.fold("我有三百五十六蚊"), f.fold("我有356蚊"));
+        assert_eq!(f.fold("我有三百五十六蚊").len(), 4);
     }
 
     #[test]

@@ -247,17 +247,30 @@ read is refused before the engine is loaded. `--trace` writes one ggtts-trace/2 
 (a header naming the engine, instruction and steering, then each chunk's events); chunks taken from an earlier run
 are not in it. Chunk numbers in it restart at each chapter, and it replays with `ggtts_core::trace::replay`.
 
-**Instruments** are `ggtts-render`'s, run by the same library call (`ggtts_instruments::options`) once per chapter
-FLAC this run wrote, after every chapter is rendered and the engine is released. A chapter is measured when at least
-one of its chunks was rendered in this run; a chapter an earlier run finished is not measured again. Each chapter is
-one render of the run, named by its directory (`NNN-<chapter id>`), with its report beside its FLAC
+**Instruments** are `ggtts-render`'s, run by the same library call (`ggtts_instruments::options`) on each chapter
+FLAC, after every chapter is rendered and the engine is released. A chapter is measured unless its report directory
+holds a `measured.json` from an earlier run with the same chapter FLAC (by SHA-256) and the same instrument settings:
+a resumed book measures the chapters an earlier, interrupted run never measured, and a re-run with other instruments
+measures every chapter again. Each chapter is one render of the run, named by its directory (`NNN-<chapter id>`), with
+its report beside its FLAC
 (`NNN-<chapter id>.report/`: the envelopes, `report.json`, `.md`, `.html` and `run.log`), or in
 `--report DIR/NNN-<chapter id>/`. The run is `--run`, else `book-<unix seconds>`, one for the whole book. The
-render report gives each measured chapter an `instruments` entry (its report directory, each instrument's status,
-and why the measurement is incomplete) and the book a `measurement` of `complete` or `incomplete`. An unknown
-instrument is refused before the engine loads. A `--require`d instrument that is not ok on any chapter makes the
-exit 3, with every chapter FLAC written, as for `ggtts-render`. The book's trace covers every chapter, so no chapter
-is handed an event stream: an instrument that needs one is recorded as `skipped` with that reason.
+render report gives each written chapter an `instruments` entry: its report directory, `measured` (`this run`,
+`earlier run` or `no`, with the reason), each instrument's status, and why the measurement is incomplete. The book
+gets a `measurement` of `complete` or `incomplete`. A `--require`d instrument that is not ok on any chapter, or a
+chapter left unmeasured while an instrument is required, makes the measurement incomplete and the exit 3, with every
+chapter FLAC written, as for `ggtts-render`. An unknown instrument is refused before the engine loads.
+
+* **Reference text.** An instrument that compares the audio with a reference (`asr-qwen`, `asr-sensevoice`) is given
+  each chapter's own text: the book writes it to `reference.txt` in the chapter's report directory and passes it as
+  `arg.reference_file`. A `reference_file` given on the command line or in the instruments file is refused in a book,
+  before anything is rendered: one file cannot be every chapter's text.
+* **`--on-instrument-error abort`** skips the rest of the instruments on the chapter where one failed, and every
+  chapter after it: they are reported `measured: no`, and are measured by the next run.
+* **Timeouts are per instrument, per chapter.** `--instrument-timeout` (or an entry's `timeout_s`; 60 s when
+  unset) bounds one instrument on one chapter FLAC. An ASR instrument on a long chapter needs more: set it.
+* **No event stream.** The book's trace covers every chapter, so no chapter is handed one: an instrument that needs
+  it is recorded as `skipped` with that reason (#341 would give each chapter its own).
 
 The engine is `qwen3-tts` by default, as for `ggtts-render`, and the model flags mean what they mean there: a file
 not given is the engine's pinned default, taken from the per-user cache (`GGTTS_CACHE_DIR` overrides where) and

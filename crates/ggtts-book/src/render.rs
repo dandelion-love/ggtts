@@ -317,8 +317,12 @@ pub fn render_command_options(
     let book = Book::open(book_path).map_err(|e| e.to_string())?;
     let mut options = options.clone();
     options.read_steering().map_err(|e| e.to_string())?;
-    // An instrument that cannot be found is refused before the engine loads or any chapter is rendered.
+    // An instrument that cannot be found, or a reference a book supplies itself, is refused before the engine
+    // loads or any chapter is rendered.
     let instruments = ggtts_instruments::options::config(&options)?;
+    if let Some(c) = &instruments {
+        refuse_given_reference(c)?;
+    }
     let LoadedEngine {
         mut engine,
         files,
@@ -369,7 +373,7 @@ pub fn render_command_options(
                 .iter()
                 .map(|(role, sha)| serde_json::json!({"role": role, "sha256": sha}))
                 .collect();
-            measure_chapters(config, &options, &reports, &models, &reported)?
+            measure_chapters(config, &options, &reports, &plans, &models, &reported)?
         }
         None => Vec::new(),
     };
@@ -412,70 +416,192 @@ pub fn render_command_options(
     if !identity.is_null() {
         report["render"] = identity;
     }
-    if instruments.is_some() {
-        let complete = measured.iter().all(|m| m.summary.complete());
-        report["measurement"] = if complete { "complete" } else { "incomplete" }.into();
+    if let Some(config) = &instruments {
+        report["measurement"] = if measurement_complete(config, &measured) {
+            "complete"
+        } else {
+            "incomplete"
+        }
+        .into();
     }
     Ok(report)
 }
 
-/// One chapter's instrument run: its id, its report directory and the runner's summary.
+/// Whether a chapter was measured, and when.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Measured {
+    /// Measured in this run.
+    ThisRun,
+    /// Measured by an earlier run with the same chapter FLAC and the same settings: its `measured.json`.
+    EarlierRun,
+    /// Not measured, for this reason; the next run measures it.
+    No(String),
+}
+
+/// One written chapter's instrument run: its id, its report directory, when it was measured, and what came of it
+/// (the instruments' statuses and why the measurement is incomplete; empty when it was not measured).
 pub struct ChapterMeasurement {
     pub id: String,
     pub report_dir: PathBuf,
-    pub summary: ggtts_instruments::RunSummary,
+    pub measured: Measured,
+    pub status: serde_json::Map<String, serde_json::Value>,
+    pub incomplete: Vec<String>,
 }
 
 impl ChapterMeasurement {
     /// The chapter's `instruments` entry in the render report: the report directory (relative to `out` when inside
-    /// it), each instrument's status, and why the measurement is incomplete, if it is.
+    /// it), when it was measured, each instrument's status, and why the measurement is incomplete, if it is.
     pub fn to_json(&self, out: &Path) -> serde_json::Value {
-        let statuses: serde_json::Map<String, serde_json::Value> = self
-            .summary
-            .envelopes
-            .iter()
-            .map(|e| (e.name.clone(), e.status.as_str().into()))
-            .collect();
-        serde_json::json!({
+        let (measured, reason) = match &self.measured {
+            Measured::ThisRun => ("this run", None),
+            Measured::EarlierRun => ("earlier run", None),
+            Measured::No(why) => ("no", Some(why.clone())),
+        };
+        let mut v = serde_json::json!({
             "report": self.report_dir.strip_prefix(out).unwrap_or(&self.report_dir).to_string_lossy(),
-            "status": statuses,
-            "complete": self.summary.complete(),
-            "incomplete": self.summary.incomplete,
-        })
+            "measured": measured,
+            "status": self.status,
+            "complete": matches!(self.measured, Measured::ThisRun | Measured::EarlierRun) && self.incomplete.is_empty(),
+            "incomplete": self.incomplete,
+        });
+        if let Some(r) = reason {
+            v["reason"] = r.into();
+        }
+        v
     }
 }
 
-/// The chapter's length in seconds, from its FLAC's stream info.
-fn flac_seconds(path: &Path) -> Option<f64> {
-    let info = claxon::FlacReader::open(path).ok()?.streaminfo();
-    let samples = info.samples?;
-    (info.sample_rate > 0).then(|| samples as f64 / f64::from(info.sample_rate))
+/// Whether the book's measurement is complete: every measured chapter is, and, when an instrument is required, no
+/// written chapter was left unmeasured (as `ggtts-render` counts a required instrument that never ran).
+pub fn measurement_complete(config: &ggtts_instruments::Config, measured: &[ChapterMeasurement]) -> bool {
+    measured.iter().all(|m| match m.measured {
+        Measured::ThisRun | Measured::EarlierRun => m.incomplete.is_empty(),
+        Measured::No(_) => config.require.is_empty(),
+    })
 }
 
-/// Run `config`'s instruments on every chapter FLAC this run wrote: a chapter with at least one chunk rendered in
-/// this run. A chapter whose chunks were all finished by an earlier run is not measured again. Each chapter is one
-/// render of the run (its id is the chapter's directory name), with its report beside its FLAC
+/// Refuse a `reference_file` given for a book: the book gives each chapter its own text, and one file cannot be every
+/// chapter's.
+pub fn refuse_given_reference(config: &ggtts_instruments::Config) -> Result<(), String> {
+    use ggtts_instruments::catalogue::REFERENCE_ARG;
+    match config
+        .instruments
+        .iter()
+        .find(|e| e.args.iter().any(|(k, _)| k == REFERENCE_ARG))
+    {
+        Some(e) => Err(format!(
+            "--instrument {}: arg.{REFERENCE_ARG} is refused by ggtts-book render: a book gives each chapter its own \
+             text as the reference, so leave it out",
+            e.name
+        )),
+        None => Ok(()),
+    }
+}
+
+/// A chapter's spoken text, as its reference: its chunks, a line per paragraph.
+pub fn chapter_reference(plan: &ChapterPlan) -> String {
+    let mut text = String::new();
+    for c in &plan.chunks {
+        text.push_str(&c.text);
+        if c.last_in_para {
+            text.push('\n');
+        }
+    }
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text
+}
+
+/// The file in a chapter's report directory that records a finished measurement.
+pub const MEASURED_STAMP: &str = "measured.json";
+/// Its format.
+pub const MEASURED_FORMAT: &str = "ggtts-book-measured/1";
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// Measure every written chapter not yet measured with the same chapter FLAC and the same settings. A chapter whose
+/// report directory holds a matching `measured.json` is taken from it ([`Measured::EarlierRun`]); any other is
+/// measured now, and stamped when no instrument failed. So a resumed book measures the chapters an interrupted run never measured, and a re-run
+/// with other instruments measures every chapter again.
+///
+/// Each chapter is one render of the run (its id is the chapter's directory name), with its report beside its FLAC
 /// (`NNN-<id>.report`), or under `observe.report` when given (`<report>/NNN-<id>`). The run is `observe.run`, else
-/// `book-<unix seconds>`, one for the whole book. The book's trace covers every chapter, so no chapter is given an
-/// event stream, and an instrument that needs one is `skipped` with that reason.
+/// `book-<unix seconds>`, one for the whole book. An instrument that takes a reference (an ASR) is given the chapter's
+/// own text, written to `reference.txt` in its report directory. The book's trace covers every chapter, so no chapter
+/// is given an event stream, and an instrument that needs one is `skipped` with that reason. Under
+/// `on_instrument_error: abort`, a chapter where an instrument failed stops the chapters after it ([`Measured::No`]).
 pub fn measure_chapters(
     config: &ggtts_instruments::Config,
     options: &Options,
     reports: &[ChapterReport],
+    plans: &[ChapterPlan],
     models: &[serde_json::Value],
     reported: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Vec<ChapterMeasurement>, String> {
+    use ggtts_instruments::catalogue::{find, REFERENCE_ARG};
     let run = ggtts_instruments::options::run_id(options, "book");
     let mut measured = Vec::new();
-    for r in reports {
-        let ChapterOutcome::Written { file, rendered, .. } = &r.outcome else {
+    let mut aborted: Option<String> = None;
+    for (r, plan) in reports.iter().zip(plans) {
+        let ChapterOutcome::Written { file, .. } = &r.outcome else {
             continue;
         };
-        if rendered.is_empty() {
+        let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or(&r.id).to_string();
+        let report_dir = options
+            .observe
+            .report
+            .as_ref()
+            .map_or_else(|| file.with_extension("report"), |d| d.join(&stem));
+        let entry = |measured, status, incomplete| ChapterMeasurement {
+            id: r.id.clone(),
+            report_dir: report_dir.clone(),
+            measured,
+            status,
+            incomplete,
+        };
+        if let Some(why) = &aborted {
+            measured.push(entry(Measured::No(why.clone()), serde_json::Map::new(), Vec::new()));
             continue;
         }
-        let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or(&r.id).to_string();
-        let report_dir = options.observe.report.as_ref().map(|d| d.join(&stem));
+        // The chapter's own config: every reference-taking instrument reads the chapter's text.
+        let reference = report_dir.join("reference.txt");
+        let mut chapter_config = config.clone();
+        let mut needs_reference = false;
+        for e in &mut chapter_config.instruments {
+            if find(&e.name).is_some_and(|k| k.takes_reference) {
+                e.args
+                    .push((REFERENCE_ARG.to_string(), reference.to_string_lossy().into_owned()));
+                e.args.sort();
+                needs_reference = true;
+            }
+        }
+        let flac = std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let signature = hex(&ggtts_core::seed::sha256(
+            format!("{}\n{chapter_config:?}", hex(&ggtts_core::seed::sha256(&flac))).as_bytes(),
+        ));
+        let stamp_path = report_dir.join(MEASURED_STAMP);
+        let stamp = std::fs::read(&stamp_path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .filter(|v| v["format"] == MEASURED_FORMAT && v["signature"] == signature.as_str());
+        if let Some(v) = stamp {
+            let status = v["status"].as_object().cloned().unwrap_or_default();
+            let incomplete = v["incomplete"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            measured.push(entry(Measured::EarlierRun, status, incomplete));
+            continue;
+        }
+        // A stamp that no longer matches is removed before the run, so an interrupted run leaves none.
+        let _ = std::fs::remove_file(&stamp_path);
+        if needs_reference {
+            std::fs::create_dir_all(&report_dir).map_err(|e| format!("{}: {e}", report_dir.display()))?;
+            std::fs::write(&reference, chapter_reference(plan)).map_err(|e| format!("{}: {e}", reference.display()))?;
+        }
         let finished = ggtts_instruments::options::Finished {
             run: run.clone(),
             render: stem,
@@ -485,22 +611,49 @@ pub fn measure_chapters(
             events: None,
             models: Some(models.to_vec()),
             reported: reported.clone(),
-            default_report_dir: file.with_extension("report"),
+            default_report_dir: report_dir.clone(),
         };
-        let (inputs, summary) = ggtts_instruments::options::run(
-            config,
+        let (_, summary) = ggtts_instruments::options::run(
+            &chapter_config,
             &finished,
-            report_dir.as_deref(),
+            None,
             ggtts_core::logging::Settings::default(),
         )
         .map_err(|e| format!("chapter {}: instruments: {e}", r.id))?;
-        measured.push(ChapterMeasurement {
-            id: r.id.clone(),
-            report_dir: inputs.report_dir,
-            summary,
-        });
+        let status: serde_json::Map<String, serde_json::Value> = summary
+            .envelopes
+            .iter()
+            .map(|e| (e.name.clone(), e.status.as_str().into()))
+            .collect();
+        // Only a measurement in which no instrument failed is kept for later runs: a failure (a crash, a timeout, an
+        // invalid envelope) or an abort is measured again next time.
+        if summary.failures() == 0 && !summary.aborted {
+            let stamp = serde_json::json!({
+                "format": MEASURED_FORMAT,
+                "signature": signature,
+                "run": run,
+                "status": status,
+                "incomplete": summary.incomplete,
+            });
+            crate::manifest::write_atomic(&stamp_path, stamp.to_string().as_bytes())
+                .map_err(|e| format!("{}: {e}", stamp_path.display()))?;
+        }
+        if summary.aborted {
+            aborted = Some(format!(
+                "an instrument failed on chapter {} and on_instrument_error is abort",
+                r.id
+            ));
+        }
+        measured.push(entry(Measured::ThisRun, status, summary.incomplete.clone()));
     }
     Ok(measured)
+}
+
+/// The chapter's length in seconds, from its FLAC's stream info.
+fn flac_seconds(path: &Path) -> Option<f64> {
+    let info = claxon::FlacReader::open(path).ok()?.streaminfo();
+    let samples = info.samples?;
+    (info.sample_rate > 0).then(|| samples as f64 / f64::from(info.sample_rate))
 }
 
 /// Render every chapter of `book` into `out`, with `engine` loaded once for all of them.

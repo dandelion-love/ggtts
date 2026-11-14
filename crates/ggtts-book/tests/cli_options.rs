@@ -77,7 +77,7 @@ fn seed_is_refused_by_name() {
 }
 
 /// The other options of the table a book does not take are refused the same way: a report and the log. (The
-/// instruments are a book's since they run on each chapter written: .)
+/// instruments are a book's since they run on each chapter written: `tests/instruments.rs`.)
 #[test]
 fn report_and_log_flags_are_refused_by_name() {
     refused_by_name(

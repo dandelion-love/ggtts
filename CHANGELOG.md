@@ -34,10 +34,12 @@ that a merge places under a released heading is caught.
   `render.redraw`, so `ggtts-render --story --redraw N` takes it too and its usage names it.
 - **`ggtts-book render` runs instruments**: `--instrument`, `--instruments`, `--require`, `--instrument-device`,
   `--on-instrument-error`, `--instrument-timeout`, `--report` and `--run`, meaning what they mean in `ggtts-render`.
-  They run once per chapter FLAC the run wrote, with one report per chapter beside it (`NNN-<chapter id>.report/`),
-  and the render report gains each chapter's `instruments` entry and the book's `measurement`. A `--require`d
-  instrument that is not ok exits 3 with every chapter written. An unknown instrument is refused before anything is
-  rendered. Without the flags a book renders exactly as before. The instrument run is one library call,
+  They run on each chapter FLAC not yet measured with the same settings, with one report per chapter beside it
+  (`NNN-<chapter id>.report/`), and the render report gains each chapter's `instruments` entry and the book's
+  `measurement`. An ASR instrument is given each chapter's own text as its reference. A `--require`d instrument
+  that is not ok, or a chapter left unmeasured under `--require`, exits 3 with every chapter written. An unknown
+  instrument, or a `reference_file` given for a book, is refused before anything is rendered. The instrument
+  timeout is per chapter. Without the flags a book renders exactly as before. The instrument run is one library call,
   `ggtts_instruments::options`, which `ggtts-render` now makes too; its reports and exit codes are unchanged.
 
 ### Changed

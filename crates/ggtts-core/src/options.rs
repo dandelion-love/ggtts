@@ -13,8 +13,9 @@
 //! value always wins over the environment ([`Options::layer`]).
 //!
 //! [`Options::render_options`] turns the render section into the pipeline's [`RenderOptions`], and [`record`] writes
-//! the provenance record. `ggtts-book` reads its command line through it. `docs/options.md` describes the sections, the phases, the
-//! seed keys and the environment rule.
+//! the provenance record; [`reported`] is the part of it every report carries. `ggtts-render` reads its command line
+//! and environment through this module, and `ggtts-book` its command line. `docs/options.md` describes the sections,
+//! the phases, the seed keys and the environment rule.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -452,8 +453,8 @@ pub const TABLE: &[Descriptor] = &[
     Descriptor {
         flags: &["--stream-format"],
         requires: Some("stream"),
-        help: "wav (plays as it arrives) or s16le after a one-line header; unset is wav.",
-        ..row("stream_format", SU, R, Kind::Choice(&["wav", "s16le"]), "null")
+        help: "wav (plays as it arrives) or s16le after a one-line header (raw is s16le too); unset is wav.",
+        ..row("stream_format", SU, R, Kind::Choice(&["wav", "s16le", "raw"]), "null")
     },
     Descriptor {
         flags: &["--stream-raw"],
@@ -488,6 +489,34 @@ pub fn descriptor(key: &str) -> Option<&'static Descriptor> {
 
 fn by_flag(flag: &str) -> Option<&'static Descriptor> {
     TABLE.iter().find(|d| d.flags.contains(&flag))
+}
+
+/// One command-line argument as the flag parser reads it: the flag as given, its row (`None` for a spelling the table
+/// does not have), and its value as given (`None` for a boolean, for a flag the table does not have, and for a value
+/// missing at the end).
+#[derive(Debug, Clone, Copy)]
+pub struct Arg<'a> {
+    pub flag: &'a str,
+    pub row: Option<&'static Descriptor>,
+    pub value: Option<&'a str>,
+}
+
+/// The arguments as [`Options::from_args`] walks them, checking nothing: a row's flag takes the next argument as its
+/// value unless the row is a boolean, and a flag the table does not have takes none. A front end reads it to find what
+/// a refused command line asked for (the log format to report the refusal in, the value it refused), never to accept
+/// a flag.
+pub fn walk_args(args: &[String]) -> Vec<Arg<'_>> {
+    let mut out = Vec::new();
+    let mut it = args.iter();
+    while let Some(flag) = it.next() {
+        let row = by_flag(flag);
+        let value = match row {
+            Some(d) if d.kind != Kind::Bool => it.next().map(String::as_str),
+            _ => None,
+        };
+        out.push(Arg { flag, row, value });
+    }
+    out
 }
 
 fn in_section(section: Section, name: &str) -> Option<&'static Descriptor> {
@@ -873,15 +902,12 @@ impl Options {
     /// have is refused under its own spelling. A list flag may be repeated; any other given twice keeps the last.
     pub fn from_args(args: &[String]) -> Result<Self, Refusal> {
         let mut doc = Map::new();
-        let mut it = args.iter();
-        while let Some(flag) = it.next() {
-            let d = by_flag(flag).ok_or_else(|| Refusal::new(flag.clone(), "is not an option"))?;
+        for Arg { flag, row, value } in walk_args(args) {
+            let d = row.ok_or_else(|| Refusal::new(flag, "is not an option"))?;
             let value = if d.kind == Kind::Bool {
                 Value::Bool(true)
             } else {
-                let text = it
-                    .next()
-                    .ok_or_else(|| Refusal::new(d.key(), format!("{flag} needs a value")))?;
+                let text = value.ok_or_else(|| Refusal::new(d.key(), format!("{flag} needs a value")))?;
                 from_text(d, text)?
             };
             let section = doc
@@ -1101,6 +1127,18 @@ pub fn record(options: &Options, info: &EngineInfo) -> Value {
         m.insert("ignored".into(), ignored.into());
     }
     Value::Object(m)
+}
+
+/// The fields of a [`record`] that every `ggtts-render` report (timing, duration, each instrument's inputs) and its
+/// trace header carry beside the model files: what the render was asked to do differently.
+pub const REPORTED: [&str; 2] = ["instruction", "steer"];
+
+/// The [`REPORTED`] fields of `record`, those it has. A report writes these, so it cannot disagree with the record.
+pub fn reported(record: &Value) -> Map<String, Value> {
+    REPORTED
+        .iter()
+        .filter_map(|k| record.get(*k).map(|v| ((*k).to_string(), v.clone())))
+        .collect()
 }
 
 // ── the schema ──

@@ -95,6 +95,14 @@ pub struct Header {
 }
 
 impl Header {
+    /// Sets the instruction and the steering from a provenance record ([`crate::options::record`]): its
+    /// [`REPORTED`](crate::options::REPORTED) fields, as every report carries them.
+    pub fn set_reported(&mut self, record: &Value) {
+        let reported = crate::options::reported(record);
+        self.instruction = reported.get("instruction").and_then(Value::as_str).map(str::to_string);
+        self.steer = reported.get("steer").cloned();
+    }
+
     /// A header for `engine` at `trace_level`, including declared measurement semantics.
     pub fn for_engine(engine: &dyn Engine, trace_level: u8) -> Self {
         let info = engine.info();

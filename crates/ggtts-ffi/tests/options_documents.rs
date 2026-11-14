@@ -27,6 +27,7 @@ fn load_doc(json: &str) -> (i32, u64) {
 }
 
 /// `ggtts_load_with` with a full version-3 struct, its strings given or NULL.
+#[allow(clippy::too_many_arguments)]
 fn load_struct(
     engine: &str,
     model: Option<&str>,

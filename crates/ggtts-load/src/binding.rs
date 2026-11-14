@@ -317,6 +317,9 @@ pub fn check_document(o: &Options, at_load: bool) -> Result<(), Fail> {
     }
 }
 
+/// A stream's callback: a piece's samples and its rate; false stops the render.
+pub type PieceSink<'a> = &'a mut dyn FnMut(&[f32], u32) -> bool;
+
 /// Render `text` with an options value: the whole read, or, with `on_piece`, each kept chunk handed to it before the
 /// level step (returning false stops the render with [`ERR_STOPPED`]); the whole read's samples and rate either way.
 /// An option the engine does not support is refused ([`options::check`]) as [`ERR_ARG`] before anything is
@@ -327,7 +330,7 @@ pub fn render_document(
     engine: &mut dyn Engine,
     text: &str,
     options: &Options,
-    on_piece: Option<&mut dyn FnMut(&[f32], u32) -> bool>,
+    on_piece: Option<PieceSink<'_>>,
 ) -> Result<(Vec<f32>, u32), Fail> {
     let chunks = plan(engine, text)?;
     let mut o = options::check(options, &engine.capabilities())

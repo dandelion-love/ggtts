@@ -517,8 +517,11 @@ pub unsafe extern "C" fn ggtts_load_opts(options_json: *const c_char, handle: *m
         let o = Options::from_json(json).map_err(refused)?;
         binding::check_document(&o, true)?;
         let id = load_options(&o, true, true)?;
-        let mut kept = Options::default();
-        kept.render = o.render.clone();
+        // The render defaults, kept with the handle: the render section, marked as given where the document gave it.
+        let mut kept = Options {
+            render: o.render.clone(),
+            ..Options::default()
+        };
         kept.marks.sources = o
             .marks
             .sources
@@ -604,7 +607,7 @@ fn render(
     handle: u64,
     text: &str,
     doc: &Options,
-    on_piece: Option<&mut dyn FnMut(&[f32], u32) -> bool>,
+    on_piece: Option<binding::PieceSink<'_>>,
 ) -> Result<(Vec<f32>, u32), Fail> {
     let base = defaults().get_or_insert_with(HashMap::new).get(&handle).cloned();
     let mut o = match base {

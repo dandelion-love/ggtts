@@ -30,7 +30,9 @@ serde_json.workspace = true
 
 [dev-dependencies]
 claxon.workspace = true
-# The C ABI, to show it refuses an option in ggtts-render's words.
+# The conformance test (`tests/conformance.rs`) drives these front ends too: the book's options parser and the C ABI.
+ggtts-book = { path = "../ggtts-book" }
+# The C ABI, to show it refuses an option in ggtts-render's words, and for the conformance test's C ABI probes.
 ggtts-ffi = { path = "../ggtts-ffi" }
 jsonschema = { version = "0.60.2", default-features = false }
 

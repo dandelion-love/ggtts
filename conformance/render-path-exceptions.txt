@@ -1,0 +1,6 @@
+# Source files that call an engine's generate, generate_traced, generate_hooked or decode directly, outside the
+# shared pipeline (crates/ggtts-cli/tests/conformance.rs, only_the_listed_files_call_an_engine_directly).
+# One per line: the file, a tab, then the issue that removes the call or "permanent:" and why.
+# This list only shrinks: scripts/check_conformance_base.py --base REF refuses a line that is not in it at REF.
+crates/ggtts-core/src/trace.rs	permanent: check_trace_identity compares the tokens of a traced and an untraced engine; it renders no audio
+crates/ggtts-kitten/src/bin/ggtts-kitten.rs	permanent: ggtts-kitten render is an engine parity tool; render with ggtts-render --engine kitten-tts-2

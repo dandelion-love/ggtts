@@ -1,0 +1,22 @@
+# The binding surfaces as committed (crates/ggtts-cli/tests/conformance.rs, the_binding_surfaces_match_their_snapshot):
+# the pyo3 load, render and render_stream parameters (crates/ggtts-py/src/python.rs), ggtts.h's ggtts_settings fields
+# and exported functions, and Ggtts.kt's external funs. A change fails until each new name has a row in the options
+# table, a cell per front end in the conformance table, and this file is updated in the same pull request.
+python load: engine, model, codec, voice, speaker, instruction, device, threads, offline, progress
+python render: text, seed
+python render_stream: text, seed, on_piece
+c ggtts_settings: size, speaker, instruction, device, cache_dir, allow_download
+c ggtts_load: engine, model, codec, voice, threads, handle
+c ggtts_load_with: engine, model, codec, voice, threads, settings, handle
+c ggtts_abi_version:
+c ggtts_render: handle, text, seed, pcm, len, rate
+c ggtts_render_stream: handle, text, seed, on_piece, user
+c ggtts_pcm_free: pcm, len
+c ggtts_free: handle
+c ggtts_last_error:
+kotlin load: engine, model, codec, voice, threads
+kotlin loadWith: engine, model, codec, voice, threads, speaker, instruction
+kotlin loadWithModels: engine, model, codec, voice, threads, speaker, instruction, cacheDir, allowDownload
+kotlin render: handle, text, seed, rateOut
+kotlin renderStream: handle, text, seed, listener
+kotlin free: handle

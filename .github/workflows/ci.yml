@@ -76,6 +76,17 @@ jobs:
           set -eu
           python3 scripts/check_doc_examples.py --self-test
           python3 scripts/check_doc_examples.py
+      # The conformance test (crates/ggtts-cli/tests/conformance.rs) fails on a gap or a direct engine call that is not
+      # listed; this fails on a line added to either list since the pull request's base, so both lists only shrink.
+      - name: The conformance lists only shrink (a planted added line is red)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -eu
+          python3 scripts/check_conformance_base.py --self-test
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          python3 scripts/check_conformance_base.py --base FETCH_HEAD
       - name: Fail if Cargo.lock was missing
         if: always()
         run: test -z "${LOCK_MISSING:-}"

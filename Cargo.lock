@@ -405,6 +405,7 @@ name = "ggtts-cli"
 version = "0.0.1"
 dependencies = [
  "claxon",
+ "ggtts-book",
  "ggtts-core",
  "ggtts-fake",
  "ggtts-ffi",

@@ -453,8 +453,8 @@ pub const TABLE: &[Descriptor] = &[
     Descriptor {
         flags: &["--stream-format"],
         requires: Some("stream"),
-        help: "wav (plays as it arrives) or s16le after a one-line header; unset is wav.",
-        ..row("stream_format", SU, R, Kind::Choice(&["wav", "s16le"]), "null")
+        help: "wav (plays as it arrives) or s16le after a one-line header (raw is s16le too); unset is wav.",
+        ..row("stream_format", SU, R, Kind::Choice(&["wav", "s16le", "raw"]), "null")
     },
     Descriptor {
         flags: &["--stream-raw"],

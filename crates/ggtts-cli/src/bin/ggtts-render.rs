@@ -184,7 +184,7 @@ fn options_from(args: &[String], env: &dyn Fn(&str) -> Option<String>) -> Result
     if let Some(a) = first_refused {
         return Err(Refusal {
             key: a.flag.to_string(),
-            message: "is not an option".into(),
+            message: NOT_AN_OPTION.into(),
         });
     }
     let flags = Options::from_args(args)?;
@@ -206,6 +206,28 @@ fn given_text<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
         .find_map(|a| a.value)
 }
 
+/// What [`Options::from_args`] says of a spelling the table does not have.
+const NOT_AN_OPTION: &str = "is not an option";
+
+/// Whether the usage follows a refusal on stderr: only after those `ggtts-render`'s own parser made before #289 (an
+/// unknown flag, a missing value, and the values it checked itself). The rest were refused after the command line
+/// was read, with no usage, and still are.
+fn shows_usage(r: &Refusal) -> bool {
+    let Some(d) = options::descriptor(&r.key).filter(|_| r.message != NOT_AN_OPTION) else {
+        return true;
+    };
+    if r.message.ends_with(" needs a value") {
+        return true;
+    }
+    if r.message.starts_with("needs ") {
+        return false;
+    }
+    matches!(
+        d.name,
+        "seed" | "trace_level" | "speaker" | "steer_scale" | "steer_layers" | "stream_level_seconds" | "threads"
+    )
+}
+
 /// Whether a refusal is about the logging options, which `ggtts-render` reports as a logging configuration error.
 fn is_logging(r: &Refusal) -> bool {
     r.key == "observe.log_level" || r.key == "observe.log_format"
@@ -214,8 +236,9 @@ fn is_logging(r: &Refusal) -> bool {
 /// A refusal in the words `ggtts-render` has always used for it, so a script matching an error still matches.
 /// Anything it had no words for reads as the flag and the table's reason.
 fn refusal_message(r: &Refusal, args: &[String]) -> String {
-    let Some(d) = options::descriptor(&r.key) else {
-        return format!("invalid argument: {}", r.key);
+    let d = match options::descriptor(&r.key) {
+        Some(d) if r.message != NOT_AN_OPTION => d,
+        _ => return format!("invalid argument: {}", r.key),
     };
     let flag = d.flags.first().copied().unwrap_or(d.name);
     if r.message.ends_with(" needs a value") {
@@ -234,6 +257,8 @@ fn refusal_message(r: &Refusal, args: &[String]) -> String {
     let text = given_text(args, &r.key).unwrap_or_default();
     let number = text.parse::<f64>().is_ok();
     match d.name {
+        "text" => "text is empty".into(),
+        "instrument_timeout" => "--instrument-timeout: must be a positive number of seconds".into(),
         "seed" => "--seed needs an integer".into(),
         "trace_level" => "--trace-level must be 1 or 2".into(),
         "speaker" => "--speaker must not be empty".into(),
@@ -1262,7 +1287,11 @@ fn main() -> ExitCode {
                     let log = log_settings(&a);
                     (log, render(a, log), false)
                 }
-                Err(r) => (refusal_settings(&args, &env), Err(refusal_message(&r, &args)), true),
+                Err(r) => (
+                    refusal_settings(&args, &env),
+                    Err(refusal_message(&r, &args)),
+                    shows_usage(&r),
+                ),
             };
             match result {
                 Ok(code) => ExitCode::from(code),
@@ -1355,10 +1384,39 @@ mod tests {
     }
 
     /// AC4 of #289: each is refused while the command line is read, before any model file is touched, with the
-    /// message `ggtts-render` has always given.
+    /// message `ggtts-render` has always given, and the usage follows it only where it always did.
     #[test]
     fn bad_command_lines_are_refused_with_the_messages_they_always_had() {
+        // Refused after the command line was read before #289: no usage after the message.
+        let late = [
+            "--trace-level requires a story and --trace",
+            "--stream-raw needs --stream",
+            "--stream-format needs --stream",
+            "--stream-level-seconds needs --stream",
+            "--steer-scale and --steer-layers need --steer",
+            "--device must be cpu or cuda, not tpu",
+            "--stream-format must be wav or s16le, not mp3",
+            "text is empty",
+            "--instrument-timeout: must be a positive number of seconds",
+            // A logging refusal is reported as a logging configuration error, never with the usage.
+            "log level must be error, warn, info, debug or trace",
+        ];
         for (line, want) in [
+            (&["--text", ""][..], "text is empty"),
+            (&["--text", "   "][..], "text is empty"),
+            (
+                &["--instrument-timeout", "-1"][..],
+                "--instrument-timeout: must be a positive number of seconds",
+            ),
+            (
+                &["--instrument-timeout", "x"][..],
+                "--instrument-timeout: must be a positive number of seconds",
+            ),
+            (&["render.seed"][..], "invalid argument: render.seed"),
+            (
+                &["--text", "hi", "render.seed", "7"][..],
+                "invalid argument: render.seed",
+            ),
             (&["--bogus"][..], "invalid argument: --bogus"),
             (&["--steer-scale", "nan"][..], "--steer-scale must be a finite number"),
             (&["--steer-scale", "x"][..], "--steer-scale needs a number"),
@@ -1400,10 +1458,20 @@ mod tests {
             (&["--out"][..], "--out needs a value"),
         ] {
             // A model that does not exist, so any attempt to read it would fail differently.
-            let mut full: Vec<&str> = vec!["--model", "/no/such/model.gguf"];
-            full.extend(line);
-            assert_eq!(parse(&full).err().as_deref(), Some(want), "{line:?}");
+            let mut full: Vec<String> = vec!["--model".into(), "/no/such/model.gguf".into()];
+            full.extend(line.iter().map(|s| s.to_string()));
+            let r = options_from(&full, &|_| None).unwrap_err();
+            assert_eq!(refusal_message(&r, &full), want, "{line:?}");
+            assert_eq!(
+                shows_usage(&r),
+                !late.contains(&want),
+                "{line:?}: the usage after {want:?}"
+            );
         }
+        // raw is s16le, as it always was.
+        let o = opts(&["--stream", "-", "--stream-format", "raw"]);
+        assert_eq!(o.output.stream_format.as_deref(), Some("raw"));
+        assert!(Container::parse("raw").is_some());
     }
 
     /// AC6 of #289: `GGTTS_LOG_LEVEL` and `GGTTS_LOG_FORMAT` are read through the table, and a flag wins over its

@@ -84,7 +84,8 @@ fn the_core_step_renders_a_book_chunk_as_the_book_does() {
                 &book_opts,
                 &mut Observers::new(&mut NullEvents, &mut live_hooks),
             )
-            .unwrap();
+            .unwrap()
+            .bytes;
             assert_eq!(flac, book_flac, "{} chunk {i}: the book's stored FLAC", plan.chapter_id);
             n += 1;
         }
@@ -149,7 +150,8 @@ fn the_book_stores_the_same_chunk_bytes_on_a_seed_sensitive_engine() {
                 &opts,
                 &mut Observers::new(&mut NullEvents, &mut hooks),
             )
-            .unwrap();
+            .unwrap()
+            .bytes;
             assert_eq!(got, want, "{} chunk {i}", plan.chapter_id);
             distinct.insert(want);
         }

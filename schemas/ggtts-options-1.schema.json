@@ -465,6 +465,9 @@
           "maximum": 4294967295,
           "minimum": 0,
           "type": "integer",
+          "x-ggtts-flags": [
+            "--redraw"
+          ],
           "x-ggtts-phase": "render"
         },
         "seed": {

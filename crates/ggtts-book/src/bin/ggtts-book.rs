@@ -7,7 +7,7 @@
 //!                  [--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME]
 //!                  [--device cpu|cuda] [--threads N] [--offline]
 //!                  [--instruction TEXT] [--steer FILE [--steer-scale X] [--steer-layers L,L]]
-//!                  [--trace FILE [--trace-level 1|2]] [--include-skippable]
+//!                  [--trace FILE [--trace-level 1|2]] [--redraw N] [--include-skippable]
 //!                                   render every chapter into DIR, resuming what an earlier run finished
 //! ggtts-book export DIR --out BOOK.flac|BOOK.m4b
 //!                                   join a finished render into one FLAC with a chapter mark per chapter
@@ -29,7 +29,9 @@
 //!
 //! The flags are the shared options table's (`ggtts_core::options`), read by its parser, so each means what it means
 //! in `ggtts-render`: `--instruction`, `--steer` and its scale and layers reach every chunk's request, and `--trace`
-//! writes one ggtts-trace/2 stream for the chunks this run renders. A table option a book does not take (`--text`,
+//! writes one ggtts-trace/2 stream for the chunks this run renders. Each chunk is judged, and one the judge rejects is
+//! redrawn up to `--redraw` times (unset: the engine profile's), as in a story; each chunk's manifest entry records
+//! the kept draw and the number of draws. A table option a book does not take (`--text`,
 //! `--story`, `--seed`, `--stream`, the reports and instruments) is refused by name with the reason. A chapter's
 //! manifest records the instruction and steering, and a resume under different ones starts the chapter again, naming
 //! the difference.
@@ -52,7 +54,7 @@ const USAGE: &str = "usage: ggtts-book inspect BOOK.epub [--engine qwen3-tts|fak
 ggtts-book render BOOK.epub --out DIR [--engine qwen3-tts|kitten-tts-2|fake] [--seed-root R]\n                  \
 [--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME] [--device cpu|cuda] [--threads N] [--offline]\n                  \
 [--instruction TEXT] [--steer FILE [--steer-scale X] [--steer-layers L,L]] [--trace FILE [--trace-level 1|2]]\n                  \
-[--include-skippable]\n       \
+[--redraw N] [--include-skippable]\n       \
 ggtts-book export DIR --out BOOK.flac|BOOK.m4b\n       \
 ggtts-book --version";
 

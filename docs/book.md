@@ -257,8 +257,11 @@ planned with the loaded engine's own profile (its ceiling and split marks).
 For each chapter that is not front or back matter:
 
 1. `DIR/NNN-<chapter id>/` holds the chapter's `manifest.json` and one `chunk-NNNNN.flac` per chunk. Each chunk is
-   rendered by the core chunk step (`ggtts_core::pipeline::render_chunk`, the step every render is made of) at its
-   planned seed (draw 0): generated, decoded, judged, and trimmed at its edges by the profile's rule.
+   rendered by the core chunk step (`ggtts_core::pipeline::render_chunk`, the step every render is made of):
+   generated at its planned seed (draw 0), decoded and judged. A draw the judge rejects (a runaway or a silent draw,
+   by its seconds of speech per character) is redrawn at the chunk's seed for draw 1, 2, ..., up to `--redraw` times,
+   as in a story; the first draw the judge passes is kept, else the last. The kept draw is trimmed at its edges by the
+   profile's rule.
 2. When every chunk is done, the chunks are read back from their files, joined with the profile's pauses (as the
    story path joins them), levelled by the story path's level step, and written as `DIR/NNN-<chapter id>.flac`.
 
@@ -286,6 +289,17 @@ different instruction or steering is refused the same way, naming the difference
 before it existed, is a render with no instruction and no steering: it resumes a run with neither, and is refused
 for a run with either.
 
+**Redraws.** `--redraw N` (the shared table's `render.redraw`; unset is the engine profile's, which is 0 for
+`qwen3-tts`, so a book redraws only when asked, as a story does) is how many times a chunk the judge rejects is drawn
+again. A render with redraws records `redraw` in each chapter manifest and, per done chunk, `kept_draw`, `draws` (the
+number made) and `verdict` (the judge's verdict on the kept draw, `null` when it passed). A render at redraw 0 writes
+none of them, so its manifests are the bytes they were before redraws existed. A changed `--redraw` does not refuse a
+manifest. A done chunk is kept when a render at the new setting would end at the same draw: its kept draw passed the
+judge and is within the new setting, or it is the new setting's last draw. Any other done chunk is judged again under
+the new setting and rendered again, counted as `rejudged` in the report. So raising `--redraw` gives the chunks the
+judge rejected their further draws, a chunk recorded without draws (rendered at redraw 0) is judged again once
+redraws are on, and lowering it renders again the chunks kept at a draw the new setting does not reach.
+
 **What a resume can match, and what has been observed.** Chapters are always joined from the stored chunk files, so
 a resumed chapter can match an uninterrupted one byte for byte only when both of these hold:
 
@@ -304,8 +318,8 @@ on CPU, on one Linux machine with the same build and `--threads`, a 13-chunk cha
 Each resume exported byte-identically to the uninterrupted run, and every chunk file matched. That is evidence at
 those three points, not a proof for every kill point, engine or device; CUDA was not tried.
 
-Redraws of chunks the judge rejects are not done yet: every chunk is a first draw, whatever redraws the render options
-ask for.
+The judge reads duration only: it cannot hear a chunk that dropped or repeated words at a normal pace. A judge that
+listens (an ASR round trip) plugs into the same step.
 
 `DIR/book.json` names the book rendered into `DIR` and lists the chapters the last render planned (`chapters`, the
 directory names, in order). A `DIR` holding another book, or a non-empty `DIR` with no `book.json`, is refused before

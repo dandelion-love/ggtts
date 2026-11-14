@@ -33,12 +33,52 @@ pub struct Output {
     pub sha256: String,
 }
 
+/// The draws the core chunk step made for a done chunk: which one was kept, how many were made, and the judge's verdict
+/// on the kept one (`None` when it passed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Draws {
+    /// The kept draw: 0 for the first, `n` for the `n`th redraw.
+    pub kept: u32,
+    /// Draws made, the kept one included.
+    pub count: u32,
+    /// The judge's verdict on the kept draw (`runaway`, `truncated`, ...), or `None` when it passed.
+    pub verdict: Option<String>,
+}
+
+impl Draws {
+    /// Whether a fresh render with `redraw` redraws allowed ends at the same draw: it stops at the first draw the judge
+    /// passes, or at draw `redraw` either way. A chunk with no record (a render at redraw 0, or one written before
+    /// draws were recorded) was never judged, so it holds only at redraw 0.
+    pub fn holds_at(draws: Option<&Draws>, redraw: u32) -> bool {
+        match draws {
+            None => redraw == 0,
+            Some(d) => d.kept <= redraw && (d.verdict.is_none() || d.kept == redraw),
+        }
+    }
+}
+
+/// What a chunk renderer returns to [`run_chapter`]: the file's bytes and, when it judges its draws, the draws it made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkOutput {
+    pub bytes: Vec<u8>,
+    pub draws: Option<Draws>,
+}
+
+impl From<Vec<u8>> for ChunkOutput {
+    fn from(bytes: Vec<u8>) -> Self {
+        ChunkOutput { bytes, draws: None }
+    }
+}
+
 /// A chapter's manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
     pub plan: ChapterPlan,
     /// One entry per planned chunk: `Some` once it is done.
     pub done: Vec<Option<Output>>,
+    /// Each done chunk's draws, when recorded. Written only when the plan allows redraws
+    /// ([`ChapterPlan::redraw`] above 0), so a render at redraw 0 writes the manifest it wrote before draws existed.
+    pub draws: Vec<Option<Draws>>,
     /// How long each done chunk took to render (generate, decode, trim and encode), in milliseconds. Recorded for
     /// reading back; never checked.
     pub render_ms: Vec<Option<u64>>,
@@ -95,9 +135,11 @@ impl Manifest {
     pub fn new(plan: ChapterPlan) -> Self {
         let done = vec![None; plan.chunks.len()];
         let render_ms = vec![None; plan.chunks.len()];
+        let draws = vec![None; plan.chunks.len()];
         Manifest {
             plan,
             done,
+            draws,
             render_ms,
             chapter: None,
         }
@@ -130,7 +172,7 @@ impl Manifest {
             "chapter_file": self.chapter.as_ref().map(|o| json!({"file": o.file, "sha256": o.sha256})),
             "chunks": p.chunks.iter().enumerate().map(|(i, c)| {
                 let done = &self.done[i];
-                json!({
+                let mut chunk = json!({
                     "index": c.index,
                     "paragraph": c.paragraph,
                     "chunk": c.chunk,
@@ -140,9 +182,19 @@ impl Manifest {
                     "state": if done.is_some() { "done" } else { "planned" },
                     "output": done.as_ref().map(|o| json!({"file": o.file, "sha256": o.sha256})),
                     "render_ms": self.render_ms[i],
-                })
+                });
+                if let (true, Some(d)) = (p.redraw > 0 && done.is_some(), &self.draws[i]) {
+                    chunk["kept_draw"] = d.kept.into();
+                    chunk["draws"] = d.count.into();
+                    chunk["verdict"] = d.verdict.clone().into();
+                }
+                chunk
             }).collect::<Vec<_>>(),
         });
+        // Written only when the render allows redraws, so a render at redraw 0 writes the bytes it wrote before.
+        if p.redraw > 0 {
+            body["redraw"] = p.redraw.into();
+        }
         // Written only when the render has an instruction or steering, so a manifest of a render with neither is the
         // same bytes it was before the field existed.
         if !p.render.is_null() {
@@ -262,6 +314,7 @@ impl Manifest {
             .and_then(Value::as_array)
             .ok_or_else(|| ManifestError::Format("no chunks".into()))?;
         let mut done = Vec::with_capacity(plan.chunks.len());
+        let mut draws = Vec::with_capacity(plan.chunks.len());
         let mut render_ms = Vec::with_capacity(plan.chunks.len());
         for (i, planned) in plan.chunks.iter().enumerate() {
             let Some(c) = chunks.get(i) else {
@@ -292,6 +345,22 @@ impl Manifest {
                 (state, _) => return Err(ManifestError::Format(format!("chunk {i} has state {state:?}"))),
             };
             render_ms.push(output.as_ref().and(c.get("render_ms").and_then(Value::as_u64)));
+            let kept = c
+                .get("kept_draw")
+                .and_then(Value::as_u64)
+                .and_then(|v| u32::try_from(v).ok());
+            let count = c
+                .get("draws")
+                .and_then(Value::as_u64)
+                .and_then(|v| u32::try_from(v).ok());
+            draws.push(match (&output, kept, count) {
+                (Some(_), Some(kept), Some(count)) if kept < count => Some(Draws {
+                    kept,
+                    count,
+                    verdict: c.get("verdict").and_then(Value::as_str).map(String::from),
+                }),
+                _ => None,
+            });
             done.push(output);
         }
         if chunks.len() != plan.chunks.len() {
@@ -308,18 +377,21 @@ impl Manifest {
         Ok(Manifest {
             plan: plan.clone(),
             done,
+            draws,
             render_ms,
             chapter,
         })
     }
 
-    /// The chunks still to render: those not done, and those whose recorded output is missing from `dir` or no
-    /// longer has its recorded SHA-256.
+    /// The chunks still to render: those not done, those whose recorded output is missing from `dir` or no longer has
+    /// its recorded SHA-256, and those whose recorded draws a render at the plan's [`redraw`](ChapterPlan::redraw)
+    /// would not end at ([`Draws::holds_at`]): a chunk the judge rejected at a lower redraw setting is judged again
+    /// under the new one, never kept silently.
     pub fn todo(&self, dir: &Path) -> Vec<usize> {
         (0..self.plan.chunks.len())
             .filter(|&i| match &self.done[i] {
                 None => true,
-                Some(o) => !output_intact(dir, o),
+                Some(o) => !output_intact(dir, o) || !Draws::holds_at(self.draws[i].as_ref(), self.plan.redraw),
             })
             .collect()
     }
@@ -370,6 +442,9 @@ pub struct Resume {
     pub todo: Vec<usize>,
     /// Why an existing manifest was not used, when one was found and refused.
     pub refused: Option<ManifestError>,
+    /// The done chunks rendered again because their recorded draws do not hold at the plan's redraw setting
+    /// ([`Draws::holds_at`]), in order. Also in [`todo`](Self::todo).
+    pub rejudged: Vec<usize>,
 }
 
 /// Decide how to start a chapter in `dir`: resume a trusted manifest, else start again from `plan`.
@@ -382,14 +457,24 @@ pub fn resume(dir: &Path, plan: &ChapterPlan) -> Resume {
             manifest,
             todo,
             refused: None,
+            rejudged: Vec::new(),
         };
     }
     match Manifest::load(dir, plan) {
         Ok(manifest) => {
             let todo = manifest.todo(dir);
+            let rejudged = todo
+                .iter()
+                .copied()
+                .filter(|&i| {
+                    manifest.done[i].as_ref().is_some_and(|o| output_intact(dir, o))
+                        && !Draws::holds_at(manifest.draws[i].as_ref(), plan.redraw)
+                })
+                .collect();
             let mut manifest = manifest;
             for &i in &todo {
                 manifest.done[i] = None;
+                manifest.draws[i] = None;
                 manifest.render_ms[i] = None;
             }
             if !todo.is_empty() {
@@ -400,12 +485,14 @@ pub fn resume(dir: &Path, plan: &ChapterPlan) -> Resume {
                 manifest,
                 todo,
                 refused: None,
+                rejudged,
             }
         }
         Err(e) => Resume {
             manifest: Manifest::new(plan.clone()),
             todo: (0..plan.chunks.len()).collect(),
             refused: Some(e),
+            rejudged: Vec::new(),
         },
     }
 }
@@ -439,13 +526,14 @@ impl std::error::Error for RunError {}
 
 /// Render a chapter's outstanding chunks into `dir`, resuming from its manifest.
 ///
-/// `render` is called once per chunk still to do, in order, and returns that chunk's audio file. Each output is
-/// written atomically and the manifest saved after it, so a run killed at any point resumes at the first chunk not
-/// recorded as done. Returns the [`Resume`] it started from, so a caller can report what was skipped and why.
-pub fn run_chapter(
+/// `render` is called once per chunk still to do, in order, and returns that chunk's audio file (bytes, or a
+/// [`ChunkOutput`] with the draws it made). Each output is written atomically and the manifest saved after it, so a
+/// run killed at any point resumes at the first chunk not recorded as done. Returns the [`Resume`] it started from, so
+/// a caller can report what was skipped and why.
+pub fn run_chapter<R: Into<ChunkOutput>>(
     dir: &Path,
     plan: &ChapterPlan,
-    mut render: impl FnMut(&ChapterPlan, usize) -> Result<Vec<u8>, String>,
+    mut render: impl FnMut(&ChapterPlan, usize) -> Result<R, String>,
 ) -> Result<Resume, RunError> {
     fs::create_dir_all(dir).map_err(RunError::Io)?;
     let start = resume(dir, plan);
@@ -453,7 +541,9 @@ pub fn run_chapter(
     manifest.save(dir).map_err(RunError::Io)?;
     for &index in &start.todo {
         let started = std::time::Instant::now();
-        let bytes = render(plan, index).map_err(|reason| RunError::Render { index, reason })?;
+        let ChunkOutput { bytes, draws } = render(plan, index)
+            .map_err(|reason| RunError::Render { index, reason })?
+            .into();
         let ms = started.elapsed().as_millis() as u64;
         let file = chunk_file(index);
         write_atomic(&dir.join(&file), &bytes).map_err(RunError::Io)?;
@@ -461,6 +551,7 @@ pub fn run_chapter(
             file,
             sha256: hex(&sha256(&bytes)),
         });
+        manifest.draws[index] = draws;
         manifest.render_ms[index] = Some(ms);
         manifest.save(dir).map_err(RunError::Io)?;
     }

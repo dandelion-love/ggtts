@@ -26,6 +26,12 @@ that a merge places under a released heading is caught.
   and every chunk is rendered by the core chunk step. A book rendered without them is byte-identical to before. Each
   chapter manifest records the instruction and steering, and a resume under different ones renders the chapter again,
   naming the difference; a manifest written before this resumes as "no instruction, no steering".
+- **`ggtts-book render --redraw N` redraws a chunk the judge rejects**, up to N times at the chunk's seeds for draws
+  1, 2, ..., through the same judge as a story. Unset is the engine profile's (0 for `qwen3-tts`), so a book renders
+  as before unless asked; at 0 the output and manifests are byte-identical. With redraws, each chunk's manifest entry
+  records its kept draw, its draw count and the kept draw's verdict, and a resume at a different `--redraw` renders
+  again only the chunks whose outcome the new setting changes. `--redraw` is the shared options table's spelling of
+  `render.redraw`, so `ggtts-render --story --redraw N` takes it too and its usage names it.
 
 ### Changed
 

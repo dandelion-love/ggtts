@@ -46,7 +46,7 @@ A **front end** is anything a person or a program renders through:
 |---|---|---|
 | `ggtts-render --story` | `crates/ggtts-cli` | `render_plan`, with its stream mode as the output |
 | `ggtts-render --text` | `crates/ggtts-cli` | `render_plan` on a one-chunk plan at `Given(seed)`, with no redraw, no trim and no level ([#278](https://github.com/dandelion-love/ggtts/issues/278)) |
-| `ggtts-book render` | `crates/ggtts-book` | the core `render_chunk` per chunk at draw 0, its flags read by the shared options parser ([#279](https://github.com/dandelion-love/ggtts/issues/279)) |
+| `ggtts-book render` | `crates/ggtts-book` | the core `render_chunk` per chunk with the shared judge, redrawing a rejected chunk up to `--redraw` ([#305](https://github.com/dandelion-love/ggtts/issues/305)), its flags read by the shared options parser ([#279](https://github.com/dandelion-love/ggtts/issues/279)) |
 | C ABI (`libggtts_ffi`, `ggtts.h`) | `crates/ggtts-ffi` | `render_story`, `render_story_streamed` |
 | Kotlin (`ggtts.Ggtts`, over JNI) | `android/ggtts`, `crates/ggtts-ffi/src/jni.rs` | the C ABI |
 | Python (`import ggtts`) | `crates/ggtts-py` | `render_story`, `render_story_streamed`, through the engine glue it shares with the C ABI (`ggtts_load::binding`, [#281](https://github.com/dandelion-love/ggtts/issues/281)) |
@@ -75,7 +75,7 @@ fixed means the front end hard-codes one value, and `?` is not confirmed from th
 | seed | N: ignored ([#215](https://github.com/dandelion-love/ggtts/issues/215)) | Y: the sampler seed | own: `--seed-root` | Y: as the story's seed salt | as C | as C | as C |
 | style instruction | Y | Y | Y (since [#279](https://github.com/dandelion-love/ggtts/issues/279)) | Y, fixed at load (v2) | Y, at load | Y, at load | N |
 | steering | Y | Y | Y (since #279) | N | N | N | N |
-| redraws, chunk ceiling, sampler | N (profile only) | N | N | N | N | N | N |
+| redraws, chunk ceiling, sampler | N (profile only) | N | redraws: Y, `--redraw` ([#305](https://github.com/dandelion-love/ggtts/issues/305)); ceiling and sampler N | N | N | N | N |
 | edge trim | Y | N ([#180](https://github.com/dandelion-love/ggtts/issues/180)) | Y | Y | Y | Y | Y |
 | trace and level | Y | qwen3-tts only, the engine's step file; accepted and ignored on kitten-tts-2 and fake | Y (since #279) | N | N | N | N |
 | tensor hooks | N | N | N | N | N | N | N |

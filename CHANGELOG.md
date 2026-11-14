@@ -20,6 +20,9 @@ that a merge places under a released heading is caught.
 
 ### Fixed
 
+- **The Android demo recovers from playback failures.** If the phone's audio output fails to start, it is released
+  instead of held; if it refuses audio partway through, the read shows an error instead of reporting a finished read;
+  and an error such as running out of memory during playback leaves the screen usable instead of busy until restart.
 - **Stop in the Android demo is immediate and safe at any moment.** It no longer holds the screen for up to a second
   while playback winds down, a Stop pressed while the last chunk plays is reported as stopped rather than as a
   finished read, and a Stop pressed just as a read starts no longer lets its first chunk play on.

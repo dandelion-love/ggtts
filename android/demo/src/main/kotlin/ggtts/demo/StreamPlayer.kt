@@ -5,6 +5,9 @@ package ggtts.demo
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicReference
 
+/** The device refused a write with [code] (an AudioTrack error), so the stream did not play to its end. */
+class PlaybackFailed(val code: Int) : RuntimeException("the audio device refused a write (error $code)")
+
 /** One stream's output device, as the player sees it: an AudioTrack on a phone, a fake in a test. */
 interface PcmSink {
     fun play()
@@ -44,20 +47,41 @@ class StreamPlayer(
         val lock = Any()
         @Volatile var cut = false
         var released = false // guarded by lock
+        /** The code of a write the device refused, if one was; the stream ended there. */
+        @Volatile var refused: Int? = null
         lateinit var thread: Thread
     }
 
     private val end = FloatArray(0)
     private val current = AtomicReference<Stream?>(null)
 
-    /** A new stream at [rate] Hz begins; a stream still playing is stopped first. */
+    /**
+     * A new stream at [rate] Hz begins; a stream still playing is stopped first. If the device cannot start (its
+     * `play` throws, or the player thread cannot start), the device is released and the throw passes to the caller.
+     */
     fun begin(rate: Int) {
         stop()
         val s = Stream(newSink(rate))
-        s.sink.play()
-        s.thread = Thread({ run(s) }, "ggtts-player")
-        current.set(s)
-        s.thread.start()
+        try {
+            s.sink.play()
+            s.thread = Thread({ run(s) }, "ggtts-player")
+            current.set(s)
+            s.thread.start()
+        } catch (e: Throwable) {
+            current.compareAndSet(s, null)
+            release(s)
+            throw e
+        }
+    }
+
+    /** Stop and release [s]'s device, once. */
+    private fun release(s: Stream) {
+        synchronized(s.lock) {
+            if (s.released) return
+            s.released = true
+            runCatching { s.sink.stop() }
+            s.sink.release()
+        }
     }
 
     private fun run(s: Stream) {
@@ -68,18 +92,17 @@ class StreamPlayer(
                 var at = 0
                 while (at < piece.size && !s.cut) {
                     val n = s.sink.write(piece, at, piece.size - at)
-                    if (n < 0) return // the device refused the write: give up this stream (finally releases it)
+                    if (n < 0) {
+                        s.refused = n // the device refused the write: end the stream here, and finish() reports it
+                        return
+                    }
                     if (n == 0) Thread.sleep(waitMs) else at += n
                 }
             }
             if (!s.cut) Thread.sleep(drainMs)
         } catch (_: InterruptedException) {
         } finally {
-            synchronized(s.lock) {
-                s.released = true
-                runCatching { s.sink.stop() }
-                s.sink.release()
-            }
+            release(s)
         }
     }
 
@@ -88,12 +111,16 @@ class StreamPlayer(
         if (samples.isNotEmpty()) current.get()?.queue?.put(samples)
     }
 
-    /** Wait until everything queued has played, or until the stream is stopped. Never on the main thread. */
+    /**
+     * Wait until everything queued has played, or until the stream is stopped. Never on the main thread. Throws
+     * [PlaybackFailed] if the device refused a write, since the stream then did not play to its end.
+     */
     fun finish() {
         val s = current.get() ?: return
         s.queue.put(end)
         s.thread.join()
         current.compareAndSet(s, null)
+        s.refused?.let { throw PlaybackFailed(it) }
     }
 
     /** Drop what is queued and stop playing now, without waiting for the player thread. Safe from any thread. */

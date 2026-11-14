@@ -58,7 +58,11 @@ fn inspect_prints_the_planned_chunks_and_seeds() {
 #[test]
 fn inspect_refuses_an_engine_it_has_no_profile_for() {
     let path = nested().write_temp("inspect-engine");
-    for (engine, reason) in [("kitten-tts-2", "ggml feature"), ("nope", "unknown engine")] {
+    // An engine the options table does not list is refused by the table, by its schema name.
+    for (engine, reason) in [
+        ("kitten-tts-2", "ggml feature"),
+        ("nope", "load.engine: must be one of"),
+    ] {
         let out = ggtts_book()
             .arg("inspect")
             .arg(&path)
@@ -175,7 +179,7 @@ fn render_refuses_an_engine_it_cannot_load() {
         (vec!["--offline"], no_engines),
         (vec!["--engine", "qwen3-tts", "--offline"], no_engines),
         (vec!["--engine", "kitten-tts-2"], "--model is required"),
-        (vec!["--engine", "parrot"], "unknown engine \"parrot\""),
+        (vec!["--engine", "parrot"], "load.engine: must be one of"),
     ];
     for (args, reason) in cases {
         let o = ggtts_book()

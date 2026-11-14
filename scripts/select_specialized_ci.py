@@ -57,6 +57,10 @@ GGML_GATED_FILES = {
     "crates/ggtts-cli/tests/no_change_real.rs",
     "crates/ggtts-cli/tests/steer_cli.rs",
     "crates/ggtts-cli/tests/version_engines.rs",
+    # The book's real-model steering test. It is `#[ignore]` and run by hand (its header says how): the ggml job
+    # builds the workspace with `ggtts-cli/ggml`, which does not turn on `ggtts-book/ggml`, so there it compiles to
+    # nothing. Listed so the gated-file check holds and a change to it still runs the ggml job.
+    "crates/ggtts-book/tests/steer_tiny.rs",
 }
 
 # The Python binding (crates/ggtts-py) is its own workspace, built and tested by the python job only, which compiles

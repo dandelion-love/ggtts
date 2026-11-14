@@ -21,6 +21,18 @@ that a merge places under a released heading is caught.
   no output changes. `RenderOptions` gains `trim` and `level` (both on by default, as before); code that builds it
   field by field instead of from `RenderOptions::for_profile` must set them. `ggtts-render --text` now renders
   through the same entry point, with both off, and its output is unchanged.
+- **`ggtts-book render` takes `--instruction`, `--steer` (with `--steer-scale` and `--steer-layers`) and `--trace`
+  (with `--trace-level`)**, meaning what they mean in `ggtts-render`: its flags are read by the shared options table,
+  and every chunk is rendered by the core chunk step. A book rendered without them is byte-identical to before. Each
+  chapter manifest records the instruction and steering, and a resume under different ones renders the chapter again,
+  naming the difference; a manifest written before this resumes as "no instruction, no steering".
+
+### Changed
+
+- **`ggtts-book` refuses the options of the shared table it does not take by name, with the reason**: `--text`,
+  `--story`, `--seed`, `--stream` and its settings, the timing and duration reports, the log settings and the
+  instruments. An engine name the table does not list is refused as `load.engine` rather than "unknown engine", and
+  `--threads` also takes the table's spelling `-j`.
 
 ### Changed
 

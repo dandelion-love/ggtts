@@ -14,8 +14,8 @@
 //!
 //! [`Options::render_options`] turns the render section into the pipeline's [`RenderOptions`], and [`record`] writes
 //! the provenance record; [`reported`] is the part of it every report carries. `ggtts-render` reads its command line
-//! and environment through this module. `docs/options.md` describes the sections, the phases, the seed keys and the
-//! environment rule.
+//! and environment through this module, and `ggtts-book` its command line. `docs/options.md` describes the sections,
+//! the phases, the seed keys and the environment rule.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

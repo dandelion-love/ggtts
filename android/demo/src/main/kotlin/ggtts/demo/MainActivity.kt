@@ -77,6 +77,7 @@ class MainActivity : Activity(), DemoView {
     private var askedForNotifications = false
     private lateinit var importButton: Button
     private lateinit var status: TextView
+    private lateinit var gettingStarted: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -191,6 +192,11 @@ class MainActivity : Activity(), DemoView {
         }
         fun label(s: String) = TextView(this).apply { text = s; setPadding(0, pad / 2, 0, 0) }
         col.addView(TextView(this).apply { text = "ggtts Text-to-Speech"; textSize = 22f })
+        // What the app is for comes first, before any engine or file name (About).
+        col.addView(TextView(this).apply { text = About.TAGLINE; textSize = 17f; setPadding(0, pad / 2, 0, 0) })
+        About.PURPOSE.forEach { col.addView(label(it)) }
+        gettingStarted = TextView(this).apply { textSize = 16f; setPadding(0, pad, 0, 0) }
+        col.addView(gettingStarted)
         col.addView(label("No model ships with this app. Model files are read from:\n${modelsDir.path}"))
 
         engines = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
@@ -260,7 +266,11 @@ class MainActivity : Activity(), DemoView {
     }
 
     private fun refreshFiles() {
-        val files = listOf(NONE) + ModelImport.listed(modelsDir)
+        val listed = ModelImport.listed(modelsDir)
+        val steps = About.gettingStarted(listed.size)
+        gettingStarted.text = if (steps.isEmpty()) "" else "To start:\n" + steps.joinToString("\n")
+        gettingStarted.visibility = if (steps.isEmpty()) View.GONE else View.VISIBLE
+        val files = listOf(NONE) + listed
         for (s in listOf(model, codec, voice)) {
             val keep = s.selectedItem as String?
             s.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, files)

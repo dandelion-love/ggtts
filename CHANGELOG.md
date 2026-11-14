@@ -13,6 +13,9 @@ that a merge places under a released heading is caught.
 
 ### Changed
 
+- **The Android app and its text-to-speech engine are named "ggtts Text-to-Speech"** in the launcher and in the phone's
+  text-to-speech settings, where they were "ggtts demo" and "ggtts (on-device, slow)". The speed warning is unchanged
+  on the app's screen before a load.
 - **A Kitten-TTS 2 model whose token map names ids outside its vocabulary is refused when it loads,** with an error
   naming the `kitten.token_map` field and both numbers. Such a file used to load and could fail or misbehave later.
   For code using the engine crate directly: output-head rows set outside the head are now an error from the forward

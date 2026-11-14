@@ -190,7 +190,7 @@ class MainActivity : Activity(), DemoView {
             setPadding(pad, pad, pad, pad)
         }
         fun label(s: String) = TextView(this).apply { text = s; setPadding(0, pad / 2, 0, 0) }
-        col.addView(TextView(this).apply { text = "ggtts demo"; textSize = 22f })
+        col.addView(TextView(this).apply { text = "ggtts Text-to-Speech"; textSize = 22f })
         col.addView(label("No model ships with this app. Model files are read from:\n${modelsDir.path}"))
 
         engines = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }

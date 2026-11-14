@@ -151,7 +151,8 @@ nothing is being read.
 
 ## ggtts as Android's text-to-speech engine
 
-The demo app also provides a system TTS engine, a `TextToSpeechService` labelled "ggtts (on-device, slow)". Any app
+The demo app also provides a system TTS engine, a `TextToSpeechService` listed in the phone's settings as "ggtts Text-to-Speech",
+the app's own name. It is slow: its voices declare very high latency, and the first audio takes tens of seconds. Any app
 that speaks through Android's `TextToSpeech` API can use it, either by naming the engine (`ggtts.demo`) or after the
 user picks it in the phone's text-to-speech settings. The app does not change that setting itself.
 

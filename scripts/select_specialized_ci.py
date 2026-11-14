@@ -61,13 +61,14 @@ GGML_GATED_FILES = {
 
 # The Python binding (crates/ggtts-py) is its own workspace, built and tested by the python job only, which compiles
 # its ggml-gated code on Linux. It links these crates (ggtts-ffi only for a test that holds the error codes equal), so a
-# change to their source or manifest also runs it. Their own tests do not reach the binding.
+# change to their source or manifest also runs it. Their own tests do not reach the binding. ggtts-load holds the engine
+# glue the binding shares with the C library (`ggtts_load::binding`).
 PYTHON_CRATE = "crates/ggtts-py/"
 # The book layer (crates/ggtts-book) links no ggml and ships in no archive, wheel or binding: the general CPU
 # checks (fmt, clippy, and build-test on Linux and Windows) build and test it, and no specialized job reads it.
 BOOK_CRATE = "crates/ggtts-book/"
 PYTHON_ENGINE_CRATES = ("crates/ggtts-core/", "crates/ggtts-fake/", "crates/ggtts-qwen3-tts/", "crates/ggtts-kitten/",
-                        "crates/ggtts-ggml-sys/", "crates/ggtts-models/", "crates/ggtts-ffi/")
+                        "crates/ggtts-ggml-sys/", "crates/ggtts-models/", "crates/ggtts-ffi/", "crates/ggtts-load/")
 
 
 # The scripts the python job runs to build, check and smoke the release wheel as release.yml does, and release.yml
@@ -298,6 +299,10 @@ def decide(event, base_ref, head_ref, same_repo, paths, workflow_selected=None, 
                 # Ordinary source PRs get the CPU checks and package smoke; promotion
                 # above still runs the CPU native, binding and release jobs.
                 selected.add("package")
+            if path.startswith("crates/ggtts-load/") and "/tests/" not in path:
+                # The C library (and Kotlin and Android over it) loads, refuses and renders through ggtts-load's
+                # engine glue (`binding`), as the Python binding does: a change to its source runs their jobs.
+                selected.update(("binding", "android"))
         if path.startswith(("android/", "scripts/android_build.sh")):
             selected.update(("android", "binding"))
         if path.startswith(("scripts/kotlin_binding_test.sh",)):

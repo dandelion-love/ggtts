@@ -251,9 +251,17 @@ impl AsrRecogniser {
                 ))
             }
             Err(RecvTimeoutError::Disconnected) => {
-                // Its output closed. A worker that closed it and lives on is stopped, never waited on: a blocking wait
-                // would hang the render with no deadline.
-                let status = self.child.try_wait().ok().flatten();
+                // Its output closed. A worker that is exiting is given 2 s to be seen exiting; one that closed its
+                // output and lives on is then stopped, never waited on: a blocking wait would hang the render with no
+                // deadline.
+                let mut status = None;
+                for _ in 0..40 {
+                    status = self.child.try_wait().ok().flatten();
+                    if status.is_some() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
                 if status.is_none() {
                     let _ = self.child.kill();
                     let _ = self.child.wait();

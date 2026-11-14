@@ -185,10 +185,16 @@ fn a_worker_that_closes_its_output_and_lives_on_is_stopped() {
     let dir = scratch("closes");
     let spec = asr(&dir, r#"{"close_after": 0}"#);
     let t = std::time::Instant::now();
-    let o = render(&dir, &["--story", "s.txt", "--out", "o.flac", "--judge", &spec, "--redraw", "1"]);
+    let o = render(
+        &dir,
+        &["--story", "s.txt", "--out", "o.flac", "--judge", &spec, "--redraw", "1"],
+    );
     assert_eq!(o.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&o.stderr);
-    assert!(stderr.contains("judge: the ASR closed its output, and was stopped"), "{stderr}");
+    assert!(
+        stderr.contains("judge: the ASR closed its output, and was stopped"),
+        "{stderr}"
+    );
     assert!(t.elapsed().as_secs() < 60, "took {:?}", t.elapsed());
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -42,7 +42,9 @@ with open(os.path.join(a.model, "requests.jsonl"), "a", encoding="utf-8") as log
             time.sleep(3600)
         if "close_after" in answers and served >= answers["close_after"]:
             # Close stdout and stay alive: a worker ggtts must stop, not wait on.
-            sys.stdout.close()
+            # sys.stdout does not own fd 1 (closefd is False), so close the descriptor itself.
+            sys.stdout.flush()
+            os.close(1)
             time.sleep(3600)
         served += 1
         log.write(json.dumps({"text": req.get("text"), "device": a.device, "audio_exists": os.path.isfile(req["audio"])},

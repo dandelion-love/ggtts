@@ -68,15 +68,17 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use ggtts_core::engine::{ChunkRequest, Engine};
+use ggtts_core::engine::Engine;
 use ggtts_core::flac::write_flac;
 use ggtts_core::hooks::Hooks;
 use ggtts_core::logging::{Format as LogFormat, Level as LogLevel, Settings as LogSettings};
 use ggtts_core::pipeline::{
-    plan_story, render_plan, DurationJudge, Observers, Output, RenderOptions, StorySeeds, StreamMode, StreamPiece,
+    plan_story, render_plan, DurationJudge, Given, Observers, Output, RenderError, RenderOptions, StorySeeds,
+    StreamMode, StreamPiece,
 };
 use ggtts_core::stream::{Container, StreamWriter};
 use ggtts_core::text::read_text;
+use ggtts_core::text::PlannedChunk;
 use ggtts_core::trace::{emit_header, Event, Events, Header, JsonlEvents, NullEvents};
 
 // The pipeline ends before a held stream is flushed. Delay the trace end marker until the CLI has recorded
@@ -692,33 +694,55 @@ fn render_with_models(
     let mut duration_chunks = None;
     let (samples, rate) = match (&a.text, &a.story) {
         (Some(text), None) => {
-            let req = ChunkRequest {
-                text,
-                seed: a.seed.unwrap_or(20260905),
-                chunk: 0,
-                draw: 0,
-                instruction: a.instruction.as_deref(),
-                steer: a.steering.as_ref(),
+            // A one-chunk plan at the given seed, through the same entry point as a story: no redraw, no trim and
+            // no level, so the output is the decoded draw as it always was (#180 and #294 change that, not this).
+            let chunk = PlannedChunk {
+                para: 0,
+                text: text.clone(),
+                punct: String::new(),
+                last_in_para: true,
             };
-            let g = engine.generate(&req).map_err(|e| e.to_string())?;
-            frames_generated = g.codes.n_frames() as u64;
-            let gen_ns = t1.elapsed().as_nanos();
-            let gen_ms = gen_ns / 1_000_000;
-            let t2 = Instant::now();
-            let pcm = engine.decode(&g.codes).map_err(|e| e.to_string())?;
-            let decode_ns = t2.elapsed().as_nanos();
+            let mut options = RenderOptions::for_profile(engine.profile());
+            options.redraw = 0;
+            options.trim = false;
+            options.level = false;
+            options.measure_timings = true;
+            options.instruction.clone_from(&a.instruction);
+            options.steer.clone_from(&a.steering);
+            let mut timing = StreamTiming::default();
+            let streaming = stream.is_some();
+            let mut sink = |p: StreamPiece<'_>| match stream.as_mut() {
+                Some(w) => timing.write(w, p.samples, p.sample_rate, t1).map_err(|e| e.to_string()),
+                None => Ok(()),
+            };
+            let output = if streaming {
+                Output::Stream {
+                    sink: &mut sink,
+                    level: StreamMode::Raw,
+                }
+            } else {
+                Output::Whole
+            };
+            let mut hooks = Hooks::new();
+            let read = render_plan(
+                engine.as_mut(),
+                std::slice::from_ref(&chunk),
+                &Given(a.seed.unwrap_or(20260905)),
+                &mut DurationJudge,
+                &options,
+                &mut Observers::new(&mut NullEvents, &mut hooks),
+                output,
+            )
+            .map_err(|e| match e {
+                RenderError::Sink(m) => format!("--stream: {m}"),
+                other => other.to_string(),
+            })?;
+            frames_generated = read.frames_generated;
+            let t = read.timings.unwrap_or_default();
             if a.timing_report.is_some() {
-                stage_times = Some(ggtts_core::pipeline::StageTimings {
-                    generate_ns: gen_ns,
-                    decode_ns,
-                    judge_ns: 0,
-                });
+                stage_times = read.timings;
             }
-            if let Some(w) = stream.as_mut() {
-                let mut timing = StreamTiming::default();
-                timing
-                    .write(w, &pcm.samples, pcm.sample_rate, t1)
-                    .map_err(|e| format!("--stream: {e}"))?;
+            if streaming {
                 stream_stats = Some((timing.first_audio_ms, timing.writes, None, timing.write_ns));
             }
             measured_render_ms = t1.elapsed().as_millis();
@@ -727,13 +751,14 @@ fn render_with_models(
                 BINARY,
                 "draw",
                 format_args!(
-                    "{} frames, stop {:?}, generate {gen_ms} ms, decode {} ms",
-                    g.codes.n_frames(),
-                    g.stop,
-                    decode_ns / 1_000_000
+                    "{} frames, stop {:?}, generate {} ms, decode {} ms",
+                    read.frames_generated,
+                    read.chunks[0].stop,
+                    t.generate_ns / 1_000_000,
+                    t.decode_ns / 1_000_000
                 ),
             );
-            (pcm.samples, pcm.sample_rate)
+            (read.samples, read.sample_rate)
         }
         (None, Some(_story)) => {
             let (title, chunks) = preplanned.expect("story was planned before loading");
@@ -1219,7 +1244,7 @@ mod tests {
         );
     }
     use super::*;
-    use ggtts_core::engine::{Codes, EngineError, EngineInfo, Generated, Pcm};
+    use ggtts_core::engine::{ChunkRequest, Codes, EngineError, EngineInfo, Generated, Pcm};
     use ggtts_core::profile::Profile;
 
     #[test]
@@ -2243,5 +2268,110 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+/// `--text` through `render_plan` (#278): one request, at the given seed (any `u64`), chunk 0, draw 0, and the output
+/// is the decoded draw itself, neither trimmed nor levelled.
+#[cfg(test)]
+mod text_path {
+    use super::*;
+    use ggtts_core::engine::{ChunkRequest, Codes, EngineError, EngineInfo, Generated, Pcm};
+    use ggtts_core::flac::to_i16;
+    use ggtts_core::profile::Profile;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// Each request's (text, seed, chunk, draw).
+    type Requests = Rc<RefCell<Vec<(String, u64, u32, u32)>>>;
+
+    /// The fake engine at a quarter of its amplitude, recording each request and keeping each decoded draw.
+    struct Recording {
+        inner: ggtts_fake::FakeEngine,
+        requests: Requests,
+        decoded: Rc<RefCell<Vec<Vec<f32>>>>,
+    }
+
+    impl Engine for Recording {
+        fn info(&self) -> &EngineInfo {
+            self.inner.info()
+        }
+        fn profile(&self) -> &Profile {
+            self.inner.profile()
+        }
+        fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
+            self.requests
+                .borrow_mut()
+                .push((req.text.to_string(), req.seed, req.chunk, req.draw));
+            self.inner.generate(req)
+        }
+        fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
+            // A quarter of the fake's amplitude, so a level step would change every sample.
+            let mut pcm = self.inner.decode(codes)?;
+            pcm.samples.iter_mut().for_each(|x| *x *= 0.25);
+            self.decoded.borrow_mut().push(pcm.samples.clone());
+            Ok(pcm)
+        }
+    }
+
+    #[test]
+    fn text_is_one_request_at_its_seed_and_writes_the_decoded_draw_whole() {
+        let dir = std::env::temp_dir().join(format!("ggtts-render-text-path-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = LogSettings {
+            level: LogLevel::Error,
+            format: LogFormat::Text,
+        };
+        let text = "今日天氣好好，我哋去公園行下。";
+        for seed in [None, Some(7u64), Some(5_000_000_000)] {
+            let requests = Rc::new(RefCell::new(Vec::new()));
+            let decoded = Rc::new(RefCell::new(Vec::new()));
+            let stream = dir.join(format!("{seed:?}.s16"));
+            let out = dir.join(format!("{seed:?}.flac"));
+            let args = Args {
+                engine: Some("fake".into()),
+                text: Some(text.into()),
+                seed,
+                out: Some(out.clone()),
+                stream: Some(stream.to_str().unwrap().into()),
+                stream_format: Some("s16le".into()),
+                stream_raw: true,
+                ..Args::default()
+            };
+            let (r, d) = (requests.clone(), decoded.clone());
+            let code = render_with_loader(args, log, move |_, _, _| {
+                Ok(Box::new(Recording {
+                    inner: ggtts_fake::FakeEngine::default(),
+                    requests: r,
+                    decoded: d,
+                }) as Box<dyn Engine>)
+            })
+            .unwrap();
+            assert_eq!(code, 0);
+            assert_eq!(
+                *requests.borrow(),
+                vec![(text.to_string(), seed.unwrap_or(20260905), 0, 0)],
+                "one request, at the given seed"
+            );
+            let decoded = decoded.borrow();
+            assert_eq!(decoded.len(), 1);
+            let bytes = std::fs::read(&stream).unwrap();
+            let header = ggtts_core::stream::raw_header(24_000);
+            assert!(bytes.starts_with(header.as_bytes()), "an s16le stream at 24 kHz");
+            let written: Vec<i16> = bytes[header.len()..]
+                .chunks_exact(2)
+                .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                .collect();
+            let want: Vec<i16> = decoded[0].iter().map(|&x| to_i16(x)).collect();
+            assert_eq!(written.len(), want.len(), "no sample trimmed");
+            assert_eq!(written, want, "the stream is the decoded draw");
+            // The FLAC is the decoded draw too: no level step on --text.
+            let reference = write_flac(&dir.join(format!("{seed:?}-want.flac")), &decoded[0], 24_000).unwrap();
+            assert_eq!(
+                std::fs::read(&out).unwrap(),
+                std::fs::read(reference).unwrap(),
+                "the FLAC is the decoded draw, not levelled"
+            );
+        }
     }
 }

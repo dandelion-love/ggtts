@@ -392,7 +392,7 @@ fn run_render(r: &mut Report, p: &Profile) {
             let p = format!("chunk[{}]", g.i);
             x.eq(&format!("{p}.i"), g.i as u64, u(&w["i"]));
             x.eq(&format!("{p}.text"), g.text.as_str(), s(&w["text"]));
-            x.eq(&format!("{p}.seed"), u64::from(g.seed), u(&w["seed"]));
+            x.eq(&format!("{p}.seed"), g.seed, u(&w["seed"]));
             x.eq(&format!("{p}.redraws"), u64::from(g.redraws), u(&w["redraws"]));
             x.eq(
                 &format!("{p}.first_draw_defect"),

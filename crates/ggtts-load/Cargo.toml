@@ -20,3 +20,6 @@ default = []
 # The engines over ggml. Without it only the fake engine loads, and a model engine is refused with a named reason.
 ggml = ["ggtts-qwen3-tts/ggml", "ggtts-kitten/ggml"]
 cuda = ["ggml", "ggtts-qwen3-tts/cuda", "ggtts-kitten/cuda"]
+# Test-only engines for the bindings' boundary tests (`binding`): `panic` (generating panics), `slow` (each chunk takes
+# a quarter second) and `panic-load` (loading panics).
+plant = []

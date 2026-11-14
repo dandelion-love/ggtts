@@ -30,6 +30,9 @@ serde_json.workspace = true
 
 [dev-dependencies]
 claxon.workspace = true
+# The conformance test (`tests/conformance.rs`) drives these front ends too: the book's options parser and the C ABI.
+ggtts-book = { path = "../ggtts-book" }
+ggtts-ffi = { path = "../ggtts-ffi" }
 jsonschema = { version = "0.60.2", default-features = false }
 
 [features]

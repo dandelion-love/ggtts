@@ -82,7 +82,7 @@ fn render(engine: &mut FakeEngine, text: &str, judge: &mut dyn Judge, redraw: u3
 fn one(transcript: &str) -> (Option<Verdict>, Reading) {
     let (mut j, _) = judge(&[Ok(transcript)]);
     let kept = render(&mut FakeEngine::default(), TEXT, &mut j, 0);
-    (kept.kept().judgement.verdict, j.take_reading().unwrap())
+    (kept.kept().judgement.verdict, j.last_reading().cloned().unwrap())
 }
 
 /// AC1, AC2: a transcript identical to the reference, or the reference written in simplified characters, scores zero
@@ -165,7 +165,7 @@ fn a_duration_rejection_is_not_read_back_and_a_failed_read_keeps_the_draw() {
     let (mut j, _) = judge(&[Err("the recogniser crashed")]);
     let kept = render(&mut FakeEngine::default(), TEXT, &mut j, 2);
     assert_eq!((kept.draws.len(), kept.kept().judgement.verdict), (1, None));
-    let reading = j.take_reading().unwrap();
+    let reading = j.last_reading().cloned().unwrap();
     assert_eq!(reading.error.as_deref(), Some("the recogniser crashed"));
 }
 

@@ -638,6 +638,12 @@ fn instruments_dir(inputs: &Inputs) -> Option<PathBuf> {
     if let Some(d) = &inputs.instruments_dir {
         return Some(d.clone());
     }
+    shipped_dir()
+}
+
+/// The shipped `instruments/` directory with no caller's choice: `GGTTS_INSTRUMENTS_DIR`, or the nearest
+/// `instruments/` holding the Python SDK above the running binary.
+pub fn shipped_dir() -> Option<PathBuf> {
     if let Some(d) = std::env::var_os("GGTTS_INSTRUMENTS_DIR") {
         return Some(PathBuf::from(d));
     }

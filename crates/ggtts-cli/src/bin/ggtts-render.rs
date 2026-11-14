@@ -137,7 +137,7 @@ impl StreamTiming {
 const USAGE: &str = "usage: ggtts-render [--model M.gguf] [--codec C.gguf] [--offline] --out x.flac \
 [--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N (capped at the CPUs allowed)] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--speaker NAME] [--instruction TEXT] \
 [--steer FILE [--steer-scale X] [--steer-layers LIST]] \
-[--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE [--redraw N]) \
+[--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE [--redraw N [--judge asr-qwen,model=DIR]]) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
 [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID] \
 [--log-level error|warn|info|debug|trace] [--log-format text|json] [--timing-report FILE] [--duration-report FILE]\n       ggtts-render --version";
@@ -622,6 +622,16 @@ fn render_with_models(
     } else {
         None
     };
+    // The judge, built (its ASR started) before the engine loads, so a judge that cannot run costs no model load. A
+    // one-chunk plan keeps its one draw, so there is nothing for a judge to redraw.
+    if a.render.judge.is_some() && a.render.text.is_some() {
+        return Err(
+            "--judge (render.judge): --text renders one draw and keeps it; the judge redraws a story's \
+                    chunks (--story)"
+                .into(),
+        );
+    }
+    let mut judge = ggtts_instruments::judge::judge(&a)?;
     // Refuse a duration report that cannot be written before spending the render on it. The instrument report
     // directory is the one parent that may not exist yet: the runner creates it.
     if let Some(parent) = a
@@ -854,16 +864,8 @@ fn render_with_models(
             } else {
                 Output::Whole
             };
-            let read = render_plan(
-                engine.as_mut(),
-                &chunks,
-                &seeds,
-                &mut DurationJudge,
-                &options,
-                obs,
-                output,
-            )
-            .map_err(|e| e.to_string())?;
+            let read = render_plan(engine.as_mut(), &chunks, &seeds, judge.as_mut(), &options, obs, output)
+                .map_err(|e| e.to_string())?;
             let level_ns = read.stream.map_or(0, |s| s.level_ns);
             let render_ms = t1.elapsed().as_millis();
             measured_render_ms = render_ms;

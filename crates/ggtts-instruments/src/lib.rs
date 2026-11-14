@@ -12,9 +12,11 @@
 //! * [`runner`]: runs them, isolated, merges the report, logs what ran and what it cost, and decides whether the
 //!   measurement is complete.
 //! * [`options`]: the instrument run from the shared options value, the one call every front end makes.
+//! * [`judge`]: the render's judge from the options value: the duration judge, or with an ASR reading each draw back.
 
 pub mod catalogue;
 pub mod config;
+pub mod judge;
 pub mod options;
 pub mod runner;
 

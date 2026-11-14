@@ -240,11 +240,6 @@ impl<R: Recogniser> TextJudge<R> {
         self.last.as_ref()
     }
 
-    /// Take the reading of the last draw judged ([`TextJudge::last_reading`]).
-    pub fn take_reading(&mut self) -> Option<Reading> {
-        self.last.take()
-    }
-
     /// Read `transcript` against `text`: the comparison and the verdict.
     pub fn read(&self, text: &str, transcript: &str) -> Reading {
         let comparison = compare(&self.fold.fold(text), &self.fold.fold(transcript));
@@ -264,7 +259,29 @@ impl<R: Recogniser> TextJudge<R> {
     }
 }
 
+impl Reading {
+    /// The reading as the trace's `read` event and a book manifest carry it: the transcript, the counts, the verdict
+    /// it gave, and the recogniser's error.
+    pub fn to_json(&self) -> serde_json::Value {
+        let c = &self.comparison;
+        serde_json::json!({
+            "transcript": self.transcript,
+            "lost": c.lost,
+            "longest_lost": c.longest_lost,
+            "wrong": c.wrong,
+            "extra": c.extra,
+            "longest_repeat": c.longest_repeat,
+            "read_verdict": self.verdict.map(Verdict::as_str),
+            "error": self.error,
+        })
+    }
+}
+
 impl<R: Recogniser> Judge for TextJudge<R> {
+    fn take_reading(&mut self) -> Option<serde_json::Value> {
+        self.last.as_ref().map(Reading::to_json)
+    }
+
     fn judge(&mut self, profile: &Profile, samples: &[f32], sample_rate: u32, text: &str) -> Judgement {
         let duration = judge_f32(profile, samples, sample_rate, text);
         if duration.verdict.is_some() {

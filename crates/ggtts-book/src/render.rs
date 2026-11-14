@@ -21,7 +21,7 @@ use ggtts_core::engine::{Engine, EngineInfo};
 use ggtts_core::flac::encode_flac;
 use ggtts_core::hooks::Hooks;
 use ggtts_core::options::Options;
-use ggtts_core::pipeline::{gap_samples, level, DurationJudge, Observers, RenderOptions};
+use ggtts_core::pipeline::{gap_samples, level, DurationJudge, Judge, Observers, RenderOptions};
 use ggtts_core::profile::Profile;
 use ggtts_core::trace::{emit_header, Events, Header, JsonlEvents, NullEvents};
 
@@ -87,17 +87,22 @@ pub fn render_chunk(
     opts: &RenderOptions,
     obs: &mut Observers<'_>,
 ) -> Result<ChunkOutput, String> {
+    render_chunk_judged(engine, plan, index, opts, &mut DurationJudge, obs)
+}
+
+/// [`render_chunk`] with the caller's `judge` (the options value's, [`ggtts_instruments::judge::judge`]): what a
+/// judge that reads back read in each draw is kept in the chunk's [`Draws::reads`].
+pub fn render_chunk_judged(
+    engine: &mut dyn Engine,
+    plan: &ChapterPlan,
+    index: usize,
+    opts: &RenderOptions,
+    judge: &mut dyn Judge,
+    obs: &mut Observers<'_>,
+) -> Result<ChunkOutput, String> {
     let seeds = |i: usize, _: &str, draw: u32| plan.seed_at(i, draw);
-    let kept = ggtts_core::pipeline::render_chunk(
-        engine,
-        &plan.chunks[index].text,
-        index,
-        &seeds,
-        &mut DurationJudge,
-        opts,
-        obs,
-    )
-    .map_err(|e| e.to_string())?;
+    let kept = ggtts_core::pipeline::render_chunk(engine, &plan.chunks[index].text, index, &seeds, judge, opts, obs)
+        .map_err(|e| e.to_string())?;
     let pcm: Vec<i16> = kept.samples.iter().map(|&x| to_i16(x)).collect();
     let bytes = encode_flac(&pcm, kept.sample_rate).map_err(|e| e.to_string())?;
     let last = kept.kept();
@@ -107,6 +112,15 @@ pub fn render_chunk(
             kept: last.draw,
             count: kept.draws.len() as u32,
             verdict: last.judgement.verdict.map(|v| v.as_str().to_string()),
+            reads: kept
+                .readings
+                .iter()
+                .map(|(draw, r)| {
+                    let mut r = r.clone();
+                    r["draw"] = (*draw).into();
+                    r
+                })
+                .collect(),
         }),
     })
 }
@@ -290,10 +304,23 @@ pub fn render_command_with(
 /// it, and a resume under other render options is refused ([`crate::manifest::ManifestError::Mismatch`]).
 pub fn render_identity(options: &Options, info: &EngineInfo) -> serde_json::Value {
     let record = ggtts_core::options::record(options, info);
-    let kept: serde_json::Map<String, serde_json::Value> = ["instruction", "steer"]
+    let mut kept: serde_json::Map<String, serde_json::Value> = ["instruction", "steer"]
         .into_iter()
         .filter_map(|k| record.get(k).map(|v| (k.to_string(), v.clone())))
         .collect();
+    // The judge decides which draw is kept, so a resume under another one starts the chapter again. Its ASR and run
+    // bar are its identity; the model's path and the device are where it runs, not what it decides.
+    if let Some(spec) = options
+        .render
+        .judge
+        .as_deref()
+        .and_then(|s| ggtts_instruments::judge::parse(s).ok())
+    {
+        kept.insert(
+            "judge".into(),
+            serde_json::json!({"asr": spec.name, "min_run": spec.min_run}),
+        );
+    }
     if kept.is_empty() {
         serde_json::Value::Null
     } else {
@@ -323,6 +350,8 @@ pub fn render_command_options(
     if let Some(c) = &instruments {
         refuse_given_reference(c)?;
     }
+    // The judge, its ASR started before the engine loads, so one that cannot run costs no model load.
+    let mut judge = ggtts_instruments::judge::judge(&options)?;
     let LoadedEngine {
         mut engine,
         files,
@@ -359,7 +388,7 @@ pub fn render_command_options(
         header.instruction = settings.opts.instruction.clone().filter(|i| !i.is_empty());
         header.steer = settings.opts.steer.as_ref().map(|s| s.record());
         emit_header(events, &header);
-        render_book_observed(engine.as_mut(), &book, &plans, out, &settings, events)?
+        render_book_judged(engine.as_mut(), &book, &plans, out, &settings, judge.as_mut(), events)?
     };
     if let Some(t) = trace {
         t.finish().map_err(|e| format!("--trace: {e}"))?;
@@ -695,6 +724,19 @@ pub fn render_book_observed(
     settings: &BookRender,
     events: &mut dyn Events,
 ) -> Result<Vec<ChapterReport>, String> {
+    render_book_judged(engine, book, plans, out, settings, &mut DurationJudge, events)
+}
+
+/// [`render_book_observed`] with the caller's `judge` for every chunk.
+pub fn render_book_judged(
+    engine: &mut dyn Engine,
+    book: &Book,
+    plans: &[ChapterPlan],
+    out: &Path,
+    settings: &BookRender,
+    judge: &mut dyn Judge,
+    events: &mut dyn Events,
+) -> Result<Vec<ChapterReport>, String> {
     let include_skippable = settings.include_skippable;
     let mut hooks = Hooks::new();
     // A chapter's manifest records the redraws its chunks were rendered with, whoever planned it.
@@ -746,11 +788,12 @@ pub fn render_book_observed(
         let mut rendered = Vec::new();
         let start: Resume = run_chapter(&dir, plan, |p, index| {
             rendered.push(index);
-            render_chunk(
+            render_chunk_judged(
                 engine,
                 p,
                 index,
                 &settings.opts,
+                &mut *judge,
                 &mut Observers::new(&mut *events, &mut hooks),
             )
         })

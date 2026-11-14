@@ -7,7 +7,8 @@
 //!                  [--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME]
 //!                  [--device cpu|cuda] [--threads N] [--offline]
 //!                  [--instruction TEXT] [--steer FILE [--steer-scale X] [--steer-layers L,L]]
-//!                  [--trace FILE [--trace-level 1|2]] [--redraw N] [--include-skippable]
+//!                  [--trace FILE [--trace-level 1|2]] [--redraw N [--judge asr-qwen,model=DIR[,device=cpu|cuda][,min_run=N]]]
+//!                  [--include-skippable]
 //!                  [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE.yaml] [--require NAME]...
 //!                  [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort]
 //!                  [--instrument-timeout S] [--report DIR] [--run ID]
@@ -34,7 +35,8 @@
 //! in `ggtts-render`: `--instruction`, `--steer` and its scale and layers reach every chunk's request, and `--trace`
 //! writes one ggtts-trace/2 stream for the chunks this run renders. Each chunk is judged, and one the judge rejects is
 //! redrawn up to `--redraw` times (unset: the engine profile's), as in a story; each chunk's manifest entry records
-//! the kept draw and the number of draws. The instrument flags are ggtts-render's: the instruments run on each
+//! the kept draw and the number of draws. `--judge` adds an ASR that reads each draw back, so a chunk that lost or
+//! repeated a run of its text is redrawn too, and records what it read per chunk (`docs/book.md`). The instrument flags are ggtts-render's: the instruments run on each
 //! chapter FLAC this run wrote (not on a chapter an earlier run finished), with one report per chapter beside its
 //! FLAC (`NNN-<chapter id>.report`, or `--report DIR/NNN-<chapter id>`). An unknown instrument is refused before
 //! anything is rendered. A table option a book does not take (`--text`, `--story`, `--seed`, `--stream`, the
@@ -61,7 +63,7 @@ const USAGE: &str = "usage: ggtts-book inspect BOOK.epub [--engine qwen3-tts|fak
 ggtts-book render BOOK.epub --out DIR [--engine qwen3-tts|kitten-tts-2|fake] [--seed-root R]\n                  \
 [--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME] [--device cpu|cuda] [--threads N] [--offline]\n                  \
 [--instruction TEXT] [--steer FILE [--steer-scale X] [--steer-layers L,L]] [--trace FILE [--trace-level 1|2]]\n                  \
-[--redraw N] [--include-skippable]\n                  \
+[--redraw N [--judge asr-qwen,model=DIR[,device=cpu|cuda][,min_run=N]]] [--include-skippable]\n                  \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]...\n                  \
 [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] \
 [--report DIR] [--run ID]\n       \

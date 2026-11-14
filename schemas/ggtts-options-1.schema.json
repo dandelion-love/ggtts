@@ -454,6 +454,15 @@
             "instruction"
           ]
         },
+        "judge": {
+          "description": "An ASR that reads each draw back; a draw that lost or repeated a run of its text is redrawn: asr-qwen,model=DIR[,device=cpu|cuda][,min_run=N]. Needs --redraw. Unset: the duration judge alone.",
+          "pattern": "\\S",
+          "type": "string",
+          "x-ggtts-flags": [
+            "--judge"
+          ],
+          "x-ggtts-phase": "render"
+        },
         "measure_timings": {
           "default": false,
           "description": "Collect wall-clock stage durations; also on whenever observe.timing_report is given.",

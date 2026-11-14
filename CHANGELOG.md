@@ -31,7 +31,7 @@ that a merge places under a released heading is caught.
   as before unless asked; at 0 the output and manifests are byte-identical. With redraws, each chunk's manifest entry
   records its kept draw, its draw count and the kept draw's verdict, and a resume at a different `--redraw` renders
   again only the chunks whose outcome the new setting changes. `--redraw` is the shared options table's spelling of
-  `render.redraw`.
+  `render.redraw`, so `ggtts-render --story --redraw N` takes it too and its usage names it.
 
 ### Changed
 

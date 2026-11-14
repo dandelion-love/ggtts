@@ -1,44 +1,26 @@
-//! The binding's engine layer, in plain Rust: loading with the settings of the C-ABI's `ggtts_load_with`, rendering,
-//! streaming with a stop, and the guard that turns an error or a panic into a code and a message. `lib.rs` puts the
-//! Python module over it; nothing here needs Python, so `cargo test` runs it without an interpreter.
+//! The binding's engine layer, in plain Rust: Python's handle and load request over the engine glue it shares with the
+//! C-ABI (`ggtts_load::binding`): loading with the settings of `ggtts_load_with`, rendering, streaming with a stop, and
+//! the guard that turns an error or a panic into a code and a message. `lib.rs` puts the Python module over it; nothing
+//! here needs Python, so `cargo test` runs it without an interpreter.
 //!
-//! It mirrors `crates/ggtts-ffi/src/lib.rs` on the engine API directly (no C strings, no handle registry): the same
-//! codes, the same refusals before any file is read or any text rendered, the same story path, and a panic caught at
-//! the boundary, with the engine that panicked dropped.
+//! What is here is only what Python has and the C-ABI does not: its handle object (no registry, no ids), its load
+//! request and the report of what was loaded, its device argument, and its wording of the refusals that name its own
+//! arguments ([`WORDING`]). The codes, the refusals, the story path and the panic guard are the shared module's.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, TryLockError};
+use std::sync::Mutex;
 
-use ggtts_core::engine::{refuse_instruction, ChunkRequest, Engine};
-use ggtts_core::pipeline::{plan_story, render_story, render_story_streamed, RenderError, RenderOptions};
-use ggtts_core::trace::NullEvents;
+use ggtts_core::engine::Engine;
+use ggtts_load::binding::{self, Held, Slot};
 
-/// The codes are the C-ABI's (`ggtts.h`): a test holds them equal to `ggtts-ffi`'s.
-pub const OK: i32 = 0;
-/// An invalid argument: an unknown device, a setting the engine does not take, empty or punctuation-only text.
-pub const ERR_ARG: i32 = -1;
-/// The engine was closed, or dropped after a panic.
-pub const ERR_HANDLE: i32 = -2;
-/// The engine refused: a missing file, not a GGUF, an unknown engine or speaker, a failed download, a failed render.
-pub const ERR_ENGINE: i32 = -3;
-/// A panic inside ggtts, caught at the boundary.
-pub const ERR_PANIC: i32 = -4;
-/// The stream was stopped. The Python stream returns instead of raising it; it is here for parity.
-pub const ERR_STOPPED: i32 = -5;
-/// The engine is rendering: a call on it from its own stream callback, or from another thread meanwhile.
-pub const ERR_BUSY: i32 = -6;
+pub use ggtts_load::binding::{
+    guard, Device, Fail, ERR_ARG, ERR_BUSY, ERR_ENGINE, ERR_HANDLE, ERR_PANIC, ERR_STOPPED, OK,
+};
+/// The engines a build can load, by name, besides the test engines.
+pub use ggtts_load::ENGINES;
 
 /// The seed a render uses when given none, as `ggtts-render`.
 pub const DEFAULT_SEED: u64 = 20260905;
-
-/// The story id every binding render uses, as the C-ABI: the seed of each chunk is derived from it, the text and the
-/// seed given, so a render here is the C-ABI's render at the same seed.
-const STORY: &str = "ggtts-binding";
-const STOPPED: &str = "stopped by the callback";
-
-/// A code and a message.
-pub type Fail = (i32, String);
 
 fn arg_err(msg: impl Into<String>) -> Fail {
     (ERR_ARG, msg.into())
@@ -48,45 +30,23 @@ fn engine_err(msg: impl Into<String>) -> Fail {
     (ERR_ENGINE, msg.into())
 }
 
-/// The message of a caught panic.
-fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
-    let msg = p
-        .downcast_ref::<&str>()
-        .map(|s| s.to_string())
-        .or_else(|| p.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "a panic with no message".into());
-    format!("panic inside ggtts: {msg}")
+/// Python's `device` argument: `cpu` or `cuda`.
+pub fn parse_device(s: &str) -> Result<Device, Fail> {
+    Device::from_name(s).ok_or_else(|| arg_err(format!("device must be \"cpu\" or \"cuda\", not {s:?}")))
 }
 
-/// Run `f`, turning a panic into [`ERR_PANIC`] with its message.
-pub fn guard<T>(f: impl FnOnce() -> Result<T, Fail>) -> Result<T, Fail> {
-    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|p| Err((ERR_PANIC, panic_message(p.as_ref()))))
-}
+/// How Python words the refusals that name its own arguments ([`binding::Wording`]).
+const WORDING: binding::Wording = binding::Wording {
+    choose_speaker: ". Choose one with speaker=",
+    device_setting: "device",
+    cpu_only,
+    no_engines_for_defaults: ", so no default model is fetched",
+    offline_hint: "",
+    file_checks: binding::FileChecks::NeededFirst,
+};
 
-/// Where the graphs run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Device {
-    #[default]
-    Cpu,
-    /// The first CUDA device. Needs a build with the `cuda` feature; another build refuses it when loading.
-    Cuda,
-}
-
-impl Device {
-    pub fn parse(s: &str) -> Result<Self, Fail> {
-        match s {
-            "cpu" => Ok(Device::Cpu),
-            "cuda" => Ok(Device::Cuda),
-            other => Err(arg_err(format!("device must be \"cpu\" or \"cuda\", not {other:?}"))),
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Device::Cpu => "cpu",
-            Device::Cuda => "cuda",
-        }
-    }
+fn cpu_only(engine: &str, device: Device) -> String {
+    format!("the {engine} engine runs on the CPU only, not {}", device.as_str())
 }
 
 /// What to load. A path not given is the engine's pinned default where it has one (Qwen3-TTS), from the per-user
@@ -128,66 +88,27 @@ pub struct Loaded {
     pub files: Vec<ModelFile>,
 }
 
-/// An engine and the instruction its renders carry. `Engine` has no `Send` bound and the real engines are not `Send` to
-/// the compiler (raw ggml pointers; Kitten-TTS 2 shares its backend through `Rc`), so a `Held` is built in one of two
-/// ways only: [`Held::checked`], where the compiler proves the engine `Send`, or [`Held::assume_send`], whose every
-/// caller argues it for that one engine, as in the C-ABI.
-struct Held {
-    engine: Box<dyn Engine>,
-    instruction: Option<String>,
-    /// The engine panicked: it is never used again.
-    dead: bool,
-}
-
-impl Held {
-    fn checked(e: Box<dyn Engine + Send>) -> Self {
-        Held {
-            engine: e,
-            instruction: None,
-            dead: false,
-        }
-    }
-
-    /// # Safety
-    /// The engine may be moved to another thread whole and used there by one thread at a time: nothing in it is tied
-    /// to the thread that made it, and nothing it shares (an `Rc`, a pointer) is reachable from outside it.
-    #[cfg_attr(not(feature = "ggml"), allow(dead_code))]
-    unsafe fn assume_send(e: Box<dyn Engine>) -> Self {
-        Held {
-            engine: e,
-            instruction: None,
-            dead: false,
-        }
-    }
-}
-
-// SAFETY: every `Held` is `Send` by the compiler's proof or by its constructor's per-engine argument (above), and its
-// engine is used under its own mutex, one call at a time.
-unsafe impl Send for Held {}
-
 /// A loaded engine. Its lock is taken with `try_lock`, so a second call while it renders is [`ERR_BUSY`], never a
 /// deadlock; [`Handle::close`] never waits for a render, which drops the engine when it returns. A panic inside a
 /// render drops the engine, and later calls are [`ERR_HANDLE`].
 pub struct Handle {
-    slot: Mutex<Option<Arc<Mutex<Held>>>>,
+    slot: Mutex<Option<Slot>>,
 }
 
 impl Handle {
     fn new(held: Held) -> Self {
         Handle {
-            slot: Mutex::new(Some(Arc::new(Mutex::new(held)))),
+            slot: Mutex::new(Some(binding::slot(held))),
         }
     }
 
     /// A handle over any engine, for tests of the boundary.
     #[cfg(test)]
     fn from_engine(e: Box<dyn Engine + Send>, instruction: Option<&str>) -> Self {
-        let mut held = Held::checked(e);
-        held.instruction = instruction.map(String::from);
-        Handle::new(held)
+        Handle::new(Held::checked(e, instruction))
     }
 
-    fn slot(&self) -> std::sync::MutexGuard<'_, Option<Arc<Mutex<Held>>>> {
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<Slot>> {
         // Nothing panics while this lock is held, so a poisoned lock still holds a whole value.
         self.slot.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -203,52 +124,36 @@ impl Handle {
         self.slot().is_none()
     }
 
-    /// Run `f` on the engine, catching a panic: the engine is dropped and the panic becomes [`ERR_PANIC`].
+    /// Run `f` on the engine ([`binding::with_engine`]): a panic drops the engine and becomes [`ERR_PANIC`].
     fn with_engine<T>(&self, f: impl FnOnce(&mut dyn Engine, Option<&str>) -> Result<T, Fail>) -> Result<T, Fail> {
         let slot = self
             .slot()
             .clone()
             .ok_or_else(|| (ERR_HANDLE, "the engine is closed".to_string()))?;
-        let mut held = match slot.try_lock() {
-            Ok(h) => h,
-            Err(TryLockError::WouldBlock) => {
-                return Err((
+        binding::with_engine(
+            &slot,
+            |why| match why {
+                binding::Unusable::Busy => (
                     ERR_BUSY,
                     "the engine is rendering (a call from its own stream callback, or from another thread)".into(),
-                ))
-            }
-            // Nothing panics while the lock is held (a panic is caught inside it), but a poisoned lock is closed too.
-            Err(TryLockError::Poisoned(_)) => return Err((ERR_HANDLE, "the engine is closed".to_string())),
-        };
-        if held.dead {
-            return Err((ERR_HANDLE, "the engine is closed (it panicked)".to_string()));
-        }
-        let h = &mut *held;
-        match catch_unwind(AssertUnwindSafe(|| f(h.engine.as_mut(), h.instruction.as_deref()))) {
-            Ok(r) => r,
-            Err(p) => {
-                let msg = panic_message(p.as_ref());
+                ),
+                binding::Unusable::Poisoned => (ERR_HANDLE, "the engine is closed".to_string()),
+                binding::Unusable::Panicked => (ERR_HANDLE, "the engine is closed (it panicked)".to_string()),
+            },
+            || {
                 // Only this slot is dropped, and only if it is still the one that panicked.
                 let mut current = self.slot();
-                if current.as_ref().is_some_and(|s| Arc::ptr_eq(s, &slot)) {
+                if current.as_ref().is_some_and(|s| std::sync::Arc::ptr_eq(s, &slot)) {
                     *current = None;
                 }
-                drop(current);
-                // A call that took a clone of the slot before it was dropped sees the engine closed, never uses it.
-                held.dead = true;
-                Err((ERR_PANIC, msg))
-            }
-        }
+            },
+            f,
+        )
     }
 
     /// Render `text` (one paragraph per non-empty line) to mono f32 samples and their rate.
     pub fn render(&self, text: &str, seed: u64) -> Result<(Vec<f32>, u32), Fail> {
-        self.with_engine(|e, instruction| {
-            let chunks = plan(e, text)?;
-            let opts = options(e, seed, instruction);
-            let read = render_story(e, STORY, &chunks, &opts).map_err(render_error)?;
-            Ok((read.samples, read.sample_rate))
-        })
+        self.with_engine(|e, instruction| binding::render(e, text, seed, instruction))
     }
 
     /// Render `text`, handing each kept chunk's piece (samples and rate) to `on_piece` before the next chunk is
@@ -260,93 +165,15 @@ impl Handle {
         seed: u64,
         on_piece: &mut dyn FnMut(&[f32], u32) -> bool,
     ) -> Result<bool, Fail> {
-        self.with_engine(|e, instruction| {
-            let chunks = plan(e, text)?;
-            let opts = options(e, seed, instruction);
-            let mut sink = |p: ggtts_core::pipeline::StreamPiece<'_>| {
-                if on_piece(p.samples, p.sample_rate) {
-                    Ok(())
-                } else {
-                    Err(STOPPED.to_string())
-                }
-            };
-            match render_story_streamed(e, STORY, &chunks, &opts, &mut NullEvents, &mut sink) {
-                Ok(_) => Ok(true),
-                Err(err) => match render_error(err) {
-                    (ERR_STOPPED, _) => Ok(false),
-                    other => Err(other),
-                },
-            }
-        })
+        self.with_engine(
+            |e, instruction| match binding::render_stream(e, text, seed, instruction, on_piece) {
+                Ok(()) => Ok(true),
+                Err((ERR_STOPPED, _)) => Ok(false),
+                Err(other) => Err(other),
+            },
+        )
     }
 }
-
-/// Text to the story path's chunks: one paragraph per non-empty line. Empty and punctuation-only text is refused here,
-/// before the engine generates anything.
-fn plan(engine: &dyn Engine, text: &str) -> Result<Vec<ggtts_core::text::PlannedChunk>, Fail> {
-    let paragraphs: Vec<String> = text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(String::from)
-        .collect();
-    if paragraphs.is_empty() {
-        return Err(arg_err("text is empty"));
-    }
-    plan_story(engine.profile(), &paragraphs).map_err(|e| arg_err(e.to_string()))
-}
-
-fn options(engine: &dyn Engine, seed: u64, instruction: Option<&str>) -> RenderOptions {
-    RenderOptions {
-        seed_salt: seed.to_string(),
-        instruction: instruction.map(String::from),
-        ..RenderOptions::for_profile(engine.profile())
-    }
-}
-
-fn render_error(e: RenderError) -> Fail {
-    match e {
-        RenderError::Sink(m) if m == STOPPED => (ERR_STOPPED, "the stream callback asked to stop".into()),
-        other => engine_err(other.to_string()),
-    }
-}
-
-/// A model file must exist and be a GGUF before any engine is asked to load it.
-fn check_gguf(what: &str, path: &Path) -> Result<(), Fail> {
-    let mut magic = [0u8; 4];
-    let read = std::fs::File::open(path).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic));
-    match read {
-        Err(e) => Err(engine_err(format!("{what} {}: {e}", path.display()))),
-        Ok(()) if &magic != b"GGUF" => Err(engine_err(format!("{what} {}: not a GGUF file", path.display()))),
-        Ok(()) => Ok(()),
-    }
-}
-
-fn non_empty(s: &Option<String>) -> Option<&str> {
-    s.as_deref().filter(|s| !s.is_empty())
-}
-
-/// The engines other than Qwen3-TTS take neither a speaker nor an instruction, and refuse one before any file is read,
-/// rather than ignore it: [`ERR_ARG`], as the C-ABI.
-fn refuse_settings_for(engine: &str, speaker: Option<&str>, instruction: Option<&str>) -> Result<(), Fail> {
-    if speaker.is_some() {
-        return Err(arg_err(format!(
-            "a speaker is only supported by the qwen3-tts engine, not {engine}"
-        )));
-    }
-    let req = ChunkRequest {
-        text: "",
-        seed: 0,
-        chunk: 0,
-        draw: 0,
-        instruction,
-        steer: None,
-    };
-    refuse_instruction(&req, engine).map_err(|e| arg_err(e.0))
-}
-
-/// The engines a build can load, by name, besides the test engines.
-pub const ENGINES: &[&str] = &["qwen3-tts", "kitten-tts-2"];
 
 /// Load an engine. `notice` receives the download notice and progress of a default model, which is never silent.
 pub fn load(req: &LoadRequest, notice: &mut dyn FnMut(&str)) -> Result<(Handle, Loaded), Fail> {
@@ -367,192 +194,45 @@ fn load_inner(
     cache: &dyn Fn() -> Result<ggtts_models::Cache, String>,
     fetch: &dyn ggtts_models::Fetch,
 ) -> Result<(Handle, Loaded), Fail> {
-    let name = req.engine.as_str();
-    let mut speaker = non_empty(&req.speaker).map(String::from);
-    let instruction = non_empty(&req.instruction).map(String::from);
-    let threads = if req.threads <= 0 { 4 } else { req.threads };
-    if name != "qwen3-tts" {
-        refuse_settings_for(name, speaker.as_deref(), instruction.as_deref())?;
-    }
-    let mut loaded = Loaded {
-        engine: name.to_string(),
-        instruction: instruction.clone(),
-        device: req.device,
-        ..Default::default()
-    };
-    let test_engine = match name {
-        "fake" => Some(Held::checked(Box::new(ggtts_fake::FakeEngine::default()))),
-        #[cfg(feature = "plant")]
-        "panic" => Some(Held::checked(Box::new(planted::Panics(
-            ggtts_fake::FakeEngine::default(),
-        )))),
-        #[cfg(feature = "plant")]
-        "slow" => Some(Held::checked(Box::new(
-            planted::Slow(ggtts_fake::FakeEngine::default()),
-        ))),
-        #[cfg(feature = "plant")]
-        "panic-load" => panic!("planted panic in load"),
-        _ => None,
-    };
-    if let Some(held) = test_engine {
-        if req.device != Device::Cpu {
-            return Err(arg_err(format!(
-                "the {name} engine runs on the CPU only, not {}",
-                req.device.as_str()
-            )));
-        }
-        return Ok(finish(held, loaded));
-    }
-    if !ENGINES.contains(&name) {
-        return Err(engine_err(format!("no engine named {name:?}")));
-    }
-    // As the C-ABI: refused before any file is read or downloaded, with the same code (ERR_ENGINE). The message starts
-    // the same way; the rest names Python's `device` argument where the C-ABI names `settings.device`.
-    if req.device == Device::Cuda && !cfg!(feature = "cuda") {
-        return Err(engine_err(
-            "this build has no CUDA backend (built without the cuda feature): device cuda is not available; use cpu",
-        ));
-    }
-    // The model files: the given paths, or the engine's pinned defaults from the cache, as ggtts-render resolves them.
-    let given = vec![req.model.clone(), req.codec.clone()];
-    let given_file = |role: &str, path: &PathBuf| ModelFile {
-        role: role.to_string(),
-        path: path.clone(),
-        source: "path".into(),
-    };
-    let mut files: Vec<ModelFile> = match ggtts_models::defaults_for(name) {
-        // A file not given is the pinned default (the talker and the codec), from the cache.
-        Some(d) if given.len() == d.files.len() && given.iter().any(Option::is_none) => {
-            if !cfg!(feature = "ggml") {
-                return Err(engine_err(format!(
-                    "this build has no {name} engine (built without the ggml feature), so no default model is fetched"
-                )));
-            }
-            let cache = cache().map_err(engine_err)?;
-            let resolved = ggtts_models::resolve(d, &given, &cache, req.offline, fetch, notice).map_err(engine_err)?;
-            if req.model.is_none() && speaker.is_none() {
-                speaker = d.default_speaker.map(str::to_string);
-            }
-            resolved
-                .into_iter()
-                .map(|f| ModelFile {
-                    role: f.role,
-                    path: f.path,
-                    source: f.source.as_str().to_string(),
-                })
-                .collect()
-        }
-        _ => {
-            let model = req
-                .model
-                .as_ref()
-                .ok_or_else(|| arg_err(format!("the {name} engine needs a model")))?;
-            let codec = req
-                .codec
-                .as_ref()
-                .ok_or_else(|| arg_err(format!("the {name} engine needs a codec")))?;
-            vec![given_file("model", model), given_file("codec", codec)]
-        }
-    };
-    let (model, codec) = (files[0].path.clone(), files[1].path.clone());
-    check_gguf("model", &model)?;
-    check_gguf("codec", &codec)?;
-    if let Some(v) = &req.voice {
-        files.push(given_file("voice", v));
-    }
-    loaded.speaker = speaker.clone();
-    let held = load_real(
-        name,
-        &model,
-        &codec,
-        req.voice.as_deref(),
-        threads,
-        req.device,
-        speaker.as_deref(),
-        instruction.as_deref(),
+    let opened = binding::open(
+        binding::Request {
+            engine: &req.engine,
+            model: req.model.clone(),
+            codec: req.codec.clone(),
+            voice: req.voice.clone(),
+            speaker: req.speaker.as_deref(),
+            instruction: req.instruction.as_deref(),
+            device: req.device,
+            threads: req.threads,
+            models: Some(binding::Models {
+                cache,
+                offline: req.offline,
+                fetch,
+            }),
+        },
+        &WORDING,
+        notice,
     )?;
-    loaded.files = files;
-    Ok(finish(held, loaded))
-}
-
-fn finish(mut held: Held, mut loaded: Loaded) -> (Handle, Loaded) {
-    let info = held.engine.info();
-    loaded.family = info.family.clone();
-    loaded.backend = info.backend.clone();
-    loaded.parity = info.parity.clone();
-    held.instruction = loaded.instruction.clone();
-    (Handle::new(held), loaded)
-}
-
-#[cfg(feature = "ggml")]
-#[allow(clippy::too_many_arguments)]
-fn load_real(
-    engine: &str,
-    model: &Path,
-    codec: &Path,
-    voice: Option<&Path>,
-    threads: i32,
-    device: Device,
-    speaker: Option<&str>,
-    instruction: Option<&str>,
-) -> Result<Held, Fail> {
-    match engine {
-        "qwen3-tts" => {
-            let mut v = ggtts_qwen3_tts::engine::Voice {
-                device: match device {
-                    Device::Cpu => ggtts_qwen3_tts::cpu::Device::Cpu,
-                    Device::Cuda => ggtts_qwen3_tts::cpu::Device::Cuda,
-                },
-                ..Default::default()
-            };
-            if let Some(s) = speaker {
-                v.speaker = s.to_string();
-            }
-            // The library checks both settings while loading, before any text is rendered: an instruction the
-            // checkpoint takes none of, then a speaker the model does not have (with the model's speakers).
-            ggtts_qwen3_tts::engine::Qwen3Tts::load_for(model, codec, threads, v, instruction)
-                // SAFETY: as in the C-ABI. Qwen3-TTS is not `Send` to the compiler only for its raw ggml pointers,
-                // every one allocated by this engine and reachable only through it. It holds no `Rc` and no
-                // thread-local, and ggml's backends keep no per-thread state between graph runs, so the engine is
-                // sound to move whole and use from one thread at a time.
-                .map(|e| unsafe { Held::assume_send(Box::new(e)) })
-                .map_err(|e| {
-                    // The library's unknown-speaker message names the CLI flag, which a Python caller does not have.
-                    engine_err(e.0.replace(". Choose one with --speaker", ". Choose one with speaker="))
-                })
-        }
-        _ => {
-            let voice = voice.ok_or_else(|| arg_err("the kitten-tts-2 engine needs a voice"))?;
-            let device = match device {
-                Device::Cpu => ggtts_kitten::backend::Device::Cpu,
-                Device::Cuda => ggtts_kitten::backend::Device::Cuda,
-            };
-            ggtts_kitten::engine::KittenEngine::open(model, codec, voice, threads as usize, device)
-                // SAFETY: as in the C-ABI. Kitten-TTS 2 is not `Send` to the compiler for its raw ggml pointers and
-                // the `Rc<Backend>` its parts share. Every clone of that `Rc` lives inside this engine and nothing
-                // hands out a reference to its parts, so the clones move together and their count is only touched
-                // by the one thread using the engine.
-                .map(|e| unsafe { Held::assume_send(Box::new(e)) })
-                .map_err(engine_err)
-        }
-    }
-}
-
-#[cfg(not(feature = "ggml"))]
-#[allow(clippy::too_many_arguments)]
-fn load_real(
-    engine: &str,
-    _: &Path,
-    _: &Path,
-    _: Option<&Path>,
-    _: i32,
-    _: Device,
-    _: Option<&str>,
-    _: Option<&str>,
-) -> Result<Held, Fail> {
-    Err(engine_err(format!(
-        "this build has no {engine} engine (built without the ggml feature)"
-    )))
+    let info = opened.held.engine().info();
+    let loaded = Loaded {
+        engine: req.engine.clone(),
+        family: info.family.clone(),
+        backend: info.backend.clone(),
+        parity: info.parity.clone(),
+        speaker: opened.speaker,
+        instruction: req.instruction.clone().filter(|s| !s.is_empty()),
+        device: req.device,
+        files: opened
+            .files
+            .into_iter()
+            .map(|f| ModelFile {
+                role: f.role,
+                path: f.path,
+                source: f.source.as_str().to_string(),
+            })
+            .collect(),
+    };
+    Ok((Handle::new(opened.held), loaded))
 }
 
 /// Write mono f32 `samples` as 16-bit FLAC at `sample_rate`, with the library's writer (the suffix is forced to
@@ -564,53 +244,12 @@ pub fn write_flac(path: &Path, samples: &[f32], sample_rate: u32) -> Result<Path
     ggtts_core::flac::write_flac(path, samples, sample_rate).map_err(|e| engine_err(format!("{}: {e}", path.display())))
 }
 
-#[cfg(feature = "plant")]
-mod planted {
-    use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm};
-    use ggtts_core::profile::Profile;
-
-    /// The fake engine, except that generating panics: the planted defect for the boundary test.
-    pub struct Panics(pub ggtts_fake::FakeEngine);
-
-    impl Engine for Panics {
-        fn info(&self) -> &EngineInfo {
-            self.0.info()
-        }
-        fn profile(&self) -> &Profile {
-            self.0.profile()
-        }
-        fn generate(&mut self, _req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
-            panic!("planted panic in generate")
-        }
-        fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
-            self.0.decode(codes)
-        }
-    }
-
-    /// The fake engine, taking a quarter second per chunk: long enough for a test to see another thread run.
-    pub struct Slow(pub ggtts_fake::FakeEngine);
-
-    impl Engine for Slow {
-        fn info(&self) -> &EngineInfo {
-            self.0.info()
-        }
-        fn profile(&self) -> &Profile {
-            self.0.profile()
-        }
-        fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-            self.0.generate(req)
-        }
-        fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
-            self.0.decode(codes)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ggtts_core::engine::ChunkRequest;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
 
     const TEXT: &str = "今日天氣好好，我哋去海邊行下。\n行完之後，去食飯。";
 
@@ -787,7 +426,7 @@ mod tests {
             .0,
             ERR_ARG
         );
-        assert_eq!(Device::parse("tpu").unwrap_err().0, ERR_ARG);
+        assert_eq!(parse_device("tpu").unwrap_err().0, ERR_ARG);
         // An empty setting is no setting.
         let empty = LoadRequest {
             speaker: Some(String::new()),

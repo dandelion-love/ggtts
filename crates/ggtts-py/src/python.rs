@@ -149,7 +149,7 @@ fn load(
     offline: bool,
     progress: Option<PyObject>,
 ) -> PyResult<PyEngine> {
-    let device = core::Device::parse(device).map_err(|e| error(py, e))?;
+    let device = core::parse_device(device).map_err(|e| error(py, e))?;
     let req = core::LoadRequest {
         engine,
         model,

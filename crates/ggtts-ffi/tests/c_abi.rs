@@ -347,7 +347,9 @@ fn the_device_is_cpu_unless_asked_and_a_missing_backend_is_refused() {
     assert_eq!((code, h), (GGTTS_ERR_ARG, 0));
     assert_eq!(last_error(), "the fake engine runs on the CPU only");
 
-    if !cfg!(feature = "cuda") {
+    // The library's engines and backends are ggtts-load's, whose features cargo may unify on from another crate in
+    // the same build (`--workspace --features ggtts-cli/ggml`): ask the library, not this crate's own features.
+    if !ggtts_load::cuda_built() {
         for engine in ["qwen3-tts", "kitten-tts-2"] {
             let (code, h) = load_on(engine, "cuda");
             assert_eq!((code, h), (GGTTS_ERR_ENGINE, 0), "{engine}: {}", last_error());
@@ -375,7 +377,8 @@ fn no_model_resolves_the_default_files_and_never_downloads_unless_allowed() {
     let code = unsafe { ggtts_load_with(e.as_ptr(), ptr::null(), ptr::null(), ptr::null(), 0, &st, &mut h) };
     assert_eq!((code, h), (GGTTS_ERR_ENGINE, 0));
     let msg = last_error();
-    if cfg!(feature = "ggml") {
+    // Whether the library has its engines is ggtts-load's feature, not this crate's (as for CUDA above).
+    if ggtts_load::engines_built() {
         assert!(
             msg.contains("qwen-talker-hk-cantonese-cc0-v0.0.5-q8_0.gguf")
                 && msg.contains("https://huggingface.co/jmtl/hk-cantonese-cc0-qwen3-tts-GGUF/resolve/")

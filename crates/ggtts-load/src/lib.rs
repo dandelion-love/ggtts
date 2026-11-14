@@ -11,6 +11,11 @@
 //!
 //! Without the `ggml` feature only the fake engine loads; `qwen3-tts` and `kitten-tts-2` are refused with a named
 //! reason, and nothing is downloaded for a build that cannot render it.
+//!
+//! [`binding`] is the engine glue the bindings share: the C-ABI (`ggtts-ffi`, and Kotlin over it) and Python
+//! (`ggtts-py`) load, refuse, render and guard against panics through it, with the codes and messages they give.
+
+pub mod binding;
 
 use std::path::PathBuf;
 
@@ -30,6 +35,11 @@ fn unknown(engine: &str) -> String {
 /// Whether this build carries the model engines.
 pub fn engines_built() -> bool {
     cfg!(feature = "ggml")
+}
+
+/// Whether this build carries the CUDA backend.
+pub fn cuda_built() -> bool {
+    cfg!(feature = "cuda")
 }
 
 /// What to load: the options value's load section ([`ggtts_core::options::Load`]), one type for every front end. The

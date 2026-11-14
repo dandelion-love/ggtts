@@ -20,9 +20,9 @@ The shared surface has two public pieces in `ggtts-core::pipeline`:
 **Checkable form.** Nothing outside `ggtts-core::pipeline`, the engine crates' libraries and tests calls
 `Engine::generate`, `generate_traced`, `generate_hooked` or `decode` to render for a user. An engine that wraps another
 engine and delegates to it (inside an `impl Engine` block) is not a render. A grep test in the conformance test
-([#275](https://github.com/dandelion-love/ggtts/issues/275)) enforces it, with every exception named in the test. On
-`rc` today it would flag both divergences named below (`ggtts-render --text` and `ggtts-book`'s `render_chunk`), and
-`ggtts_core::trace::replay`.
+([#275](https://github.com/dandelion-love/ggtts/issues/275)) enforces it, with every exception named in the test. Before
+[#278](https://github.com/dandelion-love/ggtts/issues/278) and #279 it would have flagged `ggtts-render --text` and
+`ggtts-book`'s `render_chunk`; with them it flags `ggtts-kitten render` and `ggtts_core::trace::replay`.
 
 Why: until now each capability was added to each front end separately, so each front end carries a different subset.
 `ggtts-book` has no style instruction, no steering, no trace and no instruments; the bindings have no steering and no
@@ -45,11 +45,11 @@ A **front end** is anything a person or a program renders through:
 | Front end | Where | Render path today |
 |---|---|---|
 | `ggtts-render --story` | `crates/ggtts-cli` | `render_plan`, with its stream mode as the output |
-| `ggtts-render --text` | `crates/ggtts-cli` | its own `engine.generate` and `decode`: no trim, no level, no judge |
+| `ggtts-render --text` | `crates/ggtts-cli` | `render_plan` on a one-chunk plan at `Given(seed)`, with no redraw, no trim and no level ([#278](https://github.com/dandelion-love/ggtts/issues/278)) |
 | `ggtts-book render` | `crates/ggtts-book` | the core `render_chunk` per chunk at draw 0, its flags read by the shared options parser ([#279](https://github.com/dandelion-love/ggtts/issues/279)) |
 | C ABI (`libggtts_ffi`, `ggtts.h`) | `crates/ggtts-ffi` | `render_story`, `render_story_streamed` |
 | Kotlin (`ggtts.Ggtts`, over JNI) | `android/ggtts`, `crates/ggtts-ffi/src/jni.rs` | the C ABI |
-| Python (`import ggtts`) | `crates/ggtts-py` | `render_story`, `render_story_streamed` (its own copy of the C ABI's glue) |
+| Python (`import ggtts`) | `crates/ggtts-py` | `render_story`, `render_story_streamed`, through the engine glue it shares with the C ABI (`ggtts_load::binding`, [#281](https://github.com/dandelion-love/ggtts/issues/281)) |
 | Android demo and system TTS engine | `android/demo`, on `track/android` | Kotlin |
 | `ggtts-kitten render` | `crates/ggtts-kitten`, shipped in the release archive | its own loop: one seed per line (`--seed` plus the line index), its own `--max-tokens`, Kitten only |
 
@@ -102,9 +102,11 @@ observers (`Observers { events, hooks }`) and any output (`Output::Whole`, or `O
 the public step `render_chunk` per chunk (draws at a caller's `SeedSource`, a pluggable `Judge`, redraws, trim), then
 join, output and level. `render_story`, `render_story_traced`, `render_story_hooked` and `render_story_streamed` are
 wrappers over it. Before #276 they shared a private loop but each fixed its observers and output, so a caller could
-not have hooks and a stream together. The paths that still diverge are outside them: `ggtts-render --text` and `ggtts-kitten render` each call the engine
-directly. `ggtts-book` renders each chunk through `render_chunk` since
-[#279](https://github.com/dandelion-love/ggtts/issues/279).
+not have hooks and a stream together. `ggtts-render --text` renders through `render_plan` too since
+[#278](https://github.com/dandelion-love/ggtts/issues/278), with `RenderOptions::trim` and `RenderOptions::level` off,
+and `ggtts-book` renders each chunk through `render_chunk` since
+[#279](https://github.com/dandelion-love/ggtts/issues/279). The path that still diverges is outside them:
+`ggtts-kitten render` calls the engine directly.
 
 ## What every epic and story states
 

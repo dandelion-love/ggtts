@@ -68,6 +68,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
+use ggtts_core::capabilities::Capabilities;
 use ggtts_core::engine::Engine;
 use ggtts_core::flac::write_flac;
 use ggtts_core::hooks::Hooks;
@@ -505,15 +506,10 @@ fn resolve_models_with(
 }
 
 /// Reads the steering `--steer`, `--steer-scale` and `--steer-layers` name into the options
-/// ([`Options::read_steering`]); nothing without `--steer` (the table refuses the other two without it). Refuses an
-/// engine other than qwen3-tts, and every defect of the file or the selection ([`ggtts_core::steer`]). Needs no
-/// model: the talker's own check follows when it is loaded.
-fn load_steering(a: &mut Options, engine: &str) -> Result<(), String> {
-    if a.render.steer.is_some() && engine != "qwen3-tts" {
-        return Err(format!(
-            "--steer is only supported by the qwen3-tts engine, not {engine}"
-        ));
-    }
+/// ([`Options::read_steering`]); nothing without `--steer` (the table refuses the other two without it). Refuses
+/// every defect of the file or the selection ([`ggtts_core::steer`]); an engine that cannot steer has already refused
+/// it ([`options::check`]). Needs no model: the talker's own check follows when it is loaded.
+fn load_steering(a: &mut Options) -> Result<(), String> {
     a.read_steering().map_err(|r| format!("--steer: {}", r.message))
 }
 
@@ -679,13 +675,16 @@ fn render_with_models(
         ("auto", None) => DEFAULT_ENGINE.to_string(),
         (e, _) => e.to_string(),
     };
-    if a.load.speaker.is_some() && name != "qwen3-tts" {
-        return Err("--speaker is only supported by the qwen3-tts engine".into());
+    // What the engine does not support is refused here, before anything is read or loaded, in the words every front
+    // end shows (`options::check`); an environment value it has no use for is ignored with one warning.
+    if let Some(caps) = Capabilities::of(&name) {
+        let checked = options::check(&a, &caps).map_err(|r| r.to_string())?;
+        for w in &checked.warnings {
+            log.stderr(LogLevel::Warn, BINARY, "ignored", format_args!("{w}"));
+        }
+        a = checked.options;
     }
-    if a.render.instruction.as_deref().is_some_and(|i| !i.is_empty()) && name != "qwen3-tts" {
-        return Err("--instruction is only supported by the qwen3-tts engine".into());
-    }
-    load_steering(&mut a, &name)?;
+    load_steering(&mut a)?;
     // Validate and plan before opening output files or loading model weights.
     let preplanned = if let Some((title, paragraphs)) = story_input {
         let profile = match name.as_str() {
@@ -1674,6 +1673,9 @@ mod tests {
     }
 
     impl Engine for Instructed {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::of("qwen3-tts").unwrap()
+        }
         fn info(&self) -> &EngineInfo {
             self.inner.info()
         }
@@ -1768,7 +1770,10 @@ mod tests {
         })
         .unwrap_err();
         assert!(
-            err.contains("--instruction is only supported by the qwen3-tts engine"),
+            err.contains(
+                "render.instruction: the fake engine takes no style instruction, which is only supported by the \
+                 qwen3-tts engine"
+            ),
             "{err}"
         );
         assert_eq!(render_with_loader(fake(""), log, load_engine).unwrap(), 0);
@@ -2349,6 +2354,9 @@ mod tests {
     }
 
     impl Engine for Steered {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::of("qwen3-tts").unwrap()
+        }
         fn info(&self) -> &EngineInfo {
             self.inner.info()
         }

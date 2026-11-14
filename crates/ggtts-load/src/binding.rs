@@ -17,7 +17,9 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, TryLockError};
 
-use ggtts_core::engine::{refuse_instruction, ChunkRequest, Engine};
+use ggtts_core::capabilities::Capabilities;
+use ggtts_core::engine::Engine;
+use ggtts_core::options::{self, Options};
 use ggtts_core::pipeline::{plan_story, render_story, render_story_streamed, RenderError, RenderOptions};
 use ggtts_core::trace::NullEvents;
 use ggtts_models::{Cache, Fetch, ModelFile};
@@ -263,24 +265,19 @@ pub fn render_stream(
         .map_err(render_error)
 }
 
-/// The engines other than Qwen3-TTS take neither a speaker nor an instruction, and refuse one before any file is read,
-/// rather than ignore it. Both are [`ERR_ARG`], an argument the engine does not take; an instruction carries the
-/// library's own message for an engine that takes none.
+/// A speaker or an instruction the engine does not take is refused before any file is read, rather than ignored, as
+/// [`ERR_ARG`], with [`options::check`]'s refusal: the words `ggtts-render` shows for the same option and engine. An
+/// engine name the library does not know is left to the load, which names it.
 pub fn refuse_settings(engine: &str, speaker: Option<&str>, instruction: Option<&str>) -> Result<(), Fail> {
-    if speaker.is_some() {
-        return Err(arg_err(format!(
-            "a speaker is only supported by the qwen3-tts engine, not {engine}"
-        )));
-    }
-    let req = ChunkRequest {
-        text: "",
-        seed: 0,
-        chunk: 0,
-        draw: 0,
-        instruction,
-        steer: None,
+    let Some(caps) = Capabilities::of(engine) else {
+        return Ok(());
     };
-    refuse_instruction(&req, engine).map_err(|e| arg_err(e.0))
+    let mut o = Options::default();
+    o.load.speaker = speaker.map(str::to_string);
+    o.render.instruction = instruction.map(str::to_string);
+    options::check(&o, &caps)
+        .map(|_| ())
+        .map_err(|r| arg_err(r.to_string()))
 }
 
 /// The order a load checks the model files given as paths.

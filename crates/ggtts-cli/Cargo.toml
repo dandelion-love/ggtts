@@ -30,6 +30,8 @@ serde_json.workspace = true
 
 [dev-dependencies]
 claxon.workspace = true
+# The C ABI, to show it refuses an option in ggtts-render's words.
+ggtts-ffi = { path = "../ggtts-ffi" }
 jsonschema = { version = "0.60.2", default-features = false }
 
 [features]

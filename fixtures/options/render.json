@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "render": {
+    "story": "story.txt",
+    "seed_salt": "take-2",
+    "instruction": "Speak slowly and softly.",
+    "steer": "steer.safetensors",
+    "steer_scale": 0.125,
+    "steer_layers": [23, 24, 25],
+    "redraw": 3,
+    "edge_s": 0.25,
+    "measure_timings": true
+  }
+}

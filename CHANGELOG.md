@@ -18,7 +18,9 @@ that a merge places under a released heading is caught.
   no function before, such as hooks with a stream, now work. It is built from a public step, `pipeline::render_chunk`,
   which renders one chunk (draws at the caller's seeds, the judge, redraws, edge trim) for a caller with its own plan.
   `render_story`, `render_story_traced`, `render_story_hooked` and `render_story_streamed` keep working unchanged, and
-  no output changes.
+  no output changes. `RenderOptions` gains `trim` and `level` (both on by default, as before); code that builds it
+  field by field instead of from `RenderOptions::for_profile` must set them. `ggtts-render --text` now renders
+  through the same entry point, with both off, and its output is unchanged.
 
 ## v0.1.0-rc.12 (2026-11-13)
 

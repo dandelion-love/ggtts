@@ -253,7 +253,7 @@ fn the_step_takes_its_seeds_and_its_judge_from_the_caller() {
         .unwrap();
         assert_eq!(kept.draws.len(), n);
         for (k, d) in kept.draws.iter().enumerate() {
-            assert_eq!((d.draw, d.seed), (k as u32, seeds(7, &text, k as u32)));
+            assert_eq!((d.draw, d.seed), (k as u32, u64::from(seeds(7, &text, k as u32))));
             assert_eq!(d.judgement.verdict, judge.0);
         }
         let begins: Vec<(u64, u64, u64)> = rec

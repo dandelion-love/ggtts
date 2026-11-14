@@ -425,6 +425,7 @@ dependencies = [
  "ggtts-qwen3-tts",
  "jsonschema",
  "libm",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",

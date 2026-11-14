@@ -8,7 +8,7 @@
 //! version, with a changed set of pipeline cases.
 
 use crate::audio::{judge_f32, trim_edges_f32, Judgement, Verdict};
-use crate::engine::{ChunkRequest, Engine, EngineError};
+use crate::engine::{ChunkRequest, Engine, EngineError, Stop};
 use crate::hooks::Hooks;
 use crate::numeric::{log10, mean_f32, pow};
 use crate::profile::Profile;
@@ -44,11 +44,17 @@ pub struct RenderOptions {
     pub instruction: Option<String>,
     /// The steering every chunk is rendered with ([`ChunkRequest::steer`]); `None` for none.
     pub steer: Option<crate::steer::Steering>,
+    /// Trim each kept draw's edge silence to [`edge_s`](Self::edge_s). `false` keeps the decoded samples whole and
+    /// emits no `trim` event (`ggtts-render --text`).
+    pub trim: bool,
+    /// Level the joined read once ([`level`]). `false` returns it unlevelled, with [`Read::gain`] `None`
+    /// (`ggtts-render --text`). A levelled stream ([`StreamMode::Levelled`]) is levelled either way.
+    pub level: bool,
 }
 
 impl RenderOptions {
     /// The profile's defaults: its [`redraw`](Profile::redraw) and [`edge_s`](Profile::edge_s), no salt and no
-    /// instruction.
+    /// instruction, trimmed and levelled.
     pub fn for_profile(profile: &Profile) -> Self {
         Self {
             redraw: profile.redraw,
@@ -57,6 +63,8 @@ impl RenderOptions {
             measure_timings: false,
             instruction: None,
             steer: None,
+            trim: true,
+            level: true,
         }
     }
 }
@@ -67,7 +75,7 @@ pub struct ChunkRecord {
     pub i: usize,
     pub text: String,
     /// The seed of the draw that was kept.
-    pub seed: u32,
+    pub seed: u64,
     /// Redraws taken: the kept draw's index.
     pub redraws: u32,
     /// The kept draw only, decoded before edge trimming. Rejected draws are excluded.
@@ -81,6 +89,8 @@ pub struct ChunkRecord {
     pub first_s_per_char: f64,
     /// The kept chunk's samples in the read, `[start, end)`.
     pub span: (usize, usize),
+    /// Why the kept draw's generation stopped.
+    pub stop: Stop,
 }
 
 /// A rendered read: the joined, levelled samples and what happened to each chunk.
@@ -150,15 +160,16 @@ impl From<EngineError> for RenderError {
 /// The seed of a chunk's draw. [`render_chunk`] asks it for each draw it makes.
 ///
 /// [`StorySeeds`] is the story's (render spec section 3), [`Given`] serves a one-chunk plan, and a caller with its
-/// own seed key (a book's chapter plan) passes a closure: any `Fn(chunk, text, draw) -> u32` is a seed source.
+/// own seed key (a book's chapter plan) passes a closure: any `Fn(chunk, text, draw) -> u32` is a seed source. Seeds
+/// are `u64`, as [`ChunkRequest::seed`] is; the story's and the book's are `u32` values widened.
 pub trait SeedSource {
     /// The seed of chunk `chunk` (its index in the caller's plan), whose text is `text`, at draw `draw`.
-    fn seed(&self, chunk: usize, text: &str, draw: u32) -> u32;
+    fn seed(&self, chunk: usize, text: &str, draw: u32) -> u64;
 }
 
 impl<F: Fn(usize, &str, u32) -> u32> SeedSource for F {
-    fn seed(&self, chunk: usize, text: &str, draw: u32) -> u32 {
-        self(chunk, text, draw)
+    fn seed(&self, chunk: usize, text: &str, draw: u32) -> u64 {
+        u64::from(self(chunk, text, draw))
     }
 }
 
@@ -170,18 +181,18 @@ pub struct StorySeeds<'a> {
 }
 
 impl SeedSource for StorySeeds<'_> {
-    fn seed(&self, chunk: usize, text: &str, draw: u32) -> u32 {
-        seed_of(self.story_id, chunk, text, draw, self.salt)
+    fn seed(&self, chunk: usize, text: &str, draw: u32) -> u64 {
+        u64::from(seed_of(self.story_id, chunk, text, draw, self.salt))
     }
 }
 
 /// One seed for every draw of every chunk: a one-chunk plan whose caller chose the seed. With redraws, every draw
 /// gets the same seed.
 #[derive(Debug, Clone, Copy)]
-pub struct Given(pub u32);
+pub struct Given(pub u64);
 
 impl SeedSource for Given {
-    fn seed(&self, _chunk: usize, _text: &str, _draw: u32) -> u32 {
+    fn seed(&self, _chunk: usize, _text: &str, _draw: u32) -> u64 {
         self.0
     }
 }
@@ -253,10 +264,12 @@ pub struct StreamReport {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DrawRecord {
     pub draw: u32,
-    pub seed: u32,
+    pub seed: u64,
     pub judgement: Judgement,
     /// Codec frames generated.
     pub frames: usize,
+    /// Why generation stopped.
+    pub stop: Stop,
 }
 
 /// A chunk as [`render_chunk`] kept it: the kept draw's samples, trimmed, and every draw it made.
@@ -377,7 +390,8 @@ pub fn render_story_streamed(
 }
 
 /// Render one planned chunk: each draw at `seeds`' seed for (`index`, draw), generated, decoded and judged, redrawn up
-/// to `opts.redraw` times while `judge` rejects it (the last draw is kept either way), then trimmed to `opts.edge_s`.
+/// to `opts.redraw` times while `judge` rejects it (the last draw is kept either way), then trimmed to `opts.edge_s`
+/// (unless `opts.trim` is off).
 ///
 /// This is the step every render is made of. [`render_plan`] calls it per chunk and joins; a caller with its own plan,
 /// seeds, store and join (a book) calls it alone. `index` is the chunk's number in the caller's plan: the request's
@@ -402,7 +416,7 @@ pub fn render_chunk(
         let seed = seeds.seed(index, text, k);
         let req = ChunkRequest {
             text,
-            seed: u64::from(seed),
+            seed,
             chunk: index as u32,
             draw: k,
             instruction: opts.instruction.as_deref(),
@@ -463,6 +477,7 @@ pub fn render_chunk(
             seed,
             judgement: j,
             frames,
+            stop: generated.stop,
         });
         let clean = j.verdict.is_none();
         kept = Some(pcm);
@@ -471,20 +486,22 @@ pub fn render_chunk(
         }
     }
     let pcm = kept.expect("at least one draw");
-    let t = trim_edges_f32(&profile, &pcm.samples, pcm.sample_rate, opts.edge_s);
-    if tracing {
-        events.emit(Event::Trim {
-            chunk: index as u32,
-            lead_s: t.lead_cut_s,
-            tail_s: t.tail_cut_s,
-            start: t.start_sample,
-            end: t.end_sample,
-        });
-    }
     let decoded_samples = pcm.samples.len();
     let mut samples = pcm.samples;
-    samples.truncate(t.end_sample);
-    samples.drain(..t.start_sample);
+    if opts.trim {
+        let t = trim_edges_f32(&profile, &samples, pcm.sample_rate, opts.edge_s);
+        if tracing {
+            events.emit(Event::Trim {
+                chunk: index as u32,
+                lead_s: t.lead_cut_s,
+                tail_s: t.tail_cut_s,
+                start: t.start_sample,
+                end: t.end_sample,
+            });
+        }
+        samples.truncate(t.end_sample);
+        samples.drain(..t.start_sample);
+    }
     Ok(KeptChunk {
         samples,
         sample_rate: pcm.sample_rate,
@@ -590,12 +607,17 @@ pub fn render_plan(
             s_per_char: last.judgement.s_per_char,
             first_s_per_char: first.s_per_char,
             span,
+            stop: last.stop,
         });
     }
     // A read shorter than the hold leaves here, levelled over all of it.
     let stream = stream.map(|s| s.finish(sample_rate)).transpose()?;
 
-    let gain = level(&profile, &mut samples);
+    let gain = if opts.level {
+        level(&profile, &mut samples)
+    } else {
+        None
+    };
     if tracing {
         obs.events.emit(Event::Join {
             chunks: n as u32,

@@ -638,8 +638,8 @@ fn render(
 /// Render `text` with an options document (C-ABI version 4), laid over the load's render defaults; NULL is the empty
 /// document. Without `output.stream` it is a whole read: `on_piece` must be NULL, and `pcm`, `len` and `rate` get the
 /// samples, as [`ggtts_render`] gives them. With `"output": {"stream": "raw"}` each kept chunk goes to `on_piece`
-/// before the level step, as [`ggtts_render_stream`] hands it; `on_piece` is required and `pcm`, `len` and `rate` may
-/// be NULL (when given, they get the whole read). A malformed document, an unknown key, a wrong type, a load option, an
+/// before the level step, as [`ggtts_render_stream`] hands it; `on_piece` is required, and `pcm`, `len` and `rate` are
+/// all NULL or all set (then they also get the whole read). A malformed document, an unknown key, a wrong type, a load option, an
 /// option a binding does not take, and one the engine does not support are [`GGTTS_ERR_ARG`] before anything is
 /// rendered.
 ///
@@ -667,10 +667,10 @@ pub unsafe extern "C" fn ggtts_render_opts(
         binding::check_document(&doc, false)?;
         let given = [pcm.is_null(), len.is_null(), rate.is_null()];
         let outputs = given.iter().all(|null| !null);
-        if !outputs && given.iter().any(|null| !null) {
+        if doc.output.stream.is_some() && !outputs && given.iter().any(|null| !null) {
             return Err((
                 GGTTS_ERR_ARG,
-                "pcm, len and rate are all set or all NULL: one of them alone has nowhere to write".into(),
+                "a stream's pcm, len and rate are all set or all NULL: one of them alone has nowhere to write".into(),
             ));
         }
         let result =

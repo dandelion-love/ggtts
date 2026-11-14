@@ -385,6 +385,22 @@ fn a_streams_outputs_are_all_set_or_all_null() {
     };
     assert_eq!(code, GGTTS_ERR_ARG, "{}", last_error());
     assert!(got.is_empty(), "refused before anything rendered");
+    // A whole read with only some of them set is told they must not be NULL.
+    let whole = c("{}");
+    let code = unsafe {
+        ggtts_render_opts(
+            h,
+            text.as_ptr(),
+            whole.as_ptr(),
+            None,
+            ptr::null_mut(),
+            &mut p,
+            ptr::null_mut(),
+            ptr::null_mut(),
+        )
+    };
+    assert_eq!(code, GGTTS_ERR_ARG, "{}", last_error());
+    assert_eq!(last_error(), "pcm, len and rate must not be NULL");
     // All three set: the pieces and the whole read.
     let (mut n, mut r) = (0usize, 0u32);
     let code = unsafe {

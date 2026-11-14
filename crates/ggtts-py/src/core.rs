@@ -589,8 +589,12 @@ mod tests {
     /// The loaded instruction reaches every request of a render and a stream; without one, none.
     #[test]
     fn the_instruction_reaches_every_request() {
+        /// A stand-in for an engine that takes an instruction, so it says so.
         struct Recording(ggtts_fake::FakeEngine, Arc<Mutex<Vec<Option<String>>>>);
         impl Engine for Recording {
+            fn capabilities(&self) -> ggtts_core::capabilities::Capabilities {
+                ggtts_core::capabilities::Capabilities::of("qwen3-tts").unwrap()
+            }
             fn info(&self) -> &ggtts_core::engine::EngineInfo {
                 self.0.info()
             }

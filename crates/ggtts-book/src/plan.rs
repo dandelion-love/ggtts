@@ -109,6 +109,10 @@ pub struct ChapterPlan {
     /// records them ([`render::provenance`](crate::render::provenance)). `Null` for a plan not yet tied to an engine.
     /// A manifest written by another engine is not resumed.
     pub engine: Value,
+    /// The render options that change the audio, as [`render::render_identity`](crate::render::render_identity)
+    /// records them: the style instruction and the steering. `Null` for a render with neither, which is also what a
+    /// manifest written without the field reads as. A manifest written with other render options is not resumed.
+    pub render: Value,
 }
 
 impl ChapterPlan {
@@ -182,6 +186,7 @@ pub fn plan_chapter(
         ceiling: profile.story_ceiling,
         chunks,
         engine: Value::Null,
+        render: Value::Null,
     })
 }
 

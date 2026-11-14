@@ -300,6 +300,8 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(select(["crates/ggtts-bookish/src/lib.rs"]), set(JOBS))
         # The promotion still runs everything.
         self.assertEqual(decide("pull_request", "main", "rc", True, ["crates/ggtts-book/src/lib.rs"]), set(JOBS))
+        # Except its one ggml-gated file, which selects the ggml job as every gated file does.
+        self.assertEqual(select(["crates/ggtts-book/tests/steer_tiny.rs"]), {"ggml"})
 
     def test_the_loader_crate_selects_the_ggml_job(self):
         # crates/ggtts-load gates its engine code behind `ggml`: only the ggml job compiles and tests it.

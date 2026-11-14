@@ -223,7 +223,25 @@ no other finished chunk is.
 ggtts-book render BOOK.epub --out DIR [--engine qwen3-tts|kitten-tts-2|fake] [--seed-root R]
                  [--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME]
                  [--device cpu|cuda] [--threads N] [--offline]
+                 [--instruction TEXT] [--steer FILE [--steer-scale X] [--steer-layers L,L]]
+                 [--trace FILE [--trace-level 1|2]] [--include-skippable]
 ```
+
+**The flags are the shared options table's** (`ggtts_core::options`, described in `docs/options.md`), read by its
+parser, so each means in a book what it means in `ggtts-render`. A book takes the load section (the engine and its
+files), the style instruction (`--instruction`), steering (`--steer` and its scale and layers), the trace (`--trace`,
+`--trace-level`), `--out`, and the book's own `--seed-root` and `--include-skippable`. Any other option of the table is
+refused by its flag and schema name with the reason, before anything is read or written: `--text` and `--story` (a book
+renders its chapters), `--seed` (a book's seeds come from `--seed-root`), `--stream` and its settings (a book is one
+FLAC per chapter), the timing and duration reports, the log settings and the instruments. An option a book does not
+take that is set only in the environment (`GGTTS_LOG_LEVEL`, for example) is ambient and is dropped, not refused.
+
+The instruction and the steering reach every chunk's request, as they reach a story's. An engine that cannot take
+one refuses the request (the fake engine and Kitten-TTS 2 refuse steering, the fake engine an instruction), so the
+render stops at the first chunk with the engine's reason and no chunk file is written. A steering file that does not
+read is refused before the engine is loaded. `--trace` writes one ggtts-trace/2 stream for the chunks this run renders
+(a header naming the engine, instruction and steering, then each chunk's events); chunks taken from an earlier run
+are not in it. Chunk numbers in it restart at each chapter, and it replays with `ggtts_core::trace::replay`.
 
 The engine is `qwen3-tts` by default, as for `ggtts-render`, and the model flags mean what they mean there: a file
 not given is the engine's pinned default, taken from the per-user cache (`GGTTS_CACHE_DIR` overrides where) and
@@ -239,7 +257,8 @@ planned with the loaded engine's own profile (its ceiling and split marks).
 For each chapter that is not front or back matter:
 
 1. `DIR/NNN-<chapter id>/` holds the chapter's `manifest.json` and one `chunk-NNNNN.flac` per chunk. Each chunk is
-   generated at its planned seed (draw 0), decoded, and trimmed at its edges by the profile's rule.
+   rendered by the core chunk step (`ggtts_core::pipeline::render_chunk`, the step every render is made of) at its
+   planned seed (draw 0): generated, decoded, judged, and trimmed at its edges by the profile's rule.
 2. When every chunk is done, the chunks are read back from their files, joined with the profile's pauses (as the
    story path joins them), levelled by the story path's level step, and written as `DIR/NNN-<chapter id>.flac`.
 
@@ -259,6 +278,14 @@ as done (a run killed between writing the file and saving the manifest), and any
 chunk is rendered again. A resume with another engine, backend, model file, speaker or ggtts build does not splice two
 renders into one chapter: the earlier manifest is refused (`for engine ...`) and the chapter is rendered again.
 
+A render with an instruction or steering records them in every chapter manifest (`render`: the non-empty instruction,
+and the steering as the trace header writes it, the file's SHA-256, the layers and the scale). A render with neither
+writes no `render` field, so its manifests are the bytes they were before the field existed. A resume under a
+different instruction or steering is refused the same way, naming the difference (`for instruction "calm", not
+"brisk"`, `for steering ...`), and the chapter is rendered again. A manifest without the field, including one written
+before it existed, is a render with no instruction and no steering: it resumes a run with neither, and is refused
+for a run with either.
+
 **What a resume can match, and what has been observed.** Chapters are always joined from the stored chunk files, so
 a resumed chapter can match an uninterrupted one byte for byte only when both of these hold:
 
@@ -277,7 +304,8 @@ on CPU, on one Linux machine with the same build and `--threads`, a 13-chunk cha
 Each resume exported byte-identically to the uninterrupted run, and every chunk file matched. That is evidence at
 those three points, not a proof for every kill point, engine or device; CUDA was not tried.
 
-Redraws of chunks the judge rejects are not done yet: every chunk is a first draw.
+Redraws of chunks the judge rejects are not done yet: every chunk is a first draw, whatever redraws the render options
+ask for.
 
 `DIR/book.json` names the book rendered into `DIR` and lists the chapters the last render planned (`chapters`, the
 directory names, in order). A `DIR` holding another book, or a non-empty `DIR` with no `book.json`, is refused before

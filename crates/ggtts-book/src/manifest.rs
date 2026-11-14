@@ -1,7 +1,8 @@
 //! The chapter manifest: what a chapter's render planned and what it has finished, written so a killed run resumes.
 //!
 //! One `manifest.json` per chapter directory. Its body records the plan (book, chapter, seed root, profile, ceiling,
-//! and every chunk's text, hash and seed) and each chunk's state; the file carries the SHA-256 of its body beside it.
+//! and every chunk's text, hash and seed), the engine, the render options that change the audio (the instruction and
+//! the steering, only when there are any) and each chunk's state; the file carries the SHA-256 of its body beside it.
 //! A manifest is written to a temporary file, flushed to disk and renamed over the old one, so a reader sees either
 //! the old manifest or the new one, never half of one.
 //!
@@ -57,7 +58,7 @@ pub enum ManifestError {
     Checksum,
     /// A format this reader does not know, or a body missing a field.
     Format(String),
-    /// Made for another book, chapter, seed root, profile or ceiling: names the field.
+    /// Made for another book, chapter, seed root, profile, ceiling, engine, instruction or steering: names the field.
     Mismatch {
         field: &'static str,
         manifest: String,
@@ -118,7 +119,7 @@ impl Manifest {
 
     fn body(&self) -> Value {
         let p = &self.plan;
-        json!({
+        let mut body = json!({
             "format": MANIFEST_FORMAT,
             "book_id": p.book_id,
             "chapter_id": p.chapter_id,
@@ -141,7 +142,13 @@ impl Manifest {
                     "render_ms": self.render_ms[i],
                 })
             }).collect::<Vec<_>>(),
-        })
+        });
+        // Written only when the render has an instruction or steering, so a manifest of a render with neither is the
+        // same bytes it was before the field existed.
+        if !p.render.is_null() {
+            body["render"] = p.render.clone();
+        }
+        body
     }
 
     /// The manifest file's contents: `{"manifest": body, "sha256": hex of the body's compact JSON}`.
@@ -249,6 +256,7 @@ impl Manifest {
                 plan: plan.engine.to_string(),
             });
         }
+        check_render(body.get("render").unwrap_or(&Value::Null), &plan.render)?;
         let chunks = body
             .get("chunks")
             .and_then(Value::as_array)
@@ -315,6 +323,35 @@ impl Manifest {
             })
             .collect()
     }
+}
+
+/// The render options a manifest was written under against the ones about to run: the instruction, then the steering,
+/// then anything else, the first difference named. A manifest without the field (written before it existed, or by a
+/// render with neither) is a render with no instruction and no steering.
+fn check_render(recorded: &Value, planned: &Value) -> Result<(), ManifestError> {
+    let shown = |v: Option<&Value>| match v {
+        None | Some(Value::Null) => "none".to_string(),
+        Some(Value::String(s)) => s.clone(),
+        Some(v) => v.to_string(),
+    };
+    for (key, field) in [("instruction", "instruction"), ("steer", "steering")] {
+        let (m, p) = (recorded.get(key), planned.get(key));
+        if m != p {
+            return Err(ManifestError::Mismatch {
+                field,
+                manifest: shown(m),
+                plan: shown(p),
+            });
+        }
+    }
+    if recorded != planned {
+        return Err(ManifestError::Mismatch {
+            field: "render options",
+            manifest: shown(Some(recorded)),
+            plan: shown(Some(planned)),
+        });
+    }
+    Ok(())
 }
 
 fn output_intact(dir: &Path, o: &Output) -> bool {

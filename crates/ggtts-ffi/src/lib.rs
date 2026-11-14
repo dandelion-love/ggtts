@@ -602,13 +602,17 @@ mod chunk_input_tests {
         assert_eq!(ggtts_free(handle), GGTTS_OK);
     }
 
-    /// The fake engine, recording each request's instruction and rendering it as none.
+    /// The fake engine, recording each request's instruction and rendering it as none. A stand-in for an engine that
+    /// takes an instruction, so it says so.
     struct Recording {
         inner: ggtts_fake::FakeEngine,
         seen: Arc<Mutex<Vec<Option<String>>>>,
     }
 
     impl Engine for Recording {
+        fn capabilities(&self) -> ggtts_core::capabilities::Capabilities {
+            ggtts_core::capabilities::Capabilities::of("qwen3-tts").unwrap()
+        }
         fn info(&self) -> &ggtts_core::engine::EngineInfo {
             self.inner.info()
         }

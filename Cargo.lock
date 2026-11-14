@@ -407,6 +407,7 @@ dependencies = [
  "claxon",
  "ggtts-core",
  "ggtts-fake",
+ "ggtts-ffi",
  "ggtts-instruments",
  "ggtts-kitten",
  "ggtts-load",

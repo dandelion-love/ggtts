@@ -7,6 +7,7 @@
 //!
 //! An engine also declares its [`Profile`]: the protocol numbers the story path renders its output with.
 
+use crate::capabilities::Capabilities;
 use crate::hooks::Hooks;
 use crate::profile::Profile;
 use crate::steer::Steering;
@@ -137,6 +138,10 @@ pub trait Engine {
     }
     /// The protocol numbers this engine's output is rendered with: ceilings, pauses, judge bars and level.
     fn profile(&self) -> &Profile;
+    /// What this engine supports beyond rendering text ([`crate::capabilities`]). The default is nothing optional.
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::none(&self.info().family)
+    }
     /// Text to codec tokens for one chunk.
     fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError>;
     /// [`generate`](Engine::generate), emitting a `step` event per frame into `events` when its level is above 0.

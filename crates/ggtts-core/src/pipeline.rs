@@ -137,6 +137,10 @@ pub enum RenderError {
     Engine(EngineError),
     /// The stream sink refused a piece (for example, its writer failed). The render stops there.
     Sink(String),
+    /// The engine does not support something the render asks for ([`Capabilities::check_render`]). Nothing was drawn.
+    ///
+    /// [`Capabilities::check_render`]: crate::capabilities::Capabilities::check_render
+    Refused(crate::options::Refusal),
 }
 
 impl std::fmt::Display for RenderError {
@@ -145,6 +149,7 @@ impl std::fmt::Display for RenderError {
             RenderError::Empty => write!(f, "the story has no chunk to render"),
             RenderError::Engine(e) => write!(f, "engine: {e}"),
             RenderError::Sink(e) => write!(f, "stream: {e}"),
+            RenderError::Refused(r) => write!(f, "{r}"),
         }
     }
 }
@@ -556,6 +561,11 @@ pub fn render_plan(
     if chunks.is_empty() {
         return Err(RenderError::Empty);
     }
+    // What the engine does not support is refused before anything is drawn.
+    engine
+        .capabilities()
+        .check_render(opts, obs.hooks.wants())
+        .map_err(RenderError::Refused)?;
     let profile = *engine.profile();
     let mut stream = match output {
         Output::Whole => None,

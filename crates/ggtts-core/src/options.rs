@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::capabilities::Capabilities;
 use crate::engine::EngineInfo;
 use crate::pipeline::RenderOptions;
 use crate::profile::Profile;
@@ -1072,6 +1073,73 @@ impl Options {
         o.steer.clone_from(&r.steering);
         Ok(o)
     }
+}
+
+/// An options value an engine has been checked against ([`check`]): the value to render with, and the warning line
+/// for each environment value the engine has no use for, which the value lists in its record as ignored.
+#[derive(Debug, Clone)]
+pub struct Checked {
+    pub options: Options,
+    pub warnings: Vec<String>,
+}
+
+/// The options of `o` the engine `caps` describes does not support, by schema key, in table order: a non-empty
+/// instruction, steering, a speaker, and a device it does not run on.
+fn lacking(o: &Options, caps: &Capabilities) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if o.load.speaker.is_some() && !caps.speakers {
+        out.push("load.speaker");
+    }
+    if o.load.device.as_deref().is_some_and(|d| !caps.devices.contains(&d)) {
+        out.push("load.device");
+    }
+    if o.render.instruction.as_deref().is_some_and(|i| !i.is_empty()) && !caps.instruction {
+        out.push("render.instruction");
+    }
+    if o.render.steer.is_some() && !caps.steering {
+        out.push("render.steer");
+    }
+    out
+}
+
+/// Checks `options` against what an engine supports (`caps`), before anything is loaded or rendered. An option the
+/// engine does not support is refused with [`Capabilities::refusal`], under its schema key, when it was asked for: by
+/// a flag, in a document, or set by the caller. One that came only from the environment is ambient: it is reset, one
+/// warning line names its variable, and the record lists it as ignored.
+pub fn check(options: &Options, caps: &Capabilities) -> Result<Checked, Refusal> {
+    let mut o = options.clone();
+    let mut warnings = Vec::new();
+    for key in lacking(options, caps) {
+        let d = descriptor(key).expect("a lacking key is a row");
+        if o.marks.sources.get(key) != Some(&Source::Environment) {
+            let value = match key {
+                "load.device" => options.load.device.as_deref(),
+                _ => None,
+            };
+            return Err(caps.refusal(key, value));
+        }
+        // Its variable; a row with no environment spelling cannot be marked so by the parsers, only by a caller.
+        let variable = d.env.unwrap_or("the environment");
+        let mut doc = o.to_json();
+        doc[d.section.name()]
+            .as_object_mut()
+            .expect("a section is an object")
+            .remove(d.name);
+        let mut next: Options = serde_json::from_value(doc).map_err(|e| Refusal::new("$", e.to_string()))?;
+        next.marks = std::mem::take(&mut o.marks);
+        next.render.steering = o.render.steering.take();
+        next.marks.sources.remove(key);
+        next.marks.ignored.push(Ignored {
+            key: key.to_string(),
+            variable: variable.to_string(),
+        });
+        warnings.push(format!(
+            "ggtts: {variable} is set, and the {} engine has no {key}: ignored",
+            caps.family
+        ));
+        o = next;
+    }
+    Ok(Checked { options: o, warnings })
 }
 
 /// The provenance record of a render with `options` on the engine `info` describes: the engine, backend and parity;

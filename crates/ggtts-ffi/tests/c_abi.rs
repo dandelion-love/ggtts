@@ -428,7 +428,7 @@ fn a_refused_setting_is_a_code_and_a_message_and_no_handle() {
     assert_eq!((code, h), (GGTTS_ERR_ARG, 0));
     assert_eq!(
         last_error(),
-        "a speaker is only supported by the qwen3-tts engine, not fake"
+        "load.speaker: a speaker is only supported by the qwen3-tts engine, not fake"
     );
 
     // Both settings on another engine are the same code: an argument that engine does not take.

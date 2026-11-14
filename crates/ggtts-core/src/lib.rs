@@ -16,6 +16,7 @@
 //! its recorded cases in `fixtures/pipeline/` (`cargo test -p ggtts-core --test pipeline_cases`).
 
 pub mod audio;
+pub mod capabilities;
 pub mod engine;
 pub mod flac;
 pub mod hooks;

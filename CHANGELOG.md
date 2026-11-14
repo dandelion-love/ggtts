@@ -35,6 +35,25 @@ that a merge places under a released heading is caught.
 
 ### Changed
 
+- **An option an engine does not support is refused in one wording everywhere, under its schema key, before anything
+  is loaded or drawn.** Each engine states what it supports (`Engine::capabilities`, `ggtts_core::capabilities`), and
+  `ggtts-render`, the C ABI, Python and Kotlin refuse with the same text. The old and new wording:
+  - a speaker: `--speaker is only supported by the qwen3-tts engine` (ggtts-render) and `a speaker is only supported
+    by the qwen3-tts engine, not fake` (the bindings) are now `load.speaker: a speaker is only supported by the
+    qwen3-tts engine, not fake`;
+  - an instruction: `--instruction is only supported by the qwen3-tts engine` (ggtts-render) and `the fake engine
+    takes no style instruction; only qwen3-tts custom_voice (1.7B) and voice_design checkpoints do` (the bindings) are
+    now `render.instruction: the fake engine takes no style instruction, which is only supported by the qwen3-tts
+    engine's custom_voice (1.7B) and voice_design checkpoints`. A Qwen3-TTS checkpoint that takes none keeps its own
+    explanation, now after `render.instruction: `;
+  - steering: `--steer is only supported by the qwen3-tts engine, not fake` is now `render.steer: the fake engine
+    cannot apply steering, which is only supported by the qwen3-tts engine`;
+  - a tensor hook asking for a value the engine does not export is refused before the first draw:
+    `hooks: the kitten-tts-2 engine exports nothing to tensor hooks, and a hook wants logits`.
+
+  `ggtts-render --engine fake --device cuda` is now refused (`load.device: the fake engine runs on cpu, not cuda`), as
+  the bindings already refused it; the fake engine had ignored the device. Renders that were accepted before are
+  unchanged.
 - **`ggtts-book` refuses the options of the shared table it does not take by name, with the reason**: `--text`,
   `--story`, `--seed`, `--stream` and its settings, the timing and duration reports, the log settings and the
   instruments. An engine name the table does not list is refused as `load.engine` rather than "unknown engine", and

@@ -71,7 +71,7 @@ fn the_core_step_renders_a_book_chunk_as_the_book_does() {
             assert_eq!(bits(&kept.samples), bits(&want), "{} chunk {i}", plan.chapter_id);
             assert_eq!(kept.sample_rate, rate);
             assert_eq!(kept.draws.len(), 1, "redraw 0 is one draw");
-            assert_eq!(kept.kept().seed, plan.seed_at(i, 0));
+            assert_eq!(kept.kept().seed, u64::from(plan.seed_at(i, 0)));
             let pcm: Vec<i16> = kept.samples.iter().map(|&x| to_i16(x)).collect();
             let flac = encode_flac(&pcm, kept.sample_rate).unwrap();
             // The book's renderer, on the core step since it moved, with the options a book renders with by default.

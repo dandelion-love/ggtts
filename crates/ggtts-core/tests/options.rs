@@ -53,7 +53,8 @@ fn the_committed_schema_is_generated_from_the_table() {
     if std::env::var_os("GGTTS_BLESS").is_some() {
         std::fs::write(&path, &generated).unwrap();
     }
-    let committed = std::fs::read_to_string(&path).unwrap_or_default();
+    // A Windows checkout may hold the file with CRLF line ends (core.autocrlf); the content is what is compared.
+    let committed = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
     assert!(
         committed == generated,
         "{SCHEMA} is not what options::schema() generates: run the test with GGTTS_BLESS=1 and review the diff"

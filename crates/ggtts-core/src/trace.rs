@@ -34,7 +34,7 @@ use serde_json::{Map, Value};
 
 use crate::engine::{ChunkRequest, Codes, Engine, EngineError, Stop};
 use crate::hooks::Hooks;
-use crate::pipeline::{render_chunk, DurationJudge, Observers, RenderOptions};
+use crate::pipeline::{render_chunk, DurationJudge, Observers, RenderOptions, SeedSource};
 use crate::steer::Steering;
 
 /// The trace format this module writes and reads.
@@ -706,7 +706,7 @@ pub fn replay_steered(
             engine,
             group.text,
             group.chunk as usize,
-            &|_: usize, _: &str, k: u32| seeds[k as usize],
+            &RecordedSeeds(&seeds),
             &mut DurationJudge,
             &opts,
             &mut Observers::new(&mut events, &mut hooks),
@@ -733,7 +733,7 @@ struct DrawGroup<'a> {
     chunk: u32,
     text: &'a str,
     instruction: Option<&'a str>,
-    seeds: Vec<u32>,
+    seeds: Vec<u64>,
     /// Whether the trace records the chunk's `trim` (a render that failed mid-chunk does not).
     trimmed: bool,
     /// Lines from the first `chunk_begin` to the last, inclusive.
@@ -781,12 +781,19 @@ impl<'a> DrawGroup<'a> {
     }
 }
 
-fn seed_of_line(m: &Map<String, Value>) -> Result<u32, TraceError> {
-    let seed = m
-        .get("seed")
+fn seed_of_line(m: &Map<String, Value>) -> Result<u64, TraceError> {
+    m.get("seed")
         .and_then(Value::as_u64)
-        .ok_or_else(|| TraceError("chunk_begin without seed".into()))?;
-    u32::try_from(seed).map_err(|_| TraceError(format!("chunk_begin seed {seed} is not a u32")))
+        .ok_or_else(|| TraceError("chunk_begin without seed".into()))
+}
+
+/// A chunk's recorded seeds, by draw.
+struct RecordedSeeds<'a>(&'a [u64]);
+
+impl SeedSource for RecordedSeeds<'_> {
+    fn seed(&self, _chunk: usize, _text: &str, draw: u32) -> u64 {
+        self.0[draw as usize]
+    }
 }
 
 /// Passes every event through, except a `trim` the recorded trace does not have.

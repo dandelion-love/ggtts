@@ -13,8 +13,12 @@ fn root() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
 }
 
+/// A source file with LF line ends: a Windows checkout may hold CRLF (core.autocrlf), and the readers below split on
+/// `\n`.
 fn read(path: &str) -> String {
-    std::fs::read_to_string(root().join(path)).unwrap_or_else(|e| panic!("{path}: {e}"))
+    std::fs::read_to_string(root().join(path))
+        .unwrap_or_else(|e| panic!("{path}: {e}"))
+        .replace("\r\n", "\n")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

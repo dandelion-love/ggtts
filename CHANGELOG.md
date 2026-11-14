@@ -22,6 +22,13 @@ that a merge places under a released heading is caught.
   field by field instead of from `RenderOptions::for_profile` must set them. `ggtts-render --text` now renders
   through the same entry point, with both off, and its output is unchanged.
 
+### Fixed
+
+- **A Qwen3-TTS model given by path speaks with no speaker named.** The speaker is the model's default:
+  `hk_cantonese_speaker` when it has one, otherwise the first of its speakers in alphabetical order (`hk_voice_343`
+  for the released talkers, the same as the default model). It was always `hk_cantonese_speaker`, which the released
+  talkers do not have, so `ggtts-render --model`, the C API, Python and the Android app failed without a speaker.
+
 ## v0.1.0-rc.12 (2026-11-13)
 
 ### Added

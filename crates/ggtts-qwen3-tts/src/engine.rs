@@ -19,9 +19,11 @@ use crate::talker::{language_id, Sampling, Talker};
 use crate::PROFILE;
 
 /// What a request is rendered with besides its text and seed. The defaults are the reference CLI's, with the
-/// published model's one speaker, on CPU, untraced.
+/// model's default speaker, on CPU, untraced.
 #[derive(Debug, Clone)]
 pub struct Voice {
+    /// A speaker the model has, case ignored. Empty (the default) is the model's default speaker
+    /// ([`Talker::default_speaker`]), resolved at load.
     pub speaker: String,
     /// A language the reference CLI's `-l` accepts, for example `zh` or `auto`.
     pub language: String,
@@ -38,7 +40,7 @@ pub struct Voice {
 impl Default for Voice {
     fn default() -> Self {
         Self {
-            speaker: "hk_cantonese_speaker".into(),
+            speaker: String::new(),
             language: "zh".into(),
             max_frames: 1200,
             sampling: Sampling::default(),
@@ -100,10 +102,17 @@ impl Qwen3Tts {
         language_id: i32,
         codec: &Path,
         threads: i32,
-        voice: Voice,
+        mut voice: Voice,
         instruction: Option<&str>,
     ) -> Result<Self, EngineError> {
         talker.check_instruction(instruction)?;
+        // No speaker named: the model's default. Before 2026-11-13 this was always hk_cantonese_speaker, which the
+        // released models do not have, so every model given by path failed without --speaker.
+        if voice.speaker.is_empty() {
+            voice.speaker = talker.default_speaker().ok_or_else(|| {
+                EngineError("the talker has no named speakers, so there is no default speaker to use".into())
+            })?;
+        }
         // An unknown speaker fails here, before any text is rendered, with the model's own speaker names.
         talker.speaker(&voice.speaker)?;
         let trace = match &voice.trace {

@@ -196,9 +196,9 @@ to its GGUFs and to audio rendered with it (its outputs may not be used to train
 
 For a Qwen model with named speakers, select the name in its model card with `--speaker NAME`. The Cantonese
 v0.0.5 model uses `--speaker hk_voice_343` (or `hk_voice_777` for its other voice). Without the option, the
-default model uses `hk_voice_343`, and a talker given with `--model` uses the legacy `hk_cantonese_speaker` name,
-as for v0.0.1. An unknown or absent speaker is an error; ggtts does
-not choose an arbitrary voice. `--speaker` applies only to Qwen, while `--voice` supplies Kitten's reference JSON.
+speaker is the model's default: `hk_cantonese_speaker` if the model has it (v0.0.1), otherwise the first of its
+speakers in alphabetical order, so `hk_voice_343` for v0.0.5, whether it is the default model or given with
+`--model`. An unknown speaker is an error that lists the model's speakers. `--speaker` applies only to Qwen, while `--voice` supplies Kitten's reference JSON.
 
 `--instruction TEXT` passes a natural-language style instruction, for example
 `--instruction "Speak slowly and softly."`, to a Qwen3-TTS checkpoint that takes one: a `custom_voice` checkpoint of

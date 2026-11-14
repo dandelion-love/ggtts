@@ -119,8 +119,8 @@ the model's card before you use its voice; its licence is the model's, not this 
   [default model files](../../README.md#default-model-files-what-ggtts-downloads-and-when) section lists the files,
   their hashes and how a download is checked.
 * **The speaker.** The default model's speakers are `hk_voice_343` (used when you give none) and `hk_voice_777`. A
-  model you give by path uses `hk_cantonese_speaker` when you give none, so a talker without that speaker needs
-  `speaker=`. An unknown speaker is `ERR_ENGINE`, and the message lists the model's speakers.
+  model you give by path uses its own default when you give none: `hk_cantonese_speaker` if it has one, otherwise
+  the first of its speakers in alphabetical order (`hk_voice_343` for the v0.0.5 talker). An unknown speaker is `ERR_ENGINE`, and the message lists the model's speakers.
 
 ### Kitten-TTS 2
 

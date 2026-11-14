@@ -13,6 +13,17 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **A text judge in the `ggtts-core` library: `textjudge::TextJudge`.** It judges a draw for duration as before,
+  then reads it back with a recogniser the caller supplies (`textjudge::Recogniser`) and rejects a draw that lost
+  text (`lost-text`: a run of 4 characters or more, a quarter of a chunk of 8 or more, or 8 in a row lost or
+  misread) or said a stretch twice (`repeated-text`, found through a misread character or a filler at the join).
+  Both texts are compared as CJK characters folded to simplified with OpenCC's character table, vendored in the
+  crate, and each number (written out, in digits or mixed, as in 3萬) as one token for its value, so 三百五十六
+  read back as 356 is not lost text and a misheard number is one slip. A single misread or missing
+  character is counted, not rejected. Known limits: the fold is many-to-one, so a swap between two traditional
+  characters with one simplified form reads as correct; a chunk of fewer than 4 compared characters is never
+  rejected; text with no CJK characters or numbers has nothing to compare. No front
+  end uses it yet, and every render is unchanged; `ggtts-trace/2` allows the two new verdicts.
 - **The C ABI takes options documents (ABI version 4): `ggtts_load_opts(json, &handle)` and
   `ggtts_render_opts(handle, text, json, on_piece, user, &pcm, &len, &rate)`.** Every option of the shared options
   table reaches C as JSON, so a new option needs no new struct field, function or ABI version. A render document

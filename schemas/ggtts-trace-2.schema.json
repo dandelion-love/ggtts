@@ -120,7 +120,7 @@
         "frames": { "$ref": "#/$defs/u32" },
         "stop": { "enum": ["eos", "cap", "abort"] },
         "spc": { "type": "number", "minimum": 0 },
-        "verdict": { "enum": [null, "runaway", "silent"] },
+        "verdict": { "enum": [null, "runaway", "silent", "lost-text", "repeated-text"] },
         "ms": {
           "description": "Wall-clock of the whole draw: generate, decode and judge. May differ between runs.",
           "$ref": "#/$defs/u64"

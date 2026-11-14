@@ -30,6 +30,7 @@ pub mod seed;
 pub mod steer;
 pub mod stream;
 pub mod text;
+pub mod textjudge;
 pub mod trace;
 
 /// The release tag embedded at build time, or the workspace version for ordinary local builds.

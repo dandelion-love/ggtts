@@ -13,6 +13,87 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **A stream through an options document is levelled by default, as `ggtts-render --stream` is.** The C ABI's
+  `ggtts_render_opts` with a callback, Python's `render_stream` and `stream` with `options=`, and Kotlin's
+  `renderStream` with `options` now hand each piece levelled by one gain from the first 5 s of audio
+  (`output.stream_level_seconds` changes the hold). That is the stream to play: the same text and seed give
+  `ggtts-render --stream`'s samples. `{"output": {"stream": "raw"}}` or `"stream_raw": true` gives the pieces before
+  the level step, as before. Nothing existing changes: `ggtts_render_stream`, and the Python and Kotlin stream calls
+  without options, still stream the unlevelled pieces, and a raw document gives the same pieces it gave. In C, a
+  callback with no `output.stream`, which was refused, now streams levelled.
+- **Python and Kotlin read the options schema and an engine's capabilities from the library**, as the C ABI does
+  since version 5. Python: `ggtts.options_schema()` and `TTS.capabilities()`, each a dict. Kotlin:
+  `Ggtts.optionsSchema()` and `Ggtts.capabilities()`, each JSON. Both come from the same shared pieces as
+  `ggtts_options_schema` and `ggtts_capabilities`, so every front end states the same thing, and neither binding ships
+  a schema file. A refused option's key was already on Python's `OptionError.key` and Kotlin's `GgttsException.key`.
+- **Kotlin takes every option through one parameter, `options`.** `Ggtts.load(options = ...)` takes a load document,
+  and `render(text, options = ...)` and `renderStream(text, options = ...)` a render document laid over the load's
+  defaults: steering, `edge_s`, `redraw` and a per-render instruction. It is the C ABI's document, as a JSON string
+  over JNI. A refusal throws `GgttsException` with `ERR_ARG`, and the new `GgttsException.key` is the refused
+  option's schema key, read from `ggtts_last_error_key`; the trace (no file sink a phone user can read) and
+  `load.device` (CPU only) are refused by key. The `load` parameters keep working beside a document, and a value
+  given both ways is refused, naming both. `render` and `renderStream` take `seed: Long? = null` (the seed salt,
+  `DEFAULT_SEED` when not given) and `load` takes nullable `engine`, `threads` and `allowDownload` with the same
+  defaults as before; the old signatures stay in the class, hidden from source, so compiled code still links. A call
+  without `options` renders the same samples as before.
+- **Python takes every option through one argument, `options=`.** `ggtts.load(options=...)` takes a load document
+  (the `load` section, `cache_dir` included, and `render` defaults), and `render`, `render_stream` and `stream` take a
+  render document laid over those defaults: steering, `edge_s`, `redraw`, a per-render instruction and a trace. A
+  document is a dict or a JSON string, read and checked by the C ABI's own document code. A refused option is the new
+  `ggtts.OptionError`, a `GgttsError` and a `ValueError`, whose `key` is the option's schema key (`render.steer`); a
+  value given both as an argument and in the document is refused, naming both. `seed` on a render is documented as
+  the seed salt it already was (`render.seed_salt`). The arguments `engine`, `device` and `offline` now default to
+  None (not given), which loads exactly what their old defaults did, and a setting refused by its key (a speaker on
+  an engine that has none) is now an `OptionError`, still a `GgttsError` with the same code and message. A call
+  without `options` renders the same samples as before.
+- **`--kitten-full-head` (`load.kitten_full_head`) is an option of the table**, with `GGTTS_KITTEN_FULL_HEAD` as its
+  environment spelling, for `ggtts-render` and `ggtts-book render`. It makes Kitten-TTS 2 compute its whole output
+  head, as `GGTTS_KITTEN_FULL_HEAD=1` did, and the audio is unchanged by the move. When it is on, the trace header and
+  the timing and duration reports carry `"kitten_full_head": true` (added within ggtts-trace/2, ggtts-timing/1 and
+  ggtts-duration/1), and a book's chapter manifests record it, so a resume with the other head is refused. On qwen3-tts
+  and fake, the variable exported in the environment is ignored with one warning and listed as ignored in the record;
+  the flag, or the key in an options document, is refused. Through `ggtts-render` and `ggtts-book` the variable takes
+  the table's boolean spellings (`1`, `true`, `0`, `false`) and refuses any other value; the bindings take no option
+  for it, and their engine still reads exactly `1` from the environment. A C ABI load document that gives
+  `load.kitten_full_head` is refused. The C ABI capability statement (`ggtts_capabilities`) gains `full_head`.
+
+- **The C ABI states its options and an engine's capabilities, and names a refused option (version 5).**
+  `ggtts_options_schema()` returns the options schema built into the library (`schemas/ggtts-options-1.schema.json`
+  byte for byte). `ggtts_capabilities(handle, &json)` returns a loaded engine's capability statement as JSON
+  (`ggtts-capabilities/1`: instruction, steering, devices, hooks, step events, and the model's `speaker_names`),
+  freed with `ggtts_string_free`. `ggtts_last_error_key()` is the schema key of the option a `GGTTS_ERR_ARG`
+  refused (`render.steer`, or an unknown key itself), and NULL for any other error. Nothing existing changes.
+  `Engine::speakers()` and `ggtts_core::capabilities::statement` are the shared pieces behind it.
+- **`--judge asr-qwen,model=DIR` redraws a chunk whose read-back lost or repeated text**, for `ggtts-render
+  --story` and `ggtts-book render`, from one shared option (`render.judge`). An ASR (a local Qwen3-ASR, run as
+  one Python process per render) reads every draw the duration judge keeps back; a draw that lost a run of 4
+  characters or more (`min_run=N`), or said one twice, is rejected and redrawn at the chunk's next seed, up to
+  `--redraw`. CJK characters (folded to simplified) and numbers (by value) are compared. An ASR that dies or misses its deadline
+  (`timeout=S`, 120 s per draw; `start_timeout=S`, 600 s to load) stops the render, which a rerun resumes. The trace records each reading in a new
+  `read` event, and a book's chapter manifest in each chunk's `reads`. Off by default. It needs `--redraw N`, and is
+  refused before anything is drawn when its ASR cannot start; `--text` and the bindings refuse it. When the ASR's Python lacks a package, the
+  refusal names the missing module (`the model did not load (ModuleNotFoundError: qwen_asr)`). A trace with
+  text verdicts replays, taking them as recorded.
+- **A text judge in the `ggtts-core` library: `textjudge::TextJudge`.** It judges a draw for duration as before,
+  then reads it back with a recogniser the caller supplies (`textjudge::Recogniser`) and rejects a draw that lost
+  text (`lost-text`: a run of 4 characters or more, a quarter of a chunk of 8 or more, or 8 in a row lost or
+  misread) or said a stretch twice (`repeated-text`, found through a misread character or a filler at the join).
+  Both texts are compared as CJK characters folded to simplified with OpenCC's character table, vendored in the
+  crate, and each number (written out, in digits or mixed, as in 3萬) as one token for its value, so 三百五十六
+  read back as 356 is not lost text and a misheard number is one slip. A single misread or missing
+  character is counted, not rejected. Known limits: the fold is many-to-one, so a swap between two traditional
+  characters with one simplified form reads as correct; a chunk of fewer than 4 compared characters is never
+  rejected; text with no CJK characters or numbers has nothing to compare; a number of any length weighs one token,
+  so a dropped number, however long (a phone number), is one lost token and the draw is kept, and a number said
+  twice reads as one misread number. No front end uses it yet, and every render is unchanged; `ggtts-trace/2` allows the two new verdicts.
+- **The C ABI takes options documents (ABI version 4): `ggtts_load_opts(json, &handle)` and
+  `ggtts_render_opts(handle, text, json, on_piece, user, &pcm, &len, &rate)`.** Every option of the shared options
+  table reaches C as JSON, so a new option needs no new struct field, function or ABI version. A render document
+  takes the seed salt, an instruction, steering, redraws, the edge trim and a trace file; `{"output": {"stream":
+  "raw"}}` streams to `on_piece`. A malformed document, an unknown key, a load key in a render document and an option
+  the engine does not support are `GGTTS_ERR_ARG` before anything renders. **`ggtts_settings` is frozen at version
+  3**; the struct functions keep working unchanged and now render through the same path, sample for sample. See
+  [docs/bindings/c.md](docs/bindings/c.md#options-documents).
 - **One render entry point in the `ggtts-core` library: `pipeline::render_plan`.** It renders a plan with any trace
   level, tensor hooks and output (the whole read, or a stream raw or levelled) in one call, so combinations that had
   no function before, such as hooks with a stream, now work. It is built from a public step, `pipeline::render_chunk`,
@@ -21,6 +102,128 @@ that a merge places under a released heading is caught.
   no output changes. `RenderOptions` gains `trim` and `level` (both on by default, as before); code that builds it
   field by field instead of from `RenderOptions::for_profile` must set them. `ggtts-render --text` now renders
   through the same entry point, with both off, and its output is unchanged.
+- **`ggtts-book render` takes `--instruction`, `--steer` (with `--steer-scale` and `--steer-layers`) and `--trace`
+  (with `--trace-level`)**, meaning what they mean in `ggtts-render`: its flags are read by the shared options table,
+  and every chunk is rendered by the core chunk step. A book rendered without them is byte-identical to before. Each
+  chapter manifest records the instruction and steering, and a resume under different ones renders the chapter again,
+  naming the difference. A manifest without the field reads as "no instruction, no steering"; a manifest written by
+  another ggtts build is refused on its engine record, as before, so the chapter is rendered again.
+- **`ggtts-book render --redraw N` redraws a chunk the judge rejects**, up to N times at the chunk's seeds for draws
+  1, 2, ..., through the same judge as a story. Unset is the engine profile's (0 for `qwen3-tts`), so a book renders
+  as before unless asked; at 0 the output and manifests are byte-identical. With redraws, each chunk's manifest entry
+  records its kept draw, its draw count and the kept draw's verdict, and a resume at a different `--redraw` renders
+  again only the chunks whose outcome the new setting changes. `--redraw` is the shared options table's spelling of
+  `render.redraw`, so `ggtts-render --story --redraw N` takes it too and its usage names it.
+- **`ggtts-book render` runs instruments**: `--instrument`, `--instruments`, `--require`, `--instrument-device`,
+  `--on-instrument-error`, `--instrument-timeout`, `--report` and `--run`, meaning what they mean in `ggtts-render`.
+  They run on each chapter FLAC not yet measured with the same settings, with one report per chapter beside it
+  (`NNN-<chapter id>.report/`), and the render report gains each chapter's `instruments` entry and the book's
+  `measurement`. An ASR instrument is given each chapter's own text as its reference. A `--require`d instrument
+  that is not ok, or a chapter left unmeasured under `--require`, exits 3 with every chapter written. An unknown
+  instrument, or a `reference_file` given for a book, is refused before anything is rendered. The instrument
+  timeout is per chapter. A chapter's kept measurement is reused only while its FLAC, the settings and each
+  instrument's version and program (a script's bytes) are unchanged, and a chapter after an aborted one keeps it.
+  Without the flags a book renders exactly as before. The instrument run is one library call,
+  `ggtts_instruments::options`, which `ggtts-render` now makes too; its reports and exit codes are unchanged.
+
+### Changed
+
+- **`ggtts-render --text --trace FILE` writes the `ggtts-trace/2` event stream on every engine**, as `--story` does:
+  the header, `chunk_begin`, the engine's `step`s, `chunk_end` and `end`. Before, it reached only qwen3-tts, which
+  wrote its older step-only file, and kitten-tts-2 and fake accepted it and wrote nothing. A `--trace` path that
+  cannot be written is now an error on every engine, reported after the model loads; on kitten-tts-2 and fake it used
+  to pass silently. `--trace-level` is taken with `--text` too: it needs only `--trace`, and its refusal reads
+  "--trace-level requires --trace" on `--story` as well (it was "requires a story and --trace").
+- **`ggtts-render --text --stream` is levelled by default**, as `--story`'s is. `--stream-raw` gives the decoded draw
+  exactly, which is what `--text --stream` wrote before. The `--text` FLAC is unchanged: the decoded draw, with no
+  level step. A `--text` timing report's `stream.preparation_ns` is now a number (it was null), and at
+  `--log-level info` `--text` writes the `stream`, `stream_handoff` and `trace_sink` lines a story writes.
+- **`ggtts-render --text --stream-level-seconds S` is refused**: `--text` is one chunk, which the stream levels by its
+  own gain whatever the hold, so the option changed nothing.
+- **An option an engine does not support is refused in one wording everywhere, under its schema key, before anything
+  is loaded or drawn.** Each engine states what it supports (`Engine::capabilities`, `ggtts_core::capabilities`), and
+  `ggtts-render`, the C ABI, Python and Kotlin refuse with the same text. The old and new wording:
+  - a speaker: `--speaker is only supported by the qwen3-tts engine` (ggtts-render) and `a speaker is only supported
+    by the qwen3-tts engine, not fake` (the bindings) are now `load.speaker: a speaker is only supported by the
+    qwen3-tts engine, not fake`;
+  - an instruction: `--instruction is only supported by the qwen3-tts engine` (ggtts-render) and `the fake engine
+    takes no style instruction; only qwen3-tts custom_voice (1.7B) and voice_design checkpoints do` (the bindings) are
+    now `render.instruction: the fake engine takes no style instruction, which is only supported by the qwen3-tts
+    engine's custom_voice (1.7B) and voice_design checkpoints`. A Qwen3-TTS checkpoint that takes none keeps its own
+    explanation, now after `render.instruction: `;
+  - steering: `--steer is only supported by the qwen3-tts engine, not fake` is now `render.steer: the fake engine
+    cannot apply steering, which is only supported by the qwen3-tts engine`;
+  - a tensor hook asking for a value the engine does not export is refused before the first draw:
+    `hooks: the kitten-tts-2 engine exports nothing to tensor hooks, and a hook wants logits`.
+
+  `ggtts-render --engine fake --device cuda` is now refused (`load.device: the fake engine runs on cpu, not cuda`), as
+  the bindings already refused it; the fake engine had ignored the device. Renders that were accepted before are
+  unchanged.
+- **`ggtts-book` refuses the options of the shared table it does not take by name, with the reason**: `--text`,
+  `--story`, `--seed`, `--stream` and its settings, the timing and duration reports, the log settings and the
+  instruments. An engine name the table does not list is refused as `load.engine` rather than "unknown engine", and
+  `--threads` also takes the table's spelling `-j`.
+- **`ggtts-render --text --redraw N` is refused** (`--redraw (render.redraw): --text renders one draw and keeps it;
+  redraws are a story's (--story)`). It was accepted and did nothing: `--text` renders one draw.
+- **`ggtts-book`'s public Rust API** (for a caller of the library, not the command):
+  - `book_render_options` is removed; a book's options are read with the shared table (`ggtts_book::options::parse`);
+  - `render::render_chunk` returns a `manifest::ChunkOutput` (the chunk file's bytes and the draws it made, with
+    the kept draw's verdict) instead of the bytes alone;
+  - `ChapterPlan` has a public `redraw` field, so a struct literal must set it;
+  - `ChapterOutcome::Written` has a `rejudged` field, so an exhaustive pattern must name it or use `..`.
+
+### Changed
+
+- **`ggtts-render` reads its flags, `GGTTS_LOG_LEVEL`, `GGTTS_LOG_FORMAT` and `GGTTS_CACHE_DIR` through the options
+  table** (`ggtts_core::options`), a flag winning over its variable as before. Its output, `--help` and reports are
+  unchanged, and the refusals it had words for keep them. A few command lines it used to accept, or refuse later, are
+  now refused as they are read, before any model file is touched:
+  - `--threads` below 1;
+  - an `--engine` other than `auto`, `qwen3-tts`, `kitten-tts-2` or `fake`;
+  - a `--device` other than `cpu` or `cuda` for every engine (kitten-tts-2 rendered on the CPU for any value but
+    `cuda`, the fake engine ignored it, and a build without engines never reached the check);
+  - an empty `--run`, or an empty path for `--out`, `--model`, `--codec`, `--voice`, `--story`, `--stream`, `--trace`,
+    `--report`, the reports or `--instruments`;
+  - an `--on-instrument-error`, `--instrument-device` or `--instrument-timeout` value the instruments would refuse,
+    even with no instrument asked for.
+
+  An empty `GGTTS_LOG_LEVEL` or `GGTTS_LOG_FORMAT` is now unset rather than an error. `--stream-format raw` is still
+  s16le.
+- **The Android app says what it is for before anything technical**: it reads text aloud in Cantonese or English,
+  on the phone only, slowly, and is not for screen readers. A fresh install also lists the steps to a first read.
+  A test fails if the app gains the internet permission while the screen says it has none.
+- **The Android app offers voices, not an engine and its files.** It reads what each file in its models directory is
+  from the file itself (a GGUF's architecture, a talker's speaker names, a voice JSON's fields), lists the voices the
+  files make, and selects the first complete one, so Speak works on opening. Files that make no voice yet are named
+  with what they lack. The engine, file pickers, speaker and threads are under "Advanced", closed by default, and the
+  adb extras still set them.
+- **The Android app's screen puts typing and Speak first.** The voice, a multi-line text box and a filled Speak button
+  come right under the title; the purpose paragraphs move under "About this app" and the Android-TTS check under
+  "Advanced". While a read runs, a progress bar and a seconds count show until the first sound, with plain wording
+  ("Preparing the voice", "Writing the first sentence"). The app follows the phone's dark mode on Android 10 and later.
+- **The Android app is laid out as a reading screen.** A voice card opens a sheet of voices, each with its language,
+  engine, size, time to first sound and a Sample button. The text sits in a card with Paste, Clear and a character
+  count, and a player is docked at the bottom: Read aloud, then the stage, a progress bar, the seconds and Stop. Import,
+  About and Advanced are in a ⋮ menu. `scripts/android_voice_samples.sh` makes each voice's sample with the app itself.
+- **The Android app has an icon:** 粵 in Noto Sans HK (SIL Open Font License) on the app's light blue, as an adaptive
+  icon with a monochrome layer, rendered by `scripts/android_icon.py`.
+- **The Android app and its text-to-speech engine are named "ggtts Text-to-Speech"** in the launcher and in the phone's
+  text-to-speech settings, where they were "ggtts demo" and "ggtts (on-device, slow)". The speed warning is unchanged
+  on the app's screen before a load.
+- **A Kitten-TTS 2 model whose token map names ids outside its vocabulary is refused when it loads,** with an error
+  naming the `kitten.token_map` field and both numbers. Such a file used to load and could fail or misbehave later.
+  For code using the engine crate directly: output-head rows set outside the head are now an error from the forward
+  pass, where they used to fall back to the whole head.
+
+### Fixed
+
+- **The Android demo recovers from playback failures.** If the phone's audio output fails to start, it is released
+  instead of held; if it refuses audio partway through, the read shows an error instead of reporting a finished read;
+  and an error such as running out of memory during playback leaves the screen usable instead of busy until restart.
+- **Stop in the Android demo is immediate and safe at any moment.** It no longer holds the screen for up to a second
+  while playback winds down, a Stop pressed while the last chunk plays is reported as stopped rather than as a
+  finished read, and a Stop pressed just as a read starts no longer lets its first chunk play on.
+
 
 ### Fixed
 

@@ -57,6 +57,10 @@ GGML_GATED_FILES = {
     "crates/ggtts-cli/tests/no_change_real.rs",
     "crates/ggtts-cli/tests/steer_cli.rs",
     "crates/ggtts-cli/tests/version_engines.rs",
+    # The book's real-model steering test. It needs the tiny fixture, so the tiny-model job runs it (TINY_FILES); the
+    # ggml job builds `ggtts-cli/ggml`, which does not turn on `ggtts-book/ggml`, so there it compiles to nothing.
+    # Listed so the gated-file check holds.
+    "crates/ggtts-book/tests/steer_tiny.rs",
 }
 
 # The Python binding (crates/ggtts-py) is its own workspace, built and tested by the python job only, which compiles
@@ -360,11 +364,13 @@ def cuda_decision(event, base_ref, ref, paths):
 # The tiny-model job: the no-change check on a real Qwen3-TTS engine cut to one layer (crates/ggtts-qwen3-tts/fixtures/
 # tiny), on CPU. What it reads: the engine, the core it implements (the engine trait, hooks, trace, pipeline), ggml and
 # its bindings (the submodule pointer included), the instruments and the CLI the event check runs them from, the
-# fixture's pins and scripts, and the workspace's manifests and toolchain. Documentation never selects it.
+# fixture's pins and scripts, and the workspace's manifests and toolchain, and the book's steering test, which the job
+# runs. The book's source does not select it: the CPU checks test the book on the fake engine on every pull request,
+# and every promotion runs this job. Documentation never selects it.
 TINY_PREFIXES = ("crates/ggtts-qwen3-tts/", "crates/ggtts-core/", "crates/ggtts-ggml-sys/", "crates/ggtts-instruments/",
                  "crates/ggtts-cli/", "instruments/")
 TINY_FILES = {"scripts/tiny_fixture.sh", "scripts/cut_tiny_fixture.py", "Cargo.toml", "Cargo.lock",
-              "rust-toolchain.toml", ".gitmodules"}
+              "rust-toolchain.toml", ".gitmodules", "crates/ggtts-book/tests/steer_tiny.rs"}
 TINY_JOB = "tiny-model"
 
 

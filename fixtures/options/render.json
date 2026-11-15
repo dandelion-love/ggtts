@@ -8,6 +8,7 @@
     "steer_scale": 0.125,
     "steer_layers": [23, 24, 25],
     "redraw": 3,
+    "judge": "asr-qwen,model=asr-model",
     "edge_s": 0.25,
     "measure_timings": true
   }

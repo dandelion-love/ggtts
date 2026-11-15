@@ -123,9 +123,10 @@ In an app, `load` and `render` block: call them off the main thread. To play a `
 
 | Member | What it does |
 |---|---|
-| `Ggtts.load(engine, model, codec, voice, threads, speaker, instruction, cacheDir, allowDownload)` | Load an engine. Every argument after `engine` has a default; name the ones you set. |
-| `render(text, seed = Ggtts.DEFAULT_SEED): Pcm` | Render the whole text. `Pcm` has `samples: FloatArray` (mono) and `sampleRate: Int`. |
-| `renderStream(text, seed = Ggtts.DEFAULT_SEED, listener): Boolean` | Render, handing each piece to `listener` as soon as it is ready. False if the listener stopped it. |
+| `Ggtts.load(engine, model, codec, voice, threads, speaker, instruction, cacheDir, allowDownload, options)` | Load an engine. Every argument has a default; name the ones you set. `options` is a load document ([Options](#options)). |
+| `render(text, seed = null, options = null): Pcm` | Render the whole text. `Pcm` has `samples: FloatArray` (mono) and `sampleRate: Int`. |
+| `renderStream(text, seed = null, options = null, listener): Boolean` | Render, handing each piece to `listener` as soon as it is ready. False if the listener stopped it. |
+| `capabilities(): String` | What the engine supports, as JSON. `Ggtts.optionsSchema()` is the options schema. See [Options](#options). |
 | `close()` | Release the engine. `Ggtts` is `AutoCloseable`, so `use { }` works. |
 | `Ggtts.ERR_ARG` ... `Ggtts.ERR_BUSY`, `Ggtts.DEFAULT_SEED` | The error codes, and the default seed, 20260905. |
 
@@ -133,15 +134,16 @@ In an app, `load` and `render` block: call them off the main thread. To play a `
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `engine` | (required) | `"qwen3-tts"`, `"kitten-tts-2"`, or `"fake"` (a test engine that needs no files). |
+| `engine` | `"qwen3-tts"` | `"qwen3-tts"`, `"kitten-tts-2"`, or `"fake"` (a test engine that needs no files). With `options`, null is the document's engine. |
 | `model` | null | The model GGUF path: Qwen3-TTS's talker, or Kitten-TTS 2's LM. Null for Qwen3-TTS means the default model (below). |
 | `codec` | null | The audio decoder GGUF: Qwen3-TTS's 12 Hz codec, or Kitten-TTS 2's S3Gen GGUF. Null for Qwen3-TTS means the default codec. |
 | `voice` | null | Kitten-TTS 2's prepared reference voice (a JSON file). |
-| `threads` | 4 | CPU threads. 0 or less means 4. Before each graph the count is capped at the CPUs the app may use, so an app moved to the little cores when it leaves the screen does not stall; the first cap is said once on stderr, which an Android app does not show in logcat. |
+| `threads` | null: 4 | CPU threads. 0 or less means 4. Before each graph the count is capped at the CPUs the app may use, so an app moved to the little cores when it leaves the screen does not stall; the first cap is said once on stderr, which an Android app does not show in logcat. |
 | `speaker` | null | A Qwen3-TTS speaker the model has, such as `"hk_voice_777"`. Case is ignored. |
 | `instruction` | null | A Qwen3-TTS style instruction for every chunk, such as `"Speak slowly and softly."` |
 | `cacheDir` | null | Where the default model files are cached. An app passes its own (below). |
-| `allowDownload` | false | True: download a default model file the cache lacks. False: never download. |
+| `allowDownload` | null: false | True: download a default model file the cache lacks. False: never download. |
+| `options` | null | A load document, JSON: every option a load takes, and render defaults. See [Options](#options). |
 
 Paths are file paths on the device. For `speaker`, `instruction` and `cacheDir`, an empty string is the same as null:
 no setting. That is not true of `model`, `codec` and `voice`: an empty one is taken as a path and fails with
@@ -189,8 +191,13 @@ no instruction (`ERR_ARG`). Its licence is the model's: audio rendered with it m
   throws `ERR_ARG`, before any rendering.
 * **The render** splits the text into chunks, renders each, checks it, trims it, joins them and levels the whole read,
   as `ggtts-render --story` does.
-* **The seed** fixes the random draws. The same engine, model, text and seed give the same samples on the same
+* **The seed** fixes the random draws. It is the **seed salt**: each chunk's sampler seed is derived from the text, a
+  fixed story id and this salt. In an options document its key is `render.seed_salt` (a string). With no `seed` and
+  no `options`, the salt is `Ggtts.DEFAULT_SEED`, 20260905; with `options` and no salt given anywhere, it is empty,
+  as the C library's `ggtts_render_opts` leaves it, so a document renders the same samples in every binding. Pass
+  `seed` to keep a render the same with and without a document. The same engine, model, text and seed give the same samples on the same
   platform.
+* **`options`** is a render document, laid over the load's render defaults. See [Options](#options).
 * **The result** is a `Pcm`: mono float samples in a `FloatArray` the JVM owns, at `sampleRate` Hz (24000 for the
   models above).
 
@@ -203,7 +210,8 @@ so playback can start before the render ends.
 * Each piece is a new `FloatArray`; you may keep it.
 * Return true to go on, false to stop. A stopped render returns false; it does not throw.
 * An exception the listener throws stops the render and is thrown from `renderStream` as it is.
-* The pieces are the render's samples *before* its final level step. Joined, they have the render's length, but not
+* Without `options`, the pieces are the render's samples *before* its final level step (with `options`, they are
+  levelled by default: see [Options](#options), and use that for listening). Joined, they have the render's length, but not
   its exact values.
 
 This program streams, stops after two pieces, tries a render from inside the listener, and shows three errors:
@@ -262,10 +270,89 @@ fun main(args: Array<String>) {
 }
 ```
 
+## Options
+
+Every option of ggtts's options table reaches Kotlin through one parameter, `options`, so an option added to the table
+needs no new parameter. A document is a JSON string, the C library's options document
+([C: options documents](c.md#options-documents)), read and checked over JNI by the same code. The schema is
+`schemas/ggtts-options-1.schema.json`, and [docs/options.md](../options.md) describes the sections.
+
+* **`Ggtts.load(options = ...)`** takes the `load` section (each `load` parameter has its key there) and `render`
+  defaults that every render on the engine starts from. A parameter left null is not given; one given both as a
+  parameter and in the document throws `ERR_ARG` naming both. The whole document is checked against the engine before
+  any file is read.
+* **`render(text, options = ...)`** and **`renderStream(text, options = ...) { ... }`** take a render document, laid
+  over the load's defaults: `render` `seed_salt`, `instruction`, `steer` with `steer_scale` and `steer_layers`,
+  `redraw` and `edge_s`. A stream through a document is levelled as `ggtts-render --stream` levels it: held until the first `output.stream_level_seconds` of audio (5 s unless given) set one gain, then each piece at that gain. `{"output": {"stream": "raw"}}` (or
+  `"stream_raw": true`) hands the pieces over before the level step instead, as `renderStream` with no options
+  does. `render` refuses `output.stream`: stream with `renderStream`.
+* **Refused:** `load.device` (the binding is CPU only), the trace (`observe.trace`: a desktop observer, with no file a
+  phone user can read), instruments, a `load` key in a render document, `render.seed` (use `seed_salt`), the reports
+  and logging, `render.measure_timings`, `output.out` and the book options.
+
+**What the library states.** `Ggtts.optionsSchema()` is the options schema as JSON: every option a document may
+give, with its type, default and phase, from the library (the C library's `ggtts_options_schema`), so no schema file
+ships with the binding. `capabilities()` on an instance is what its engine supports, as JSON (`ggtts-capabilities/1`,
+the C library's `ggtts_capabilities`): `family`, `instruction` and `no_instruction_why`, `steering`, `speakers` and
+`speaker_names` (the model's speakers), `devices`, `hooks` and `step_events`. Read them to offer only what the engine
+takes, for example to show steering only when `steering` is true.
+
+A refused option throws `GgttsException` with `ERR_ARG`, and its `key` is the option's schema key, read from the
+library (`ggtts_last_error_key`) and never parsed from the message: `render.steer` for steering on an engine that has
+none, `render.nonesuch` for an unknown key. A document that is not JSON is refused whole, with `key` null.
+
+This program loads with a document, renders and streams with render documents, and catches a refusal:
+
+<!-- example: examples/kotlin/Options.kt -->
+```kotlin
+// Options.kt: every option through one argument, `options`, at load and per render; a refused option names its key.
+//
+//   main(arrayOf())                                          Qwen3-TTS with its default model (from the cache)
+//   main(arrayOf("qwen3-tts", "talker.gguf", "codec.gguf"))  model files you already have
+//   main(arrayOf("fake"))                                    the test engine: no files, a tone instead of speech
+package options
+
+import ggtts.Ggtts
+import ggtts.GgttsException
+
+fun main(args: Array<String>) {
+    val engine = args.getOrElse(0) { "qwen3-tts" }
+    // The load document: the load section, and render defaults every render on this engine starts from. The
+    // parameters of load still work beside it; one given both ways is refused.
+    Ggtts.load(
+        engine,
+        model = args.getOrNull(1),
+        codec = args.getOrNull(2),
+        options = """{"render": {"edge_s": 0.25}}""",
+    ).use { tts ->
+        // A render document, laid over those defaults. seed = 7 is the same value as "render": {"seed_salt": "7"}.
+        val pcm = tts.render("今日天氣好好。", seed = 7, options = """{"render": {"redraw": 1}}""")
+        println("${pcm.samples.size} samples at ${pcm.sampleRate} Hz")
+
+        // A stream through a document is levelled as ggtts-render --stream levels it: one gain from the first 5 s.
+        // {"output": {"stream": "raw"}} asks for the pieces before the level step, as renderStream with no options.
+        var pieces = 0
+        tts.renderStream("今日天氣好好。\n我哋去海邊行下。", options = "{}") { _, _ ->
+            pieces++
+            true
+        }
+        println("$pieces levelled pieces")
+
+        // A refused option throws GGTTS_ERR_ARG, and the exception's key is the option's schema key.
+        try {
+            tts.render("今日天氣好好。", options = """{"render": {"nonesuch": 1}}""")
+        } catch (e: GgttsException) {
+            println("refused ${e.key}: ${e.message}")
+            check(e.code == Ggtts.ERR_ARG && e.key == "render.nonesuch")
+        }
+    }
+}
+```
+
 ## Errors
 
 Every failure is a `ggtts.GgttsException` (a `RuntimeException`) with `code`, one of the constants below (the C
-library's codes), and the library's `message`. A bad argument, a missing file or a closed instance never crashes the
+library's codes), the library's `message`, and `key`: the schema key of the one option refused, or null. A bad argument, a missing file or a closed instance never crashes the
 process.
 
 | Code | Value | What happened | What to do |
@@ -296,6 +383,7 @@ process.
 
 ## Compatibility
 
-The binding grew `speaker` and `instruction` (C ABI version 2), then `cacheDir` and `allowDownload` (version 3). The
-older `load` signatures stay in the compiled class, hidden from source, so code built against them still runs and
-loads exactly as it did: from the paths given only. New code calls the one `load` above.
+The binding grew `speaker` and `instruction` (C ABI version 2), then `cacheDir` and `allowDownload` (version 3), then
+`options` (version 4's documents). The older `load`, `render` and `renderStream` signatures stay in the compiled
+class, hidden from source, so code built against them still runs and renders exactly as it did. New code calls the
+ones above. A new option arrives through `options`, with no new parameter.

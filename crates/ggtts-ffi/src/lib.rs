@@ -8,18 +8,28 @@
 //!   is [`GGTTS_ERR_BUSY`], never a deadlock. Different engines render at once, and [`ggtts_free`] never waits for a
 //!   render: it drops the registry's reference, and the engine goes when the render holding it returns.
 //! * **No panic unwinds across the boundary.** The entry points that reach an engine or the registry
-//!   ([`ggtts_load`], [`ggtts_load_with`], [`ggtts_render`], [`ggtts_render_stream`], [`ggtts_free`]) run inside
+//!   ([`ggtts_load`], [`ggtts_load_with`], [`ggtts_load_opts`], [`ggtts_render`], [`ggtts_render_stream`],
+//!   [`ggtts_render_opts`], [`ggtts_free`]) run inside
 //!   `catch_unwind`, and a panic comes back as [`GGTTS_ERR_PANIC`] with its message; the engine that panicked is
-//!   dropped from the registry. [`ggtts_pcm_free`], [`ggtts_last_error`] and [`ggtts_abi_version`] are not wrapped:
-//!   one drops a box, one reads a thread-local, one returns a constant. `catch_unwind` catches unwinding panics only: an abort, a stack overflow or a crash in C code
-//!   still ends the process.
-//! * **Errors are a code plus a message:** [`ggtts_last_error`] holds the calling thread's last message.
+//!   dropped from the registry. [`ggtts_capabilities`] is wrapped too. [`ggtts_pcm_free`], [`ggtts_string_free`],
+//!   [`ggtts_last_error`], [`ggtts_last_error_key`], [`ggtts_abi_version`] and [`ggtts_options_schema`] are not: two
+//!   drop a box, two read a thread-local, two return a constant. `catch_unwind` catches unwinding panics only: an
+//!   abort, a stack overflow or a crash in C code still ends the process.
+//! * **Errors are a code plus a message:** [`ggtts_last_error`] holds the calling thread's last message, and
+//!   [`ggtts_last_error_key`] the schema key of the option a [`GGTTS_ERR_ARG`] refused, when it refused one.
 //! * **The surface is versioned and only grows.** [`GGTTS_ABI_VERSION`] (and [`ggtts_abi_version`]) goes up by one
 //!   whenever a function, a struct or a code is added; an exported function never changes its signature or its
 //!   behaviour. Version 2 added [`ggtts_load_with`] and [`GgttsSettings`] (a Qwen3-TTS speaker and style
 //!   instruction). Version 3 added three trailing fields to [`GgttsSettings`]: the device, and the default model
 //!   files' cache directory and download permission. A version-2 struct (its `size` is
-//!   [`GGTTS_SETTINGS_V2_SIZE`]) still loads exactly as it did.
+//!   [`GGTTS_SETTINGS_V2_SIZE`]) still loads exactly as it did. Version 4 added [`ggtts_load_opts`] and
+//!   [`ggtts_render_opts`], which take options documents (JSON, every option of `ggtts_core::options::TABLE`);
+//!   [`GgttsSettings`] is frozen at version 3, and a new option goes in a document. Version 5 added
+//!   [`ggtts_options_schema`], [`ggtts_capabilities`] with [`ggtts_string_free`], and [`ggtts_last_error_key`], so a
+//!   binding learns the options, an engine's capabilities and a refused option's key from the library itself.
+//! * **One render path.** [`ggtts_render`] and [`ggtts_render_stream`] build the document their arguments mean and
+//!   render it as [`ggtts_render_opts`] does ([`binding::render_document`]); the struct loads build the options their
+//!   settings mean and load them as [`ggtts_load_opts`] does, keeping their own refusals' words.
 //!
 //! With the `jni` feature, `jni.rs` adds the `Java_ggtts_Native_*` entry points over the same functions.
 
@@ -28,12 +38,16 @@ use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
+use ggtts_core::options::{Options, Refusal, Source};
 use ggtts_load::binding::{self, Held, Slot};
 
 #[cfg(feature = "jni")]
 mod jni;
+/// The Kotlin binding's document calls in plain Rust, under the JNI layer: public to Rust hosts and tests (the
+/// conformance test probes Kotlin through it), not part of the C-ABI.
+pub mod kotlin;
 
 pub const GGTTS_OK: i32 = binding::OK;
 /// A NULL, non-UTF-8 or out-of-range argument.
@@ -50,10 +64,12 @@ pub const GGTTS_ERR_STOPPED: i32 = binding::ERR_STOPPED;
 pub const GGTTS_ERR_BUSY: i32 = binding::ERR_BUSY;
 
 /// The C-ABI's version: 1 was the surface before [`ggtts_load_with`]; 2 added it and [`GgttsSettings`]; 3 added the
-/// struct's `device`, `cache_dir` and `allow_download` fields.
-pub const GGTTS_ABI_VERSION: u32 = 3;
+/// struct's `device`, `cache_dir` and `allow_download` fields; 4 added [`ggtts_load_opts`] and [`ggtts_render_opts`];
+/// 5 added [`ggtts_options_schema`], [`ggtts_capabilities`], [`ggtts_string_free`] and [`ggtts_last_error_key`].
+pub const GGTTS_ABI_VERSION: u32 = 5;
 
-/// The settings [`ggtts_load_with`] takes, by pointer. `size` is `sizeof(ggtts_settings)` as the caller's header
+/// The settings [`ggtts_load_with`] takes, by pointer. **Frozen at version 3**: no field is ever added; a new option
+/// goes in an options document ([`ggtts_load_opts`], [`ggtts_render_opts`]). `size` is `sizeof(ggtts_settings)` as the caller's header
 /// declares it, so a later version can add fields and still tell an older caller's struct apart. A NULL or empty
 /// string is no setting: the result is what [`ggtts_load`] gives.
 #[repr(C)]
@@ -89,22 +105,26 @@ type Fail = binding::Fail;
 
 thread_local! {
     static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
+    static LAST_ERROR_KEY: RefCell<Option<CString>> = const { RefCell::new(None) };
 }
 
-fn set_error(msg: &str) {
+fn set_error(msg: &str, key: Option<&str>) {
     let c = CString::new(msg.replace('\0', " ")).unwrap_or_default();
     LAST_ERROR.with(|e| *e.borrow_mut() = c);
+    let key = key.and_then(|k| CString::new(k).ok());
+    LAST_ERROR_KEY.with(|e| *e.borrow_mut() = key);
 }
 
-/// Run `f`, turning an error or a panic into a status ([`binding::guard`]), and record the message.
+/// Run `f`, turning an error or a panic into a status ([`binding::guard_keyed`]), and record the message and the
+/// refused key ([`ggtts_last_error_key`], [`binding::refused_key`]).
 fn guard(f: impl FnOnce() -> Result<(), Fail>) -> i32 {
-    match binding::guard(f) {
+    match binding::guard_keyed(f) {
         Ok(()) => {
-            set_error("");
+            set_error("", None);
             GGTTS_OK
         }
-        Err((code, msg)) => {
-            set_error(&msg);
+        Err(((code, msg), key)) => {
+            set_error(&msg, key.as_deref());
             code
         }
     }
@@ -112,6 +132,17 @@ fn guard(f: impl FnOnce() -> Result<(), Fail>) -> i32 {
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static ENGINES: Mutex<Option<HashMap<u64, Slot>>> = Mutex::new(None);
+/// The render defaults a load document gave, by handle: every render on it starts from them.
+static DEFAULTS: Mutex<Option<HashMap<u64, Options>>> = Mutex::new(None);
+
+fn defaults() -> MutexGuard<'static, Option<HashMap<u64, Options>>> {
+    DEFAULTS.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// A refused option, as [`GGTTS_ERR_ARG`] with its schema key ([`ggtts_last_error_key`]).
+fn refused(r: Refusal) -> Fail {
+    binding::refusal_err(r)
+}
 
 /// The registry, locked for a lookup, an insert or a remove and never longer. None of those panics, so a poisoned lock
 /// still holds a whole map.
@@ -288,6 +319,16 @@ const WORDING: binding::Wording = binding::Wording {
     file_checks: binding::FileChecks::InTurn,
 };
 
+/// How a load document words the same refusals: by the document's keys.
+const DOCUMENT_WORDING: binding::Wording = binding::Wording {
+    choose_speaker: ". Choose one with load.speaker",
+    device_setting: "load.device",
+    cpu_only,
+    no_engines_for_defaults: "",
+    offline_hint: " (downloading is off: set load.offline to false to allow it)",
+    file_checks: binding::FileChecks::InTurn,
+};
+
 fn cpu_only(engine: &str, _: binding::Device) -> String {
     format!("the {engine} engine runs on the CPU only")
 }
@@ -312,6 +353,7 @@ fn open_engine(
     voice: Option<&str>,
     threads: i32,
     settings: Settings<'_>,
+    wording: &binding::Wording,
 ) -> Result<Held, Fail> {
     // The C-ABI refuses a setting the engine does not take before it reads the device; `binding::open` checks again.
     if engine != "qwen3-tts" {
@@ -338,7 +380,7 @@ fn open_engine(
             threads,
             models,
         },
-        &WORDING,
+        wording,
         &mut |_| {},
     )?;
     Ok(opened.held)
@@ -392,7 +434,9 @@ pub unsafe extern "C" fn ggtts_load_with(
     })
 }
 
-/// The body of both loads.
+/// The body of both struct loads: the options the arguments and settings mean, loaded as a document is
+/// ([`load_options`]). A struct load reads the default model files only with a version-3 struct, and keeps its own
+/// refusals' words: the device is read as the struct reads it, after a setting the engine does not take.
 ///
 /// # Safety
 /// As [`ggtts_load`].
@@ -408,18 +452,105 @@ unsafe fn load(
     if handle.is_null() {
         return Err((GGTTS_ERR_ARG, "handle is NULL".into()));
     }
+    let engine = unsafe { arg(engine, "engine") }?;
+    let (model, codec, voice) = unsafe {
+        (
+            opt_arg(model, "model")?,
+            opt_arg(codec, "codec")?,
+            opt_arg(voice, "voice")?,
+        )
+    };
+    let mut o = Options::default();
+    o.load.engine = engine.to_string();
+    o.load.model = model.map(PathBuf::from);
+    o.load.codec = codec.map(PathBuf::from);
+    o.load.voice = voice.map(PathBuf::from);
+    o.load.speaker = settings.speaker.map(String::from);
+    o.load.device = settings.device.map(String::from);
+    o.load.threads = Some(threads);
+    o.render.instruction = settings.instruction.map(String::from);
+    if let Some(m) = settings.models {
+        o.load.cache_dir = m.cache_dir.map(PathBuf::from);
+        o.load.offline = !m.allow_download;
+    }
+    let id = load_options(&o, settings.models.is_some(), false)?;
+    unsafe { *handle = id };
+    Ok(())
+}
+
+/// Load the engine an options value names, register it and return its handle. `default_files`: a model or codec not
+/// given is the engine's pinned default, from `load.cache_dir`, downloaded unless `load.offline`. `document`: the
+/// value is a load document, checked whole against the engine before anything is read ([`ggtts_core::options::check`]);
+/// otherwise only a speaker or instruction the engine does not take is refused first, as the struct loads always have.
+fn load_options(o: &Options, default_files: bool, document: bool) -> Result<u64, Fail> {
+    let path = |p: &Option<PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned());
+    let (model, codec, voice) = (path(&o.load.model), path(&o.load.codec), path(&o.load.voice));
+    // "auto" is a document's engine only: a struct load names its engine, and "auto" is no engine there.
+    let engine = if document {
+        binding::document_engine(o)?
+    } else {
+        o.load.engine.clone()
+    };
+    if document {
+        if let Some(caps) = ggtts_core::capabilities::Capabilities::of(&engine) {
+            ggtts_core::options::check(o, &caps).map_err(refused)?;
+        }
+    }
+    let cache_dir = path(&o.load.cache_dir);
+    let settings = Settings {
+        speaker: o.load.speaker.as_deref().filter(|s| !s.is_empty()),
+        instruction: o.render.instruction.as_deref().filter(|s| !s.is_empty()),
+        device: o.load.device.as_deref(),
+        models: default_files.then_some(Models {
+            cache_dir: cache_dir.as_deref(),
+            allow_download: !o.load.offline,
+        }),
+    };
     let e = open_engine(
-        unsafe { arg(engine, "engine") }?,
-        unsafe { opt_arg(model, "model") }?,
-        unsafe { opt_arg(codec, "codec") }?,
-        unsafe { opt_arg(voice, "voice") }?,
-        threads,
+        &engine,
+        model.as_deref(),
+        codec.as_deref(),
+        voice.as_deref(),
+        o.load.threads.unwrap_or(0),
         settings,
+        if document { &DOCUMENT_WORDING } else { &WORDING },
     )?;
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     registry().get_or_insert_with(HashMap::new).insert(id, binding::slot(e));
-    unsafe { *handle = id };
-    Ok(())
+    Ok(id)
+}
+
+/// Load an engine from an options document (C-ABI version 4): the `load` section, and `render` defaults every render
+/// on the handle starts from. A document with no model loads the engine's default files, downloading a missing one
+/// unless `load.offline` is true. A malformed document, an unknown key, a wrong type, an option a load does not take
+/// (a trace, a stream, a report) and one the engine does not support are [`GGTTS_ERR_ARG`] before anything is read.
+///
+/// # Safety
+/// `options_json` is NULL or NUL-terminated; `handle` is NULL or writable.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_load_opts(options_json: *const c_char, handle: *mut u64) -> i32 {
+    guard(|| {
+        if handle.is_null() {
+            return Err((GGTTS_ERR_ARG, "handle is NULL".into()));
+        }
+        let json = unsafe { arg(options_json, "options_json") }?;
+        let o = Options::from_json(json).map_err(refused)?;
+        binding::check_document(&o, true)?;
+        let id = load_document(&o)?;
+        unsafe { *handle = id };
+        Ok(())
+    })
+}
+
+/// Load the engine a checked load document names and keep its render defaults with the handle: the body of
+/// [`ggtts_load_opts`], which the Kotlin binding's document load calls too.
+fn load_document(o: &Options) -> Result<u64, Fail> {
+    let id = load_options(o, true, true)?;
+    // The render defaults, kept with the handle: the render section, marked as given where the document gave it.
+    defaults()
+        .get_or_insert_with(HashMap::new)
+        .insert(id, binding::render_defaults(o));
+    Ok(id)
 }
 
 /// Render `text` to mono f32 PCM. Free the buffer with [`ggtts_pcm_free`].
@@ -440,7 +571,8 @@ pub unsafe extern "C" fn ggtts_render(
             return Err((GGTTS_ERR_ARG, "pcm, len and rate must not be NULL".into()));
         }
         let text = unsafe { arg(text, "text") }?;
-        let (samples, sample_rate) = with_engine(handle, |e, instruction| binding::render(e, text, seed, instruction))?;
+        let doc = seed_document(seed);
+        let (samples, sample_rate) = render(handle, text, &doc, None)?;
         let boxed = samples.into_boxed_slice();
         let n = boxed.len();
         unsafe {
@@ -470,11 +602,112 @@ pub unsafe extern "C" fn ggtts_render_stream(
     guard(|| {
         let on_piece = on_piece.ok_or((GGTTS_ERR_ARG, "on_piece is NULL".to_string()))?;
         let text = unsafe { arg(text, "text") }?;
-        with_engine(handle, |e, instruction| {
-            binding::render_stream(e, text, seed, instruction, &mut |samples, rate| {
-                on_piece(user, samples.as_ptr(), samples.len(), rate) == 0
-            })
-        })
+        let mut doc = seed_document(seed);
+        doc.output.stream = Some("raw".into());
+        doc.marks.sources.insert("output.stream".into(), Source::Document);
+        let mut piece = |samples: &[f32], rate: u32| on_piece(user, samples.as_ptr(), samples.len(), rate) == 0;
+        render(handle, text, &doc, Some(&mut piece)).map(drop)
+    })
+}
+
+/// The render document `seed` means on the struct functions: the story seed's salt, marked as given so it is laid
+/// over a load document's defaults as a document's would be.
+fn seed_document(seed: u64) -> Options {
+    let mut doc = Options::default();
+    doc.render.seed_salt = Some(seed.to_string());
+    doc.marks.sources.insert("render.seed_salt".into(), Source::Document);
+    doc
+}
+
+/// Render `text` on the engine `handle` names with a render document laid over the load's defaults, the instruction
+/// it was loaded with standing in for one the document does not give ([`binding::render_document`]).
+fn render(
+    handle: u64,
+    text: &str,
+    doc: &Options,
+    on_piece: Option<binding::PieceSink<'_>>,
+) -> Result<(Vec<f32>, u32), Fail> {
+    let base = defaults().get_or_insert_with(HashMap::new).get(&handle).cloned();
+    let mut o = match base {
+        Some(b) => binding::layer_render(&b, doc.clone())?,
+        None => doc.clone(),
+    };
+    with_engine(handle, |e, instruction| {
+        if o.render.instruction.is_none() {
+            o.render.instruction = instruction.map(String::from);
+        }
+        binding::render_document(e, text, &o, on_piece)
+    })
+}
+
+/// Render `text` with an options document (C-ABI version 4), laid over the load's render defaults; NULL is the empty
+/// document. With `on_piece` NULL and no `output.stream` it is a whole read: `pcm`, `len` and `rate` get the samples,
+/// as [`ggtts_render`] gives them. With `on_piece` set it is a stream: each kept chunk goes to `on_piece`, levelled as
+/// `ggtts-render --stream` levels it (one gain from the first `output.stream_level_seconds`, 5 s unless given) unless
+/// the document says `"output": {"stream": "raw"}` or `"stream_raw": true`, which hand each piece over before the level
+/// step, as [`ggtts_render_stream`] does; `pcm`, `len` and `rate` are all NULL or all set (then they also get the
+/// whole read). `output.stream` with `on_piece` NULL has nowhere to send the pieces. A malformed document, an unknown
+/// key, a wrong type, a load option, an option a binding does not take, and one the engine does not support are
+/// [`GGTTS_ERR_ARG`] before anything is rendered.
+///
+/// # Safety
+/// `text` is NUL-terminated; `options_json` is NULL or NUL-terminated; `on_piece` is NULL or a valid function; `pcm`,
+/// `len` and `rate` are writable, or (for a stream only) NULL; `user` is passed through untouched.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ggtts_render_opts(
+    handle: u64,
+    text: *const c_char,
+    options_json: *const c_char,
+    on_piece: Option<PieceFn>,
+    user: *mut c_void,
+    pcm: *mut *mut f32,
+    len: *mut usize,
+    rate: *mut u32,
+) -> i32 {
+    guard(|| {
+        let text = unsafe { arg(text, "text") }?;
+        let doc = match unsafe { opt_arg(options_json, "options_json") }? {
+            None => Options::default(),
+            Some(json) => Options::from_render_json(json).map_err(refused)?,
+        };
+        binding::check_document(&doc, false)?;
+        let given = [pcm.is_null(), len.is_null(), rate.is_null()];
+        let outputs = given.iter().all(|null| !null);
+        let stream = doc.output.stream.is_some() || on_piece.is_some();
+        if stream && !outputs && given.iter().any(|null| !null) {
+            return Err((
+                GGTTS_ERR_ARG,
+                "a stream's pcm, len and rate are all set or all NULL: one of them alone has nowhere to write".into(),
+            ));
+        }
+        let result = match (doc.output.stream.is_some(), on_piece) {
+            (true, None) => {
+                return Err((
+                    GGTTS_ERR_ARG,
+                    "output.stream needs on_piece: the pieces go to it".into(),
+                ))
+            }
+            (false, None) if !outputs => return Err((GGTTS_ERR_ARG, "pcm, len and rate must not be NULL".into())),
+            (false, None) => render(handle, text, &doc, None)?,
+            // A stream: levelled unless the document asks for the pieces before the level step
+            // (`binding::stream_mode`).
+            (_, Some(f)) => {
+                let mut piece = |samples: &[f32], r: u32| f(user, samples.as_ptr(), samples.len(), r) == 0;
+                render(handle, text, &doc, Some(&mut piece))?
+            }
+        };
+        if outputs {
+            let (samples, sample_rate) = result;
+            let boxed = samples.into_boxed_slice();
+            let n = boxed.len();
+            unsafe {
+                *pcm = Box::into_raw(boxed) as *mut f32;
+                *len = n;
+                *rate = sample_rate;
+            }
+        }
+        Ok(())
     })
 }
 
@@ -497,6 +730,7 @@ pub extern "C" fn ggtts_free(handle: u64) -> i32 {
     guard(|| {
         // The registry guard is a temporary, so it is released before `slot`, and the engine with it, drops.
         let slot = registry().get_or_insert_with(HashMap::new).remove(&handle);
+        defaults().get_or_insert_with(HashMap::new).remove(&handle);
         slot.map(drop).ok_or_else(|| no_engine(handle))
     })
 }
@@ -505,6 +739,71 @@ pub extern "C" fn ggtts_free(handle: u64) -> i32 {
 #[no_mangle]
 pub extern "C" fn ggtts_last_error() -> *const c_char {
     LAST_ERROR.with(|e| e.borrow().as_ptr())
+}
+
+/// The schema key of the option the calling thread's last call refused (C-ABI version 5): set only when that call
+/// returned [`GGTTS_ERR_ARG`] for one option (`"render.steer"` for steering an engine that cannot steer, the key itself
+/// for an unknown one), and NULL after a success or any other error (a missing file, a NULL argument, a bad engine).
+/// It is the key [`ggtts_last_error`]'s message starts with, so a binding needs no message parsing. Valid until the
+/// thread's next call.
+#[no_mangle]
+pub extern "C" fn ggtts_last_error_key() -> *const c_char {
+    LAST_ERROR_KEY.with(|e| e.borrow().as_ref().map_or(std::ptr::null(), |k| k.as_ptr()))
+}
+
+/// The JSON schema of the options documents (C-ABI version 5), as built into this library: the text of
+/// `schemas/ggtts-options-1.schema.json` (`ggtts_core::options::schema`, pretty-printed, with a final newline). A
+/// binding reads the options it can pass from here, so it ships no schema file of its own. Static: never freed, the
+/// same pointer on every call.
+#[no_mangle]
+pub extern "C" fn ggtts_options_schema() -> *const c_char {
+    static SCHEMA: OnceLock<CString> = OnceLock::new();
+    SCHEMA
+        .get_or_init(|| CString::new(options_schema_text()).unwrap_or_default())
+        .as_ptr()
+}
+
+/// The text [`ggtts_options_schema`] returns.
+pub fn options_schema_text() -> String {
+    // A `Value` always serializes, and the schema holds no NUL.
+    serde_json::to_string_pretty(&ggtts_core::options::schema()).unwrap_or_default() + "\n"
+}
+
+/// The capability statement of the engine `handle` names (C-ABI version 5): what it supports, and the speakers its
+/// loaded model has, as JSON (`ggtts_core::capabilities::statement`, format `ggtts-capabilities/1`). `*json` gets a
+/// NUL-terminated string to free with [`ggtts_string_free`], and NULL on any error. A freed or unknown handle is
+/// [`GGTTS_ERR_HANDLE`]; an engine that is rendering is [`GGTTS_ERR_BUSY`].
+///
+/// # Safety
+/// `json` is NULL or writable.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_capabilities(handle: u64, json: *mut *mut c_char) -> i32 {
+    guard(|| {
+        if json.is_null() {
+            return Err((GGTTS_ERR_ARG, "json is NULL".into()));
+        }
+        unsafe { *json = std::ptr::null_mut() };
+        let text = with_engine(handle, |e, _| Ok(ggtts_core::capabilities::statement(e).to_string()))?;
+        let text = CString::new(text).map_err(|_| (GGTTS_ERR_ENGINE, "the statement holds a NUL".to_string()))?;
+        unsafe { *json = text.into_raw() };
+        Ok(())
+    })
+}
+
+/// Free a string [`ggtts_capabilities`] returned. NULL is no string.
+///
+/// # Safety
+/// `s` is NULL or exactly what one `ggtts_capabilities` call wrote, freed once.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_string_free(s: *mut c_char) {
+    if !s.is_null() {
+        drop(unsafe { CString::from_raw(s) });
+    }
+}
+
+/// The calling thread's last refused key as a Rust string, for the JNI layer and the tests.
+pub fn last_error_key() -> Option<String> {
+    LAST_ERROR_KEY.with(|e| e.borrow().as_ref().map(|k| k.to_string_lossy().into_owned()))
 }
 
 /// The backend a loaded engine runs on, as its engine reports it (`ggml-cpu`, `ggml-cuda`, or the fake engine's), for
@@ -602,13 +901,17 @@ mod chunk_input_tests {
         assert_eq!(ggtts_free(handle), GGTTS_OK);
     }
 
-    /// The fake engine, recording each request's instruction and rendering it as none.
+    /// The fake engine, recording each request's instruction and rendering it as none. A stand-in for an engine that
+    /// takes an instruction, so it says so.
     struct Recording {
         inner: ggtts_fake::FakeEngine,
         seen: Arc<Mutex<Vec<Option<String>>>>,
     }
 
     impl Engine for Recording {
+        fn capabilities(&self) -> ggtts_core::capabilities::Capabilities {
+            ggtts_core::capabilities::Capabilities::of("qwen3-tts").unwrap()
+        }
         fn info(&self) -> &ggtts_core::engine::EngineInfo {
             self.inner.info()
         }

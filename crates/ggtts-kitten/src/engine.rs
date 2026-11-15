@@ -332,6 +332,9 @@ pub struct KittenEngine {
     speaker: Vec<f32>,
     pub decoder: Decoder,
     pub last: GenStats,
+    /// Compute the whole output head, as a front end asked (`load.kitten_full_head`). Without it the engine still
+    /// reads `GGTTS_KITTEN_FULL_HEAD` itself, for a caller that does not read the options (the bindings).
+    pub full_head: bool,
     seed_for_decode: u64,
     tag: u32,
 }
@@ -344,7 +347,7 @@ impl KittenEngine {
         decoder: Decoder,
         threads: usize,
     ) -> Result<Self, String> {
-        let tm = TokenMap::from_meta(&model.meta)?;
+        let tm = TokenMap::from_meta(&model.meta, model.hp.n_vocab)?;
         let ref_text = tokenizer.encode(&reference.transcript)?;
         let speaker = model.project_speaker(&reference.embedding);
         let m = &model.meta;
@@ -406,6 +409,7 @@ impl KittenEngine {
             speaker,
             decoder,
             last: GenStats::default(),
+            full_head: false,
             seed_for_decode: 0,
             tag: 0,
         })
@@ -421,10 +425,14 @@ impl KittenEngine {
     /// It is a measured shortcut, not a rule of the model: the sampler draws over the whole vocabulary, as both
     /// references do, so computing only these rows is exact while no other id reaches the top-k set. That held at
     /// every step of a 22-line test set at the default settings (`examples/head_rows_check.rs`), so the subset is
-    /// used only inside that envelope: top-k on and at most 50, and top-p below 1. Outside it, or with
-    /// `GGTTS_KITTEN_FULL_HEAD=1`, the whole head is computed.
+    /// used only inside that envelope: top-k on and at most 50, and top-p below 1. Outside it, with
+    /// [`full_head`](Self::full_head), or with `GGTTS_KITTEN_FULL_HEAD=1`, the whole head is computed.
     pub fn head_rows(&self) -> Option<std::ops::Range<usize>> {
-        let env = std::env::var("GGTTS_KITTEN_FULL_HEAD").ok();
+        let env = if self.full_head {
+            Some("1".to_string())
+        } else {
+            std::env::var("GGTTS_KITTEN_FULL_HEAD").ok()
+        };
         sampler::head_rows(&self.settings, &self.tm, self.model.hp.n_vocab, env.as_deref())
     }
 
@@ -511,6 +519,11 @@ impl KittenEngine {
 }
 
 impl Engine for KittenEngine {
+    /// Kitten-TTS 2 runs on the CPU or CUDA, and takes no instruction, steering or speaker, and exports nothing to
+    /// hooks.
+    fn capabilities(&self) -> ggtts_core::capabilities::Capabilities {
+        ggtts_core::capabilities::Capabilities::of("kitten-tts-2").expect("kitten-tts-2 is an engine")
+    }
     fn info(&self) -> &EngineInfo {
         &self.info
     }

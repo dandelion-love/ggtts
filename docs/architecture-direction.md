@@ -20,9 +20,9 @@ The shared surface has two public pieces in `ggtts-core::pipeline`:
 **Checkable form.** Nothing outside `ggtts-core::pipeline`, the engine crates' libraries and tests calls
 `Engine::generate`, `generate_traced`, `generate_hooked` or `decode` to render for a user. An engine that wraps another
 engine and delegates to it (inside an `impl Engine` block) is not a render. A grep test in the conformance test
-([#275](https://github.com/dandelion-love/ggtts/issues/275)) enforces it, with every exception named in the test. On
-`rc` today it would flag both divergences named below (`ggtts-render --text` and `ggtts-book`'s `render_chunk`), and
-`ggtts_core::trace::replay`.
+([#275](https://github.com/dandelion-love/ggtts/issues/275)) enforces it, with every exception named in the test. Before
+[#278](https://github.com/dandelion-love/ggtts/issues/278) and #279 it would have flagged `ggtts-render --text` and
+`ggtts-book`'s `render_chunk`; with them it flags `ggtts-kitten render` and `ggtts_core::trace::replay`.
 
 Why: until now each capability was added to each front end separately, so each front end carries a different subset.
 `ggtts-book` has no style instruction, no steering, no trace and no instruments; the bindings have no steering and no
@@ -46,7 +46,7 @@ A **front end** is anything a person or a program renders through:
 |---|---|---|
 | `ggtts-render --story` | `crates/ggtts-cli` | `render_plan`, with its stream mode as the output |
 | `ggtts-render --text` | `crates/ggtts-cli` | `render_plan` on a one-chunk plan at `Given(seed)`, with no redraw, no trim and no level ([#278](https://github.com/dandelion-love/ggtts/issues/278)) |
-| `ggtts-book render` | `crates/ggtts-book`, on `track/epub` | its own `render_chunk`: `engine.generate` at draw 0, no judge |
+| `ggtts-book render` | `crates/ggtts-book` | the core `render_chunk` per chunk with the shared judge, redrawing a rejected chunk up to `--redraw` ([#305](https://github.com/dandelion-love/ggtts/issues/305)), its flags read by the shared options parser ([#279](https://github.com/dandelion-love/ggtts/issues/279)) |
 | C ABI (`libggtts_ffi`, `ggtts.h`) | `crates/ggtts-ffi` | `render_story`, `render_story_streamed` |
 | Kotlin (`ggtts.Ggtts`, over JNI) | `android/ggtts`, `crates/ggtts-ffi/src/jni.rs` | the C ABI |
 | Python (`import ggtts`) | `crates/ggtts-py` | `render_story`, `render_story_streamed`, through the engine glue it shares with the C ABI (`ggtts_load::binding`, [#281](https://github.com/dandelion-love/ggtts/issues/281)) |
@@ -73,15 +73,16 @@ fixed means the front end hard-codes one value, and `?` is not confirmed from th
 | device | Y | Y | Y | Y (settings v3) | N (documented: CPU only) | Y | N |
 | threads | Y | Y | Y | Y | Y | Y | Y |
 | seed | N: ignored ([#215](https://github.com/dandelion-love/ggtts/issues/215)) | Y: the sampler seed | own: `--seed-root` | Y: as the story's seed salt | as C | as C | as C |
-| style instruction | Y | Y | N: hard-coded `None` ([#262](https://github.com/dandelion-love/ggtts/issues/262)) | Y, fixed at load (v2) | Y, at load | Y, at load | N |
-| steering | Y | Y | N: hard-coded `None` | N | N | N | N |
-| redraws, chunk ceiling, sampler | N (profile only) | N | N | N | N | N | N |
+| style instruction | Y | Y | Y (since [#279](https://github.com/dandelion-love/ggtts/issues/279)) | Y, fixed at load (v2) | Y, at load | Y, at load | N |
+| steering | Y | Y | Y (since #279) | N | N | N | N |
+| ASR judge (redraw a chunk that lost or repeated text, `--judge`) | Y ([#306](https://github.com/dandelion-love/ggtts/issues/306)) | refused: one draw | Y (#306) | refused: no redraws yet | refused | refused | refused |
+| redraws, chunk ceiling, sampler | N (profile only) | N | redraws: Y, `--redraw` ([#305](https://github.com/dandelion-love/ggtts/issues/305)); ceiling and sampler N | N | N | N | N |
 | edge trim | Y | N ([#180](https://github.com/dandelion-love/ggtts/issues/180)) | Y | Y | Y | Y | Y |
-| trace and level | Y | qwen3-tts only, the engine's step file; accepted and ignored on kitten-tts-2 and fake | N | N | N | N | N |
+| trace and level | Y | Y (since [#294](https://github.com/dandelion-love/ggtts/issues/294)) | Y (since #279) | N | N | N | N |
 | tensor hooks | N | N | N | N | N | N | N |
-| instruments, report | Y | Y | N | N | N | N | N |
+| instruments, report | Y | Y | Y, per chapter written ([#295](https://github.com/dandelion-love/ggtts/issues/295)) | N | N | N | N |
 | timing and duration reports, log settings | Y | Y | N | N | N | N | ? |
-| stream | Y: levelled by default, `--stream-raw` | one unlevelled piece; `--stream-raw` and `--stream-level-seconds` accepted and ignored | N | Y: unlevelled pieces only | as C | as C | as C |
+| stream | Y: levelled by default, `--stream-raw` | Y: levelled by default, `--stream-raw` (since #294) | N | Y: unlevelled pieces only | as C | as C | as C |
 | output | FLAC, WAV or s16le stream | same | FLAC per chapter, export | PCM | PCM | PCM, FLAC | played, saved |
 | speech rate and pitch (Android `SynthesisRequest`) | n/a | n/a | n/a | n/a | n/a | n/a | ignored silently |
 
@@ -93,8 +94,8 @@ What the table shows beyond missing cells:
   binding streams the pieces before the level step. Since [#276](https://github.com/dandelion-love/ggtts/issues/276)
   the pipeline applies the levelled stream (`Output::Stream` with `StreamMode::Levelled`), so a binding can have it;
   the bindings still ask for `Raw`.
-* **Options are accepted and dropped.** `--text` takes `--trace` on engines that write nothing, and the stream
-  levelling flags, without effect.
+* **Options were accepted and dropped.** Until [#294](https://github.com/dandelion-love/ggtts/issues/294), `--text`
+  took `--trace` on engines that wrote nothing, and the stream levelling flags, without effect. It now carries them.
 
 **The render entry points.** Since [#276](https://github.com/dandelion-love/ggtts/issues/276), `ggtts-core` has one:
 `render_plan(engine, chunks, seeds, judge, opts, observers, output)` (`crates/ggtts-core/src/pipeline.rs`), with any
@@ -103,9 +104,10 @@ the public step `render_chunk` per chunk (draws at a caller's `SeedSource`, a pl
 join, output and level. `render_story`, `render_story_traced`, `render_story_hooked` and `render_story_streamed` are
 wrappers over it. Before #276 they shared a private loop but each fixed its observers and output, so a caller could
 not have hooks and a stream together. `ggtts-render --text` renders through `render_plan` too since
-[#278](https://github.com/dandelion-love/ggtts/issues/278), with `RenderOptions::trim` and `RenderOptions::level` off.
-The paths that still diverge are outside them: `ggtts-book`'s `render_chunk` (moved onto the core step by
-[#279](https://github.com/dandelion-love/ggtts/issues/279)) and `ggtts-kitten render` each call the engine directly.
+[#278](https://github.com/dandelion-love/ggtts/issues/278), with `RenderOptions::trim` and `RenderOptions::level` off,
+and `ggtts-book` renders each chunk through `render_chunk` since
+[#279](https://github.com/dandelion-love/ggtts/issues/279). The path that still diverges is outside them:
+`ggtts-kitten render` calls the engine directly.
 
 ## What every epic and story states
 
@@ -117,7 +119,8 @@ An epic or story that adds or exposes a capability says, in its acceptance crite
 2. **How each front end gets it or refuses it**: one line per front end in the table above. "Carried through the
    options value" or "refused: reason" are the only answers; "not yet" is a gap and is listed as one. The expected
    answers for the bindings: the trace is carried by the desktop bindings (C ABI, Python) and refused on Android;
-   instruments are refused by every binding (they are out-of-process programs the CLI runs on a finished file).
+   instruments are refused by every binding (they are programs run on a finished file; run them with
+   `ggtts-render` or on the file).
 3. **The conformance test that would catch a front end without it**: the case in the conformance test, and a planted
    front end that drops the option and turns it red.
 4. **No per-front-end wiring.** A flag, a binding parameter, a struct field or an environment variable that exposes a
@@ -134,8 +137,9 @@ a capability. Adding the option to the binding is.
 
 An environment variable that changes or observes a render is a spelling of an option, like a flag: it is a column in
 the schema's table, read by the one parser, and recorded in provenance like any other option. That covers
-`GGTTS_LOG_LEVEL`, `GGTTS_LOG_FORMAT` and `GGTTS_CACHE_DIR` today, which become table entries in
-[#274](https://github.com/dandelion-love/ggtts/issues/274).
+`GGTTS_LOG_LEVEL`, `GGTTS_LOG_FORMAT` and `GGTTS_CACHE_DIR` today, which became table entries in
+[#274](https://github.com/dandelion-love/ggtts/issues/274). `ggtts-render` reads all three through the table since
+[#289](https://github.com/dandelion-love/ggtts/issues/289).
 
 Until #274 lands, a new variable of this kind is allowed only with a filed issue that moves it into the table once the
 table exists, linked from the pull request. The reason: the alternative, holding a diagnostic switch on an engine

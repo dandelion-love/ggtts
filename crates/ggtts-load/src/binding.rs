@@ -17,10 +17,21 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, TryLockError};
 
-use ggtts_core::engine::{refuse_instruction, ChunkRequest, Engine};
-use ggtts_core::pipeline::{plan_story, render_story, render_story_streamed, RenderError, RenderOptions};
-use ggtts_core::trace::NullEvents;
+use ggtts_core::capabilities::Capabilities;
+use ggtts_core::engine::Engine;
+use ggtts_core::hooks::Hooks;
+use ggtts_core::options::{self, Options};
+use ggtts_core::pipeline::{
+    plan_story, render_plan, render_story, render_story_streamed, DurationJudge, Observers, Output, RenderError,
+    RenderOptions, StorySeeds, StreamMode, StreamPiece,
+};
+use ggtts_core::trace::{emit_header, Events, Header, JsonlEvents, NullEvents};
 use ggtts_models::{Cache, Fetch, ModelFile};
+
+// The GGUF header reader `ggtts-render` and the C-ABI use to pick the engine for `"engine": "auto"`.
+#[path = "../../ggtts-cli/src/gguf_arch.rs"]
+#[allow(dead_code)]
+mod gguf_arch;
 
 /// The codes, the C-ABI's (`ggtts.h`): success.
 pub const OK: i32 = 0;
@@ -44,6 +55,9 @@ pub type Fail = (i32, String);
 /// a render is the same in every binding at the same seed.
 pub const STORY: &str = "ggtts-binding";
 
+/// The story seed's salt a binding render uses when given none (Python's and Kotlin's `DEFAULT_SEED`).
+pub const DEFAULT_SEED: u64 = 20260905;
+
 /// The CPU threads a load uses when given 0 or less.
 pub const DEFAULT_THREADS: i32 = 4;
 
@@ -51,6 +65,49 @@ const STOPPED: &str = "stopped by the callback";
 
 fn arg_err(msg: impl Into<String>) -> Fail {
     (ERR_ARG, msg.into())
+}
+
+thread_local! {
+    /// The schema key of the last refusal of one option on this thread ([`refusal_err`]), until taken.
+    static REFUSED_KEY: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A refusal of the one option `key`, as [`ERR_ARG`] with `msg`; the key is kept for [`take_refused_key`].
+fn key_err(key: &str, msg: impl Into<String>) -> Fail {
+    REFUSED_KEY.with(|k| *k.borrow_mut() = Some(key.to_string()));
+    arg_err(msg)
+}
+
+/// An options refusal ([`options::Refusal`]) as [`ERR_ARG`], its message as every front end shows it and its schema key kept
+/// for [`take_refused_key`].
+pub fn refusal_err(r: options::Refusal) -> Fail {
+    key_err(&r.key, r.to_string())
+}
+
+/// The schema key of the last refusal of one option on this thread, cleared by the taking: a front end clears it before
+/// a call and takes it after one that failed with [`ERR_ARG`], so it never reports a key an earlier call left.
+pub fn take_refused_key() -> Option<String> {
+    REFUSED_KEY.with(|k| k.borrow_mut().take())
+}
+
+/// The schema key a failed call refused: the key of the refusal of one option ([`refusal_err`]) when the call failed
+/// with [`ERR_ARG`] and its message is that refusal's (`"key: ..."`), else `None`. The message check keeps a key
+/// recorded by a refusal the call recovered from off a later, unrelated argument error. `$` (a document that is not
+/// JSON, or not an object) is the whole document, not one option, so it is `None` too.
+pub fn refused_key(code: i32, msg: &str, key: Option<String>) -> Option<String> {
+    key.filter(|k| code == ERR_ARG && !k.is_empty() && k != "$" && msg.starts_with(&format!("{k}: ")))
+}
+
+/// [`guard`] that also gives the schema key a failure refused ([`refused_key`]): the key is cleared before `f` runs
+/// and taken after, on this thread, so it is never one an earlier call left.
+pub fn guard_keyed<T>(f: impl FnOnce() -> Result<T, Fail>) -> Result<T, (Fail, Option<String>)> {
+    take_refused_key();
+    let result = guard(f);
+    let key = take_refused_key();
+    result.map_err(|(code, msg)| {
+        let key = refused_key(code, &msg, key);
+        ((code, msg), key)
+    })
 }
 
 fn engine_err(msg: impl Into<String>) -> Fail {
@@ -263,24 +320,265 @@ pub fn render_stream(
         .map_err(render_error)
 }
 
-/// The engines other than Qwen3-TTS take neither a speaker nor an instruction, and refuse one before any file is read,
-/// rather than ignore it. Both are [`ERR_ARG`], an argument the engine does not take; an instruction carries the
-/// library's own message for an engine that takes none.
-pub fn refuse_settings(engine: &str, speaker: Option<&str>, instruction: Option<&str>) -> Result<(), Fail> {
-    if speaker.is_some() {
-        return Err(arg_err(format!(
-            "a speaker is only supported by the qwen3-tts engine, not {engine}"
-        )));
-    }
-    let req = ChunkRequest {
-        text: "",
-        seed: 0,
-        chunk: 0,
-        draw: 0,
-        instruction,
-        steer: None,
+// ── options documents ──
+
+/// Why a binding refuses the option `key` in a document, or `None` when it takes it: in a load document (`at_load`)
+/// the load section and the render defaults; in a render document the render, the trace and the stream.
+pub fn document_refusal(key: &str, at_load: bool) -> Option<&'static str> {
+    let (section, name) = key.split_once('.').unwrap_or((key, ""));
+    let why = match (section, name) {
+        ("load", "kitten_full_head") => {
+            "the kitten-tts-2 engine reads GGTTS_KITTEN_FULL_HEAD=1 from the environment itself: a binding takes no \
+             option for it"
+        }
+        ("load", _) if at_load => return None,
+        ("load", _) => "a load option: it is fixed when the engine loads, so give it in the load document",
+        ("render", "text" | "story") => "the text is the render's own argument",
+        ("render", "seed") => "a binding's seed is the story seed's salt: give render.seed_salt",
+        ("render", "measure_timings") | ("observe", "timing_report" | "duration_report") => {
+            "a binding returns the samples, not timings or reports"
+        }
+        ("observe", "log_level" | "log_format") => "a binding writes no log: its errors are its codes and messages",
+        ("observe", "trace" | "trace_level") if at_load => "a trace is per render: give it in the render document",
+        ("observe", "trace" | "trace_level") => return None,
+        ("observe", _) => "instruments are out-of-process programs the CLI runs on a finished file",
+        ("output", "out" | "stream_format") => "a binding hands the PCM to its caller and writes no file",
+        ("output", "stream" | "stream_raw" | "stream_level_seconds") if at_load => {
+            "a stream is per render: give it in the render document"
+        }
+        ("output", "stream" | "stream_raw" | "stream_level_seconds") => return None,
+        ("book", _) => "ggtts-book's own options",
+        ("render", "judge") => {
+            "the ASR judge starts a Python process beside the render: judge with ggtts-render --story or ggtts-book"
+        }
+        ("render", _) => return None,
+        _ => "not an option of a binding",
     };
-    refuse_instruction(&req, engine).map_err(|e| arg_err(e.0))
+    Some(why)
+}
+
+/// Refuses an option a binding does not take in this document ([`document_refusal`]), a stream other than
+/// `"levelled"` or `"raw"`, and a level hold on a raw stream, as [`ERR_ARG`] naming the option.
+pub fn check_document(o: &Options, at_load: bool) -> Result<(), Fail> {
+    for key in o.marks.sources.keys() {
+        if let Some(why) = document_refusal(key, at_load) {
+            return Err(key_err(key, format!("{key}: {why}")));
+        }
+    }
+    match o.output.stream.as_deref() {
+        None | Some("raw" | "levelled") => {}
+        Some(other) => {
+            return Err(key_err(
+                "output.stream",
+                format!(
+                    "output.stream: a binding streams to its callback: \"levelled\" (the default) levels the pieces \
+                     as ggtts-render --stream does, \"raw\" hands them over before the level step; not {other:?}"
+                ),
+            ))
+        }
+    }
+    if o.output.stream_level_seconds.is_some() && matches!(stream_mode(o), StreamMode::Raw) {
+        return Err(key_err(
+            "output.stream_level_seconds",
+            "output.stream_level_seconds: a raw stream has no level step to hold",
+        ));
+    }
+    Ok(())
+}
+
+/// The stream a binding's document asks for, as `ggtts-render --stream` reads its flags: the pieces before the level
+/// step when `output.stream` is `"raw"` or `output.stream_raw` is set, else levelled with one gain from the first
+/// `output.stream_level_seconds` ([`ggtts_core::stream::DEFAULT_HOLD_S`] when not given). The pipeline applies it
+/// ([`render_plan`]'s [`Output::Stream`]); no front end levels a stream itself.
+pub fn stream_mode(o: &Options) -> StreamMode {
+    if o.output.stream.as_deref() == Some("raw") || o.output.stream_raw {
+        StreamMode::Raw
+    } else {
+        StreamMode::Levelled {
+            hold_s: o
+                .output
+                .stream_level_seconds
+                .unwrap_or(ggtts_core::stream::DEFAULT_HOLD_S),
+        }
+    }
+}
+
+/// Refuses a value a binding was given twice, once as its own argument and once in its options document, naming
+/// both: each `(argument, key)` pair whose argument was given and whose key the document `o` gives. Neither wins
+/// over the other, so the caller says which it meant.
+pub fn refuse_given_twice(o: &Options, given: &[(&str, &str)]) -> Result<(), Fail> {
+    for (argument, key) in given {
+        if o.marks.sources.contains_key(*key) {
+            return Err(refusal_err(options::Refusal {
+                key: (*key).to_string(),
+                message: format!("given twice, as the argument {argument} and in the options document: give it once"),
+            }));
+        }
+    }
+    Ok(())
+}
+
+/// The engine a load document names: `auto` is the model file's GGUF architecture, or `qwen3-tts` when it gives no
+/// model, as `ggtts-render` resolves it.
+pub fn document_engine(o: &Options) -> Result<String, Fail> {
+    match (o.load.engine.as_str(), &o.load.model) {
+        ("auto", Some(m)) => {
+            gguf_arch::architecture(m).map_err(|e| engine_err(format!("load.model {}: {e}", m.display())))
+        }
+        ("auto", None) => Ok("qwen3-tts".to_string()),
+        (e, _) => Ok(e.to_string()),
+    }
+}
+
+/// The render defaults a load document gives: its render section, marked as given where the document gave it, so a
+/// render document laid over them ([`layer_render`]) replaces only what it gives itself.
+pub fn render_defaults(o: &Options) -> Options {
+    let mut kept = Options {
+        render: o.render.clone(),
+        ..Options::default()
+    };
+    kept.marks.sources = o
+        .marks
+        .sources
+        .iter()
+        .filter(|(k, _)| k.starts_with("render."))
+        .map(|(k, s)| (k.clone(), *s))
+        .collect();
+    kept
+}
+
+/// A render document laid over a load's render defaults ([`render_defaults`]): what the document gives wins.
+pub fn layer_render(defaults: &Options, doc: Options) -> Result<Options, Fail> {
+    defaults.clone().layer(doc).map_err(refusal_err)
+}
+
+/// A binding's render call as a render document: `options` (JSON; `None` is the empty document) read and checked
+/// ([`check_document`]), the call's own `seed` as its `render.seed_salt` (refused when the document gives the salt
+/// too, naming both), and `stream` deciding the stream: a stream call with a document streams as the document says,
+/// levelled by default ([`stream_mode`]); a stream call with no document is the old call, the pieces before the
+/// level step; a whole-read call refuses `output.stream`. The load's render defaults are not laid under it here.
+pub fn render_request(options: Option<&str>, seed: Option<u64>, stream: bool) -> Result<Options, Fail> {
+    let mut doc = match options {
+        Some(json) => Options::from_render_json(json).map_err(refusal_err)?,
+        None => Options::default(),
+    };
+    check_document(&doc, false)?;
+    if let Some(seed) = seed {
+        refuse_given_twice(&doc, &[("seed", "render.seed_salt")])?;
+        doc.render.seed_salt = Some(seed.to_string());
+        doc.marks
+            .sources
+            .insert("render.seed_salt".into(), options::Source::Document);
+    }
+    match (stream, doc.output.stream.is_some()) {
+        (false, true) => {
+            return Err(key_err(
+                "output.stream",
+                "output.stream: this call returns the whole read: stream with the binding's stream call",
+            ))
+        }
+        (true, false) => {
+            let mode = if options.is_none() { "raw" } else { "levelled" };
+            doc.output.stream = Some(mode.into());
+            doc.marks
+                .sources
+                .insert("output.stream".into(), options::Source::Document);
+        }
+        _ => {}
+    }
+    Ok(doc)
+}
+
+/// A stream's callback: a piece's samples and its rate; false stops the render.
+pub type PieceSink<'a> = &'a mut dyn FnMut(&[f32], u32) -> bool;
+
+/// Render `text` with an options value: the whole read, or, with `on_piece`, each kept chunk handed to it as the
+/// document's stream mode says ([`stream_mode`]: levelled unless it asks for the pieces before the level step;
+/// returning false stops the render with [`ERR_STOPPED`]); the whole read's samples and rate either way.
+/// An option the engine does not support is refused ([`options::check`]) as [`ERR_ARG`] before anything is
+/// rendered, and so is steering it cannot read. `observe.trace` writes the event stream, as `ggtts-render` does.
+/// With only `render.seed_salt` and `render.instruction` set, this is [`render`] (and with `on_piece` and
+/// `output.stream` `"raw"`, [`render_stream`]) sample for sample.
+pub fn render_document(
+    engine: &mut dyn Engine,
+    text: &str,
+    options: &Options,
+    on_piece: Option<PieceSink<'_>>,
+) -> Result<(Vec<f32>, u32), Fail> {
+    let chunks = plan(engine, text)?;
+    let mut o = options::check(options, &engine.capabilities())
+        .map_err(refusal_err)?
+        .options;
+    o.read_steering().map_err(refusal_err)?;
+    let opts = o.render_options(engine.profile()).map_err(refusal_err)?;
+    let level = o.observe.trace_level.unwrap_or(1);
+    let mut trace = match &o.observe.trace {
+        Some(path) => Some(JsonlEvents::new(
+            std::fs::File::create(path).map_err(|e| arg_err(format!("observe.trace {}: {e}", path.display())))?,
+            level,
+        )),
+        None => None,
+    };
+    let mut null = NullEvents;
+    let events: &mut dyn Events = match trace.as_mut() {
+        Some(w) => w,
+        None => &mut null,
+    };
+    if events.level() > 0 {
+        let mut header = Header::for_engine(engine, level);
+        header.set_reported(&options::record(&o, engine.info()));
+        emit_header(events, &header);
+    }
+    let mut hooks = Hooks::new();
+    let mut obs = Observers::new(events, &mut hooks);
+    let seeds = StorySeeds {
+        story_id: STORY,
+        salt: &opts.seed_salt,
+    };
+    let read = match on_piece {
+        None => render_plan(
+            engine,
+            &chunks,
+            &seeds,
+            &mut DurationJudge,
+            &opts,
+            &mut obs,
+            Output::Whole,
+        ),
+        Some(f) => {
+            let mut sink = |p: StreamPiece<'_>| {
+                if f(p.samples, p.sample_rate) {
+                    Ok(())
+                } else {
+                    Err(STOPPED.to_string())
+                }
+            };
+            let output = Output::Stream {
+                sink: &mut sink,
+                level: stream_mode(&o),
+            };
+            render_plan(engine, &chunks, &seeds, &mut DurationJudge, &opts, &mut obs, output)
+        }
+    }
+    .map_err(render_error)?;
+    if let Some(w) = trace {
+        w.finish_with_stats()
+            .map_err(|e| engine_err(format!("observe.trace: {e}")))?;
+    }
+    Ok((read.samples, read.sample_rate))
+}
+
+/// A speaker or an instruction the engine does not take is refused before any file is read, rather than ignored, as
+/// [`ERR_ARG`], with [`options::check`]'s refusal: the words `ggtts-render` shows for the same option and engine. An
+/// engine name the library does not know is left to the load, which names it.
+pub fn refuse_settings(engine: &str, speaker: Option<&str>, instruction: Option<&str>) -> Result<(), Fail> {
+    let Some(caps) = Capabilities::of(engine) else {
+        return Ok(());
+    };
+    let mut o = Options::default();
+    o.load.speaker = speaker.map(str::to_string);
+    o.render.instruction = instruction.map(str::to_string);
+    options::check(&o, &caps).map(|_| ()).map_err(refusal_err)
 }
 
 /// The order a load checks the model files given as paths.

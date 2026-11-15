@@ -101,6 +101,16 @@
             "engine"
           ]
         },
+        "kitten_full_head": {
+          "default": false,
+          "description": "Kitten-TTS 2 only: compute the whole output head, not only the rows a step can sample at the default sampler settings. A diagnostic; the bindings' engine reads GGTTS_KITTEN_FULL_HEAD=1 itself.",
+          "type": "boolean",
+          "x-ggtts-env": "GGTTS_KITTEN_FULL_HEAD",
+          "x-ggtts-flags": [
+            "--kitten-full-head"
+          ],
+          "x-ggtts-phase": "load"
+        },
         "model": {
           "description": "The model GGUF (Qwen3-TTS: the talker; Kitten-TTS 2: the LM); unset is the engine's pinned default.",
           "minLength": 1,
@@ -388,10 +398,11 @@
           "x-ggtts-phase": "render"
         },
         "stream_format": {
-          "description": "wav (plays as it arrives) or s16le after a one-line header; unset is wav.",
+          "description": "wav (plays as it arrives) or s16le after a one-line header (raw is s16le too); unset is wav.",
           "enum": [
             "wav",
-            "s16le"
+            "s16le",
+            "raw"
           ],
           "x-ggtts-flags": [
             "--stream-format"
@@ -453,6 +464,15 @@
             "instruction"
           ]
         },
+        "judge": {
+          "description": "An ASR that reads each draw back; a draw that lost or repeated a run of its text is redrawn: asr-qwen,model=DIR[,device=cpu|cuda][,min_run=N]. Needs --redraw. Unset: the duration judge alone.",
+          "pattern": "\\S",
+          "type": "string",
+          "x-ggtts-flags": [
+            "--judge"
+          ],
+          "x-ggtts-phase": "render"
+        },
         "measure_timings": {
           "default": false,
           "description": "Collect wall-clock stage durations; also on whenever observe.timing_report is given.",
@@ -464,6 +484,9 @@
           "maximum": 4294967295,
           "minimum": 0,
           "type": "integer",
+          "x-ggtts-flags": [
+            "--redraw"
+          ],
           "x-ggtts-phase": "render"
         },
         "seed": {

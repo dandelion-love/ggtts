@@ -231,11 +231,20 @@ fn the_header_reads_the_same_with_lf_and_crlf_endings() {
 }
 
 #[test]
-fn the_abi_version_is_3_in_the_library_and_the_header() {
-    assert_eq!(ggtts_abi_version(), 3);
-    assert_eq!(GGTTS_ABI_VERSION, 3);
+fn the_abi_version_is_5_in_the_library_and_the_header() {
+    assert_eq!(ggtts_abi_version(), 5);
+    assert_eq!(GGTTS_ABI_VERSION, 5);
     let header = include_str!("../include/ggtts.h");
-    assert_eq!(header_version(header), Some(3), "the header's version");
+    assert_eq!(header_version(header), Some(5), "the header's version");
+    // Version 5's functions are declared as the library exports them.
+    for decl in [
+        "const char *ggtts_options_schema(void);",
+        "int32_t ggtts_capabilities(uint64_t handle, char **json);",
+        "void ggtts_string_free(char *s);",
+        "const char *ggtts_last_error_key(void);",
+    ] {
+        assert!(header_lines(header).contains(&decl), "the header declares {decl}");
+    }
     // The header's struct is the library's: version 2's three fields, size first, then version 3's.
     let joined = header_lines(header).join("\n");
     assert!(
@@ -428,7 +437,7 @@ fn a_refused_setting_is_a_code_and_a_message_and_no_handle() {
     assert_eq!((code, h), (GGTTS_ERR_ARG, 0));
     assert_eq!(
         last_error(),
-        "a speaker is only supported by the qwen3-tts engine, not fake"
+        "load.speaker: a speaker is only supported by the qwen3-tts engine, not fake"
     );
 
     // Both settings on another engine are the same code: an argument that engine does not take.

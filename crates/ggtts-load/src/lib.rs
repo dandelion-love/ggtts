@@ -147,8 +147,10 @@ fn load_model_engine(req: &Request) -> Result<Box<dyn Engine>, String> {
                 "cpu" => ggtts_kitten::backend::Device::Cpu,
                 other => return Err(format!("--device must be cpu or cuda, not {other}")),
             };
-            ggtts_kitten::engine::KittenEngine::open(model, codec, voice, threads as usize, device)
-                .map(|e| Box::new(e) as Box<dyn Engine>)
+            ggtts_kitten::engine::KittenEngine::open(model, codec, voice, threads as usize, device).map(|mut e| {
+                e.full_head = req.kitten_full_head;
+                Box::new(e) as Box<dyn Engine>
+            })
         }
         other => Err(format!("unknown engine {other:?}")),
     }

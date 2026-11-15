@@ -13,8 +13,9 @@
 //! value always wins over the environment ([`Options::layer`]).
 //!
 //! [`Options::render_options`] turns the render section into the pipeline's [`RenderOptions`], and [`record`] writes
-//! the provenance record. No front end uses this module yet. `docs/options.md` describes the sections, the phases, the
-//! seed keys and the environment rule.
+//! the provenance record; [`reported`] is the part of it every report carries. `ggtts-render` reads its command line
+//! and environment through this module, and `ggtts-book` its command line. `docs/options.md` describes the sections,
+//! the phases, the seed keys and the environment rule.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -22,6 +23,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::capabilities::Capabilities;
 use crate::engine::EngineInfo;
 use crate::pipeline::RenderOptions;
 use crate::profile::Profile;
@@ -274,6 +276,13 @@ pub const TABLE: &[Descriptor] = &[
         help: "The root of the default model files' cache; unset is the platform's per-user cache.",
         ..row("cache_dir", SL, L, path(), "null")
     },
+    Descriptor {
+        flags: &["--kitten-full-head"],
+        env: Some("GGTTS_KITTEN_FULL_HEAD"),
+        help: "Kitten-TTS 2 only: compute the whole output head, not only the rows a step can sample at the default \
+               sampler settings. A diagnostic; the bindings' engine reads GGTTS_KITTEN_FULL_HEAD=1 itself.",
+        ..row("kitten_full_head", SL, L, Kind::Bool, "false")
+    },
     // ── render ──
     Descriptor {
         flags: &["--text", "-t"],
@@ -326,6 +335,7 @@ pub const TABLE: &[Descriptor] = &[
         ..row("steer_layers", SR, R, Kind::Layers, "null")
     },
     Descriptor {
+        flags: &["--redraw"],
         help: "Redraws allowed for a chunk the judge rejects; unset is the engine profile's.",
         ..row(
             "redraw",
@@ -337,6 +347,12 @@ pub const TABLE: &[Descriptor] = &[
             },
             "null",
         )
+    },
+    Descriptor {
+        flags: &["--judge"],
+        help: "An ASR that reads each draw back; a draw that lost or repeated a run of its text is redrawn: \
+               asr-qwen,model=DIR[,device=cpu|cuda][,min_run=N]. Needs --redraw. Unset: the duration judge alone.",
+        ..row("judge", SR, R, named(), "null")
     },
     Descriptor {
         help: "Seconds of silence kept at each edge of a chunk; unset is the engine profile's.",
@@ -452,8 +468,8 @@ pub const TABLE: &[Descriptor] = &[
     Descriptor {
         flags: &["--stream-format"],
         requires: Some("stream"),
-        help: "wav (plays as it arrives) or s16le after a one-line header; unset is wav.",
-        ..row("stream_format", SU, R, Kind::Choice(&["wav", "s16le"]), "null")
+        help: "wav (plays as it arrives) or s16le after a one-line header (raw is s16le too); unset is wav.",
+        ..row("stream_format", SU, R, Kind::Choice(&["wav", "s16le", "raw"]), "null")
     },
     Descriptor {
         flags: &["--stream-raw"],
@@ -488,6 +504,34 @@ pub fn descriptor(key: &str) -> Option<&'static Descriptor> {
 
 fn by_flag(flag: &str) -> Option<&'static Descriptor> {
     TABLE.iter().find(|d| d.flags.contains(&flag))
+}
+
+/// One command-line argument as the flag parser reads it: the flag as given, its row (`None` for a spelling the table
+/// does not have), and its value as given (`None` for a boolean, for a flag the table does not have, and for a value
+/// missing at the end).
+#[derive(Debug, Clone, Copy)]
+pub struct Arg<'a> {
+    pub flag: &'a str,
+    pub row: Option<&'static Descriptor>,
+    pub value: Option<&'a str>,
+}
+
+/// The arguments as [`Options::from_args`] walks them, checking nothing: a row's flag takes the next argument as its
+/// value unless the row is a boolean, and a flag the table does not have takes none. A front end reads it to find what
+/// a refused command line asked for (the log format to report the refusal in, the value it refused), never to accept
+/// a flag.
+pub fn walk_args(args: &[String]) -> Vec<Arg<'_>> {
+    let mut out = Vec::new();
+    let mut it = args.iter();
+    while let Some(flag) = it.next() {
+        let row = by_flag(flag);
+        let value = match row {
+            Some(d) if d.kind != Kind::Bool => it.next().map(String::as_str),
+            _ => None,
+        };
+        out.push(Arg { flag, row, value });
+    }
+    out
 }
 
 fn in_section(section: Section, name: &str) -> Option<&'static Descriptor> {
@@ -527,6 +571,9 @@ pub struct Load {
     /// The root of the default model files' cache; the per-user cache when not given.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_dir: Option<PathBuf>,
+    /// Kitten-TTS 2 computes its whole output head (`GGTTS_KITTEN_FULL_HEAD`).
+    #[serde(skip_serializing_if = "is_false")]
+    pub kitten_full_head: bool,
 }
 
 impl Default for Load {
@@ -541,6 +588,7 @@ impl Default for Load {
             threads: None,
             offline: false,
             cache_dir: None,
+            kitten_full_head: false,
         }
     }
 }
@@ -569,6 +617,9 @@ pub struct Render {
     pub steer_layers: Option<Vec<u32>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redraw: Option<u32>,
+    /// The ASR judge's spec (`ggtts_instruments::judge`); unset is the duration judge alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judge: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edge_s: Option<f64>,
     #[serde(skip_serializing_if = "is_false")]
@@ -873,15 +924,12 @@ impl Options {
     /// have is refused under its own spelling. A list flag may be repeated; any other given twice keeps the last.
     pub fn from_args(args: &[String]) -> Result<Self, Refusal> {
         let mut doc = Map::new();
-        let mut it = args.iter();
-        while let Some(flag) = it.next() {
-            let d = by_flag(flag).ok_or_else(|| Refusal::new(flag.clone(), "is not an option"))?;
+        for Arg { flag, row, value } in walk_args(args) {
+            let d = row.ok_or_else(|| Refusal::new(flag, "is not an option"))?;
             let value = if d.kind == Kind::Bool {
                 Value::Bool(true)
             } else {
-                let text = it
-                    .next()
-                    .ok_or_else(|| Refusal::new(d.key(), format!("{flag} needs a value")))?;
+                let text = value.ok_or_else(|| Refusal::new(d.key(), format!("{flag} needs a value")))?;
                 from_text(d, text)?
             };
             let section = doc
@@ -1047,10 +1095,80 @@ impl Options {
     }
 }
 
+/// An options value an engine has been checked against ([`check`]): the value to render with, and the warning line
+/// for each environment value the engine has no use for, which the value lists in its record as ignored.
+#[derive(Debug, Clone)]
+pub struct Checked {
+    pub options: Options,
+    pub warnings: Vec<String>,
+}
+
+/// The options of `o` the engine `caps` describes does not support, by schema key, in table order: a non-empty
+/// instruction, steering, a speaker, and a device it does not run on.
+fn lacking(o: &Options, caps: &Capabilities) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if o.load.speaker.is_some() && !caps.speakers {
+        out.push("load.speaker");
+    }
+    if o.load.device.as_deref().is_some_and(|d| !caps.devices.contains(&d)) {
+        out.push("load.device");
+    }
+    if o.render.instruction.as_deref().is_some_and(|i| !i.is_empty()) && !caps.instruction {
+        out.push("render.instruction");
+    }
+    if o.render.steer.is_some() && !caps.steering {
+        out.push("render.steer");
+    }
+    if o.load.kitten_full_head && !caps.full_head {
+        out.push("load.kitten_full_head");
+    }
+    out
+}
+
+/// Checks `options` against what an engine supports (`caps`), before anything is loaded or rendered. An option the
+/// engine does not support is refused with [`Capabilities::refusal`], under its schema key, when it was asked for: by
+/// a flag, in a document, or set by the caller. One that came only from the environment is ambient: it is reset, one
+/// warning line names its variable, and the record lists it as ignored.
+pub fn check(options: &Options, caps: &Capabilities) -> Result<Checked, Refusal> {
+    let mut o = options.clone();
+    let mut warnings = Vec::new();
+    for key in lacking(options, caps) {
+        let d = descriptor(key).expect("a lacking key is a row");
+        if o.marks.sources.get(key) != Some(&Source::Environment) {
+            let value = match key {
+                "load.device" => options.load.device.as_deref(),
+                _ => None,
+            };
+            return Err(caps.refusal(key, value));
+        }
+        // Its variable; a row with no environment spelling cannot be marked so by the parsers, only by a caller.
+        let variable = d.env.unwrap_or("the environment");
+        let mut doc = o.to_json();
+        doc[d.section.name()]
+            .as_object_mut()
+            .expect("a section is an object")
+            .remove(d.name);
+        let mut next: Options = serde_json::from_value(doc).map_err(|e| Refusal::new("$", e.to_string()))?;
+        next.marks = std::mem::take(&mut o.marks);
+        next.render.steering = o.render.steering.take();
+        next.marks.sources.remove(key);
+        next.marks.ignored.push(Ignored {
+            key: key.to_string(),
+            variable: variable.to_string(),
+        });
+        warnings.push(format!(
+            "ggtts: {variable} is set, and the {} engine has no {key}: ignored",
+            caps.family
+        ));
+        o = next;
+    }
+    Ok(Checked { options: o, warnings })
+}
+
 /// The provenance record of a render with `options` on the engine `info` describes: the engine, backend and parity;
 /// the instruction (when not empty) and the steering record, as the trace header and every report write them; the
-/// seed keys given; the speaker given; the device; the trace level (0 untraced); and the environment values the
-/// engine ignored. A steering file not yet read is recorded by its path.
+/// seed keys given; the speaker given; `kitten_full_head` when it is on; the device; the trace level (0 untraced);
+/// and the environment values the engine ignored. A steering file not yet read is recorded by its path.
 pub fn record(options: &Options, info: &EngineInfo) -> Value {
     let mut m = Map::new();
     m.insert("engine".into(), info.family.clone().into());
@@ -1081,6 +1199,9 @@ pub fn record(options: &Options, info: &EngineInfo) -> Value {
     if let Some(speaker) = &options.load.speaker {
         m.insert("speaker".into(), speaker.clone().into());
     }
+    if options.load.kitten_full_head {
+        m.insert("kitten_full_head".into(), true.into());
+    }
     m.insert(
         "device".into(),
         options.load.device.clone().unwrap_or_else(|| "cpu".into()).into(),
@@ -1101,6 +1222,18 @@ pub fn record(options: &Options, info: &EngineInfo) -> Value {
         m.insert("ignored".into(), ignored.into());
     }
     Value::Object(m)
+}
+
+/// The fields of a [`record`] that every `ggtts-render` report (timing, duration, each instrument's inputs) and its
+/// trace header carry beside the model files: what the render was asked to do differently.
+pub const REPORTED: [&str; 3] = ["instruction", "steer", "kitten_full_head"];
+
+/// The [`REPORTED`] fields of `record`, those it has. A report writes these, so it cannot disagree with the record.
+pub fn reported(record: &Value) -> Map<String, Value> {
+    REPORTED
+        .iter()
+        .filter_map(|k| record.get(*k).map(|v| ((*k).to_string(), v.clone())))
+        .collect()
 }
 
 // ── the schema ──

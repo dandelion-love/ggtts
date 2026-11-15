@@ -30,6 +30,8 @@ pyo3 = { version = "0.25.1", features = ["abi3-py39"], optional = true }
 ggtts-fake = { path = "../ggtts-fake" }
 # The error codes are the C-ABI's; a test holds them equal.
 ggtts-ffi = { path = "../ggtts-ffi" }
+# To compare the C-ABI's JSON with the binding's as values.
+serde_json = "1"
 
 [features]
 default = []

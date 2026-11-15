@@ -393,6 +393,7 @@ dependencies = [
  "flate2",
  "ggtts-core",
  "ggtts-fake",
+ "ggtts-instruments",
  "ggtts-load",
  "ggtts-qwen3-tts",
  "quick-xml",
@@ -405,12 +406,15 @@ name = "ggtts-cli"
 version = "0.0.1"
 dependencies = [
  "claxon",
+ "ggtts-book",
  "ggtts-core",
  "ggtts-fake",
+ "ggtts-ffi",
  "ggtts-instruments",
  "ggtts-kitten",
  "ggtts-load",
  "ggtts-models",
+ "ggtts-py",
  "ggtts-qwen3-tts",
  "jsonschema",
  "serde_json",
@@ -521,6 +525,16 @@ dependencies = [
  "serde_json",
  "sha2",
  "ureq",
+]
+
+[[package]]
+name = "ggtts-py"
+version = "0.0.1"
+dependencies = [
+ "ggtts-core",
+ "ggtts-load",
+ "ggtts-models",
+ "ggtts-qwen3-tts",
 ]
 
 [[package]]

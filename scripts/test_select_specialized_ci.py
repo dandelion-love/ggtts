@@ -81,7 +81,8 @@ class SelectionTest(unittest.TestCase):
                   "crates/ggtts-ggml-sys/ggml", "crates/ggtts-ggml-sys/build.rs",
                   "crates/ggtts-instruments/src/runner.rs", "crates/ggtts-cli/tests/no_change_real.rs",
                   "instruments/examples/python/loudness-ends/instrument.py", "scripts/tiny_fixture.sh",
-                  "scripts/cut_tiny_fixture.py", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".gitmodules")
+                  "scripts/cut_tiny_fixture.py", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".gitmodules",
+                  "crates/ggtts-book/tests/steer_tiny.rs")
         for path in engine:
             self.assertTrue(tiny_path(path), path)
             self.assertTrue(tiny_decision("pull_request", "rc", "feature", True, "refs/pull/1/merge",
@@ -90,6 +91,7 @@ class SelectionTest(unittest.TestCase):
             self.assertFalse(tiny_decision("push", "", "", False, "refs/heads/main", [path]), path)
             self.assertFalse(tiny_decision("workflow_dispatch", "rc", "", False, "refs/heads/rc", [path]), path)
         unrelated = ("README.md", "crates/ggtts-qwen3-tts/README.md", "fixtures/tiny/SOURCE",
+                     "crates/ggtts-book/src/render.rs", "crates/ggtts-book/tests/redraw.rs",
                      "crates/ggtts-kitten/src/lib.rs", "crates/ggtts-py/src/core.rs", "android/app/build.gradle",
                      "scripts/android_build.sh", "scripts/rc_gate.py", "docs/tiny.md")
         for path in unrelated:
@@ -300,6 +302,8 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(select(["crates/ggtts-bookish/src/lib.rs"]), set(JOBS))
         # The promotion still runs everything.
         self.assertEqual(decide("pull_request", "main", "rc", True, ["crates/ggtts-book/src/lib.rs"]), set(JOBS))
+        # Except its one ggml-gated file, which selects the ggml job as every gated file does.
+        self.assertEqual(select(["crates/ggtts-book/tests/steer_tiny.rs"]), {"ggml"})
 
     def test_the_loader_crate_selects_the_ggml_job(self):
         # crates/ggtts-load gates its engine code behind `ggml`: only the ggml job compiles and tests it.

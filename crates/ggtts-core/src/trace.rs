@@ -34,7 +34,7 @@ use serde_json::{Map, Value};
 
 use crate::engine::{ChunkRequest, Codes, Engine, EngineError, Stop};
 use crate::hooks::Hooks;
-use crate::pipeline::{render_chunk, DurationJudge, Observers, RenderOptions, SeedSource};
+use crate::pipeline::{render_chunk, Observers, RenderOptions, SeedSource};
 use crate::steer::Steering;
 
 /// The trace format this module writes and reads.
@@ -92,9 +92,20 @@ pub struct Header {
     /// The render's steering, as [`Steering::record`](crate::steer::Steering::record) writes it: the file's sha256,
     /// the layers applied and the scale. Absent from the line for an unsteered render.
     pub steer: Option<Value>,
+    /// Kitten-TTS 2 computed its whole output head (`load.kitten_full_head`). Absent from the line when false.
+    pub kitten_full_head: bool,
 }
 
 impl Header {
+    /// Sets the instruction, the steering and the whole-head switch from a provenance record
+    /// ([`crate::options::record`]): its [`REPORTED`](crate::options::REPORTED) fields, as every report carries them.
+    pub fn set_reported(&mut self, record: &Value) {
+        let reported = crate::options::reported(record);
+        self.instruction = reported.get("instruction").and_then(Value::as_str).map(str::to_string);
+        self.steer = reported.get("steer").cloned();
+        self.kitten_full_head = reported.get("kitten_full_head") == Some(&Value::Bool(true));
+    }
+
     /// A header for `engine` at `trace_level`, including declared measurement semantics.
     pub fn for_engine(engine: &dyn Engine, trace_level: u8) -> Self {
         let info = engine.info();
@@ -114,6 +125,7 @@ impl Header {
             models: Vec::new(),
             instruction: None,
             steer: None,
+            kitten_full_head: false,
         }
     }
 }
@@ -152,6 +164,13 @@ pub enum Event<'a> {
         spc: Option<f64>,
         verdict: Option<&'a str>,
         ms: u64,
+    },
+    /// What the judge read in a draw beyond its verdict ([`crate::pipeline::Judge::take_reading`]): a text judge's
+    /// transcript and counts. Follows the draw's `chunk_end`; only a judge that reads emits it.
+    Read {
+        chunk: u32,
+        draw: u32,
+        reading: &'a Value,
     },
     Trim {
         chunk: u32,
@@ -213,6 +232,9 @@ impl Event<'_> {
                 }
                 put(&mut m, "instruction", h.instruction.clone());
                 put(&mut m, "steer", h.steer.clone());
+                if h.kitten_full_head {
+                    m.insert("kitten_full_head".into(), true.into());
+                }
             }
             Event::ChunkBegin {
                 chunk,
@@ -270,6 +292,16 @@ impl Event<'_> {
                 // The judge's verdict is always known once judged, so a clean draw is an explicit null.
                 m.insert("verdict".into(), verdict.map_or(Value::Null, Value::from));
                 m.insert("ms".into(), (*ms).into());
+            }
+            Event::Read { chunk, draw, reading } => {
+                m.insert("ev".into(), "read".into());
+                m.insert("chunk".into(), (*chunk).into());
+                m.insert("draw".into(), (*draw).into());
+                if let Some(fields) = reading.as_object() {
+                    for (k, v) in fields {
+                        m.insert(k.clone(), v.clone());
+                    }
+                }
             }
             Event::Trim {
                 chunk,
@@ -702,12 +734,20 @@ pub fn replay_steered(
             keep_trim: group.trimmed,
         };
         let mut hooks = Hooks::new();
+        let mut judge = RecordedReads {
+            verdicts: lines[i - 1..i - 1 + group.span]
+                .iter()
+                .filter(|l| l["ev"] == "chunk_end")
+                .map(|l| l["verdict"].as_str().map(str::to_string))
+                .collect(),
+            next: 0,
+        };
         let kept = render_chunk(
             engine,
             group.text,
             group.chunk as usize,
             &RecordedSeeds(&seeds),
-            &mut DurationJudge,
+            &mut judge,
             &opts,
             &mut Observers::new(&mut events, &mut hooks),
         )
@@ -724,6 +764,36 @@ pub fn replay_steered(
         events: recorded.len(),
         mismatch: compare(&recorded, &replayed),
     })
+}
+
+/// Replay's judge: the duration judge, and a recorded verdict it cannot make again taken as given. A text judge's
+/// verdict (`lost-text`, `repeated-text`) came from a recogniser replay does not run; on a draw the duration judge
+/// keeps, the recorded one stands, so the chunk is redrawn as it was.
+struct RecordedReads {
+    verdicts: Vec<Option<String>>,
+    next: usize,
+}
+
+impl crate::pipeline::Judge for RecordedReads {
+    fn judge(
+        &mut self,
+        profile: &crate::profile::Profile,
+        samples: &[f32],
+        sample_rate: u32,
+        text: &str,
+    ) -> crate::audio::Judgement {
+        let mut j = crate::audio::judge_f32(profile, samples, sample_rate, text);
+        let recorded = self.verdicts.get(self.next).cloned().flatten();
+        self.next += 1;
+        if j.verdict.is_none() {
+            j.verdict = match recorded.as_deref() {
+                Some("lost-text") => Some(crate::audio::Verdict::LostText),
+                Some("repeated-text") => Some(crate::audio::Verdict::RepeatedText),
+                _ => None,
+            };
+        }
+        j
+    }
 }
 
 /// One chunk's recorded draws: consecutive `chunk_begin`s of the same chunk, text and instruction, numbered from 0,

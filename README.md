@@ -26,10 +26,9 @@ reproduced from its command line and its manifest. The core holds the rules and 
 ceilings, the pause table, the judge bars and the level target are a profile the engine declares, named
 `{protocol}/{family}`, for example `story-v1/qwen3-tts`.
 
-**Instruments, opt in.** For a story, `--trace FILE` writes the complete `ggtts-trace/2` event stream as JSON
-Lines, including per-step values the engine supplies (Qwen supplies the token and stop probability). Kitten does not
-yet emit per-step events. For `--text`, Qwen's `--trace` remains its older step-only diagnostic and is not a complete
-event stream for instruments. With tracing off nothing is computed for it. With it on, the output must not change: an
+**Instruments, opt in.** For a story or a `--text` render, `--trace FILE` writes the complete `ggtts-trace/2`
+event stream as JSON Lines, including per-step values the engine supplies (Qwen supplies the token and stop
+probability). Kitten does not yet emit per-step events. With tracing off nothing is computed for it. With it on, the output must not change: an
 instrument never draws from the sampler's random stream. The hook points, the event order and the two instrument
 tiers are in [docs/instruments/hooks.md](docs/instruments/hooks.md), and the stream's JSON schema is
 [schemas/ggtts-trace-2.schema.json](schemas/ggtts-trace-2.schema.json). Current readers also accept v1; older

@@ -1,0 +1,83 @@
+{
+  "manifest": {
+    "book_id": "urn:uuid:5b1d6f0e-1c1e-4b7a-9d8a-0f3e2a1b4c5d",
+    "ceiling": 45,
+    "chapter_file": {
+      "file": "004-ch1.flac",
+      "sha256": "96bf4a52af5fa41bf9bd1804b6cb60e88cbad45920eb0712c1fca9a12e709a1d"
+    },
+    "chapter_id": "ch1",
+    "chunks": [
+      {
+        "chunk": 0,
+        "index": 0,
+        "output": {
+          "file": "chunk-00000.flac",
+          "sha256": "1628ecde6f9b25fcfbaa305c9b7992fb0402e7c7424e6a12f2b5b89521139617"
+        },
+        "paragraph": 0,
+        "render_ms": 2,
+        "seed": 3621667395,
+        "state": "done",
+        "text": "1. Low Tide",
+        "text_sha256": "64c5307aef4a6a1e95a8d98d0fc5b3dafbbddbc1119dbd991b8fd40a252df76e"
+      },
+      {
+        "chunk": 0,
+        "index": 1,
+        "output": {
+          "file": "chunk-00001.flac",
+          "sha256": "82650edcdfab46f1a44e01fb52e5504637b14c75f137ffeaefc7a60ef7805acb"
+        },
+        "paragraph": 1,
+        "render_ms": 2,
+        "seed": 3351112023,
+        "state": "done",
+        "text": "The keeper counted the gulls before breakfast.",
+        "text_sha256": "31112c604eaa3c9a361938fcc7b7cff85fbc714ca1bc73c45c38641082ce7d96"
+      },
+      {
+        "chunk": 0,
+        "index": 2,
+        "output": {
+          "file": "chunk-00002.flac",
+          "sha256": "1628ecde6f9b25fcfbaa305c9b7992fb0402e7c7424e6a12f2b5b89521139617"
+        },
+        "paragraph": 2,
+        "render_ms": 2,
+        "seed": 2655129617,
+        "state": "done",
+        "text": "There were seven of them—one more than yester",
+        "text_sha256": "25a10fb553b350564ee75504e528f0ea677daef7e99d7ed2d2fd7fde07ff3c97"
+      },
+      {
+        "chunk": 1,
+        "index": 3,
+        "output": {
+          "file": "chunk-00003.flac",
+          "sha256": "82650edcdfab46f1a44e01fb52e5504637b14c75f137ffeaefc7a60ef7805acb"
+        },
+        "paragraph": 2,
+        "render_ms": 3,
+        "seed": 1552169670,
+        "state": "done",
+        "text": "day & one fewer than the day before.",
+        "text_sha256": "044557f6d8ac7d23693f6d8ba384223b02508dfebdb06e536b50c5635f5f3e7a"
+      }
+    ],
+    "engine": {
+      "backend": "none",
+      "family": "fake",
+      "files": [],
+      "ggtts_commit": "efcc5c43d7925314e9cb7b189857d9664fdea3aa",
+      "ggtts_version": "0.0.1",
+      "parity": "none",
+      "profile": "story-v1/qwen3-tts",
+      "speaker": null
+    },
+    "format": "ggtts-book-manifest/1",
+    "profile": "story-v1/qwen3-tts",
+    "seed_root": "20260905"
+  },
+  "sha256": "efb1ec97e6f5269bcfa5f9cbba90131a23b0db2974203d780bd1c1e45efe48ad"
+}

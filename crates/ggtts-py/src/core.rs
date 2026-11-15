@@ -10,7 +10,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use ggtts_core::capabilities::Capabilities;
 use ggtts_core::engine::Engine;
+use ggtts_core::options::{self, Options};
 use ggtts_load::binding::{self, Held, Slot};
 
 pub use ggtts_load::binding::{
@@ -20,7 +22,7 @@ pub use ggtts_load::binding::{
 pub use ggtts_load::ENGINES;
 
 /// The seed a render uses when given none, as `ggtts-render`.
-pub const DEFAULT_SEED: u64 = 20260905;
+pub use ggtts_load::binding::DEFAULT_SEED;
 
 fn arg_err(msg: impl Into<String>) -> Fail {
     (ERR_ARG, msg.into())
@@ -50,19 +52,25 @@ fn cpu_only(engine: &str, device: Device) -> String {
 }
 
 /// What to load. A path not given is the engine's pinned default where it has one (Qwen3-TTS), from the per-user
-/// cache, downloaded first unless `offline`. An empty speaker or instruction is no setting, as in the C-ABI.
+/// cache (or `load.cache_dir`), downloaded first unless `offline`. An empty speaker or instruction is no setting, as
+/// in the C-ABI. A field left `None` is not given: the load document's value, else the default.
 #[derive(Debug, Clone, Default)]
 pub struct LoadRequest {
-    pub engine: String,
+    /// `None`: the document's `load.engine`, else `qwen3-tts`.
+    pub engine: Option<String>,
     pub model: Option<PathBuf>,
     pub codec: Option<PathBuf>,
     pub voice: Option<PathBuf>,
     pub speaker: Option<String>,
     pub instruction: Option<String>,
-    pub device: Device,
+    /// `None`: the document's `load.device`, else the CPU.
+    pub device: Option<Device>,
     /// 0 or less is the C-ABI's default, 4.
-    pub threads: i32,
-    pub offline: bool,
+    pub threads: Option<i32>,
+    pub offline: Option<bool>,
+    /// A load document (JSON, the C-ABI's `ggtts_load_opts` document): the `load` section, and `render` defaults
+    /// every render on the engine starts from. A value given here and as an argument too is refused, naming both.
+    pub options: Option<String>,
 }
 
 /// One model file a loaded engine uses.
@@ -93,19 +101,22 @@ pub struct Loaded {
 /// render drops the engine, and later calls are [`ERR_HANDLE`].
 pub struct Handle {
     slot: Mutex<Option<Slot>>,
+    /// The render defaults a load document gave ([`binding::render_defaults`]); `None` for a load without one.
+    defaults: Option<Options>,
 }
 
 impl Handle {
-    fn new(held: Held) -> Self {
+    fn new(held: Held, defaults: Option<Options>) -> Self {
         Handle {
             slot: Mutex::new(Some(binding::slot(held))),
+            defaults,
         }
     }
 
     /// A handle over any engine, for tests of the boundary.
     #[cfg(test)]
     fn from_engine(e: Box<dyn Engine + Send>, instruction: Option<&str>) -> Self {
-        Handle::new(Held::checked(e, instruction))
+        Handle::new(Held::checked(e, instruction), None)
     }
 
     fn slot(&self) -> std::sync::MutexGuard<'_, Option<Slot>> {
@@ -151,9 +162,70 @@ impl Handle {
         )
     }
 
+    /// The engine's capability statement, as the C-ABI's `ggtts_capabilities` states it
+    /// (`ggtts_core::capabilities::statement`, format `ggtts-capabilities/1`, with the loaded model's speakers), as JSON.
+    pub fn capabilities(&self) -> Result<String, Fail> {
+        self.with_engine(|e, _| Ok(ggtts_core::capabilities::statement(e).to_string()))
+    }
+
     /// Render `text` (one paragraph per non-empty line) to mono f32 samples and their rate.
     pub fn render(&self, text: &str, seed: u64) -> Result<(Vec<f32>, u32), Fail> {
         self.with_engine(|e, instruction| binding::render(e, text, seed, instruction))
+    }
+
+    /// The render document `options` (JSON, as the C-ABI's `ggtts_render_opts` takes it) with `seed` as its
+    /// `render.seed_salt`, laid over the load's render defaults; `None` when there is neither a document nor
+    /// defaults, so the call renders exactly as [`Handle::render`] does. A stream (`stream`) is `output.stream` `raw`
+    /// unless the document says otherwise; a whole read refuses `output.stream`.
+    fn document(&self, seed: Option<u64>, options: Option<&str>, stream: bool) -> Result<Option<Options>, Fail> {
+        if options.is_none() && self.defaults.is_none() {
+            return Ok(None);
+        }
+        let doc = binding::render_request(options, seed, stream)?;
+        // No salt given anywhere is the C-ABI's `ggtts_render_opts` default (an empty salt), so the same document
+        // renders the same samples in both.
+        let o = match &self.defaults {
+            Some(d) => binding::layer_render(d, doc)?,
+            None => doc,
+        };
+        Ok(Some(o))
+    }
+
+    /// Render `text` with a render document ([`Handle::document`]): `seed` the salt unless the document gives it.
+    /// Without a document or load defaults, this is [`Handle::render`] at `seed` (or [`DEFAULT_SEED`]).
+    pub fn render_with(&self, text: &str, seed: Option<u64>, options: Option<&str>) -> Result<(Vec<f32>, u32), Fail> {
+        match self.document(seed, options, false)? {
+            None => self.render(text, seed.unwrap_or(DEFAULT_SEED)),
+            Some(mut o) => self.with_engine(|e, instruction| {
+                if o.render.instruction.is_none() {
+                    o.render.instruction = instruction.map(String::from);
+                }
+                binding::render_document(e, text, &o, None)
+            }),
+        }
+    }
+
+    /// [`Handle::render_stream`] with a render document ([`Handle::document`]), as [`Handle::render_with`].
+    pub fn render_stream_with(
+        &self,
+        text: &str,
+        seed: Option<u64>,
+        options: Option<&str>,
+        on_piece: &mut dyn FnMut(&[f32], u32) -> bool,
+    ) -> Result<bool, Fail> {
+        match self.document(seed, options, true)? {
+            None => self.render_stream(text, seed.unwrap_or(DEFAULT_SEED), on_piece),
+            Some(mut o) => self.with_engine(|e, instruction| {
+                if o.render.instruction.is_none() {
+                    o.render.instruction = instruction.map(String::from);
+                }
+                match binding::render_document(e, text, &o, Some(on_piece)) {
+                    Ok(_) => Ok(true),
+                    Err((ERR_STOPPED, _)) => Ok(false),
+                    Err(other) => Err(other),
+                }
+            }),
+        }
     }
 
     /// Render `text`, handing each kept chunk's piece (samples and rate) to `on_piece` before the next chunk is
@@ -175,6 +247,16 @@ impl Handle {
     }
 }
 
+/// The options schema, as the C-ABI's `ggtts_options_schema` states it: `ggtts_core::options::schema`, as JSON.
+pub fn options_schema() -> String {
+    ggtts_core::options::schema().to_string()
+}
+
+/// Run `f` as [`guard`] does, and give the schema key of an option it refused ([`binding::guard_keyed`]).
+pub fn guard_keyed<T>(f: impl FnOnce() -> Result<T, Fail>) -> Result<T, (Fail, Option<String>)> {
+    binding::guard_keyed(f)
+}
+
 /// Load an engine. `notice` receives the download notice and progress of a default model, which is never silent.
 pub fn load(req: &LoadRequest, notice: &mut dyn FnMut(&str)) -> Result<(Handle, Loaded), Fail> {
     guard(|| {
@@ -194,19 +276,97 @@ fn load_inner(
     cache: &dyn Fn() -> Result<ggtts_models::Cache, String>,
     fetch: &dyn ggtts_models::Fetch,
 ) -> Result<(Handle, Loaded), Fail> {
+    let doc = match &req.options {
+        None => None,
+        Some(json) => {
+            let o = Options::from_json(json).map_err(binding::refusal_err)?;
+            binding::check_document(&o, true)?;
+            Some(o)
+        }
+    };
+    let set = |s: &Option<String>| s.as_deref().is_some_and(|s| !s.is_empty());
+    if let Some(d) = &doc {
+        let given: Vec<(&str, &str)> = [
+            ("engine=", "load.engine", req.engine.is_some()),
+            ("model=", "load.model", req.model.is_some()),
+            ("codec=", "load.codec", req.codec.is_some()),
+            ("voice=", "load.voice", req.voice.is_some()),
+            ("speaker=", "load.speaker", set(&req.speaker)),
+            ("instruction=", "render.instruction", set(&req.instruction)),
+            ("device=", "load.device", req.device.is_some()),
+            ("threads=", "load.threads", req.threads.is_some()),
+            ("offline=", "load.offline", req.offline.is_some()),
+        ]
+        .into_iter()
+        .filter(|(_, _, given)| *given)
+        .map(|(argument, key, _)| (argument, key))
+        .collect();
+        binding::refuse_given_twice(d, &given)?;
+    }
+    // The arguments laid into the document: a value comes from one or the other, never both.
+    let mut o = doc.clone().unwrap_or_default();
+    match (&req.engine, &doc) {
+        (Some(e), _) => o.load.engine = e.clone(),
+        (None, None) => o.load.engine = "qwen3-tts".into(),
+        (None, Some(_)) => {}
+    }
+    let paths = [
+        (&req.model, &mut o.load.model),
+        (&req.codec, &mut o.load.codec),
+        (&req.voice, &mut o.load.voice),
+    ];
+    for (given, slot) in paths {
+        if given.is_some() {
+            slot.clone_from(given);
+        }
+    }
+    if set(&req.speaker) {
+        o.load.speaker.clone_from(&req.speaker);
+    }
+    if set(&req.instruction) {
+        o.render.instruction.clone_from(&req.instruction);
+    }
+    if let Some(t) = req.threads {
+        o.load.threads = Some(t);
+    }
+    if let Some(off) = req.offline {
+        o.load.offline = off;
+    }
+    let device = match (req.device, o.load.device.as_deref()) {
+        (Some(d), _) => d,
+        (None, Some(name)) => Device::from_name(name).ok_or_else(|| {
+            binding::refusal_err(options::Refusal {
+                key: "load.device".into(),
+                message: format!("must be \"cpu\" or \"cuda\", not {name:?}"),
+            })
+        })?,
+        (None, None) => Device::Cpu,
+    };
+    let engine = binding::document_engine(&o)?;
+    if doc.is_some() {
+        // A document is checked whole against the engine before anything is read, as the C-ABI checks one.
+        if let Some(caps) = Capabilities::of(&engine) {
+            options::check(&o, &caps).map_err(binding::refusal_err)?;
+        }
+    }
+    let cache_dir = o.load.cache_dir.clone();
+    let cache_in = || match &cache_dir {
+        Some(dir) => Ok(ggtts_models::Cache::new(dir.clone())),
+        None => cache(),
+    };
     let opened = binding::open(
         binding::Request {
-            engine: &req.engine,
-            model: req.model.clone(),
-            codec: req.codec.clone(),
-            voice: req.voice.clone(),
-            speaker: req.speaker.as_deref(),
-            instruction: req.instruction.as_deref(),
-            device: req.device,
-            threads: req.threads,
+            engine: &engine,
+            model: o.load.model.clone(),
+            codec: o.load.codec.clone(),
+            voice: o.load.voice.clone(),
+            speaker: o.load.speaker.as_deref(),
+            instruction: o.render.instruction.as_deref(),
+            device,
+            threads: o.load.threads.unwrap_or(0),
             models: Some(binding::Models {
-                cache,
-                offline: req.offline,
+                cache: &cache_in,
+                offline: o.load.offline,
                 fetch,
             }),
         },
@@ -215,13 +375,13 @@ fn load_inner(
     )?;
     let info = opened.held.engine().info();
     let loaded = Loaded {
-        engine: req.engine.clone(),
+        engine,
         family: info.family.clone(),
         backend: info.backend.clone(),
         parity: info.parity.clone(),
         speaker: opened.speaker,
-        instruction: req.instruction.clone().filter(|s| !s.is_empty()),
-        device: req.device,
+        instruction: o.render.instruction.clone().filter(|s| !s.is_empty()),
+        device,
         files: opened
             .files
             .into_iter()
@@ -232,7 +392,10 @@ fn load_inner(
             })
             .collect(),
     };
-    Ok((Handle::new(opened.held), loaded))
+    Ok((
+        Handle::new(opened.held, doc.as_ref().map(binding::render_defaults)),
+        loaded,
+    ))
 }
 
 /// Write mono f32 `samples` as 16-bit FLAC at `sample_rate`, with the library's writer (the suffix is forced to
@@ -256,7 +419,7 @@ mod tests {
     fn fake() -> (Handle, Loaded) {
         load(
             &LoadRequest {
-                engine: "fake".into(),
+                engine: Some("fake".into()),
                 ..Default::default()
             },
             &mut |_| {},
@@ -266,7 +429,7 @@ mod tests {
 
     fn req(engine: &str) -> LoadRequest {
         LoadRequest {
-            engine: engine.into(),
+            engine: Some(engine.into()),
             ..Default::default()
         }
     }
@@ -420,7 +583,7 @@ mod tests {
         assert!(msg.contains("takes no style instruction"), "{msg}");
         assert_eq!(
             load_err(&LoadRequest {
-                device: Device::Cuda,
+                device: Some(Device::Cuda),
                 ..req("fake")
             })
             .0,
@@ -476,7 +639,7 @@ mod tests {
     fn the_default_model_offline_with_an_empty_cache_is_refused_without_fetching() {
         let root = std::env::temp_dir().join(format!("ggtts-py-cache-{}", std::process::id()));
         let r = LoadRequest {
-            offline: true,
+            offline: Some(true),
             ..req("qwen3-tts")
         };
         let mut said = Vec::new();
@@ -510,7 +673,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("ggtts-py-cuda-{}", std::process::id()));
         for model in [None, Some(PathBuf::from("/no/such/model.gguf"))] {
             let r = LoadRequest {
-                device: Device::Cuda,
+                device: Some(Device::Cuda),
                 model: model.clone(),
                 ..req("qwen3-tts")
             };
@@ -589,8 +752,12 @@ mod tests {
     /// The loaded instruction reaches every request of a render and a stream; without one, none.
     #[test]
     fn the_instruction_reaches_every_request() {
+        /// A stand-in for an engine that takes an instruction, so it says so.
         struct Recording(ggtts_fake::FakeEngine, Arc<Mutex<Vec<Option<String>>>>);
         impl Engine for Recording {
+            fn capabilities(&self) -> ggtts_core::capabilities::Capabilities {
+                ggtts_core::capabilities::Capabilities::of("qwen3-tts").unwrap()
+            }
             fn info(&self) -> &ggtts_core::engine::EngineInfo {
                 self.0.info()
             }
@@ -637,5 +804,263 @@ mod tests {
         assert_eq!(&bytes[..4], b"fLaC");
         std::fs::remove_file(written).unwrap();
         assert_eq!(write_flac(&path, &[0.0], 0).unwrap_err().0, ERR_ARG);
+    }
+
+    // ── options documents ──
+
+    fn doc_load(json: &str) -> Result<(Handle, Loaded), (Fail, Option<String>)> {
+        guard_keyed(|| {
+            load(
+                &LoadRequest {
+                    options: Some(json.into()),
+                    ..Default::default()
+                },
+                &mut |_| {},
+            )
+        })
+    }
+
+    fn refused(r: Result<impl Sized, (Fail, Option<String>)>) -> (i32, String, Option<String>) {
+        match r {
+            Ok(_) => panic!("not refused"),
+            Err(((code, msg), key)) => (code, msg, key),
+        }
+    }
+
+    /// The C-ABI's `ggtts_render_opts` on the fake engine, loaded with `load_doc`, rendering `TEXT` with `doc`.
+    fn c_abi_render(load_doc: &str, doc: &str) -> (Vec<f32>, u32) {
+        let (l, t, d) = (
+            std::ffi::CString::new(load_doc).unwrap(),
+            std::ffi::CString::new(TEXT).unwrap(),
+            std::ffi::CString::new(doc).unwrap(),
+        );
+        let mut handle = 0u64;
+        assert_eq!(unsafe { ggtts_ffi::ggtts_load_opts(l.as_ptr(), &mut handle) }, 0);
+        let (mut p, mut n, mut r) = (std::ptr::null_mut(), 0usize, 0u32);
+        let code = unsafe {
+            ggtts_ffi::ggtts_render_opts(
+                handle,
+                t.as_ptr(),
+                d.as_ptr(),
+                None,
+                std::ptr::null_mut(),
+                &mut p,
+                &mut n,
+                &mut r,
+            )
+        };
+        assert_eq!(code, 0);
+        let samples = unsafe { std::slice::from_raw_parts(p, n) }.to_vec();
+        unsafe { ggtts_ffi::ggtts_pcm_free(p, n) };
+        assert_eq!(ggtts_ffi::ggtts_free(handle), 0);
+        (samples, r)
+    }
+
+    /// A fresh fake engine for each side of a comparison: the fake engine's output depends on what it rendered
+    /// before (its draws per text), so one engine rendering twice is not a comparison.
+    fn fresh() -> Handle {
+        fake().0
+    }
+
+    /// No document and no load defaults: the old render, sample for sample, at the seed or the default seed.
+    #[test]
+    fn without_a_document_a_render_is_the_old_render() {
+        assert_eq!(
+            fresh().render_with(TEXT, Some(7), None).unwrap(),
+            fresh().render(TEXT, 7).unwrap()
+        );
+        assert_eq!(
+            fresh().render_with(TEXT, None, None).unwrap(),
+            fresh().render(TEXT, DEFAULT_SEED).unwrap()
+        );
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        fresh()
+            .render_stream_with(TEXT, Some(7), None, &mut |s, _| {
+                a.extend_from_slice(s);
+                true
+            })
+            .unwrap();
+        fresh()
+            .render_stream(TEXT, 7, &mut |s, _| {
+                b.extend_from_slice(s);
+                true
+            })
+            .unwrap();
+        assert_eq!(a, b);
+    }
+
+    /// A document render is the C-ABI's document render: the same load defaults and render document give the same
+    /// samples; the seed argument is the salt, and an empty document is the plain render.
+    #[test]
+    fn a_document_render_is_the_c_abi_document_render() {
+        let load_doc = r#"{"load": {"engine": "fake"}, "render": {"edge_s": 1.5}}"#;
+        let loaded_with = || doc_load(load_doc).unwrap();
+        assert_eq!(loaded_with().1.engine, "fake");
+        let doc = r#"{"render": {"seed_salt": "7"}}"#;
+        let ours = loaded_with().0.render_with(TEXT, None, Some(doc)).unwrap();
+        assert_eq!(ours, c_abi_render(load_doc, doc));
+        assert_eq!(loaded_with().0.render_with(TEXT, Some(7), Some("{}")).unwrap(), ours);
+        // The load's edge is carried: without it the read is another length.
+        // No salt anywhere: the C-ABI's document default, sample for sample.
+        assert_eq!(
+            loaded_with().0.render_with(TEXT, None, Some("{}")).unwrap(),
+            c_abi_render(load_doc, "{}")
+        );
+        assert_eq!(
+            fresh().render_with(TEXT, None, Some("{}")).unwrap(),
+            c_abi_render(r#"{"load": {"engine": "fake"}}"#, "{}")
+        );
+        assert_ne!(fresh().render(TEXT, 7).unwrap().0.len(), ours.0.len());
+        assert_eq!(
+            fresh().render_with(TEXT, Some(7), Some("{}")).unwrap(),
+            fresh().render(TEXT, 7).unwrap()
+        );
+    }
+
+    /// Steering is carried to the engine, which refuses it by its key where it has no steering; on kitten-tts-2 a
+    /// load document carrying it is refused before any file is read.
+    #[test]
+    fn steering_reaches_the_engine_and_is_refused_by_its_key() {
+        let (h, _) = fake();
+        let (code, msg, key) = refused(guard_keyed(|| {
+            h.render_with(TEXT, None, Some(r#"{"render": {"steer": "s.safetensors"}}"#))
+        }));
+        let capability = Capabilities::of("fake")
+            .unwrap()
+            .refusal("render.steer", None)
+            .to_string();
+        assert_eq!(
+            (code, msg.as_str(), key.as_deref()),
+            (ERR_ARG, capability.as_str(), Some("render.steer"))
+        );
+        let (code, msg, key) = refused(doc_load(
+            r#"{"load": {"engine": "kitten-tts-2", "model": "/no/such.gguf"}, "render": {"steer": "s.safetensors"}}"#,
+        ));
+        assert_eq!((code, key.as_deref()), (ERR_ARG, Some("render.steer")), "{msg}");
+    }
+
+    /// A value given as an argument and in the document is refused, naming both; an unknown key and a load key in a
+    /// render document are refused by their keys, as is a stream document on a whole read.
+    #[test]
+    fn twice_given_unknown_and_misplaced_options_are_refused_by_key() {
+        let twice = guard_keyed(|| {
+            load(
+                &LoadRequest {
+                    speaker: Some("a".into()),
+                    options: Some(r#"{"load": {"engine": "fake", "speaker": "b"}}"#.into()),
+                    ..Default::default()
+                },
+                &mut |_| {},
+            )
+        });
+        let (code, msg, key) = refused(twice);
+        assert_eq!((code, key.as_deref()), (ERR_ARG, Some("load.speaker")));
+        assert!(msg.contains("speaker=") && msg.starts_with("load.speaker: "), "{msg}");
+        let (code, msg, key) = refused(doc_load(r#"{"load": {"engine": "fake", "nonesuch": 1}}"#));
+        assert_eq!((code, key.as_deref()), (ERR_ARG, Some("load.nonesuch")), "{msg}");
+        let (h, _) = doc_load(r#"{"load": {"engine": "fake"}}"#).unwrap();
+        for (doc, want) in [
+            (r#"{"load": {"device": "cpu"}}"#, "load.device"),
+            (r#"{"render": {"seed": 3}}"#, "render.seed"),
+            (r#"{"output": {"stream": "raw"}}"#, "output.stream"),
+            (r#"{"render": {"nonesuch": 1}}"#, "render.nonesuch"),
+        ] {
+            let (code, msg, key) = refused(guard_keyed(|| h.render_with(TEXT, None, Some(doc))));
+            assert_eq!((code, key.as_deref()), (ERR_ARG, Some(want)), "{doc}: {msg}");
+        }
+        let (code, msg, key) = refused(guard_keyed(|| {
+            h.render_with(TEXT, Some(3), Some(r#"{"render": {"seed_salt": "4"}}"#))
+        }));
+        assert_eq!((code, key.as_deref()), (ERR_ARG, Some("render.seed_salt")));
+        assert!(msg.contains("the argument seed"), "{msg}");
+        // Malformed JSON is the whole document: no key.
+        let (code, _, key) = refused(guard_keyed(|| h.render_with(TEXT, None, Some("{"))));
+        assert_eq!((code, key), (ERR_ARG, None));
+    }
+
+    /// A stream through a document hands its pieces before the level step, as the plain stream does.
+    #[test]
+    fn a_document_stream_is_the_plain_stream() {
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        assert!(fresh()
+            .render_stream_with(TEXT, Some(5), Some(r#"{"output": {"stream": "raw"}}"#), &mut |s, _| {
+                a.extend_from_slice(s);
+                true
+            })
+            .unwrap());
+        fresh()
+            .render_stream(TEXT, 5, &mut |s, _| {
+                b.extend_from_slice(s);
+                true
+            })
+            .unwrap();
+        assert_eq!(a, b);
+        let mut seen = 0;
+        assert!(!fresh()
+            .render_stream_with(TEXT, None, Some("{}"), &mut |_, _| {
+                seen += 1;
+                false
+            })
+            .unwrap());
+        assert_eq!(seen, 1);
+    }
+
+    /// The load document's cache directory is the cache a default model is looked up in.
+    #[test]
+    fn the_cache_dir_is_where_a_default_model_is_looked_up() {
+        let root = std::env::temp_dir().join(format!("ggtts-py-docache-{}", std::process::id()));
+        // A JSON string: `{:?}` escapes a Windows path's backslashes as JSON does.
+        let doc = format!(
+            r#"{{"load": {{"engine": "qwen3-tts", "offline": true, "cache_dir": {:?}}}}}"#,
+            root.display().to_string()
+        );
+        let r = LoadRequest {
+            options: Some(doc),
+            ..Default::default()
+        };
+        let got = guard(|| {
+            load_inner(
+                &r,
+                &mut |_| {},
+                &|| Err("the per-user cache was used".into()),
+                &NoNetwork,
+            )
+        });
+        let (code, msg) = match got {
+            Ok(_) => panic!("loaded from an empty cache"),
+            Err(e) => e,
+        };
+        assert_eq!(code, ERR_ENGINE, "{msg}");
+        assert!(!msg.contains("per-user cache was used"), "{msg}");
+        if cfg!(feature = "ggml") {
+            assert!(msg.contains(&root.display().to_string()), "{msg}");
+        }
+    }
+
+    /// The schema and an engine's statement are the C-ABI's, text for text, from the same shared pieces.
+    #[test]
+    fn the_schema_and_the_statement_are_the_c_abis() {
+        let c_schema = unsafe { std::ffi::CStr::from_ptr(ggtts_ffi::ggtts_options_schema()) }
+            .to_str()
+            .unwrap()
+            .to_string();
+        let parsed = |t: &str| -> serde_json::Value { serde_json::from_str(t).unwrap() };
+        assert_eq!(parsed(&options_schema()), parsed(&c_schema));
+        let (h, _) = fake();
+        let e = std::ffi::CString::new("fake").unwrap();
+        let mut handle = 0u64;
+        let null = std::ptr::null();
+        assert_eq!(
+            unsafe { ggtts_ffi::ggtts_load(e.as_ptr(), null, null, null, 0, &mut handle) },
+            0
+        );
+        let mut json = std::ptr::null_mut();
+        assert_eq!(unsafe { ggtts_ffi::ggtts_capabilities(handle, &mut json) }, 0);
+        let theirs = unsafe { std::ffi::CStr::from_ptr(json) }.to_str().unwrap().to_string();
+        unsafe { ggtts_ffi::ggtts_string_free(json) };
+        ggtts_ffi::ggtts_free(handle);
+        assert_eq!(h.capabilities().unwrap(), theirs);
+        assert!(h.close());
+        assert_eq!(h.capabilities().unwrap_err().0, ERR_HANDLE);
     }
 }

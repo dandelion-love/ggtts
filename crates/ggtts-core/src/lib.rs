@@ -16,6 +16,7 @@
 //! its recorded cases in `fixtures/pipeline/` (`cargo test -p ggtts-core --test pipeline_cases`).
 
 pub mod audio;
+pub mod capabilities;
 pub mod engine;
 pub mod flac;
 pub mod hooks;
@@ -29,6 +30,7 @@ pub mod seed;
 pub mod steer;
 pub mod stream;
 pub mod text;
+pub mod textjudge;
 pub mod trace;
 
 /// The release tag embedded at build time, or the workspace version for ordinary local builds.

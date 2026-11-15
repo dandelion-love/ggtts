@@ -214,6 +214,36 @@ fn the_trace_is_written_and_replays() {
     std::fs::remove_dir_all(book.parent().unwrap()).ok();
 }
 
+/// #333: a render refused because its --out holds another book leaves an existing trace file as it was: the output
+/// is claimed before the trace is created.
+#[test]
+fn a_render_refused_for_another_books_out_leaves_the_trace_file_intact() {
+    let d = dir("trace-refused");
+    let book = nested().write_temp("options-trace-refused");
+    let out = d.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(
+        out.join(ggtts_book::render::BOOK_MARKER),
+        r#"{"book_id": "urn:uuid:00000000-0000-0000-0000-000000000000"}"#,
+    )
+    .unwrap();
+    let trace = d.join("kept.jsonl");
+    std::fs::write(&trace, "an earlier trace\n").unwrap();
+    let args = [
+        "--out",
+        out.to_str().unwrap(),
+        "--engine",
+        "fake",
+        "--trace",
+        trace.to_str().unwrap(),
+    ];
+    let err = render(&book, &args).unwrap_err();
+    assert!(err.contains("holds another book"), "{err}");
+    assert_eq!(std::fs::read_to_string(&trace).unwrap(), "an earlier trace\n");
+    std::fs::remove_dir_all(&d).ok();
+    std::fs::remove_dir_all(book.parent().unwrap()).ok();
+}
+
 /// AC4: a chapter resumed under another instruction, or with an instruction where there was none, starts again, its
 /// manifest refused naming the instruction; the same render options resume.
 #[test]

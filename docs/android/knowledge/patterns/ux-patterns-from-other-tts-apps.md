@@ -26,6 +26,9 @@ whose first audio takes tens of seconds ([limitations](/research/limitations.md)
 | 4 | **Try before committing storage, and import user models with clear rules.** | VoxSherpa (previews, `.onnx` import), SherpaTTS (sideloading) | **Done** (merged): a checked import (type, size, published hash, `.part` then rename; [decision](/decisions/models-are-brought-not-bundled.md)). Previews are not adopted: no published samples to point at yet |
 | 5 | **Say up front what it cannot do.** Name the missing languages, the speed class, and "not for screen readers". | RHVoice's listing names the languages it has[^rhvoice-play]; Vocalizer warns about apps that ignore third-party engines | **In PR 234** (for [#223](https://github.com/dandelion-love/ggtts/issues/223)): the screen states each engine's size, memory and wait on a named phone, and "not suitable for screen readers"; low memory [warns before a load](/decisions/warn-on-low-memory.md) |
 
+How the same apps lay out their screens (player, voice sheet, waiting) is in
+[how read-aloud apps lay out their screens](/research/tts-app-screens.md).
+
 # Also common, and lower in priority
 
 - Speed and pitch come from the system TTS settings once an app is a system engine, so they follow from PR 235.

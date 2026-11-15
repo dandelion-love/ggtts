@@ -37,6 +37,20 @@ impl Default for Settings {
 /// The largest top-k at which computing only the head rows below was measured exact (the default is 50).
 pub const HEAD_ROWS_MAX_TOP_K: usize = 50;
 
+/// `Ok` if `rows` is a non-empty range of the output head's `n_vocab` rows. [`head_rows`] always gives one for a token
+/// map that passed [`crate::prompt::TokenMap::checked`]; anything else is a caller's error, refused rather than
+/// silently computed as the whole head.
+pub fn check_head_rows(rows: &std::ops::Range<usize>, n_vocab: usize) -> Result<(), String> {
+    if rows.start < rows.end && rows.end <= n_vocab {
+        Ok(())
+    } else {
+        Err(format!(
+            "head_rows {}..{} is not a non-empty range of the output head's {n_vocab} rows",
+            rows.start, rows.end
+        ))
+    }
+}
+
 /// The output-head rows a generation needs, or `None` for the whole head.
 ///
 /// The rows run from the first end id to the end of the vocabulary: the end ids, the audio ids, and the special ids
@@ -229,6 +243,27 @@ mod tests {
             ref_speech_start: 158_237,
             ref_speech_end: 158_238,
         }
+    }
+
+    #[test]
+    fn head_rows_outside_the_head_are_refused_not_widened() {
+        assert!(check_head_rows(&(151_670..158_241), 158_241).is_ok());
+        for bad in [
+            151_670..158_242,
+            158_241..158_241,
+            std::ops::Range { start: 9, end: 3 },
+            0..0,
+        ] {
+            let e = check_head_rows(&bad, 158_241).unwrap_err();
+            assert!(
+                e.contains(&format!("head_rows {}..{}", bad.start, bad.end)) && e.contains("158241 rows"),
+                "{e}"
+            );
+        }
+        // Every range head_rows gives for a checked map passes.
+        let tm = kitten_map().checked(158_241).expect("the released map fits");
+        let rows = head_rows(&Settings::default(), &tm, 158_241, None).unwrap();
+        assert!(check_head_rows(&rows, 158_241).is_ok());
     }
 
     #[test]

@@ -15,6 +15,8 @@ import android.app.ActivityManager
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.content.res.Configuration
 import android.graphics.Color
 import android.media.AudioAttributes
 import android.media.AudioFormat
@@ -25,6 +27,10 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.text.InputType
+import android.view.Gravity
+import android.widget.ProgressBar
 import android.provider.OpenableColumns
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
@@ -84,6 +90,19 @@ class MainActivity : Activity(), DemoView {
     private lateinit var voiceList: Spinner
     private lateinit var voiceNote: TextView
     private lateinit var playSample: Button
+    private lateinit var progress: ProgressBar
+    /** The status the controller last gave, shown with the seconds since Speak while a read runs. */
+    private var lastStatus = ""
+    private var statusIsError = false
+    /** When the running read started (elapsedRealtime), or 0 when none runs. */
+    private var busySince = 0L
+    private val tick = object : Runnable {
+        override fun run() {
+            if (busySince == 0L) return
+            renderStatus()
+            handler.postDelayed(this, 1000)
+        }
+    }
     private var found = Found(emptyList(), emptyList())
     /** The voice last applied to the Advanced controls, so a refresh does not undo a choice made there. */
     private var applied: Voice? = null
@@ -174,6 +193,11 @@ class MainActivity : Activity(), DemoView {
     override fun setBusy(busy: Boolean) {
         speak.isEnabled = !busy
         stop.isEnabled = busy
+        // The first sound takes tens of seconds, so the screen shows that it is working and for how long.
+        progress.visibility = if (busy) View.VISIBLE else View.GONE
+        handler.removeCallbacks(tick)
+        busySince = if (busy) SystemClock.elapsedRealtime() else 0L
+        if (busy) handler.post(tick) else renderStatus()
         // While a read runs on this screen, keep the screen on. Off screen, Android moves the app to the phone's slow
         // cores (measured: the render threads ran on the three Cortex-A510s only), and the read takes several times
         // longer; the reading service keeps it going there, but slowly.
@@ -183,13 +207,46 @@ class MainActivity : Activity(), DemoView {
     }
 
     override fun showStatus(text: String) {
-        status.setTextColor(Color.DKGRAY)
-        status.text = text
+        lastStatus = text
+        statusIsError = false
+        status.setTextColor(themeColor(android.R.attr.textColorSecondary))
+        renderStatus()
     }
+
+    private fun renderStatus() {
+        if (statusIsError) return
+        val secs = if (busySince == 0L) -1 else (SystemClock.elapsedRealtime() - busySince) / 1000
+        status.text = if (secs < 0) lastStatus else "$lastStatus\n$secs s"
+    }
+
+    /**
+     * A list for a Spinner whose text takes the theme's colour: the platform's item layout keeps a light theme's dark
+     * text, which disappears on a dark background.
+     */
+    private fun themed(items: List<String>): ArrayAdapter<String> {
+        val colour = themeColor(android.R.attr.textColorPrimary)
+        // The closed Spinner shows simple_spinner_item: the dropdown row layout measured 0 px high there under the
+        // DayNight theme, and the chosen voice was not shown.
+        return object : ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, items.toMutableList()) {
+            override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup) =
+                super.getView(position, convertView, parent).also { (it as? TextView)?.setTextColor(colour) }
+            override fun getDropDownView(position: Int, convertView: View?, parent: android.view.ViewGroup) =
+                super.getDropDownView(position, convertView, parent).also { (it as? TextView)?.setTextColor(colour) }
+        }.apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+    }
+
+    private fun themeColor(attr: Int): Int {
+        val a = obtainStyledAttributes(intArrayOf(attr))
+        try { return a.getColor(0, Color.GRAY) } finally { a.recycle() }
+    }
+
+    private val night get() =
+        resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
 
     override fun showError(text: String) {
         Log.w(TAG, "shown: $text")
-        status.setTextColor(Color.rgb(0xB0, 0x00, 0x20))
+        statusIsError = true
+        status.setTextColor(if (night) Color.rgb(0xF2, 0xB8, 0xB5) else Color.rgb(0xB0, 0x00, 0x20))
         status.text = text
     }
 
@@ -205,10 +262,8 @@ class MainActivity : Activity(), DemoView {
         col.addView(TextView(this).apply { text = "ggtts Text-to-Speech"; textSize = 22f })
         // What the app is for comes first, before any engine or file name (About).
         col.addView(TextView(this).apply { text = About.TAGLINE; textSize = 17f; setPadding(0, pad / 2, 0, 0) })
-        About.PURPOSE.forEach { col.addView(label(it)) }
         gettingStarted = TextView(this).apply { textSize = 16f; setPadding(0, pad, 0, 0) }
         col.addView(gettingStarted)
-        col.addView(label("No model ships with this app. Model files are read from:\n${modelsDir.path}"))
 
         // One choice: a voice. Picking one fills in the Advanced controls below, which Speak reads.
         voiceList = Spinner(this)
@@ -218,22 +273,17 @@ class MainActivity : Activity(), DemoView {
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
-        col.addView(label("Voice")); col.addView(voiceList)
         voiceNote = TextView(this)
-        col.addView(voiceNote)
-        playSample = Button(this).apply { text = "Play a sample"; isEnabled = false }
+        playSample = Button(this, null, android.R.attr.borderlessButtonStyle).apply { text = "Play a sample"; isEnabled = false }
         playSample.setOnClickListener { playSample() }
-        col.addView(playSample)
 
         val adv = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
-        val toggle = Button(this).apply { text = "Advanced: engine, files, speaker, threads  ▸" }
+        val toggle = Button(this, null, android.R.attr.borderlessButtonStyle).apply { text = "Advanced: engine, files, speaker, threads  ▸" }
         toggle.setOnClickListener {
             val open = adv.visibility != View.VISIBLE
             adv.visibility = if (open) View.VISIBLE else View.GONE
             toggle.text = "Advanced: engine, files, speaker, threads  " + if (open) "▾" else "▸"
         }
-        col.addView(toggle)
-        col.addView(adv)
 
         engines = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
         ENGINES.forEachIndexed { i, name ->
@@ -264,12 +314,15 @@ class MainActivity : Activity(), DemoView {
                 PICK,
             )
         }
-        col.addView(importButton)
 
-        text = EditText(this)
-        col.addView(label("Line to speak")); col.addView(text)
+        text = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 4
+            gravity = Gravity.TOP or Gravity.START
+            hint = "Type or paste what to read aloud"
+        }
         threads = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, THREADS.map { "$it threads" })
+            adapter = themed(THREADS.map { "$it threads" })
             setSelection(THREADS.indexOf(DEFAULT_THREADS))
         }
         adv.addView(label("CPU threads")); adv.addView(threads)
@@ -283,12 +336,40 @@ class MainActivity : Activity(), DemoView {
         stop.setOnClickListener { controller.stop() }
         buttons.addView(speak, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         buttons.addView(stop, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        col.addView(buttons)
         systemSpeak = Button(this).apply { text = "Speak through Android's TTS (ggtts as the engine)" }
         systemSpeak.setOnClickListener { speakThroughAndroid() }
-        col.addView(systemSpeak)
-        status = TextView(this).apply { textSize = 16f; setPadding(0, pad, 0, 0) }
+        adv.addView(systemSpeak)
+        status = TextView(this).apply { textSize = 16f; setPadding(0, pad / 2, 0, 0) }
+        progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = true; visibility = View.GONE
+        }
+        // Speak is the one primary action: filled with the theme's accent, and larger.
+        val accent = themeColor(android.R.attr.colorAccent)
+        speak.backgroundTintList = ColorStateList.valueOf(accent)
+        // Dark mode's accent is light, so the label's colour follows the fill's brightness.
+        speak.setTextColor(if (Color.luminance(accent) > 0.5f) Color.BLACK else Color.WHITE)
+        speak.textSize = 18f
+
+        val about = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
+        About.PURPOSE.forEach { about.addView(label(it)) }
+        about.addView(label("No model ships with this app. Model files are read from:\n${modelsDir.path}"))
+        val aboutToggle = Button(this, null, android.R.attr.borderlessButtonStyle).apply { text = "About this app  ▸" }
+        aboutToggle.setOnClickListener {
+            val open = about.visibility != View.VISIBLE
+            about.visibility = if (open) View.VISIBLE else View.GONE
+            aboutToggle.text = "About this app  " + if (open) "▾" else "▸"
+        }
+
+        // In the order a first-time user needs them: a voice, the text, Speak and what it is doing; then the rest.
+        col.addView(label("Voice")); col.addView(voiceList); col.addView(voiceNote)
+        col.addView(text)
+        col.addView(buttons)
+        col.addView(progress)
         col.addView(status)
+        col.addView(playSample)
+        col.addView(importButton)
+        col.addView(aboutToggle); col.addView(about)
+        col.addView(toggle); col.addView(adv)
         engines.check(100)
         return ScrollView(this).apply {
             addView(col)
@@ -309,7 +390,7 @@ class MainActivity : Activity(), DemoView {
         val files = listOf(NONE) + listed
         for (s in listOf(model, codec, voice)) {
             val keep = s.selectedItem as String?
-            s.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, files)
+            s.adapter = themed(files)
             keep?.let { files.indexOf(it).takeIf { i -> i >= 0 }?.let(s::setSelection) }
         }
         refreshVoices(listed)
@@ -320,11 +401,12 @@ class MainActivity : Activity(), DemoView {
         val samples = modelsDir.list()?.filter { it.endsWith(Voices.SAMPLE_SUFFIX) }?.toSet() ?: emptySet()
         found = Voices.group(Voices.scan(modelsDir, listed.filter { !it.endsWith(Voices.SAMPLE_SUFFIX) }), samples)
         val labels = found.voices.map { it.label }.ifEmpty { listOf("(no complete voice yet)") }
-        voiceList.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
+        voiceList.adapter = themed(labels)
         voiceList.isEnabled = found.voices.isNotEmpty()
         val keep = applied?.let { a -> found.voices.indexOfFirst { it.label == a.label } }?.takeIf { it >= 0 }
         val i = keep ?: 0
-        voiceList.setSelection(i, false)
+        // Not setSelection(i, false): before the first layout, that leaves the closed Spinner drawn empty.
+        voiceList.setSelection(i)
         // Applied here, not in the listener, which Android calls later: after adb extras have set the controls.
         found.voices.getOrNull(i)?.let { if (keep == null) applyVoice(it) else showVoice(it) }
         val gaps = found.incomplete.joinToString("\n") { "Not complete yet: ${it.name} needs ${it.missing}." }
@@ -336,6 +418,8 @@ class MainActivity : Activity(), DemoView {
     /** Sets the Advanced controls to the voice's files, which is all Speak reads. */
     private fun applyVoice(v: Voice) {
         applied = v
+        val current = text.text.toString()
+        if (current.isBlank() || current in EXAMPLES.values) EXAMPLES[v.language]?.let { text.setText(it) }
         engines.check(100 + ENGINES.indexOf(v.engine))
         pick(model, v.model)
         pick(codec, v.codec)

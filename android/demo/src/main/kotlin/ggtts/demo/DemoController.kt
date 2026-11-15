@@ -81,7 +81,7 @@ class DemoController(
         busy = true
         stopRequested = false
         view.setBusy(true)
-        view.showStatus("Loading ${request.engine}...")
+        view.showStatus("Preparing the voice...")
         background(Runnable {
             val outcome: Result<String> = try {
                 Result.success(run(request, text, seed))
@@ -135,7 +135,7 @@ class DemoController(
     }
 
     private fun read(tts: TtsEngine, request: LoadRequest, text: String, seed: Long): String {
-        main(Runnable { view.showStatus("Rendering the first chunk...") })
+        main(Runnable { view.showStatus("Writing the first sentence (this takes 20 to 60 s)...") })
         val t0 = clock()
         var firstMs = -1L
         var rate = 0
@@ -152,7 +152,7 @@ class DemoController(
             audio.play(samples)
             val n = pieces.size
             main(Runnable {
-                view.showStatus("Speaking: chunk $n ready (first audio after %.1f s); rendering the next...".format(firstMs / 1000.0))
+                view.showStatus("Speaking: chunk $n ready (first audio after %.1f s); preparing the rest...".format(firstMs / 1000.0))
             })
             true
         }

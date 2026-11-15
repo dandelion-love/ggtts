@@ -65,7 +65,7 @@ pub const PREPARE_HINT: &str = "make a reference voice with ggtts-kitten, which 
 impl Reference {
     pub fn open(path: &Path) -> Result<Self, String> {
         let bad = |why: String| format!("{}: {why}; {PREPARE_HINT}", path.display());
-        let s = std::fs::read(path).map_err(|e| bad(e.to_string()))?;
+        let s = ggtts_core::fdpath::read(path).map_err(|e| bad(e.to_string()))?;
         let j: serde_json::Value =
             serde_json::from_slice(&s).map_err(|e| bad(format!("not a reference voice JSON ({e})")))?;
         Ok(Reference {

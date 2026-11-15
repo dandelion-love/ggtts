@@ -1,16 +1,13 @@
 // Where the app's files live so a person can reach them, with no storage permission. Audio goes out to Music/ggtts/
 // through MediaStore (Android 10 and later let an app add its own media there without asking), where the Files app
 // and a computer over USB both see it. Model files come in from a folder the user picks once with the system picker
-// (ACTION_OPEN_DOCUMENT_TREE, permission persisted), and are copied into the app's own models directory, checked as an
-// import is (ModelImport), when the folder is picked and each time the screen opens.
+// (ACTION_OPEN_DOCUMENT_TREE, permission persisted) and load in place, never copied: [ContentPaths] opens each one
+// with openFileDescriptor and hands the engine `/proc/self/fd/<n>`, which the engine reads through that descriptor
+// rather than reopening it (ggtts_core::fdpath; reopening fails with "Permission denied" without a storage
+// permission). The app's own models directory stays, and a name in both places is its.
 //
-// Why a copy, not loading in place: the engine opens a model by path. A picked file's descriptor reaches it as
-// /proc/self/fd/<n>, but opening that path re-checks access to the file underneath, which is on shared storage the app
-// may not read without a storage permission. Measured on a Galaxy Z Fold5 (Android 17): "Permission denied (os error
-// 13)", three loads of three. Loading in place needs the engine to take the descriptor itself.
-//
-// The parts apart from Android (naming, merging the two listings, what to copy or export) are in [Storage] and
-// [Catalog], so the JVM tests drive them; the Android parts ([MusicFolder], [ModelsFolder]) are thin.
+// The parts apart from Android (naming, merging the two listings, what to export) are in [Storage] and [Catalog], so
+// the JVM tests drive them; the Android parts ([MusicFolder], [ModelsFolder], [ContentPaths]) are thin.
 package ggtts.demo
 
 import android.content.ContentValues
@@ -36,15 +33,19 @@ object Storage {
     /** Whether [location] is a document in the picked folder (a content URI) rather than a file path. */
     fun isContent(location: String): Boolean = location.startsWith("content://")
 
+    /** The path the engine reads a descriptor this process holds through (never reopened: ggtts_core::fdpath). */
+    fun fdPath(fd: Int): String = "/proc/self/fd/$fd"
+
     /**
-     * The picked folder's files to copy into the app directory: model files ([ModelImport] takes a `.gguf` or a `.json`)
-     * with plain names, not a copy in progress, and not already there by name ([have]). Samples stay where they are,
-     * played through their URI.
+     * The cache file name for a picked document whose descriptor cannot seek ([ContentPaths]): the document's own
+     * name, after a hash of its whole location, its [size] and when it last changed ([modified]), so two documents of
+     * one name in different places never share a copy, and a document replaced in place is copied again.
      */
-    fun toCopy(folder: List<Entry>, have: Set<String>): List<Entry> = folder.filter { e ->
-        ModelImport.isPlainName(e.name) && !e.name.endsWith(ModelImport.PART) && e.name !in have &&
-            (e.name.endsWith(".gguf", true) || e.name.endsWith(".json", true))
-    }.sortedBy { it.name }
+    fun fallbackName(location: String, size: Long?, modified: Long?): String {
+        val base = java.net.URLDecoder.decode(location.substringAfterLast('/'), "UTF-8").substringAfterLast('/')
+            .filter { it != '\\' && it != '\u0000' }.ifEmpty { "picked" }
+        return "%08x-%s".format("$location|$size|$modified".hashCode(), base)
+    }
 
     /** A saved read's file name: the engine and when the read was saved, so saves never collide or overwrite. */
     fun readName(engine: String, timeMillis: Long): String {
@@ -96,6 +97,56 @@ class Catalog private constructor(private val byName: Map<String, String>) {
         /** The app directory's complete files, as entries. */
         fun appEntries(dir: File): List<Entry> = ModelImport.listed(dir).map { Entry(it, File(dir, it).path) }
     }
+}
+
+/**
+ * A picked-folder document as `/proc/self/fd/<n>`: the descriptor stays open as long as the engine that loaded it,
+ * and the engine reads through it, never reopening the path. A plain path passes through.
+ *
+ * The fallback: a provider may hand back a descriptor that cannot seek (a pipe, for a document it streams from
+ * elsewhere), and a model is read at offsets. Such a document is copied once into the app's cache
+ * ([Storage.fallbackName]) and that copy is loaded instead. A local folder such as Download/ggtts gives a seekable
+ * descriptor, so it is never copied.
+ */
+class ContentPaths(context: Context) : PathResolver {
+    private val app = context.applicationContext
+    private val resolver = app.contentResolver
+
+    override fun open(location: String): Opened {
+        if (!Storage.isContent(location)) return Opened(location)
+        val uri = Uri.parse(location)
+        val pfd = resolver.openFileDescriptor(uri, "r") ?: throw FileNotFoundException("$location could not be opened")
+        if (seekable(pfd)) return Opened(Storage.fdPath(pfd.fd), pfd)
+        pfd.close()
+        val dir = File(app.cacheDir, "picked").apply { mkdirs() }
+        var size: Long? = null
+        var modified: Long? = null
+        runCatching {
+            resolver.query(uri, arrayOf(DocumentsContract.Document.COLUMN_SIZE, DocumentsContract.Document.COLUMN_LAST_MODIFIED),
+                null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    size = if (c.isNull(0)) null else c.getLong(0)
+                    modified = if (c.isNull(1)) null else c.getLong(1)
+                }
+            }
+        }
+        val copy = File(dir, Storage.fallbackName(location, size, modified))
+        if (!copy.isFile) {
+            val part = File(dir, copy.name + ModelImport.PART)
+            try {
+                (resolver.openInputStream(uri) ?: throw FileNotFoundException("$location could not be read"))
+                    .use { input -> part.outputStream().use { input.copyTo(it, 1 shl 20) } }
+                if (!part.renameTo(copy)) throw FileNotFoundException("could not move ${copy.name} into place")
+            } finally {
+                part.delete()
+            }
+        }
+        android.util.Log.i(MainActivity.TAG, "picked file does not seek; loading a copy: $copy")
+        return Opened(copy.path)
+    }
+
+    private fun seekable(pfd: android.os.ParcelFileDescriptor): Boolean =
+        runCatching { android.system.Os.lseek(pfd.fileDescriptor, 0, android.system.OsConstants.SEEK_CUR) }.isSuccess
 }
 
 /** Opens a location (a path or a content URI) for reading: what [Voices.scan] and the samples read through. */

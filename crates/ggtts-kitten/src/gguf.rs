@@ -286,7 +286,8 @@ impl Rd<'_> {
 
 impl Gguf {
     pub fn open(path: &Path) -> Result<Self, String> {
-        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        // A /proc/self/fd/<n> path is that open descriptor (ggtts_core::fdpath): how Android hands over a picked file.
+        let bytes = ggtts_core::fdpath::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         Self::parse(bytes)
     }
 

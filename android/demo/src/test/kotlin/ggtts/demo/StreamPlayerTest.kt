@@ -65,10 +65,12 @@ class StreamPlayerTest {
     private var setUp: (FakeSink) -> Unit = {}
     private val player = StreamPlayer({ FakeSink().also { setUp(it); sinks += it } }, drainMs = 0)
 
+    /** Waits up to 5 s in all for [latch], through any interrupts; never longer, so a fault fails a test, not hangs it. */
     private fun awaitIgnoringInterrupts(latch: CountDownLatch) {
-        while (true) {
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (System.nanoTime() < deadline) {
             try {
-                latch.await(5, TimeUnit.SECONDS)
+                latch.await(deadline - System.nanoTime(), TimeUnit.NANOSECONDS)
                 return
             } catch (_: InterruptedException) {
             }
@@ -275,7 +277,8 @@ class StreamPlayerTest {
         Thread.sleep(50)
         assertEquals(0, sink.taken.get())
         player.resume()
-        player.finish()
+        // Bounded: a resume that does not play the device on leaves the stream held, which must fail here, not hang.
+        assertTrue("resume did not play on: the stream stayed held", returnsWithin(2000) { player.finish() })
         assertEquals(10, sink.taken.get())
     }
 

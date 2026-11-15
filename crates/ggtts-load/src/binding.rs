@@ -55,6 +55,9 @@ pub type Fail = (i32, String);
 /// a render is the same in every binding at the same seed.
 pub const STORY: &str = "ggtts-binding";
 
+/// The story seed's salt a binding render uses when given none (Python's and Kotlin's `DEFAULT_SEED`).
+pub const DEFAULT_SEED: u64 = 20260905;
+
 /// The CPU threads a load uses when given 0 or less.
 pub const DEFAULT_THREADS: i32 = 4;
 
@@ -418,6 +421,41 @@ pub fn render_defaults(o: &Options) -> Options {
 /// A render document laid over a load's render defaults ([`render_defaults`]): what the document gives wins.
 pub fn layer_render(defaults: &Options, doc: Options) -> Result<Options, Fail> {
     defaults.clone().layer(doc).map_err(refusal_err)
+}
+
+/// A binding's render call as a render document: `options` (JSON; `None` is the empty document) read and checked
+/// ([`check_document`]), the call's own `seed` as its `render.seed_salt` (refused when the document gives the salt
+/// too, naming both), and `stream` deciding `output.stream`: a stream call is `raw` unless the document says so
+/// itself, and a whole-read call refuses `output.stream`. The load's render defaults are not laid under it here.
+pub fn render_request(options: Option<&str>, seed: Option<u64>, stream: bool) -> Result<Options, Fail> {
+    let mut doc = match options {
+        Some(json) => Options::from_render_json(json).map_err(refusal_err)?,
+        None => Options::default(),
+    };
+    check_document(&doc, false)?;
+    if let Some(seed) = seed {
+        refuse_given_twice(&doc, &[("seed", "render.seed_salt")])?;
+        doc.render.seed_salt = Some(seed.to_string());
+        doc.marks
+            .sources
+            .insert("render.seed_salt".into(), options::Source::Document);
+    }
+    match (stream, doc.output.stream.is_some()) {
+        (false, true) => {
+            return Err(key_err(
+                "output.stream",
+                "output.stream: this call returns the whole read: stream with the binding's stream call",
+            ))
+        }
+        (true, false) => {
+            doc.output.stream = Some("raw".into());
+            doc.marks
+                .sources
+                .insert("output.stream".into(), options::Source::Document);
+        }
+        _ => {}
+    }
+    Ok(doc)
 }
 
 /// A stream's callback: a piece's samples and its rate; false stops the render.

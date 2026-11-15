@@ -12,7 +12,7 @@ use std::sync::Mutex;
 
 use ggtts_core::capabilities::Capabilities;
 use ggtts_core::engine::Engine;
-use ggtts_core::options::{self, Options, Source};
+use ggtts_core::options::{self, Options};
 use ggtts_load::binding::{self, Held, Slot};
 
 pub use ggtts_load::binding::{
@@ -22,7 +22,7 @@ pub use ggtts_load::binding::{
 pub use ggtts_load::ENGINES;
 
 /// The seed a render uses when given none, as `ggtts-render`.
-pub const DEFAULT_SEED: u64 = 20260905;
+pub use ggtts_load::binding::DEFAULT_SEED;
 
 fn arg_err(msg: impl Into<String>) -> Fail {
     (ERR_ARG, msg.into())
@@ -175,29 +175,7 @@ impl Handle {
         if options.is_none() && self.defaults.is_none() {
             return Ok(None);
         }
-        let mut doc = match options {
-            Some(json) => Options::from_render_json(json).map_err(binding::refusal_err)?,
-            None => Options::default(),
-        };
-        binding::check_document(&doc, false)?;
-        if let Some(seed) = seed {
-            binding::refuse_given_twice(&doc, &[("seed=", "render.seed_salt")])?;
-            doc.render.seed_salt = Some(seed.to_string());
-            doc.marks.sources.insert("render.seed_salt".into(), Source::Document);
-        }
-        match (stream, doc.output.stream.is_some()) {
-            (false, true) => {
-                return Err(binding::refusal_err(options::Refusal {
-                    key: "output.stream".into(),
-                    message: "render returns the whole read: stream with render_stream".into(),
-                }))
-            }
-            (true, false) => {
-                doc.output.stream = Some("raw".into());
-                doc.marks.sources.insert("output.stream".into(), Source::Document);
-            }
-            _ => {}
-        }
+        let doc = binding::render_request(options, seed, stream)?;
         let mut o = match &self.defaults {
             Some(d) => binding::layer_render(d, doc)?,
             None => doc,
@@ -975,7 +953,7 @@ mod tests {
             h.render_with(TEXT, Some(3), Some(r#"{"render": {"seed_salt": "4"}}"#))
         }));
         assert_eq!((code, key.as_deref()), (ERR_ARG, Some("render.seed_salt")));
-        assert!(msg.contains("seed="), "{msg}");
+        assert!(msg.contains("the argument seed"), "{msg}");
         // Malformed JSON is the whole document: no key.
         let (code, _, key) = refused(guard_keyed(|| h.render_with(TEXT, None, Some("{"))));
         assert_eq!((code, key), (ERR_ARG, None));

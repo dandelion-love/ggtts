@@ -13,6 +13,16 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **Kotlin takes every option through one parameter, `options`.** `Ggtts.load(options = ...)` takes a load document,
+  and `render(text, options = ...)` and `renderStream(text, options = ...)` a render document laid over the load's
+  defaults: steering, `edge_s`, `redraw` and a per-render instruction. It is the C ABI's document, as a JSON string
+  over JNI. A refusal throws `GgttsException` with `ERR_ARG`, and the new `GgttsException.key` is the refused
+  option's schema key, read from `ggtts_last_error_key`; the trace (no file sink a phone user can read) and
+  `load.device` (CPU only) are refused by key. The `load` parameters keep working beside a document, and a value
+  given both ways is refused, naming both. `render` and `renderStream` take `seed: Long? = null` (the seed salt,
+  `DEFAULT_SEED` when not given) and `load` takes nullable `engine`, `threads` and `allowDownload` with the same
+  defaults as before; the old signatures stay in the class, hidden from source, so compiled code still links. A call
+  without `options` renders the same samples as before.
 - **Python takes every option through one argument, `options=`.** `ggtts.load(options=...)` takes a load document
   (the `load` section, `cache_dir` included, and `render` defaults), and `render`, `render_stream` and `stream` take a
   render document laid over those defaults: steering, `edge_s`, `redraw`, a per-render instruction and a trace. A

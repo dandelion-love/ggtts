@@ -355,7 +355,7 @@ def test_the_keyword_arguments_keep_working_beside_a_document():
     with fake() as tts:
         with pytest.raises(ValueError) as e:
             tts.render(LINE, seed=3, options={"render": {"seed_salt": "4"}})
-        assert e.value.key == "render.seed_salt" and "seed=" in e.value.message
+        assert e.value.key == "render.seed_salt" and "the argument seed" in e.value.message
 
 
 @pytest.mark.parametrize(

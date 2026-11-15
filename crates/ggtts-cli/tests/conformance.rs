@@ -255,13 +255,15 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
             (&["render.judge"], Refused(NO_JUDGE)),
-            (STEER, Gap(292)),
-            (&["render.redraw", "render.edge_s", "render.measure_timings"], Gap(292)),
+            (STEER, Carried),
+            (&["render.redraw", "render.edge_s"], Carried),
+            (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Refused(ANDROID_TRACE)),
-            (REPORTS, Gap(292)),
-            (LOG, Gap(292)),
+            (REPORTS, Refused(NO_TIMINGS)),
+            (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
-            (FILES_OUT, Refused(NO_FILE)),
+            (&["output.out", "output.stream_format"], Refused(NO_FILE)),
+            (&["output.stream"], Carried),
             (STREAM_LEVEL, Gap(284)),
             (BOOK, Refused(NOT_BOOK_FRONT)),
         ],
@@ -1004,11 +1006,102 @@ fn python_probes() -> Vec<Probe> {
     out
 }
 
+/// Kotlin's `options` on the fake engine, through the binding's own core under its JNI layer (`ggtts_ffi::kotlin`,
+/// what `Native.loadOpts`, `renderOpts` and `renderStreamOpts` call): each option where it is read, or its refusal by
+/// its key.
+fn kotlin_probes() -> Vec<Probe> {
+    use ggtts_ffi::kotlin::{load, render_opts, render_stream_opts, LoadArgs};
+    use ggtts_py::core::{guard_keyed, ERR_ARG};
+    let text = "你好。";
+    let fresh = |doc: &str| load(doc, &LoadArgs::default()).unwrap();
+    let fake = r#"{"load": {"engine": "fake"}}"#;
+    // A whole read with the render document `doc` on a fresh engine.
+    let render = |doc: &str| {
+        let h = fresh(fake);
+        let r = guard_keyed(|| render_opts(h, text, Some(doc), None));
+        ggtts_ffi::ggtts_free(h);
+        r
+    };
+    let mut out = Vec::new();
+    let mut push = |key: &str, seen| out.push(("kotlin", key.to_string(), seen));
+    let plain = render("{}").unwrap().0;
+    let caps = ggtts_core::capabilities::Capabilities::of("fake").unwrap();
+    for (key, doc) in [
+        ("render.steer", r#"{"render": {"steer": "s.safetensors"}}"#),
+        ("render.instruction", r#"{"render": {"instruction": "Speak slowly."}}"#),
+    ] {
+        let capability = caps.refusal(key, None).to_string();
+        push(
+            key,
+            match render(doc) {
+                Err(((ERR_ARG, msg), Some(k))) if k == key && msg == capability => Seen::Carried,
+                Err(((ERR_ARG, _), Some(k))) if k == key => Seen::Refused,
+                other => panic!("kotlin: {key} gave {:?}", other.map(|(s, _)| s.len())),
+            },
+        );
+    }
+    let edged = render(r#"{"render": {"edge_s": 1.5}}"#).unwrap().0;
+    push(
+        "render.edge_s",
+        if edged.len() != plain.len() {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        },
+    );
+    // The load document's engine is the engine loaded.
+    push(
+        "load.engine",
+        match guard_keyed(|| load(r#"{"load": {"engine": "nonesuch"}}"#, &LoadArgs::default())) {
+            Err(((_, msg), _)) if msg.contains("nonesuch") => Seen::Carried,
+            _ => Seen::Dropped,
+        },
+    );
+    // The stream: pieces reach the callback.
+    let h = fresh(fake);
+    let mut pieces = 0usize;
+    let streamed = guard_keyed(|| {
+        render_stream_opts(h, text, Some(r#"{"output": {"stream": "raw"}}"#), None, &mut |_, _| {
+            pieces += 1;
+            true
+        })
+    });
+    ggtts_ffi::ggtts_free(h);
+    assert!(streamed.is_ok(), "kotlin: the stream failed: {streamed:?}");
+    push("output.stream", if pieces > 0 { Seen::Carried } else { Seen::Dropped });
+    // What the binding refuses, by its key: in a render document, and a device in a load document.
+    let by_key = |r: Keyed<(Vec<f32>, u32)>, key: &str| match r {
+        Err(((ERR_ARG, msg), Some(k))) if k == key && msg.starts_with(&format!("{key}: ")) => Seen::Refused,
+        other => panic!("kotlin: {key} gave {:?}", other.map(|(s, _)| s.len())),
+    };
+    for (key, doc) in [
+        ("observe.trace", r#"{"observe": {"trace": "t.jsonl"}}"#),
+        ("observe.trace_level", r#"{"observe": {"trace_level": 2}}"#),
+        ("observe.instruments", r#"{"observe": {"instruments": "i"}}"#),
+        ("render.measure_timings", r#"{"render": {"measure_timings": true}}"#),
+        ("render.seed", r#"{"render": {"seed": 3}}"#),
+        ("observe.timing_report", r#"{"observe": {"timing_report": "t.json"}}"#),
+        ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
+        ("output.out", r#"{"output": {"out": "o.flac"}}"#),
+    ] {
+        push(key, by_key(render(doc), key));
+    }
+    push(
+        "load.device",
+        match guard_keyed(|| load(r#"{"load": {"engine": "fake", "device": "cpu"}}"#, &LoadArgs::default())) {
+            Err(((ERR_ARG, msg), Some(k))) if k == "load.device" && msg.starts_with("load.device: ") => Seen::Refused,
+            other => panic!("kotlin: load.device gave {:?}", other.is_ok()),
+        },
+    );
+    out
+}
+
 fn probes() -> Vec<Probe> {
     let mut out = render_probes();
     out.extend(book_probes());
     out.extend(c_abi_probes());
     out.extend(python_probes());
+    out.extend(kotlin_probes());
     out
 }
 

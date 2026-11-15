@@ -23,6 +23,9 @@ c ggtts_last_error_key:
 kotlin load: engine, model, codec, voice, threads
 kotlin loadWith: engine, model, codec, voice, threads, speaker, instruction
 kotlin loadWithModels: engine, model, codec, voice, threads, speaker, instruction, cacheDir, allowDownload
+kotlin loadOpts: optionsJson, engine, model, codec, voice, threads, speaker, instruction, cacheDir, allowDownload
 kotlin render: handle, text, seed, rateOut
+kotlin renderOpts: handle, text, optionsJson, seed, seedGiven, rateOut
 kotlin renderStream: handle, text, seed, listener
+kotlin renderStreamOpts: handle, text, optionsJson, seed, seedGiven, listener
 kotlin free: handle

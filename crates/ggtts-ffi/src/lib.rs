@@ -45,6 +45,9 @@ use ggtts_load::binding::{self, Held, Slot};
 
 #[cfg(feature = "jni")]
 mod jni;
+/// The Kotlin binding's document calls in plain Rust, under the JNI layer: public to Rust hosts and tests (the
+/// conformance test probes Kotlin through it), not part of the C-ABI.
+pub mod kotlin;
 
 pub const GGTTS_OK: i32 = binding::OK;
 /// A NULL, non-UTF-8 or out-of-range argument.
@@ -533,14 +536,21 @@ pub unsafe extern "C" fn ggtts_load_opts(options_json: *const c_char, handle: *m
         let json = unsafe { arg(options_json, "options_json") }?;
         let o = Options::from_json(json).map_err(refused)?;
         binding::check_document(&o, true)?;
-        let id = load_options(&o, true, true)?;
-        // The render defaults, kept with the handle: the render section, marked as given where the document gave it.
-        defaults()
-            .get_or_insert_with(HashMap::new)
-            .insert(id, binding::render_defaults(&o));
+        let id = load_document(&o)?;
         unsafe { *handle = id };
         Ok(())
     })
+}
+
+/// Load the engine a checked load document names and keep its render defaults with the handle: the body of
+/// [`ggtts_load_opts`], which the Kotlin binding's document load calls too.
+fn load_document(o: &Options) -> Result<u64, Fail> {
+    let id = load_options(o, true, true)?;
+    // The render defaults, kept with the handle: the render section, marked as given where the document gave it.
+    defaults()
+        .get_or_insert_with(HashMap::new)
+        .insert(id, binding::render_defaults(o));
+    Ok(id)
 }
 
 /// Render `text` to mono f32 PCM. Free the buffer with [`ggtts_pcm_free`].

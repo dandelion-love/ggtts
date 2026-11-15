@@ -45,6 +45,11 @@ pub const NOT_OPTIONS: &[(Surface, &str, &str)] = &[
         "options",
         "the options document: every option, by its schema key",
     ),
+    (
+        Surface::Kotlin,
+        "options",
+        "the options document: every option, by its schema key",
+    ),
     (Surface::C, "size", "the struct's own size, its version"),
     (Surface::C, "settings", "the struct the settings are in"),
     (Surface::C, "handle", "the engine handle"),

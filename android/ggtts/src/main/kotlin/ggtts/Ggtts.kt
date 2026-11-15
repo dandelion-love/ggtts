@@ -2,8 +2,13 @@
 // here can crash the process on a bad argument, a missing file or a closed instance.
 package ggtts
 
-/** A ggtts error: [code] is the C-ABI's status (GGTTS_ERR_*), [message] its explanation. */
-class GgttsException(val code: Int, message: String) : RuntimeException(message)
+/**
+ * A ggtts error: [code] is the C-ABI's status (GGTTS_ERR_*), [message] its explanation, and [key] the schema key of
+ * the one option refused (for example "render.steer"), read from the library (`ggtts_last_error_key`), or null.
+ */
+class GgttsException(val code: Int, message: String, val key: String?) : RuntimeException(message) {
+    constructor(code: Int, message: String) : this(code, message, null)
+}
 
 /** Mono f32 samples at [sampleRate]. */
 class Pcm(val samples: FloatArray, val sampleRate: Int)
@@ -42,8 +47,36 @@ internal object Native {
         cacheDir: String?,
         allowDownload: Boolean,
     ): Long
+    @JvmStatic external fun loadOpts(
+        optionsJson: String,
+        engine: String?,
+        model: String?,
+        codec: String?,
+        voice: String?,
+        threads: Int,
+        speaker: String?,
+        instruction: String?,
+        cacheDir: String?,
+        allowDownload: Int,
+    ): Long
     @JvmStatic external fun render(handle: Long, text: String, seed: Long, rateOut: IntArray): FloatArray
+    @JvmStatic external fun renderOpts(
+        handle: Long,
+        text: String,
+        optionsJson: String?,
+        seed: Long,
+        seedGiven: Boolean,
+        rateOut: IntArray,
+    ): FloatArray
     @JvmStatic external fun renderStream(handle: Long, text: String, seed: Long, listener: PieceListener): Boolean
+    @JvmStatic external fun renderStreamOpts(
+        handle: Long,
+        text: String,
+        optionsJson: String?,
+        seed: Long,
+        seedGiven: Boolean,
+        listener: PieceListener,
+    ): Boolean
     @JvmStatic external fun free(handle: Long)
 }
 
@@ -82,7 +115,63 @@ class Ggtts private constructor(private var handle: Long) : AutoCloseable {
          * the file is verified, so call it off the UI thread and only after the user has agreed to the download.
          *
          * The engine runs on the CPU: Android has no GPU backend in ggtts, so the binding has no device setting.
+         *
+         * [options] is a load document, JSON, as the C-ABI's `ggtts_load_opts` takes it: the `load` section (every
+         * parameter above has its key there) and `render` defaults every render on the engine starts from. With it,
+         * a parameter left null is not given, and one given both here and in the document throws GGTTS_ERR_ARG naming
+         * both. A refused option throws GGTTS_ERR_ARG with its [GgttsException.key]; so do `load.device` (CPU only)
+         * and the trace (no file sink a phone user can read). Without it, null [engine] is "qwen3-tts", [threads] 4
+         * and [allowDownload] false, and the load is the one this function always made.
          */
+        fun load(
+            engine: String? = null,
+            model: String? = null,
+            codec: String? = null,
+            voice: String? = null,
+            threads: Int? = null,
+            speaker: String? = null,
+            instruction: String? = null,
+            cacheDir: String? = null,
+            allowDownload: Boolean? = null,
+            options: String? = null,
+        ): Ggtts = Ggtts(
+            if (options == null) {
+                Native.loadWithModels(
+                    engine ?: "qwen3-tts",
+                    model,
+                    codec,
+                    voice,
+                    threads ?: 4,
+                    speaker,
+                    instruction,
+                    cacheDir,
+                    allowDownload ?: false,
+                )
+            } else {
+                Native.loadOpts(
+                    options,
+                    engine,
+                    model,
+                    codec,
+                    voice,
+                    threads ?: 0,
+                    speaker,
+                    instruction,
+                    cacheDir,
+                    when (allowDownload) {
+                        null -> -1
+                        true -> 1
+                        false -> 0
+                    },
+                )
+            },
+        )
+
+        /**
+         * The nine-parameter `load` from before the options document, kept so code compiled against it (including its
+         * default-argument form) still links and loads exactly as it did. Hidden from source.
+         */
+        @Deprecated("Kept for binary compatibility; call load with options", level = DeprecationLevel.HIDDEN)
         fun load(
             engine: String,
             model: String? = null,
@@ -122,19 +211,44 @@ class Ggtts private constructor(private var handle: Long) : AutoCloseable {
             Ggtts(Native.loadWith(engine, model, codec, voice, threads, null, null))
     }
 
-    /** Render [text] (one paragraph per line) to levelled PCM. */
-    fun render(text: String, seed: Long = DEFAULT_SEED): Pcm {
+    /**
+     * Render [text] (one paragraph per line) to levelled PCM. [seed] is the salt of the story seed every chunk's sampler
+     * seed is derived from (`render.seed_salt`), [DEFAULT_SEED] when neither it nor [options] gives one. [options] is
+     * a render document, JSON, as the C-ABI's `ggtts_render_opts` takes it, laid over the load's `render` defaults:
+     * steering, an edge, redraws, an instruction. A load option in it, `output.stream` (stream with [renderStream]),
+     * the trace and any option the engine or this binding does not take throw GGTTS_ERR_ARG with the option's
+     * [GgttsException.key]; so does a [seed] beside `render.seed_salt`.
+     */
+    fun render(text: String, seed: Long? = null, options: String? = null): Pcm {
         val rate = IntArray(1)
-        val samples = Native.render(handle, text, seed, rate)
+        val samples = if (options == null) {
+            Native.render(handle, text, seed ?: DEFAULT_SEED, rate)
+        } else {
+            Native.renderOpts(handle, text, options, seed ?: 0L, seed != null, rate)
+        }
         return Pcm(samples, rate[0])
     }
 
+    /** The `render` from before the options document, kept so compiled code still links. Hidden from source. */
+    @Deprecated("Kept for binary compatibility; call render with options", level = DeprecationLevel.HIDDEN)
+    fun render(text: String, seed: Long = DEFAULT_SEED): Pcm = render(text, seed, null)
+
     /**
      * Render [text], handing each kept chunk's piece to [listener] as it is produced (before the level step).
-     * Returns false if the listener stopped it.
+     * Returns false if the listener stopped it. [seed] and [options] are as [render]'s; a stream's document may say
+     * `"output": {"stream": "raw"}`, which is what it streams anyway.
      */
+    fun renderStream(text: String, seed: Long? = null, options: String? = null, listener: PieceListener): Boolean =
+        if (options == null) {
+            Native.renderStream(handle, text, seed ?: DEFAULT_SEED, listener)
+        } else {
+            Native.renderStreamOpts(handle, text, options, seed ?: 0L, seed != null, listener)
+        }
+
+    /** The `renderStream` from before the options document, kept so compiled code still links. Hidden from source. */
+    @Deprecated("Kept for binary compatibility; call renderStream with options", level = DeprecationLevel.HIDDEN)
     fun renderStream(text: String, seed: Long = DEFAULT_SEED, listener: PieceListener): Boolean =
-        Native.renderStream(handle, text, seed, listener)
+        renderStream(text, seed, null, listener)
 
     override fun close() {
         if (handle != 0L) {

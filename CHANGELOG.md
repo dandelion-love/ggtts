@@ -13,6 +13,15 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **The Android demo and its system TTS engine carry the options document.** The app's request, its saved voices and
+  its render calls are one options document, handed to the Kotlin binding as `options`. Any option the binding takes
+  (a style instruction, steering, an edge, redraws, a levelled stream) now reaches the app and the system engine with
+  no new field in either. The screen's choices are values in that document: the files, the speaker and the threads.
+  The app still streams the raw pieces unless the document's `output` section says otherwise, and it still never
+  downloads. Voices saved by an earlier version load as before and are saved as documents from then on. A saved voice
+  the binding refuses is reported unusable rather than dropped. The system engine logs one line when a client asks
+  for a speech rate or pitch, since ggtts has neither.
+
 - **A stream through an options document is levelled by default, as `ggtts-render --stream` is.** The C ABI's
   `ggtts_render_opts` with a callback, Python's `render_stream` and `stream` with `options=`, and Kotlin's
   `renderStream` with `options` now hand each piece levelled by one gain from the first 5 s of audio

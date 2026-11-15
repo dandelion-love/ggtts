@@ -206,7 +206,12 @@ user picks it in the phone's text-to-speech settings. The app does not change th
 
 - **Voices:** Cantonese (Hong Kong), `yue-HK`, from Qwen3-TTS, and English (US) from Kitten-TTS 2. Each voice uses
   the model files of that engine's last finished Speak in the demo. Until there has been one, the engine reports the
-  language as missing data, and a request gets `ERROR_NOT_INSTALLED_YET`.
+  language as missing data, and a request gets `ERROR_NOT_INSTALLED_YET`. A voice is saved as its whole options
+  document (the files, the speaker, the threads, and any other option the request carries). A saved voice the
+  binding refuses (a key it does not take, say) is reported unusable with the binding's message. It is not listed,
+  and a request gets `ERROR_INVALID_REQUEST` until the next finished Speak saves the voice again.
+- **Speech rate and pitch** are not available: ggtts has no option for either. A request at a rate or pitch other than
+  normal is spoken at normal, and the app logs one line naming what it ignored.
 - **Latency:** every voice is declared `LATENCY_VERY_HIGH`, so a client that reads voice latency can see it before
   choosing it. It streams like the demo: the platform gets each chunk as it is rendered.
 - **Not for screen readers.** The first audio takes tens of seconds.

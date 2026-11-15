@@ -29,6 +29,27 @@ class MediaControlsTest {
         assertNull(MediaControls.toggleAction(MediaControls.State.NONE))
     }
 
+    /**
+     * #409. Plant: the screen's button labelled from the wrong state (Pause while paused), or shown with no read. It
+     * offers what the notification offers, for playing, paused and idle, and a pause made elsewhere (the controller
+     * paused by the media session) shows Play.
+     */
+    @Test
+    fun theScreensButtonOffersWhatTheNotificationOffers() {
+        assertEquals("❚❚  Pause", MediaControls.screenLabel(MediaControls.State.PLAYING))
+        assertEquals("▶  Play", MediaControls.screenLabel(MediaControls.State.PAUSED))
+        assertNull("a button with no read", MediaControls.screenLabel(MediaControls.State.NONE))
+        for (s in MediaControls.State.values()) {
+            assertEquals(MediaControls.toggleLabel(s), MediaControls.screenLabel(s)?.substringAfter("  "))
+        }
+        val audio = Audio()
+        val c = controller(audio, mutableListOf())
+        c.speak(LoadRequest("qwen3-tts", "/m.gguf", "/c.gguf", null), "line", 1)
+        assertEquals("❚❚  Pause", MediaControls.screenLabel(MediaControls.state(c.busy, c.paused)))
+        MediaControls.apply(ForegroundGate.ACTION_PAUSE, c) // as the media session does
+        assertEquals("▶  Play", MediaControls.screenLabel(MediaControls.state(c.busy, c.paused)))
+    }
+
     private class Audio : AudioOut {
         override var paused = false
         val events = mutableListOf<String>()

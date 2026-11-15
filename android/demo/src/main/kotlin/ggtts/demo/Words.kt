@@ -116,6 +116,7 @@ object EnglishWords : Words {
         "icon_note" to "The icon's 粵 is drawn from Noto Sans HK (SIL Open Font License 1.1). No font file ships with the app.",
         "notices_heading" to "Notices",
         "notices_intro" to "ggtts and the libraries built into this app, with their licences:",
+        "notices_unavailable" to "The notices could not be read from this app.",
         "notice_missing" to "%1\$s is missing from this build.",
         "notification_channel" to "Reading",
         "notification_starting" to "Starting...",

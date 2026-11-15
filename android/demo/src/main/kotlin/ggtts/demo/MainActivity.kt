@@ -606,7 +606,6 @@ class MainActivity : AppCompatActivity(), DemoView {
 
     private fun badge(v: Voice) = when (v.language) { "Cantonese" -> "粵"; "English" -> "EN"; else -> v.language.take(2) }
 
-    /** The voices as a sheet of cards from the bottom: tap one to choose it; a sample plays without a render. */
     /**
      * Licences and privacy: what the app collects (nothing; held to the manifest by LicencesTest), whose the voices
      * are, where the icon's glyph comes from, and every notice the AAR carries, read from this APK (Licences).
@@ -626,10 +625,16 @@ class MainActivity : AppCompatActivity(), DemoView {
         section(getString(R.string.privacy_heading), getString(R.string.privacy_statement))
         section(getString(R.string.model_note_heading), getString(R.string.model_note) + "\n\n" + getString(R.string.icon_note))
         section(getString(R.string.notices_heading), getString(R.string.notices_intro))
-        val apk = java.util.zip.ZipFile(applicationInfo.sourceDir)
-        val notices = apk.use { zip ->
-            val entries = zip.entries().asSequence().map { it.name }.toList()
-            Licences.notices(entries) { path -> zip.getEntry(path)?.let { e -> zip.getInputStream(e).readBytes().inputStream() } }
+        // The APK is read for its notices; if it will not open, the sheet still opens and says so.
+        val notices = runCatching {
+            java.util.zip.ZipFile(applicationInfo.sourceDir).use { zip ->
+                val entries = zip.entries().asSequence().map { it.name }.toList()
+                Licences.notices(entries) { path -> zip.getEntry(path)?.let { e -> zip.getInputStream(e).readBytes().inputStream() } }
+            }
+        }.getOrElse {
+            Log.w(TAG, "licences: the APK could not be read: $it")
+            sheet.addView(words(getString(R.string.notices_unavailable), M.style.TextAppearance_Material3_BodyMedium, androidx.appcompat.R.attr.colorError))
+            emptyList()
         }
         for (n in notices) {
             sheet.addView(words(n.name, M.style.TextAppearance_Material3_TitleSmall).apply { setPadding(0, dp(12), 0, dp(4)) })
@@ -645,6 +650,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         dialog.show()
     }
 
+    /** The voices as a sheet of cards from the bottom: tap one to choose it; a sample plays without a render. */
     private fun showVoiceSheet() {
         if (found.voices.isEmpty()) return
         val dialog = BottomSheetDialog(this)

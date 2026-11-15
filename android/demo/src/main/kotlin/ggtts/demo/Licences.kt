@@ -33,8 +33,18 @@ object Licences {
             .toList()
 
     /**
-     * Whether [manifest] (AndroidManifest.xml's text) asks for no internet permission: the privacy statement says the
-     * app collects no data because it cannot send any, and this is what holds it to that.
+     * Whether [manifest] (an AndroidManifest.xml's text) asks for no internet permission, read from its
+     * `uses-permission` elements, so a comment that names the permission does not count. The privacy statement says
+     * the app collects no data because it cannot send any; this holds the source manifest to that, and
+     * scripts/android_build.sh holds the merged one (dependencies included).
      */
-    fun hasNoInternetPermission(manifest: String): Boolean = "android.permission.INTERNET" !in manifest
+    fun hasNoInternetPermission(manifest: String): Boolean {
+        val doc = javax.xml.parsers.DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
+            .newDocumentBuilder().parse(manifest.byteInputStream())
+        val ns = "http://schemas.android.com/apk/res/android"
+        return listOf("uses-permission", "uses-permission-sdk-23").none { tag ->
+            val nodes = doc.getElementsByTagName(tag)
+            (0 until nodes.length).any { (nodes.item(it) as org.w3c.dom.Element).getAttributeNS(ns, "name") == "android.permission.INTERNET" }
+        }
+    }
 }

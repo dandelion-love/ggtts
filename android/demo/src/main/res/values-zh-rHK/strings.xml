@@ -112,6 +112,7 @@
     <string name="icon_note">圖示上嘅「粵」字取自 Noto Sans HK（SIL Open Font License 1.1）。應用程式冇附帶字型檔案。</string>
     <string name="notices_heading">聲明</string>
     <string name="notices_intro">ggtts 同埋呢個應用程式內置嘅程式庫，以及佢哋嘅授權：</string>
+    <string name="notices_unavailable">讀取唔到呢個應用程式嘅聲明。</string>
     <string name="notice_missing">呢個版本缺少 %1$s。</string>
 
     <!-- The reading notification -->

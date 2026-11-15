@@ -113,6 +113,7 @@
     <string name="icon_note">The icon\'s 粵 is drawn from Noto Sans HK (SIL Open Font License 1.1). No font file ships with the app.</string>
     <string name="notices_heading">Notices</string>
     <string name="notices_intro">ggtts and the libraries built into this app, with their licences:</string>
+    <string name="notices_unavailable">The notices could not be read from this app.</string>
     <string name="notice_missing">%1$s is missing from this build.</string>
 
     <!-- The reading notification -->

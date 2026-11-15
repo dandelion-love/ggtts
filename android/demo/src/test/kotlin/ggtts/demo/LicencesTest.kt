@@ -57,6 +57,9 @@ class LicencesTest {
         // Planted: the same manifest with the permission added fails the check.
         val planted = manifest.replace("<application", "<uses-permission android:name=\"android.permission.INTERNET\" />\n    <application")
         assertFalse(Licences.hasNoInternetPermission(planted))
+        // A comment that names the permission is not a request for it.
+        val comment = manifest.replace("<application", "<!-- not android.permission.INTERNET -->\n    <application")
+        assertTrue(Licences.hasNoInternetPermission(comment))
     }
 
     /** #413 AC1: the ⋮ menu opens the screen. */

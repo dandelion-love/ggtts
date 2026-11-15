@@ -1,5 +1,17 @@
 # Log
 
+## 2026-11-14
+
+- Gap 3 closed: the app lists voices made from what its files say they are, selects the first, and keeps the
+  engine's parts under "Advanced". On the phone, Speak with no files named read through hk_voice_343 (first audio at
+  18 s). The files declare no language, so a Kitten-TTS 2 Cantonese voice shows as English.
+
+## 2026-11-13
+
+- The app read as a store listing would be: eight gaps, ranked. The first, no stated purpose, is closed: the screen
+  opens with what the app does, what it costs and what it is not for, held to the manifest and the measured costs by
+  a test. Getting a voice inside the app and choosing a named voice come next.
+
 ## 2026-11-12
 
 - A Kitten-TTS 2 step profiled in the engine's own graph (desktop): layer products about 27 to 30 ms, the head 16 ms,

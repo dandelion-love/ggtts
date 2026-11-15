@@ -5,12 +5,24 @@ Two Gradle modules:
 * **`ggtts`**, the Android library (AAR): the Kotlin binding [`Ggtts.kt`](ggtts/src/main/kotlin/ggtts/Ggtts.kt) and
   `libggtts_ffi.so` for `arm64-v8a` (the C-ABI with its JNI entry points, over ggml), with the NDK's
   `libc++_shared.so` beside it. How to call it: [ggtts from Kotlin and Android](../docs/bindings/kotlin-android.md).
-* **`demo`**, a one-screen app (package `ggtts.demo`) that loads the model files you pick and speaks one line with
+* **`demo`**, the app "ggtts Text-to-Speech": a one-screen app (package `ggtts.demo`) that loads the model files you pick and speaks one line with
   Qwen3-TTS or Kitten-TTS 2, through the library.
 
 **No model ships with the app.** The APK holds code only; you bring the model files. The build refuses an APK that
 carries a weights file, by name (`.gguf`, `.safetensors`, `.bin`, `.pt`, `.onnx`) or by content (any entry starting
 with GGUF's magic bytes), and checks both refusals on planted APKs every time it runs.
+
+## What the app is for
+
+**Reads text aloud in Cantonese or English, entirely on this phone.** You type or paste a passage and listen to it
+in a neural voice; nothing you type leaves the phone, because the app has no permission to use the internet. It is
+slow: a sentence takes 30 to 60 seconds before it starts on a recent phone, so it suits listening to a passage you
+have chosen, not reading the screen as you go, and it is not for screen readers. Other apps can use it as a
+text-to-speech engine in Android's settings.
+
+The app's screen opens with these words, and with the steps still ahead when no model files are present yet. They
+live in `About.kt`, and `AboutTest` holds them to the app: adding the `INTERNET` permission, or measuring a wait
+outside 30 to 60 seconds, fails the test until the words change too.
 
 ## Build
 
@@ -77,7 +89,18 @@ Put them there in either of two ways:
   adb push qwen-talker-hk-cantonese-cc0-v0.0.5-q8_0.gguf /sdcard/Android/data/ggtts.demo/files/models/
   ```
 
-Then pick the files in the three lists, and press Speak.
+Then choose a voice and press Speak. The app reads what each file is from the file itself, not from its name: a
+GGUF's `general.architecture`, a Qwen3-TTS talker's speaker names, and a voice JSON's fields. It lists one voice for
+each speaker a talker names (with a codec), and one for each prepared voice JSON (with a Kitten-TTS 2 language model
+and decoder), and selects the first. Files that make no voice yet are named on the screen with what they lack. A
+voice's sample is `<voice name>.sample.wav` beside the files, pushed with adb, and "Play a sample" plays it.
+
+A voice's language is the one its engine reads as Android's text-to-speech engine (Cantonese for Qwen3-TTS, English
+for Kitten-TTS 2): no model file here declares a language, so a Kitten-TTS 2 voice made for Cantonese is still listed
+as English.
+
+"Advanced" (closed by default) holds what a voice sets: the engine, the three file lists, the speaker and the CPU
+threads. A choice there is what Speak uses until another voice is chosen.
 
 | Engine | Model | Codec | Voice | Speaker |
 |---|---|---|---|---|
@@ -203,6 +226,8 @@ This removes the app and everything in its directory, the model files included.
 `scripts/android_build.sh app` runs the demo's JVM tests (`android/demo/src/test`). `DemoControllerTest` replaces the
 native library with a fake binding that throws the library's `GgttsException`, and checks that a missing model, a file
 that is not a GGUF, a failed render and an unexpected exception each show a message and leave the screen usable.
+`VoicesTest` checks how files make voices: one per talker speaker or voice JSON, in order, the first complete one
+selected, and each incomplete bundle named with what it lacks; and it reads a GGUF header built in the test.
 `ModelImportTest` gives the import each file it must refuse (the wrong type, empty, a `.gguf` name on other bytes, a
 default model file with other bytes, a name already taken, a copy cut short) and checks that nothing is listed after.
 Both test the

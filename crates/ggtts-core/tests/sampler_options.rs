@@ -105,6 +105,28 @@ fn greedy_decoding_is_refused_with_the_reason() {
     }
 }
 
+/// Review of #351: a top-k of 1 keeps only the most likely token, which is greedy decoding by another name; it is
+/// refused with the same reason, talker and sub-talker. Top-k 0 (off) and 2 are not.
+#[test]
+fn a_top_k_of_1_is_greedy_decoding_and_refused() {
+    let qwen = Capabilities::of("qwen3-tts").unwrap();
+    for (flag, key, says) in [
+        ("--top-k", "load.top_k", "greedy decoding does not terminate"),
+        (
+            "--subtalker-top-k",
+            "load.subtalker_top_k",
+            "greedy decoding of the sub-talker does not terminate",
+        ),
+    ] {
+        let r = check(&flags(&[flag, "1"]), &qwen).unwrap_err();
+        assert_eq!(r.key, key);
+        assert!(r.message.contains(says), "{flag}: {}", r.message);
+        for ok in ["0", "2"] {
+            check(&flags(&[flag, ok]), &qwen).unwrap_or_else(|e| panic!("{flag} {ok}: {e}"));
+        }
+    }
+}
+
 #[test]
 fn the_record_carries_the_settings_given_and_only_those() {
     let info = EngineInfo {

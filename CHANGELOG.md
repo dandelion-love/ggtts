@@ -17,8 +17,8 @@ that a merge places under a released heading is caught.
   `--repetition-penalty`, `--max-frames` and `--language` (`load.temperature` and the rest), with the reference CLI's
   meanings, and `--subtalker-temperature`, `--subtalker-top-k` and `--subtalker-top-p` for the code predictor, which
   otherwise samples with the talker's settings. Unset, each is the value every render had before (0.9, 50, 1.0, 1.05,
-  1200 frames, `zh`), so a render without them is unchanged. A temperature at or below 0 (talker or sub-talker) is
-  refused, since greedy decoding does not terminate on this model. `ggtts-render`, `ggtts-book` and the load documents
+  1200 frames, `zh`), so a render without them is unchanged. A temperature at or below 0, or a top-k of 1 (talker or
+  sub-talker), is greedy decoding and is refused, since greedy decoding does not terminate on this model. `ggtts-render`, `ggtts-book` and the load documents
   of the C ABI, Python (`options=`) and Kotlin (`options`) take them; Kitten-TTS 2 refuses each by its key. A render given any records them as `sampling` in its
   record, trace header, timing and duration reports, and a book's manifests, so a resume under other settings
   renders the chapter again. The capability statement (`ggtts_capabilities`) gains `sampler`.

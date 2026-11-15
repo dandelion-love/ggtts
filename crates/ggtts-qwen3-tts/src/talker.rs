@@ -127,6 +127,19 @@ impl Sampling {
                 return Err(err(format!("{name} {k} refused: it must be 0 (off) or more")));
             }
         }
+        // Top-k 1 keeps only the most likely token: greedy decoding by another name, whatever the temperature.
+        if self.top_k == 1 {
+            return Err(err(
+                "top-k 1 refused: it keeps only the most likely token, which is greedy decoding, and greedy decoding \
+                 does not terminate on this model",
+            ));
+        }
+        if self.subtalker_top_k == Some(1) {
+            return Err(err(
+                "sub-talker top-k 1 refused: it keeps only the most likely token, which is greedy decoding, and \
+                 greedy decoding of the sub-talker does not terminate on this model",
+            ));
+        }
         for (name, p) in [("top-p", Some(self.top_p)), ("sub-talker top-p", self.subtalker_top_p)] {
             if let Some(p) = p.filter(|p| !(p.is_finite() && *p >= 0.0)) {
                 return Err(err(format!("{name} {p} refused: it must be a number, 0 or more")));

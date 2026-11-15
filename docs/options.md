@@ -55,12 +55,12 @@ unset is the value every render had before these options existed, so a render th
 | Key | Flag | Unset is | Notes |
 |---|---|---|---|
 | `load.temperature` | `--temperature` | 0.9 | above 0: greedy decoding does not terminate on this model, and 0 or less is refused with that reason |
-| `load.top_k` | `--top-k` | 50 | 0 is off |
-| `load.top_p` | `--top-p` | 1.0 (off) | |
+| `load.top_k` | `--top-k` | 50 | 0 is off; 1 keeps only the most likely token, which is greedy decoding, and is refused |
+| `load.top_p` | `--top-p` | 1.0 | 0 and 1.0 are off |
 | `load.repetition_penalty` | `--repetition-penalty` | 1.05 | codebook 0 only; above 0 |
 | `load.subtalker_temperature` | `--subtalker-temperature` | the talker's | the code predictor (codebooks 1 to 15); above 0, for the same reason |
-| `load.subtalker_top_k` | `--subtalker-top-k` | the talker's | |
-| `load.subtalker_top_p` | `--subtalker-top-p` | the talker's | |
+| `load.subtalker_top_k` | `--subtalker-top-k` | the talker's | 1 is greedy decoding, and is refused |
+| `load.subtalker_top_p` | `--subtalker-top-p` | the talker's | 0 and 1.0 are off |
 | `load.max_frames` | `--max-frames` | 1200 | the frame cap of one chunk, at 12.5 frames a second |
 | `load.language` | `--language` | `zh` | the reference CLI's `-l` names: `auto`, `en`, `ru`, `zh`, `ja`, `ko`, `de`, `fr`, `es`, `it`, `pt` |
 

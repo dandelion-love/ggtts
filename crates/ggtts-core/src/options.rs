@@ -308,7 +308,8 @@ pub const TABLE: &[Descriptor] = &[
     },
     Descriptor {
         flags: &["--top-k"],
-        help: "Qwen3-TTS only: the talker's top-k, 0 for off; unset is 50, the reference CLI's.",
+        help: "Qwen3-TTS only: the talker's top-k, 0 for off; 1 is greedy decoding, refused since it does not \
+               terminate on this model; unset is 50, the reference CLI's.",
         ..row(
             "top_k",
             SL,
@@ -322,7 +323,7 @@ pub const TABLE: &[Descriptor] = &[
     },
     Descriptor {
         flags: &["--top-p"],
-        help: "Qwen3-TTS only: the talker's top-p; unset is 1.0 (off), the reference CLI's.",
+        help: "Qwen3-TTS only: the talker's top-p; 0 and 1.0 are off; unset is 1.0, the reference CLI's.",
         ..row("top_p", SL, L, Kind::Number { min: Some(0.0) }, "null")
     },
     Descriptor {
@@ -339,7 +340,8 @@ pub const TABLE: &[Descriptor] = &[
     },
     Descriptor {
         flags: &["--subtalker-top-k"],
-        help: "Qwen3-TTS only: the sub-talker's top-k, 0 for off; unset is the talker's.",
+        help: "Qwen3-TTS only: the sub-talker's top-k, 0 for off; 1 is greedy decoding, refused since it does not \
+               terminate; unset is the talker's.",
         ..row(
             "subtalker_top_k",
             SL,
@@ -353,7 +355,7 @@ pub const TABLE: &[Descriptor] = &[
     },
     Descriptor {
         flags: &["--subtalker-top-p"],
-        help: "Qwen3-TTS only: the sub-talker's top-p; unset is the talker's.",
+        help: "Qwen3-TTS only: the sub-talker's top-p; 0 and 1.0 are off; unset is the talker's.",
         ..row("subtalker_top_p", SL, L, Kind::Number { min: Some(0.0) }, "null")
     },
     Descriptor {
@@ -1283,7 +1285,8 @@ fn lacking(o: &Options, caps: &Capabilities) -> Vec<&'static str> {
 }
 
 /// The sampler setting of `o` an engine that takes them (`caps.sampler`) still will not run, refused under its key:
-/// a temperature at or below zero (greedy decoding, which does not terminate on Qwen3-TTS, talker or sub-talker),
+/// a temperature at or below zero, or a top-k of 1 (greedy decoding, which does not terminate on Qwen3-TTS, talker or
+/// sub-talker),
 /// and a repetition penalty at or below zero, which the sampler divides by.
 fn sampler_refusal(o: &Options, caps: &Capabilities) -> Option<Refusal> {
     let l = &o.load;
@@ -1302,6 +1305,22 @@ fn sampler_refusal(o: &Options, caps: &Capabilities) -> Option<Refusal> {
     }
     if let Some(t) = l.subtalker_temperature.filter(|t| *t <= 0.0) {
         return Some(greedy("load.subtalker_temperature", "of the sub-talker ", t));
+    }
+    // Top-k 1 keeps only the most likely token: greedy decoding, whatever the temperature.
+    let top_one = |key: &str, what: &str| {
+        Refusal::new(
+            key,
+            format!(
+                "1 refused: it keeps only the most likely token, which is greedy decoding, and greedy decoding {what}\
+                 does not terminate on the {family} engine"
+            ),
+        )
+    };
+    if l.top_k == Some(1) {
+        return Some(top_one("load.top_k", ""));
+    }
+    if l.subtalker_top_k == Some(1) {
+        return Some(top_one("load.subtalker_top_k", "of the sub-talker "));
     }
     if let Some(p) = l.repetition_penalty.filter(|p| *p <= 0.0) {
         return Some(Refusal::new(

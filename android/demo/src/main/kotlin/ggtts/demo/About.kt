@@ -7,6 +7,16 @@ object About {
     /** One line, the length of a store's short description (80 characters at most). */
     const val TAGLINE = "Reads text aloud in Cantonese or English, entirely on this phone."
 
+    /** The reading screen's header subtitle: the store line, so the screen opens saying what the app is for. */
+    const val HEADER_SUBTITLE = TAGLINE
+
+    /**
+     * Under the text box while it is empty: the use a first-time user would not guess. The wait is on the player
+     * ("First sound in about…", from [EngineCosts]), and the full sentences stay under About ([PURPOSE]).
+     */
+    const val EMPTY_TEXT_HINT =
+        "Other apps can read aloud with it too: choose ggtts as the text-to-speech engine in Android's settings."
+
     /**
      * What a person gets, what it costs them, and what it is not for. Every claim here is checked: "no internet
      * permission" by [AboutTest] against the manifest, and the wait by [EngineCosts], whose figures are measured.

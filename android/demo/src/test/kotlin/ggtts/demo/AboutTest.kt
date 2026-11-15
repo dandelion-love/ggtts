@@ -36,6 +36,20 @@ class AboutTest {
         assertTrue(About.PURPOSE.any { "30 to 60 seconds" in it })
     }
 
+    /**
+     * The screen opens saying what the app is for: the header's subtitle is the tagline, and an empty text box names
+     * the use by other apps that About states. The layout is not built on the JVM, so its source is held to the names.
+     */
+    @Test
+    fun theReadingScreenOpensWithTheTaglineAndTheOtherAppsHint() {
+        assertEquals(About.TAGLINE, About.HEADER_SUBTITLE)
+        val screen = File("src/main/kotlin/ggtts/demo/MainActivity.kt").readText()
+        assertTrue("the header's subtitle is not About.HEADER_SUBTITLE", "subtitle = About.HEADER_SUBTITLE" in screen)
+        assertTrue("the empty text box does not show About.EMPTY_TEXT_HINT", "About.EMPTY_TEXT_HINT" in screen)
+        assertTrue("text-to-speech engine" in About.EMPTY_TEXT_HINT)
+        assertTrue(About.PURPOSE.any { "text-to-speech engine" in it })
+    }
+
     @Test
     fun gettingStartedShowsOnlyWithoutModelFiles() {
         assertEquals(3, About.gettingStarted(0).size)

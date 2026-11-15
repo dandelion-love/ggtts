@@ -380,7 +380,7 @@ def test_the_keyword_arguments_keep_working_beside_a_document():
     [
         ({"render": {"nonesuch": 1}}, "render.nonesuch"),
         ({"load": {"device": "cpu"}}, "load.device"),
-        ({"render": {"seed": 3}}, "render.seed"),
+        ({"render": {"seed": 3, "redraw": 1}}, "render.seed"),
         ({"render": {"edge_s": "wide"}}, "render.edge_s"),
         ({"output": {"stream": "raw"}}, "output.stream"),
         ({"observe": {"log_level": "info"}}, "observe.log_level"),
@@ -392,6 +392,18 @@ def test_a_render_document_refuses_an_unknown_or_misplaced_key_by_name(doc, key)
         with pytest.raises(ValueError) as e:
             tts.render(LINE, options=doc)
     assert e.value.key == key, e.value.message
+
+
+def test_render_seed_is_one_chunk_at_that_exact_seed():
+    with fake() as tts:
+        exact = tts.render(LINE, options={"render": {"seed": 7}})
+        assert len(exact) > 0
+    with fake() as tts:
+        assert tts.render(LINE, options={"render": {"seed": 7}}).pcm == exact.pcm, "the same seed, the same samples"
+    with fake() as tts:
+        with pytest.raises(ValueError) as e:
+            tts.render(LINE, seed=3, options={"render": {"seed": 7}})
+        assert e.value.key == "render.seed" and "salt" in e.value.message
 
 
 def test_an_unknown_load_key_and_a_malformed_document_are_value_errors():

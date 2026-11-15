@@ -286,8 +286,9 @@ needs no new parameter. A document is a JSON string, the C library's options doc
   `redraw` and `edge_s`. A stream through a document is levelled as `ggtts-render --stream` levels it: held until the first `output.stream_level_seconds` of audio (5 s unless given) set one gain, then each piece at that gain. `{"output": {"stream": "raw"}}` (or
   `"stream_raw": true`) hands the pieces over before the level step instead, as `renderStream` with no options
   does. `render` refuses `output.stream`: stream with `renderStream`.
+* **One chunk at an exact seed:** `{"render": {"seed": S}}`. `render.seed` renders the text as one chunk at exactly that seed, drawn once and kept whole (no planning, judge, redraw, trim or level), as `ggtts-render --text TEXT --seed S` renders it: the same model, speaker, device and threads give the same samples, without a process, a model load or a hash per chunk. It cannot be given with `seed_salt` (the render call's own seed argument is one), `redraw` or `edge_s`, and an empty text is refused under `render.text`.
 * **Refused:** `load.device` (the binding is CPU only), the trace (`observe.trace`: a desktop observer, with no file a
-  phone user can read), instruments, a `load` key in a render document, `render.seed` (use `seed_salt`), the reports
+  phone user can read), instruments, a `load` key in a render document, the reports
   and logging, `render.measure_timings`, `output.out` and the book options.
 
 **What the library states.** `Ggtts.optionsSchema()` is the options schema as JSON: every option a document may

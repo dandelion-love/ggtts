@@ -13,6 +13,12 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **A binding renders one chunk at an exact seed: `render.seed` in a render document** (the C ABI's
+  `ggtts_render_opts`, Python's `options=`, Kotlin's `options`). The text is one chunk, drawn once at that seed and
+  kept whole, as `ggtts-render --text TEXT --seed S` renders it, so the samples are the same, and a caller that loaded
+  the engine once pays no process, model load or hash per chunk. `render.seed` was refused in a render document
+  before; it is refused with `seed_salt` (the render call's own seed), `redraw` or `edge_s`, and in a load document,
+  each under `render.seed`, and an empty text under `render.text`.
 - **A stream through an options document is levelled by default, as `ggtts-render --stream` is.** The C ABI's
   `ggtts_render_opts` with a callback, Python's `render_stream` and `stream` with `options=`, and Kotlin's
   `renderStream` with `options` now hand each piece levelled by one gain from the first 5 s of audio

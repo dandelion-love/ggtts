@@ -53,9 +53,12 @@ Three keys, three meanings; no key means two things.
 
 | Key | What it is | Spelled |
 |---|---|---|
-| `render.seed` | the sampler seed of a one-chunk plan only | `ggtts-render --text --seed` |
+| `render.seed` | the sampler seed of a one-chunk plan only: one chunk, one draw, kept whole | `ggtts-render --text --seed`, and `render.seed` in every binding's render document |
 | `render.seed_salt` | the story seed derivation's salt, appended to every chunk's seed key | the `seed` argument of every binding's render |
 | `book.seed_root` | a book's root, from which every chunk's seed is derived | `ggtts-book --seed-root` |
+
+A one-chunk render at an exact seed is built in one place, `ggtts_core::pipeline::exact`, which `ggtts-render --text`
+and every binding's render document use, so the same text, seed, model and settings give the same samples on each.
 
 ## Refusals
 

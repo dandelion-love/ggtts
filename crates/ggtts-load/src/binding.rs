@@ -334,7 +334,7 @@ pub fn document_refusal(key: &str, at_load: bool) -> Option<&'static str> {
         ("load", _) if at_load => return None,
         ("load", _) => "a load option: it is fixed when the engine loads, so give it in the load document",
         ("render", "text" | "story") => "the text is the render's own argument",
-        ("render", "seed") => "a binding's seed is the story seed's salt: give render.seed_salt",
+        ("render", "seed") if at_load => "a seed is per render: give it in the render document",
         ("render", "measure_timings") | ("observe", "timing_report" | "duration_report") => {
             "a binding returns the samples, not timings or reports"
         }
@@ -413,6 +413,32 @@ pub fn refuse_given_twice(o: &Options, given: &[(&str, &str)]) -> Result<(), Fai
                 key: (*key).to_string(),
                 message: format!("given twice, as the argument {argument} and in the options document: give it once"),
             }));
+        }
+    }
+    Ok(())
+}
+
+/// What an exact seed (`render.seed`: one chunk, one draw, kept whole) cannot be given with, refused under
+/// `render.seed`: a story seed's salt (the call's own `seed` argument is one), redraws, and an edge to trim to.
+fn refuse_with_exact_seed(o: &Options) -> Result<(), Fail> {
+    let why = [
+        (
+            "render.seed_salt",
+            "render.seed renders one chunk at that seed, and render.seed_salt salts a story's seeds (the render call's \
+             seed argument is the salt): give one",
+        ),
+        (
+            "render.redraw",
+            "render.seed renders one draw and keeps it: redraws are a story's",
+        ),
+        (
+            "render.edge_s",
+            "render.seed keeps its one draw whole, untrimmed: an edge is a story's",
+        ),
+    ];
+    for (key, message) in why {
+        if o.marks.sources.contains_key(key) {
+            return Err(key_err("render.seed", format!("render.seed: {message}")));
         }
     }
     Ok(())
@@ -505,12 +531,23 @@ pub fn render_document(
     options: &Options,
     on_piece: Option<PieceSink<'_>>,
 ) -> Result<(Vec<f32>, u32), Fail> {
-    let chunks = plan(engine, text)?;
+    let exact_seed = options.render.seed;
+    let chunks = match exact_seed {
+        // One chunk at an exact seed, as `ggtts-render --text` renders it.
+        Some(_) => {
+            refuse_with_exact_seed(options)?;
+            ggtts_core::pipeline::exact::chunks(text).map_err(refusal_err)?
+        }
+        None => plan(engine, text)?,
+    };
     let mut o = options::check(options, &engine.capabilities())
         .map_err(refusal_err)?
         .options;
     o.read_steering().map_err(refusal_err)?;
-    let opts = o.render_options(engine.profile()).map_err(refusal_err)?;
+    let mut opts = o.render_options(engine.profile()).map_err(refusal_err)?;
+    if exact_seed.is_some() {
+        ggtts_core::pipeline::exact::options(&mut opts);
+    }
     let level = o.observe.trace_level.unwrap_or(1);
     let mut trace = match &o.observe.trace {
         Some(path) => Some(JsonlEvents::new(
@@ -531,15 +568,20 @@ pub fn render_document(
     }
     let mut hooks = Hooks::new();
     let mut obs = Observers::new(events, &mut hooks);
-    let seeds = StorySeeds {
+    let story = StorySeeds {
         story_id: STORY,
         salt: &opts.seed_salt,
+    };
+    let given = exact_seed.map(ggtts_core::pipeline::exact::seeds);
+    let seeds: &dyn ggtts_core::pipeline::SeedSource = match &given {
+        Some(g) => g,
+        None => &story,
     };
     let read = match on_piece {
         None => render_plan(
             engine,
             &chunks,
-            &seeds,
+            seeds,
             &mut DurationJudge,
             &opts,
             &mut obs,
@@ -557,7 +599,7 @@ pub fn render_document(
                 sink: &mut sink,
                 level: stream_mode(&o),
             };
-            render_plan(engine, &chunks, &seeds, &mut DurationJudge, &opts, &mut obs, output)
+            render_plan(engine, &chunks, seeds, &mut DurationJudge, &opts, &mut obs, output)
         }
     }
     .map_err(render_error)?;

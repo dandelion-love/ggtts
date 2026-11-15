@@ -47,7 +47,17 @@ fn dup(fd: i32) -> io::Result<File> {
     // SAFETY: the borrow lasts only for the duplicating fcntl, which fails with EBADF if fd is not open.
     let owned: OwnedFd = unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned()?;
     let mut f = File::from(owned);
-    f.seek(SeekFrom::Start(0))?;
+    // A model is read at offsets, so a descriptor that cannot seek (a pipe, as some document providers give for a
+    // file they stream from elsewhere) is refused here with what to do, never read wrongly.
+    f.seek(SeekFrom::Start(0)).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "descriptor {fd} does not seek ({e}): its provider gives no seekable file, so copy the file into the \
+                 app's own folder"
+            ),
+        )
+    })?;
     Ok(f)
 }
 
@@ -93,9 +103,19 @@ mod tests {
     /// The case Android makes: the descriptor is readable, the file behind it is not. A mutant that reopens the path
     /// (`File::open` on `/proc/self/fd/<n>`) gets "Permission denied" here and fails the test. Root reads any file,
     /// so the test says so rather than passing for the wrong reason.
+    /// Gives the file its mode back however the test ends, so a failed assertion leaves no mode-000 file behind.
+    struct Restore(std::path::PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o600));
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
     #[test]
     fn a_descriptor_whose_file_may_not_be_opened_is_read_without_reopening() {
         let p = temp("model.gguf", b"GGUFsome bytes");
+        let _restore = Restore(p.clone());
         let held = File::open(&p).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
         let fd_path = std::path::PathBuf::from(format!("/proc/self/fd/{}", held.as_raw_fd()));
@@ -111,7 +131,19 @@ mod tests {
         open(&fd_path).unwrap().read_exact(&mut magic).unwrap();
         assert_eq!(&magic, b"GGUF");
         assert_eq!(read(&fd_path).unwrap(), b"GGUFsome bytes");
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    /// A descriptor that cannot seek (a pipe) fails with an error saying so and what to do, and is not read.
+    #[test]
+    fn a_descriptor_that_cannot_seek_is_refused_with_what_to_do() {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        writer.write_all(b"GGUFstreamed").unwrap();
+        drop(writer);
+        let fd_path = std::path::PathBuf::from(format!("/proc/self/fd/{}", reader.as_raw_fd()));
+        let e = read(&fd_path).unwrap_err();
+        let msg = e.to_string();
+        assert!(msg.contains("does not seek"), "{msg}");
+        assert!(msg.contains("copy the file into the app's own folder"), "{msg}");
     }
 
     #[test]

@@ -36,6 +36,16 @@ object Storage {
     /** The path the engine reads a descriptor this process holds through (never reopened: ggtts_core::fdpath). */
     fun fdPath(fd: Int): String = "/proc/self/fd/$fd"
 
+    /**
+     * The cache file name for a picked document whose descriptor cannot seek ([ContentPaths]): the document's own
+     * name, after a hash of its whole location, so two documents of one name in different places never share a copy.
+     */
+    fun fallbackName(location: String): String {
+        val base = java.net.URLDecoder.decode(location.substringAfterLast('/'), "UTF-8").substringAfterLast('/')
+            .filter { it != '\\' && it != '\u0000' }.ifEmpty { "picked" }
+        return "%08x-%s".format(location.hashCode(), base)
+    }
+
     /** A saved read's file name: the engine and when the read was saved, so saves never collide or overwrite. */
     fun readName(engine: String, timeMillis: Long): String {
         val f = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).apply { timeZone = java.util.TimeZone.getDefault() }
@@ -108,16 +118,40 @@ fun interface PathResolver {
 /**
  * A picked-folder document as `/proc/self/fd/<n>`: the descriptor stays open as long as the engine that loaded it,
  * and the engine reads through it, never reopening the path. A plain path passes through.
+ *
+ * The fallback: a provider may hand back a descriptor that cannot seek (a pipe, for a document it streams from
+ * elsewhere), and a model is read at offsets. Such a document is copied once into the app's cache
+ * ([Storage.fallbackName]) and that copy is loaded instead. A local folder such as Download/ggtts gives a seekable
+ * descriptor, so it is never copied.
  */
 class ContentPaths(context: Context) : PathResolver {
-    private val resolver = context.applicationContext.contentResolver
+    private val app = context.applicationContext
+    private val resolver = app.contentResolver
 
     override fun open(location: String): Opened {
         if (!Storage.isContent(location)) return Opened(location)
-        val pfd = resolver.openFileDescriptor(Uri.parse(location), "r")
-            ?: throw FileNotFoundException("$location could not be opened")
-        return Opened(Storage.fdPath(pfd.fd), pfd)
+        val uri = Uri.parse(location)
+        val pfd = resolver.openFileDescriptor(uri, "r") ?: throw FileNotFoundException("$location could not be opened")
+        if (seekable(pfd)) return Opened(Storage.fdPath(pfd.fd), pfd)
+        pfd.close()
+        val dir = File(app.cacheDir, "picked").apply { mkdirs() }
+        val copy = File(dir, Storage.fallbackName(location))
+        if (!copy.isFile) {
+            val part = File(dir, copy.name + ModelImport.PART)
+            try {
+                (resolver.openInputStream(uri) ?: throw FileNotFoundException("$location could not be read"))
+                    .use { input -> part.outputStream().use { input.copyTo(it, 1 shl 20) } }
+                if (!part.renameTo(copy)) throw FileNotFoundException("could not move ${copy.name} into place")
+            } finally {
+                part.delete()
+            }
+        }
+        android.util.Log.i(MainActivity.TAG, "picked file does not seek; loading a copy: $copy")
+        return Opened(copy.path)
     }
+
+    private fun seekable(pfd: android.os.ParcelFileDescriptor): Boolean =
+        runCatching { android.system.Os.lseek(pfd.fileDescriptor, 0, android.system.OsConstants.SEEK_CUR) }.isSuccess
 }
 
 /** Opens a location (a path or a content URI) for reading: what [Voices.scan] and the samples read through. */

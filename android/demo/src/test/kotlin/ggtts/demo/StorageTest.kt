@@ -105,6 +105,18 @@ class StorageTest {
         assertTrue(Storage.isContent(c.location("talker.gguf")!!))
     }
 
+    @Test
+    fun aDocumentThatCannotSeekIsCopiedUnderItsOwnNameKeptApartByPlace() {
+        val a = Storage.fallbackName(uri("talker.gguf"))
+        assertTrue(a, a.endsWith("-talker.gguf"))
+        assertEquals(a, Storage.fallbackName(uri("talker.gguf")))
+        val elsewhere = uri("talker.gguf").replace("Download", "Documents")
+        assertTrue(Storage.fallbackName(elsewhere) != a)
+        for (n in listOf(a, Storage.fallbackName("content://x/document/..%2F..%2Fescape.gguf"))) {
+            assertTrue(n, ModelImport.isPlainName(n))
+        }
+    }
+
     /** A GGUF header with general.architecture and, if any, the talker's speaker names. */
     private fun gguf(arch: String, speakers: List<String>): ByteArray {
         val o = ByteArrayOutputStream()

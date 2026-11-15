@@ -17,7 +17,8 @@ that a merge places under a released heading is caught.
   at each edge of a chunk, which the bindings already took in an options document. **`ggtts-render --story` takes
   `--seed-salt S`** (`render.seed_salt`), the salt each binding's seed already was, so a story's seeds can be moved
   together from the command line. `--text` refuses both: it renders at `--seed` and keeps its draw whole. A book
-  keeps its seeds from `--seed-root`.
+  keeps its seeds from `--seed-root`, and records its edge in each chapter manifest: a chapter resumed under
+  another `--edge-s` is rendered again, its manifest refused naming the edge.
 
 - **The Android demo and its system TTS engine carry the options document.** The app's request, its saved voices and
   its render calls are one options document, handed to the Kotlin binding as `options`. Any option the binding takes

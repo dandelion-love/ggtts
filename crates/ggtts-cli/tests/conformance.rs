@@ -190,6 +190,8 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (STEER, Carried),
             (&["render.text", "render.story"], Refused(BOOK_TEXT)),
             (&["render.seed", "render.seed_salt"], Refused(BOOK_SEED)),
+            // Declared here, not probed: a book render needs an EPUB, which this test does not build. The book's own
+            // test shows it carried and recorded: the_edge_reaches_every_chapter_and_a_resume_under_another_starts_again.
             (&["render.edge_s"], Carried),
             (&["render.measure_timings"], Refused(BOOK_TIMINGS)),
             (TRACE, Carried),

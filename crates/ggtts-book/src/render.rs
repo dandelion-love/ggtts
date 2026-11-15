@@ -309,6 +309,10 @@ pub fn render_identity(options: &Options, info: &EngineInfo) -> serde_json::Valu
         .into_iter()
         .filter_map(|k| record.get(k).map(|v| (k.to_string(), v.clone())))
         .collect();
+    // The edge kept at each chunk changes every chunk's audio, so a resume under another one starts the chapter again.
+    if let Some(edge) = options.render.edge_s {
+        kept.insert("edge_s".into(), edge.into());
+    }
     // The judge decides which draw is kept, so a resume under another one starts the chapter again. Its ASR and run
     // bar are its identity; the model's path and the device are where it runs, not what it decides.
     if let Some(spec) = options

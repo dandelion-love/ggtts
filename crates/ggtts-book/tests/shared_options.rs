@@ -279,6 +279,62 @@ fn a_resume_under_another_instruction_starts_again_naming_it() {
     std::fs::remove_dir_all(book.parent().unwrap()).ok();
 }
 
+/// #283: `--edge-s` reaches every chunk (a longer edge keeps more audio in the chapter), and a chapter resumed under
+/// another edge starts again, its manifest refused naming the edge; the same edge resumes.
+#[test]
+fn the_edge_reaches_every_chapter_and_a_resume_under_another_starts_again() {
+    let d = dir("resume-edge");
+    let book = nested().write_temp("options-resume-edge");
+    let flac_bytes = |out: &Path| -> u64 {
+        std::fs::read_dir(out)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "flac"))
+            .map(|e| e.metadata().unwrap().len())
+            .sum()
+    };
+    let (narrow, wide) = (d.join("narrow"), d.join("wide"));
+    render(
+        &book,
+        &["--out", narrow.to_str().unwrap(), "--engine", "fake", "--edge-s", "0"],
+    )
+    .unwrap();
+    render(
+        &book,
+        &["--out", wide.to_str().unwrap(), "--engine", "fake", "--edge-s", "1.5"],
+    )
+    .unwrap();
+    assert!(
+        flac_bytes(&wide) > flac_bytes(&narrow),
+        "a longer edge keeps more audio: {} against {}",
+        flac_bytes(&wide),
+        flac_bytes(&narrow)
+    );
+    let o = narrow.to_str().unwrap();
+    let (first, _) = render(&book, &["--out", o, "--engine", "fake", "--edge-s", "0"]).unwrap();
+    assert!(
+        chapters(&first).iter().all(|c| c.1 == 0 && c.2.is_none()),
+        "the same edge resumes"
+    );
+    let total: u64 = chapters(&first).len() as u64;
+    assert!(total > 0);
+    for (args, manifest, plan) in [(vec!["--edge-s", "1.5"], "0.0", "1.5"), (vec![], "1.5", "none")] {
+        let mut all = vec!["--out", o, "--engine", "fake"];
+        all.extend(args);
+        let (report, _) = render(&book, &all).unwrap();
+        for (id, rendered, refused) in chapters(&report) {
+            assert!(rendered > 0, "{id}: rendered again under {plan}");
+            let refused = refused.unwrap_or_else(|| panic!("{id}: the manifest was trusted under {plan}"));
+            assert!(
+                refused.contains("edge") && refused.contains(manifest) && refused.contains(plan),
+                "{id}: {refused}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&d).ok();
+    std::fs::remove_dir_all(book.parent().unwrap()).ok();
+}
+
 /// AC4: a chapter resumed with another steering file starts again, its manifest refused naming the steering; the
 /// same file at the same scale resumes.
 #[test]

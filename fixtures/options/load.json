@@ -9,6 +9,15 @@
     "threads": 8,
     "offline": true,
     "cache_dir": "cache",
-    "kitten_full_head": true
+    "kitten_full_head": true,
+    "temperature": 0.7,
+    "top_k": 30,
+    "top_p": 0.95,
+    "repetition_penalty": 1.1,
+    "subtalker_temperature": 0.8,
+    "subtalker_top_k": 40,
+    "subtalker_top_p": 0.9,
+    "max_frames": 600,
+    "language": "en"
   }
 }

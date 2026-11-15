@@ -1,17 +1,42 @@
-//! Text to codec tokens: `generate <talker.gguf> <text> <out.codes.json> [seed] [threads] [plant]`, speaker
+//! Text to codec tokens: `generate <talker.gguf> <text> <out.codes.json> [seed] [threads] [plant] [settings]`, speaker
 //! `hk_cantonese_speaker`, language `zh`, at most 1200 frames, the reference CLI's sampler defaults. Writes the
 //! reference CLI's `--dump-generated-codes` format, so the two files compare byte for byte. A plant other than `none`
 //! needs the `plant` feature.
+//!
+//! The settings, anywhere after the three paths, change one of those, with the reference CLI's flags where it has one:
+//! `--temperature X`, `--top-k N`, `--top-p X`, `--repetition-penalty X`, `--max-tokens N`, `-l LANG`, and ggtts's own
+//! `--subtalker-temperature X`, `--subtalker-top-k N`, `--subtalker-top-p X` (the reference has none: its code
+//! predictor samples with the talker's). `crates/ggtts-qwen3-tts/scripts/sampler_parity.sh` compares them.
 use std::path::Path;
 use std::time::Instant;
 
 use ggtts_qwen3_tts::talker::{language_id, Sampling, Talker};
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 4 {
-        eprintln!("usage: generate <talker.gguf> <text> <out.codes.json> [seed] [threads] [plant]");
+    let all: Vec<String> = std::env::args().collect();
+    if all.len() < 4 {
+        eprintln!("usage: generate <talker.gguf> <text> <out.codes.json> [seed] [threads] [plant] [settings]");
         std::process::exit(2);
+    }
+    let mut sampling = Sampling::default();
+    let (mut max_frames, mut lang) = (1200, "zh".to_string());
+    let mut args: Vec<String> = all[..4].to_vec();
+    let mut rest = all[4..].iter();
+    while let Some(a) = rest.next() {
+        let mut value = || rest.next().unwrap_or_else(|| panic!("{a} needs a value")).clone();
+        match a.as_str() {
+            "--temperature" => sampling.temperature = value().parse().unwrap(),
+            "--top-k" => sampling.top_k = value().parse().unwrap(),
+            "--top-p" => sampling.top_p = value().parse().unwrap(),
+            "--repetition-penalty" => sampling.repetition_penalty = value().parse().unwrap(),
+            "--subtalker-temperature" => sampling.subtalker_temperature = Some(value().parse().unwrap()),
+            "--subtalker-top-k" => sampling.subtalker_top_k = Some(value().parse().unwrap()),
+            "--subtalker-top-p" => sampling.subtalker_top_p = Some(value().parse().unwrap()),
+            "--max-tokens" => max_frames = value().parse().unwrap(),
+            "-l" => lang = value(),
+            other if other.starts_with('-') => panic!("unknown setting {other}"),
+            _ => args.push(a.clone()),
+        }
     }
     let seed = args.get(4).map(|s| s.parse().unwrap()).unwrap_or(20260905);
     let threads = args.get(5).map(|s| s.parse().unwrap()).unwrap_or(4);
@@ -19,15 +44,16 @@ fn main() {
     let mut talker = load(Path::new(&args[1]), threads, args.get(6).map_or("none", String::as_str));
     let load_ms = t.elapsed().as_millis();
     let t = Instant::now();
+    let language = language_id(&lang).unwrap_or_else(|| panic!("unknown language {lang}"));
     let generation = talker
         .generate(
             &args[2],
             None,
             "hk_cantonese_speaker",
-            language_id("zh").unwrap(),
+            language,
             seed,
-            1200,
-            Sampling::default(),
+            max_frames,
+            sampling,
         )
         .unwrap();
     let gen_ms = t.elapsed().as_millis();

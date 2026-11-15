@@ -19,11 +19,12 @@ object About {
 
     /**
      * What a person gets, what it costs them, and what it is not for. Every claim here is checked: "no internet
-     * permission" by [AboutTest] against the manifest, and the wait by [EngineCosts], whose figures are measured.
+     * permission" by [AboutTest] against the manifest, and the wait by [EngineCosts], whose figures are measured: each
+     * voice's range is read from there, so it says what the player's "First sound in about…" says for that voice.
      */
     val PURPOSE = listOf(
         "Type or paste a passage and listen to it read in a natural voice. Nothing you type leaves the phone: the app has no permission to use the internet.",
-        "It is slow. A sentence takes 30 to 60 seconds before it starts, so it suits listening to a passage you have chosen, not reading the screen as you go.",
+        "It is slow. The first sound takes ${EngineCosts.BY_ENGINE.getValue("qwen3-tts").firstAudioS} seconds with a Cantonese voice and ${EngineCosts.BY_ENGINE.getValue("kitten-tts-2").firstAudioS} with an English one, so it suits listening to a passage you have chosen, not reading the screen as you go.",
         "Other apps can use it too: it is a text-to-speech engine in Android's settings.",
     )
 

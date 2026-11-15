@@ -28,6 +28,11 @@ use ggtts_core::pipeline::{
 use ggtts_core::trace::{emit_header, Events, Header, JsonlEvents, NullEvents};
 use ggtts_models::{Cache, Fetch, ModelFile};
 
+// The GGUF header reader `ggtts-render` and the C-ABI use to pick the engine for `"engine": "auto"`.
+#[path = "../../ggtts-cli/src/gguf_arch.rs"]
+#[allow(dead_code)]
+mod gguf_arch;
+
 /// The codes, the C-ABI's (`ggtts.h`): success.
 pub const OK: i32 = 0;
 /// A NULL, non-UTF-8 or out-of-range argument; a setting the engine does not take; empty or punctuation-only text.
@@ -80,6 +85,26 @@ pub fn refusal_err(r: options::Refusal) -> Fail {
 /// a call and takes it after one that failed with [`ERR_ARG`], so it never reports a key an earlier call left.
 pub fn take_refused_key() -> Option<String> {
     REFUSED_KEY.with(|k| k.borrow_mut().take())
+}
+
+/// The schema key a failed call refused: the key of the refusal of one option ([`refusal_err`]) when the call failed
+/// with [`ERR_ARG`] and its message is that refusal's (`"key: ..."`), else `None`. The message check keeps a key
+/// recorded by a refusal the call recovered from off a later, unrelated argument error. `$` (a document that is not
+/// JSON, or not an object) is the whole document, not one option, so it is `None` too.
+pub fn refused_key(code: i32, msg: &str, key: Option<String>) -> Option<String> {
+    key.filter(|k| code == ERR_ARG && !k.is_empty() && k != "$" && msg.starts_with(&format!("{k}: ")))
+}
+
+/// [`guard`] that also gives the schema key a failure refused ([`refused_key`]): the key is cleared before `f` runs
+/// and taken after, on this thread, so it is never one an earlier call left.
+pub fn guard_keyed<T>(f: impl FnOnce() -> Result<T, Fail>) -> Result<T, (Fail, Option<String>)> {
+    take_refused_key();
+    let result = guard(f);
+    let key = take_refused_key();
+    result.map_err(|(code, msg)| {
+        let key = refused_key(code, &msg, key);
+        ((code, msg), key)
+    })
 }
 
 fn engine_err(msg: impl Into<String>) -> Fail {
@@ -344,6 +369,55 @@ pub fn check_document(o: &Options, at_load: bool) -> Result<(), Fail> {
             ),
         )),
     }
+}
+
+/// Refuses a value a binding was given twice, once as its own argument and once in its options document, naming
+/// both: each `(argument, key)` pair whose argument was given and whose key the document `o` gives. Neither wins
+/// over the other, so the caller says which it meant.
+pub fn refuse_given_twice(o: &Options, given: &[(&str, &str)]) -> Result<(), Fail> {
+    for (argument, key) in given {
+        if o.marks.sources.contains_key(*key) {
+            return Err(refusal_err(options::Refusal {
+                key: (*key).to_string(),
+                message: format!("given twice, as the argument {argument} and in the options document: give it once"),
+            }));
+        }
+    }
+    Ok(())
+}
+
+/// The engine a load document names: `auto` is the model file's GGUF architecture, or `qwen3-tts` when it gives no
+/// model, as `ggtts-render` resolves it.
+pub fn document_engine(o: &Options) -> Result<String, Fail> {
+    match (o.load.engine.as_str(), &o.load.model) {
+        ("auto", Some(m)) => {
+            gguf_arch::architecture(m).map_err(|e| engine_err(format!("load.model {}: {e}", m.display())))
+        }
+        ("auto", None) => Ok("qwen3-tts".to_string()),
+        (e, _) => Ok(e.to_string()),
+    }
+}
+
+/// The render defaults a load document gives: its render section, marked as given where the document gave it, so a
+/// render document laid over them ([`layer_render`]) replaces only what it gives itself.
+pub fn render_defaults(o: &Options) -> Options {
+    let mut kept = Options {
+        render: o.render.clone(),
+        ..Options::default()
+    };
+    kept.marks.sources = o
+        .marks
+        .sources
+        .iter()
+        .filter(|(k, _)| k.starts_with("render."))
+        .map(|(k, s)| (k.clone(), *s))
+        .collect();
+    kept
+}
+
+/// A render document laid over a load's render defaults ([`render_defaults`]): what the document gives wins.
+pub fn layer_render(defaults: &Options, doc: Options) -> Result<Options, Fail> {
+    defaults.clone().layer(doc).map_err(refusal_err)
 }
 
 /// A stream's callback: a piece's samples and its rate; false stops the render.

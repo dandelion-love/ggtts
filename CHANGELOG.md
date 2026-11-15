@@ -13,6 +13,16 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **Python takes every option through one argument, `options=`.** `ggtts.load(options=...)` takes a load document
+  (the `load` section, `cache_dir` included, and `render` defaults), and `render`, `render_stream` and `stream` take a
+  render document laid over those defaults: steering, `edge_s`, `redraw`, a per-render instruction and a trace. A
+  document is a dict or a JSON string, read and checked by the C ABI's own document code. A refused option is the new
+  `ggtts.OptionError`, a `GgttsError` and a `ValueError`, whose `key` is the option's schema key (`render.steer`); a
+  value given both as an argument and in the document is refused, naming both. `seed` on a render is documented as
+  the seed salt it already was (`render.seed_salt`). The arguments `engine`, `device` and `offline` now default to
+  None (not given), which loads exactly what their old defaults did, and a setting refused by its key (a speaker on
+  an engine that has none) is now an `OptionError`, still a `GgttsError` with the same code and message. A call
+  without `options` renders the same samples as before.
 - **The C ABI states its options and an engine's capabilities, and names a refused option (version 5).**
   `ggtts_options_schema()` returns the options schema built into the library (`schemas/ggtts-options-1.schema.json`
   byte for byte). `ggtts_capabilities(handle, &json)` returns a loaded engine's capability statement as JSON

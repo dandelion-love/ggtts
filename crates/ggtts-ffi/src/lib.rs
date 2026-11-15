@@ -43,10 +43,6 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use ggtts_core::options::{Options, Refusal, Source};
 use ggtts_load::binding::{self, Held, Slot};
 
-#[path = "../../ggtts-cli/src/gguf_arch.rs"]
-#[allow(dead_code)]
-mod gguf_arch;
-
 #[cfg(feature = "jni")]
 mod jni;
 
@@ -116,27 +112,16 @@ fn set_error(msg: &str, key: Option<&str>) {
     LAST_ERROR_KEY.with(|e| *e.borrow_mut() = key);
 }
 
-/// The schema key a failed call refused: the key of the refusal of one option ([`binding::refusal_err`]) when the
-/// call failed with [`GGTTS_ERR_ARG`] and its message is that refusal's (`"key: ..."`), else `None`. The message check
-/// keeps a key recorded by a refusal the call recovered from off a later, unrelated argument error. `$` (a document
-/// that is not JSON, or not an object) is the whole document, not one option, so it is `None` too.
-fn refused_key(code: i32, msg: &str, key: Option<String>) -> Option<String> {
-    key.filter(|k| code == GGTTS_ERR_ARG && !k.is_empty() && k != "$" && msg.starts_with(&format!("{k}: ")))
-}
-
-/// Run `f`, turning an error or a panic into a status ([`binding::guard`]), and record the message and the refused
-/// key ([`ggtts_last_error_key`]).
+/// Run `f`, turning an error or a panic into a status ([`binding::guard_keyed`]), and record the message and the
+/// refused key ([`ggtts_last_error_key`], [`binding::refused_key`]).
 fn guard(f: impl FnOnce() -> Result<(), Fail>) -> i32 {
-    binding::take_refused_key();
-    let result = binding::guard(f);
-    let key = binding::take_refused_key();
-    match result {
+    match binding::guard_keyed(f) {
         Ok(()) => {
             set_error("", None);
             GGTTS_OK
         }
-        Err((code, msg)) => {
-            set_error(&msg, refused_key(code, &msg, key).as_deref());
+        Err(((code, msg), key)) => {
+            set_error(&msg, key.as_deref());
             code
         }
     }
@@ -498,11 +483,10 @@ fn load_options(o: &Options, default_files: bool, document: bool) -> Result<u64,
     let path = |p: &Option<PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned());
     let (model, codec, voice) = (path(&o.load.model), path(&o.load.codec), path(&o.load.voice));
     // "auto" is a document's engine only: a struct load names its engine, and "auto" is no engine there.
-    let engine = match (o.load.engine.as_str(), &model) {
-        ("auto", Some(m)) if document => gguf_arch::architecture(std::path::Path::new(m))
-            .map_err(|e| (GGTTS_ERR_ENGINE, format!("load.model {m}: {e}")))?,
-        ("auto", None) if document => "qwen3-tts".to_string(),
-        (e, _) => e.to_string(),
+    let engine = if document {
+        binding::document_engine(o)?
+    } else {
+        o.load.engine.clone()
     };
     if document {
         if let Some(caps) = ggtts_core::capabilities::Capabilities::of(&engine) {
@@ -551,18 +535,9 @@ pub unsafe extern "C" fn ggtts_load_opts(options_json: *const c_char, handle: *m
         binding::check_document(&o, true)?;
         let id = load_options(&o, true, true)?;
         // The render defaults, kept with the handle: the render section, marked as given where the document gave it.
-        let mut kept = Options {
-            render: o.render.clone(),
-            ..Options::default()
-        };
-        kept.marks.sources = o
-            .marks
-            .sources
-            .iter()
-            .filter(|(k, _)| k.starts_with("render."))
-            .map(|(k, s)| (k.clone(), *s))
-            .collect();
-        defaults().get_or_insert_with(HashMap::new).insert(id, kept);
+        defaults()
+            .get_or_insert_with(HashMap::new)
+            .insert(id, binding::render_defaults(&o));
         unsafe { *handle = id };
         Ok(())
     })
@@ -644,7 +619,7 @@ fn render(
 ) -> Result<(Vec<f32>, u32), Fail> {
     let base = defaults().get_or_insert_with(HashMap::new).get(&handle).cloned();
     let mut o = match base {
-        Some(b) => b.layer(doc.clone()).map_err(refused)?,
+        Some(b) => binding::layer_render(&b, doc.clone())?,
         None => doc.clone(),
     };
     with_engine(handle, |e, instruction| {

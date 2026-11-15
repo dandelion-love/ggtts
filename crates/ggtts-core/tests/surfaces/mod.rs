@@ -40,6 +40,12 @@ pub const NOT_OPTIONS: &[(Surface, &str, &str)] = &[
         "a callback for download messages, not a value",
     ),
     (Surface::Python, "on_chunk", "the stream's callback, not a value"),
+    (Surface::Python, "on_piece", "the stream's callback, not a value"),
+    (
+        Surface::Python,
+        "options",
+        "the options document: every option, by its schema key",
+    ),
     (Surface::C, "size", "the struct's own size, its version"),
     (Surface::C, "settings", "the struct the settings are in"),
     (Surface::C, "handle", "the engine handle"),
@@ -191,7 +197,7 @@ pub fn python_names() -> Vec<String> {
         out.extend(names(between(&py, method, ") ->")));
     }
     let native = read("crates/ggtts-py/src/python.rs");
-    out.extend(names(between(&native, "#[pyo3(signature = (", "))]")));
+    out.extend(names(&load_signature(&native)));
     out.sort();
     out.dedup();
     out
@@ -263,13 +269,19 @@ impl Entry {
     }
 }
 
+/// `load`'s parameter list in `python.rs` (its source text): its `#[pyo3(signature = (engine...))]`, the one that
+/// starts with `engine` (the render methods have signatures of their own).
+pub fn load_signature(src: &str) -> String {
+    format!("engine{}", between(src, "#[pyo3(signature = (engine", "))]"))
+}
+
 /// The pyo3 functions of `python.rs` (its source text): `load`'s `#[pyo3(signature = ...)]`, and the parameters of the
 /// engine's `render` and `render_stream` methods (less `self` and the interpreter token `py`).
 pub fn pyo3_entries(src: &str) -> Vec<Entry> {
     let mut out = vec![Entry {
         surface: Surface::Python,
         item: "load".into(),
-        names: names(between(src, "#[pyo3(signature = (", "))]")),
+        names: names(&load_signature(src)),
     }];
     for f in ["render", "render_stream"] {
         let params = between(src, &format!("    fn {f}"), ") ->");

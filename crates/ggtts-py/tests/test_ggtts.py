@@ -275,6 +275,128 @@ def test_a_render_on_another_thread_meanwhile_is_busy():
         worker.join()
 
 
+# -- options documents ------------------------------------------------------------------------------------------
+
+
+def test_options_without_a_document_render_as_before():
+    """No document and no load defaults: the same samples as the plain call, at the seed or the default seed."""
+    with fake() as a, fake() as b:
+        assert a.render(TEXT, seed=7, options=None).pcm == b.render(TEXT, 7).pcm
+    with fake() as a, fake() as b:
+        assert a.render(TEXT).pcm == b.render(TEXT, seed=ggtts.DEFAULT_SEED).pcm
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_a_document_is_a_dict_or_a_json_string(as_json):
+    import json
+
+    load_doc = {"load": {"engine": "fake"}, "render": {"edge_s": 1.5}}
+    render_doc = {"render": {"seed_salt": "7"}}
+    if as_json:
+        load_doc, render_doc = json.dumps(load_doc), json.dumps(render_doc)
+    with ggtts.load(options=load_doc) as tts:
+        assert tts.engine == "fake"
+        edged = tts.render(TEXT, options=render_doc)
+    with fake() as plain:
+        # The load's render default (the edge kept at each chunk) is carried: the read is another length.
+        assert len(plain.render(TEXT, seed=7)) != len(edged)
+    with ggtts.load(options=load_doc) as again:
+        # The seed argument is the document's render.seed_salt.
+        assert again.render(TEXT, seed=7).pcm == edged.pcm
+
+
+def test_a_document_stream_is_the_plain_stream():
+    with fake() as a, fake() as b:
+        doc = [c.pcm for c in a.stream(TEXT, seed=5, options={"output": {"stream": "raw"}})]
+        plain = [c.pcm for c in b.stream(TEXT, seed=5)]
+    assert doc == plain and len(doc) >= 2
+    with fake() as tts:
+        got = []
+        assert tts.render_stream(TEXT, got.append, options={"render": {"seed_salt": "5"}})
+        assert len(got) == len(plain)
+
+
+def test_steering_reaches_the_engine_and_is_a_value_error_naming_its_key():
+    with fake() as tts:
+        with pytest.raises(ValueError) as e:
+            tts.render(LINE, options={"render": {"steer": "s.safetensors"}})
+    assert isinstance(e.value, ggtts.OptionError) and isinstance(e.value, ggtts.GgttsError)
+    assert e.value.key == "render.steer" and e.value.code == ggtts.ERR_ARG
+    # Kitten-TTS 2 has no steering: a load document asking for it is refused before any file is read.
+    doc = {"load": {"engine": "kitten-tts-2", "model": "/no/such/lm.gguf"}, "render": {"steer": "s.safetensors"}}
+    with pytest.raises(ValueError) as e:
+        ggtts.load(options=doc)
+    assert e.value.key == "render.steer", e.value.message
+
+
+@pytest.mark.parametrize(
+    "kwargs, key, both",
+    [
+        (dict(speaker="a", options={"load": {"engine": "fake", "speaker": "b"}}), "load.speaker", "speaker="),
+        (dict(engine="fake", options={"load": {"engine": "fake"}}), "load.engine", "engine="),
+        (dict(device="cpu", options={"load": {"engine": "fake", "device": "cpu"}}), "load.device", "device="),
+        (dict(threads=2, options={"load": {"engine": "fake", "threads": 2}}), "load.threads", "threads="),
+        (dict(offline=True, options={"load": {"engine": "fake", "offline": True}}), "load.offline", "offline="),
+        (dict(instruction="x", options={"load": {"engine": "fake"}, "render": {"instruction": "y"}}),
+         "render.instruction", "instruction="),
+    ],
+)
+def test_an_argument_and_the_same_key_in_options_is_refused_naming_both(kwargs, key, both):
+    with pytest.raises(ValueError) as e:
+        ggtts.load(**kwargs)
+    assert e.value.key == key
+    assert key in e.value.message and both in e.value.message
+
+
+def test_the_keyword_arguments_keep_working_beside_a_document():
+    with ggtts.load(engine="fake", threads=2, offline=True, device="cpu", options={"render": {"edge_s": 0.5}}) as t:
+        assert (t.engine, t.device) == ("fake", "cpu")
+        assert len(t.render(LINE)) > 0
+    with fake() as tts:
+        with pytest.raises(ValueError) as e:
+            tts.render(LINE, seed=3, options={"render": {"seed_salt": "4"}})
+        assert e.value.key == "render.seed_salt" and "seed=" in e.value.message
+
+
+@pytest.mark.parametrize(
+    "doc, key",
+    [
+        ({"render": {"nonesuch": 1}}, "render.nonesuch"),
+        ({"load": {"device": "cpu"}}, "load.device"),
+        ({"render": {"seed": 3}}, "render.seed"),
+        ({"render": {"edge_s": "wide"}}, "render.edge_s"),
+        ({"output": {"stream": "raw"}}, "output.stream"),
+        ({"observe": {"log_level": "info"}}, "observe.log_level"),
+        ({"render": {"measure_timings": True}}, "render.measure_timings"),
+    ],
+)
+def test_a_render_document_refuses_an_unknown_or_misplaced_key_by_name(doc, key):
+    with fake() as tts:
+        with pytest.raises(ValueError) as e:
+            tts.render(LINE, options=doc)
+    assert e.value.key == key, e.value.message
+
+
+def test_an_unknown_load_key_and_a_malformed_document_are_value_errors():
+    with pytest.raises(ValueError) as e:
+        ggtts.load(options={"load": {"engine": "fake", "nonesuch": 1}})
+    assert e.value.key == "load.nonesuch"
+    with fake() as tts:
+        with pytest.raises(ValueError) as e:
+            tts.render(LINE, options="{")
+        assert e.value.key is None and e.value.code == ggtts.ERR_ARG
+        with pytest.raises(TypeError):
+            tts.render(LINE, options=["render"])
+
+
+def test_a_trace_is_written_where_the_document_says(tmp_path):
+    trace = tmp_path / "t.jsonl"
+    with fake() as tts:
+        tts.render(LINE, options={"observe": {"trace": str(trace), "trace_level": 2}})
+    lines = trace.read_text(encoding="utf-8").splitlines()
+    assert len(lines) > 1 and '"trace_level":2' in lines[0]
+
+
 # -- real models, opt-in -----------------------------------------------------------------------------------------
 
 
@@ -334,3 +456,27 @@ def test_real_base_checkpoint_refuses_an_instruction():
         ggtts.load("qwen3-tts", model=base, codec=env("GGTTS_CODEC"), instruction=INSTRUCTION)
     assert code_of(e) == ggtts.ERR_ENGINE
     assert "base model" in e.value.message and "takes no style instruction" in e.value.message
+
+
+def _safetensors(path, name, values):
+    """One float32 tensor in the safetensors format (ggtts_core::steer::write_safetensors's layout)."""
+    import json
+    import struct
+
+    head = json.dumps({name: {"dtype": "F32", "shape": [len(values)], "data_offsets": [0, 4 * len(values)]}},
+                      separators=(",", ":")).encode()
+    head += b" " * (-len(head) % 8)
+    path.write_bytes(struct.pack("<Q", len(head)) + head + struct.pack(f"<{len(values)}f", *values))
+    return path
+
+
+def test_real_steering_through_options_changes_the_audio(tmp_path):
+    """GGTTS_TINY_TALKER and GGTTS_CODEC: the tiny one-layer fixture (scripts/tiny_fixture.sh), hidden size 2048."""
+    talker, codec = env("GGTTS_TINY_TALKER"), env("GGTTS_CODEC")
+    steer = _safetensors(tmp_path / "steer.safetensors", "talker.layer.0", [4.0] * 2048)
+    doc = {"load": {"engine": "qwen3-tts", "model": talker, "codec": codec, "offline": True}}
+    with ggtts.load(options=doc) as a, ggtts.load(options=doc) as b, ggtts.load(options=doc) as c:
+        plain, again = a.render(LINE, seed=3), b.render(LINE, seed=3)
+        assert plain.pcm == again.pcm, "the unsteered render repeats at its seed: a difference is the steering"
+        steered = c.render(LINE, seed=3, options={"render": {"steer": str(steer)}})
+    assert len(steered) > 0 and steered.pcm != plain.pcm

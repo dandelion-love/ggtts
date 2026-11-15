@@ -13,18 +13,25 @@ pyo3::create_exception!(
     ggtts,
     GgttsError,
     PyException,
-    "An invalid argument, an engine refusal or a caught panic: `code` is the C-ABI's code (ERR_*), `message` the text."
+    "An invalid argument, an engine refusal or a caught panic: `code` is the C-ABI's code (ERR_*), `message` the \
+     text, and `key` the schema key of the one option refused (`render.steer`), or None."
 );
 
-/// A code and a message as a [`GgttsError`] carrying both.
-fn error(py: Python<'_>, (code, message): Fail) -> PyErr {
+/// A code and a message as a [`GgttsError`] carrying both, and the schema key of the option it refused, if one.
+fn keyed_error(py: Python<'_>, (code, message): Fail, key: Option<String>) -> PyErr {
     let err = GgttsError::new_err(format!("{message} (code {code})"));
     let value = err.value(py);
     // Setting attributes on a fresh exception instance cannot fail short of memory exhaustion; the message still
     // carries the code if it does.
     let _ = value.setattr("code", code);
     let _ = value.setattr("message", message);
+    let _ = value.setattr("key", key);
     err
+}
+
+/// A code and a message as a [`GgttsError`], with no refused key.
+fn error(py: Python<'_>, fail: Fail) -> PyErr {
+    keyed_error(py, fail, None)
 }
 
 /// Samples as a bytearray of native-endian float32, which `numpy.frombuffer` and `array.array('f')` read as they are.
@@ -44,34 +51,54 @@ struct PyEngine {
 #[pymethods]
 impl PyEngine {
     /// Render `text` (one paragraph per non-empty line) at `seed`: `(pcm, sample_rate)`, `pcm` a bytearray of
-    /// float32 mono samples. The GIL is released while it renders.
-    fn render<'py>(&self, py: Python<'py>, text: String, seed: u64) -> PyResult<(Bound<'py, PyByteArray>, u32)> {
-        let r = py.allow_threads(|| self.handle.render(&text, seed));
-        let (samples, rate) = r.map_err(|e| error(py, e))?;
+    /// float32 mono samples. `seed` is the story seed's salt (`render.seed_salt`), `DEFAULT_SEED` when neither it nor
+    /// `options` gives one. `options` is a render document (JSON), laid over the load's render defaults. The GIL is
+    /// released while it renders.
+    #[pyo3(signature = (text, seed=None, options=None))]
+    fn render<'py>(
+        &self,
+        py: Python<'py>,
+        text: String,
+        seed: Option<u64>,
+        options: Option<String>,
+    ) -> PyResult<(Bound<'py, PyByteArray>, u32)> {
+        let r = py.allow_threads(|| core::guard_keyed(|| self.handle.render_with(&text, seed, options.as_deref())));
+        let (samples, rate) = r.map_err(|(e, key)| keyed_error(py, e, key))?;
         Ok((pcm(py, &samples), rate))
     }
 
     /// Render `text`, calling `on_piece(pcm, sample_rate)` with each kept chunk's piece, in order, before the next
     /// chunk is generated. `on_piece` returning `False` stops the render, and so does an exception it raises, which is
-    /// then raised here. Returns `True` when the whole text was rendered, `False` when stopped. The GIL is released
-    /// between pieces.
-    fn render_stream(&self, py: Python<'_>, text: String, seed: u64, on_piece: PyObject) -> PyResult<bool> {
+    /// then raised here. Returns `True` when the whole text was rendered, `False` when stopped. `seed` and `options`
+    /// are as `render`'s. The GIL is released between pieces.
+    #[pyo3(signature = (text, on_piece, seed=None, options=None))]
+    fn render_stream(
+        &self,
+        py: Python<'_>,
+        text: String,
+        on_piece: PyObject,
+        seed: Option<u64>,
+        options: Option<String>,
+    ) -> PyResult<bool> {
         let mut raised: Option<PyErr> = None;
         let r = py.allow_threads(|| {
-            self.handle.render_stream(&text, seed, &mut |samples, rate| {
-                Python::with_gil(|py| match on_piece.call1(py, (pcm(py, samples), rate)) {
-                    Ok(v) => !v.bind(py).is(PyBool::new(py, false)),
-                    Err(e) => {
-                        raised = Some(e);
-                        false
-                    }
-                })
+            core::guard_keyed(|| {
+                self.handle
+                    .render_stream_with(&text, seed, options.as_deref(), &mut |samples, rate| {
+                        Python::with_gil(|py| match on_piece.call1(py, (pcm(py, samples), rate)) {
+                            Ok(v) => !v.bind(py).is(PyBool::new(py, false)),
+                            Err(e) => {
+                                raised = Some(e);
+                                false
+                            }
+                        })
+                    })
             })
         });
         if let Some(e) = raised {
             return Err(e);
         }
-        r.map_err(|e| error(py, e))
+        r.map_err(|(e, key)| keyed_error(py, e, key))
     }
 
     /// Drop the engine. Later calls raise `GgttsError` with `ERR_HANDLE`. A render in progress on another thread
@@ -131,25 +158,27 @@ impl PyEngine {
     }
 }
 
-/// Load an engine. See `ggtts.load` for the arguments. The GIL is released while it loads (and downloads).
+/// Load an engine. See `ggtts.load` for the arguments; an argument left None is not given (the load document's value,
+/// else the default). `options` is a load document (JSON). The GIL is released while it loads (and downloads).
 #[pyfunction]
-#[pyo3(signature = (engine, model=None, codec=None, voice=None, speaker=None, instruction=None, device="cpu",
-                    threads=None, offline=false, progress=None))]
+#[pyo3(signature = (engine=None, model=None, codec=None, voice=None, speaker=None, instruction=None, device=None,
+                    threads=None, offline=None, options=None, progress=None))]
 #[allow(clippy::too_many_arguments)]
 fn load(
     py: Python<'_>,
-    engine: String,
+    engine: Option<String>,
     model: Option<PathBuf>,
     codec: Option<PathBuf>,
     voice: Option<PathBuf>,
     speaker: Option<String>,
     instruction: Option<String>,
-    device: &str,
+    device: Option<&str>,
     threads: Option<i32>,
-    offline: bool,
+    offline: Option<bool>,
+    options: Option<String>,
     progress: Option<PyObject>,
 ) -> PyResult<PyEngine> {
-    let device = core::parse_device(device).map_err(|e| error(py, e))?;
+    let device = device.map(core::parse_device).transpose().map_err(|e| error(py, e))?;
     let req = core::LoadRequest {
         engine,
         model,
@@ -158,21 +187,24 @@ fn load(
         speaker,
         instruction,
         device,
-        threads: threads.unwrap_or(0),
+        threads,
         offline,
+        options,
     };
     let r = py.allow_threads(|| {
-        // A download of gigabytes is never silent: to `progress` when given, else to stderr.
-        core::load(&req, &mut |message| match &progress {
-            Some(f) => Python::with_gil(|py| {
-                if let Err(e) = f.call1(py, (message,)) {
-                    e.write_unraisable(py, Some(f.bind(py)));
-                }
-            }),
-            None => eprintln!("ggtts: {message}"),
+        core::guard_keyed(|| {
+            // A download of gigabytes is never silent: to `progress` when given, else to stderr.
+            core::load(&req, &mut |message| match &progress {
+                Some(f) => Python::with_gil(|py| {
+                    if let Err(e) = f.call1(py, (message,)) {
+                        e.write_unraisable(py, Some(f.bind(py)));
+                    }
+                }),
+                None => eprintln!("ggtts: {message}"),
+            })
         })
     });
-    let (handle, loaded) = r.map_err(|e| error(py, e))?;
+    let (handle, loaded) = r.map_err(|(e, key)| keyed_error(py, e, key))?;
     Ok(PyEngine { handle, loaded })
 }
 

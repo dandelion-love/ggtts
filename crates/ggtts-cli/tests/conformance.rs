@@ -216,31 +216,20 @@ const FRONT_ENDS: &[FrontEnd] = &[
     FrontEnd {
         id: "python",
         cells: &[
-            (
-                &[
-                    "load.engine",
-                    "load.model",
-                    "load.codec",
-                    "load.voice",
-                    "load.speaker",
-                    "load.device",
-                    "load.threads",
-                    "load.offline",
-                ],
-                Carried,
-            ),
-            (&["load.cache_dir"], Gap(291)),
+            (LOAD, Carried),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
             (&["render.judge"], Refused(NO_JUDGE)),
-            (STEER, Gap(291)),
-            (&["render.redraw", "render.edge_s", "render.measure_timings"], Gap(291)),
-            (TRACE, Gap(291)),
-            (REPORTS, Gap(291)),
-            (LOG, Gap(291)),
+            (STEER, Carried),
+            (&["render.redraw", "render.edge_s"], Carried),
+            (&["render.measure_timings"], Refused(NO_TIMINGS)),
+            (TRACE, Carried),
+            (REPORTS, Refused(NO_TIMINGS)),
+            (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
-            (FILES_OUT, Refused(NO_FILE)),
+            (&["output.out", "output.stream_format"], Refused(NO_FILE)),
+            (&["output.stream"], Carried),
             (STREAM_LEVEL, Gap(284)),
             (BOOK, Refused(NOT_BOOK_FRONT)),
         ],
@@ -867,10 +856,159 @@ fn c_abi_document_probes(plain: usize) -> Vec<Probe> {
     out
 }
 
+/// A binding call's result: the value, or the failure (code and message) and the refused key.
+type Keyed<T> = Result<T, ((i32, String), Option<String>)>;
+
+/// Python's `options=` on the fake engine, through the binding's own core (`ggtts_py::core`, the plain Rust under
+/// the pyo3 module): each option where it is read, or its refusal by its key. Each render is on a fresh engine, since
+/// the fake engine's output depends on what it rendered before.
+fn python_probes() -> Vec<Probe> {
+    use ggtts_py::core::{guard_keyed, load, LoadRequest, ERR_ARG};
+    let dir = std::env::temp_dir().join(format!("ggtts-conformance-python-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let fresh = |options: Option<&str>| {
+        let req = LoadRequest {
+            options: Some(options.unwrap_or(r#"{"load": {"engine": "fake"}}"#).to_string()),
+            ..Default::default()
+        };
+        guard_keyed(|| load(&req, &mut |_| {})).map(|(h, _)| h)
+    };
+    let text = "你好。";
+    // A whole read with the render document `doc`: its samples, or the failure and the refused key.
+    let render = |doc: &str| guard_keyed(|| fresh(None).map_err(|(e, _)| e)?.render_with(text, None, Some(doc)));
+    let by_key = |r: Keyed<(Vec<f32>, u32)>, key: &str| match r {
+        Err(((ERR_ARG, msg), Some(k))) if k == key && msg.starts_with(&format!("{key}: ")) => Seen::Refused,
+        other => panic!("python: {key} gave {:?}", other.map(|(s, _)| s.len())),
+    };
+    let mut out = Vec::new();
+    let mut push = |key: &str, seen| out.push(("python", key.to_string(), seen));
+    let plain = render("{}").unwrap().0;
+    // Steering and a style instruction reach the engine's capabilities, which refuse them on the fake engine: carried
+    // only when the refusal is exactly that one, not a binding's own refusal of the key.
+    let caps = ggtts_core::capabilities::Capabilities::of("fake").unwrap();
+    for (key, doc) in [
+        ("render.steer", r#"{"render": {"steer": "s.safetensors"}}"#),
+        ("render.instruction", r#"{"render": {"instruction": "Speak slowly."}}"#),
+    ] {
+        let capability = caps.refusal(key, None).to_string();
+        push(
+            key,
+            match render(doc) {
+                Err(((ERR_ARG, msg), Some(k))) if k == key && msg == capability => Seen::Carried,
+                Err(((ERR_ARG, _), Some(k))) if k == key => Seen::Refused,
+                other => panic!("python: {key} gave {:?}", other.map(|(s, _)| s.len())),
+            },
+        );
+    }
+    // The edge kept at each chunk changes the read's length, as a load default and in a render document.
+    let edged = render(r#"{"render": {"edge_s": 1.5}}"#).unwrap().0;
+    push(
+        "render.edge_s",
+        if edged.len() != plain.len() {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        },
+    );
+    // The salt moves every chunk's sampler seed, as the trace records it.
+    let seeds = |salt: &str| {
+        let trace = dir.join(format!("salt-{salt}.jsonl"));
+        let doc = format!(
+            r#"{{"render": {{"seed_salt": "{salt}"}}, "observe": {{"trace": {}}}}}"#,
+            serde_json::to_string(&trace.to_string_lossy()).unwrap()
+        );
+        render(&doc).unwrap();
+        trace_seeds(&trace)
+    };
+    let (seven, eight) = (seeds("7"), seeds("8"));
+    push(
+        "render.seed_salt",
+        if !seven.is_empty() && seven != eight {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        },
+    );
+    // The load document's engine is the engine loaded.
+    push(
+        "load.engine",
+        match guard_keyed(|| {
+            load(
+                &LoadRequest {
+                    options: Some(r#"{"load": {"engine": "nonesuch"}}"#.into()),
+                    ..Default::default()
+                },
+                &mut |_| {},
+            )
+        }) {
+            Err(((_, msg), _)) if msg.contains("nonesuch") => Seen::Carried,
+            _ => Seen::Dropped,
+        },
+    );
+    // The trace file, and its level in the header.
+    let trace = dir.join("t.jsonl");
+    let doc = format!(
+        r#"{{"observe": {{"trace": {}, "trace_level": 2}}}}"#,
+        serde_json::to_string(&trace.to_string_lossy()).unwrap()
+    );
+    render(&doc).unwrap();
+    let header = std::fs::read_to_string(&trace).unwrap_or_default();
+    push(
+        "observe.trace",
+        if header.lines().count() > 1 {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        },
+    );
+    push(
+        "observe.trace_level",
+        if header.lines().next().is_some_and(|l| l.contains("\"trace_level\":2")) {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        },
+    );
+    // The stream: pieces reach the callback.
+    let mut pieces = 0usize;
+    let streamed = guard_keyed(|| {
+        fresh(None).map_err(|(e, _)| e)?.render_stream_with(
+            text,
+            None,
+            Some(r#"{"output": {"stream": "raw"}}"#),
+            &mut |_, _| {
+                pieces += 1;
+                true
+            },
+        )
+    });
+    assert!(streamed.is_ok(), "python: the stream failed: {streamed:?}");
+    push("output.stream", if pieces > 0 { Seen::Carried } else { Seen::Dropped });
+    // The options a binding does not take, refused by their keys.
+    for (key, doc) in [
+        ("render.measure_timings", r#"{"render": {"measure_timings": true}}"#),
+        ("render.seed", r#"{"render": {"seed": 3}}"#),
+        ("observe.timing_report", r#"{"observe": {"timing_report": "t.json"}}"#),
+        (
+            "observe.duration_report",
+            r#"{"observe": {"duration_report": "d.json"}}"#,
+        ),
+        ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
+        ("observe.log_format", r#"{"observe": {"log_format": "json"}}"#),
+        ("output.out", r#"{"output": {"out": "o.flac"}}"#),
+        ("render.judge", r#"{"render": {"judge": "asr-qwen,model=m"}}"#),
+    ] {
+        push(key, by_key(render(doc), key));
+    }
+    let _ = std::fs::remove_dir_all(dir);
+    out
+}
+
 fn probes() -> Vec<Probe> {
     let mut out = render_probes();
     out.extend(book_probes());
     out.extend(c_abi_probes());
+    out.extend(python_probes());
     out
 }
 
@@ -1053,8 +1191,8 @@ fn the_binding_surfaces_match_their_snapshot() {
 fn a_new_python_keyword_fails_the_snapshot() {
     let src = read("crates/ggtts-py/src/python.rs");
     let planted = src.replacen(
-        "#[pyo3(signature = (engine,",
-        "#[pyo3(signature = (engine, foo=None,",
+        "#[pyo3(signature = (engine=None,",
+        "#[pyo3(signature = (engine=None, foo=None,",
         1,
     );
     assert_ne!(planted, src, "the plant applies");

@@ -72,6 +72,13 @@ that a merge places under a released heading is caught.
 
 ### Changed
 
+- **`ggtts-render --text --trace FILE` writes the `ggtts-trace/2` event stream on every engine**, as `--story` does:
+  the header, `chunk_begin`, the engine's `step`s, `chunk_end` and `end`. Before, it reached only qwen3-tts, which
+  wrote its older step-only file, and kitten-tts-2 and fake accepted it and wrote nothing. `--trace-level` is taken
+  with `--text` too (it needed `--story` before).
+- **`ggtts-render --text --stream` is levelled by default**, as `--story`'s is, under `--stream-level-seconds`.
+  `--stream-raw` gives the decoded draw exactly, which is what `--text --stream` wrote before. The `--text` FLAC is
+  unchanged: the decoded draw, with no level step.
 - **An option an engine does not support is refused in one wording everywhere, under its schema key, before anything
   is loaded or drawn.** Each engine states what it supports (`Engine::capabilities`, `ggtts_core::capabilities`), and
   `ggtts-render`, the C ABI, Python and Kotlin refuse with the same text. The old and new wording:

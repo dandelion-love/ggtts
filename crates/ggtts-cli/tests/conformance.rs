@@ -164,12 +164,12 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.judge"], Refused(TEXT_JUDGE)),
             (&["render.redraw"], Gap(294)),
             (&["render.edge_s"], Gap(180)),
-            (TRACE, Gap(294)),
+            (TRACE, Carried),
             (REPORTS, Carried),
             (LOG, Carried),
             (INSTRUMENTS, Carried),
             (&["output.out", "output.stream", "output.stream_format"], Carried),
-            (STREAM_LEVEL, Gap(294)),
+            (STREAM_LEVEL, Carried),
             (BOOK, Refused(NOT_A_BOOK)),
         ],
     },
@@ -588,6 +588,19 @@ fn render_probes() -> Vec<Probe> {
         push("observe.duration_report", by_file(&r, "dr.json", "--duration-report"));
         let r = render(&p("stream"), mode, &["--stream", "st.wav"]);
         push("output.stream", by_file(&r, "st.wav", "--stream"));
+        let levelled = std::fs::read(r.dir.join("st.wav")).unwrap_or_default();
+        let r = render(&p("stream-raw"), mode, &["--stream", "st.wav", "--stream-raw"]);
+        let before_level = std::fs::read(r.dir.join("st.wav")).unwrap_or_default();
+        push(
+            "output.stream_raw",
+            if !r.ok {
+                by_front_end_refusal(&r, "--stream-raw")
+            } else if !before_level.is_empty() && before_level != levelled {
+                Seen::Carried
+            } else {
+                Seen::Dropped
+            },
+        );
 
         // The judge, through the stand-in ASR worker: carried when the trace records what it read back.
         let model = scratch(&p("judge-model"));

@@ -107,6 +107,8 @@ const ENGINE_READS_ENV: &str =
     "the kitten-tts-2 engine reads GGTTS_KITTEN_FULL_HEAD=1 from the environment itself: a binding takes no option for it";
 const NEVER_DOWNLOADS: &str = "the app never downloads: its models are installed with it";
 const PARITY_TOOL: &str = "an engine parity tool; render with ggtts-render --engine kitten-tts-2";
+const TEXT_HOLD: &str =
+    "--text renders one chunk, and the stream levels it by its own gain whatever the hold; give it with --story";
 const TEXT_JUDGE: &str = "--text renders one draw and keeps it; the judge redraws a story's chunks (--story)";
 const TEXT_REDRAW: &str = "--text renders one draw and keeps it; redraws are a story's (--story)";
 const NO_JUDGE: &str =
@@ -170,12 +172,13 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.judge"], Refused(TEXT_JUDGE)),
             (&["render.redraw"], Refused(TEXT_REDRAW)),
             (&["render.edge_s"], Gap(180)),
-            (TRACE, Gap(294)),
+            (TRACE, Carried),
             (REPORTS, Carried),
             (LOG, Carried),
             (INSTRUMENTS, Carried),
             (&["output.out", "output.stream", "output.stream_format"], Carried),
-            (STREAM_LEVEL, Gap(294)),
+            (&["output.stream_raw"], Carried),
+            (&["output.stream_level_seconds"], Refused(TEXT_HOLD)),
             (BOOK, Refused(NOT_A_BOOK)),
         ],
     },
@@ -615,6 +618,26 @@ fn render_probes() -> Vec<Probe> {
         push("observe.duration_report", by_file(&r, "dr.json", "--duration-report"));
         let r = render(&p("stream"), mode, &["--stream", "st.wav"]);
         push("output.stream", by_file(&r, "st.wav", "--stream"));
+        let levelled = std::fs::read(r.dir.join("st.wav")).unwrap_or_default();
+        let r = render(&p("stream-raw"), mode, &["--stream", "st.wav", "--stream-raw"]);
+        let before_level = std::fs::read(r.dir.join("st.wav")).unwrap_or_default();
+        push(
+            "output.stream_raw",
+            if !r.ok {
+                by_front_end_refusal(&r, "--stream-raw")
+            } else if !before_level.is_empty() && before_level != levelled {
+                Seen::Carried
+            } else {
+                Seen::Dropped
+            },
+        );
+        if mode == "text" {
+            let r = render(&p("hold"), mode, &["--stream", "st.wav", "--stream-level-seconds", "0"]);
+            push(
+                "output.stream_level_seconds",
+                by_front_end_refusal(&r, "--stream-level-seconds"),
+            );
+        }
 
         // The judge, through the stand-in ASR worker: carried when the trace records what it read back.
         let model = scratch(&p("judge-model"));

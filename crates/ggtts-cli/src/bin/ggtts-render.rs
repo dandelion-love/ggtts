@@ -32,7 +32,7 @@
 //! the file's sha256, the layers and the scale.
 //! `--engine auto` (the default) picks the engine from the model's `general.architecture`. `--text` renders one
 //! request at one seed (default 20260905). `--story` reads a story file (title line, then one paragraph per line)
-//! and renders it on the core's story path. For stories `--trace` writes a complete ggtts-trace/2 event stream;
+//! and renders it on the core's story path. On both, `--trace` writes a complete ggtts-trace/2 event stream;
 //! tracing is read-only, so the FLAC is the same with or without it. Engines need the `ggml` feature (and
 //! `--device cuda` the `cuda` feature); without it only `--version` and the fake engine work.
 //!
@@ -49,8 +49,8 @@
 //! * **To check parity: `--stream --stream-raw`.** The pieces before the level step, bit-exact to the batch read
 //!   before its level step; applying the FLAC's gain (printed on stderr at the end) gives the FLAC's samples.
 //!
-//! `--out` is optional with `--stream` and still writes the levelled FLAC. A `--text` render has no level step on
-//! either output, so its stream holds the FLAC's samples, raw or not.
+//! `--out` is optional with `--stream` and still writes the levelled FLAC. A `--text` render's FLAC has no level step,
+//! and its stream is levelled as a story's is, so `--text --stream --stream-raw` holds the FLAC's samples.
 //!
 //! `--engine fake` renders with the fake engine (a tone per chunk, no model), so the pipeline and the stream can be
 //! run end to end without one. `--model` is not needed for it.
@@ -75,7 +75,8 @@ use ggtts_core::hooks::Hooks;
 use ggtts_core::logging::{Format as LogFormat, Level as LogLevel, Settings as LogSettings};
 use ggtts_core::options::{self, Descriptor, Options, Refusal, Section};
 use ggtts_core::pipeline::{
-    plan_story, render_plan, DurationJudge, Given, Observers, Output, RenderError, StorySeeds, StreamMode, StreamPiece,
+    plan_story, render_plan, DurationJudge, Given, Judge, Observers, Output, RenderError, SeedSource, StorySeeds,
+    StreamMode, StreamPiece,
 };
 use ggtts_core::stream::{Container, StreamWriter};
 use ggtts_core::text::read_text;
@@ -248,7 +249,7 @@ fn refusal_message(r: &Refusal, args: &[String]) -> String {
     if let Some(needed) = r.message.strip_prefix("needs ") {
         return match d.name {
             "steer_scale" | "steer_layers" => "--steer-scale and --steer-layers need --steer".into(),
-            "trace_level" => "--trace-level requires a story and --trace".into(),
+            "trace_level" => "--trace-level requires --trace".into(),
             _ => {
                 let spelled = options::descriptor(needed).and_then(|n| n.flags.first().copied());
                 format!("{flag} needs {}", spelled.unwrap_or(needed))
@@ -313,6 +314,10 @@ fn refusal_settings(args: &[String], env: &dyn Fn(&str) -> Option<String>) -> Lo
     }
 }
 
+/// Why `--text` refuses `--stream-level-seconds`.
+const TEXT_HOLD: &str = "--stream-level-seconds (output.stream_level_seconds): --text renders one chunk, and the \
+stream levels it by its own gain whatever the hold; give it with --story";
+
 /// The model engines this binary can carry, by architecture name: `load_engine` has an arm for each, and
 /// `engine_lines` lists them when the build has them. `every_engine_has_a_load_arm` holds the two together.
 const ENGINES: &[&str] = &["qwen3-tts", "kitten-tts-2"];
@@ -323,12 +328,8 @@ fn qwen_voice(a: &Options) -> Result<ggtts_qwen3_tts::engine::Voice, String> {
     let mut voice = ggtts_qwen3_tts::engine::Voice {
         device: ggtts_qwen3_tts::cpu::Device::parse(device)
             .ok_or(format!("--device must be cpu or cuda, not {device}"))?,
-        // A story's --trace is the pipeline event stream, not the engine's legacy step-only file.
-        trace: if a.render.story.is_some() {
-            None
-        } else {
-            a.observe.trace.clone()
-        },
+        // --trace is the pipeline event stream on --text and --story alike, never the engine's step-only file.
+        trace: None,
         ..Default::default()
     };
     if let Some(speaker) = &a.load.speaker {
@@ -575,9 +576,13 @@ fn render_with_models(
     stream_opener: impl FnOnce(&Options) -> Result<Option<StreamWriter<Box<dyn std::io::Write>>>, String>,
     resolve: impl FnOnce(&mut Options, &str, LogSettings) -> Result<Vec<ggtts_models::ModelFile>, String>,
 ) -> Result<u8, String> {
-    // The table refuses --trace-level without --trace; a trace level is a story's only.
-    if a.observe.trace_level.is_some() && a.render.story.is_none() {
-        return Err("--trace-level requires a story and --trace".into());
+    // The table refuses --trace-level without --trace.
+    if a.observe.trace_level.is_some() && a.observe.trace.is_none() {
+        return Err("--trace-level requires --trace".into());
+    }
+    // One chunk is levelled by its own gain whatever the hold, so a hold length would change nothing on --text.
+    if a.output.stream_level_seconds.is_some() && a.render.text.is_some() {
+        return Err(TEXT_HOLD.into());
     }
     if a.observe.timing_report.as_ref().is_some_and(|p| p.exists()) {
         return Err("--timing-report must be a new file".into());
@@ -741,62 +746,179 @@ fn render_with_models(
     let t1 = Instant::now();
     let measured_render_ms;
     let frames_generated;
-    let mut stage_times = None;
+    let stage_times;
     let mut trace_stats = None;
     let mut stream_stats = None;
     let mut duration_chunks = None;
-    let (samples, rate) = match (&a.render.text, &a.render.story) {
-        (Some(text), None) => {
-            // A one-chunk plan at the given seed, through the same entry point as a story: no redraw, no trim and
-            // no level, so the output is the decoded draw as it always was (#180 and #294 change that, not this).
-            let chunk = PlannedChunk {
+    // `--text` is a one-chunk plan at its seed and `--story` the chunks planned before loading; both render through
+    // the same entry point, write the same trace (`chunk_begin`, the engine's `step`s, `chunk_end`, `end`) and stream
+    // under the same levelling options. `--text` keeps its one draw, untrimmed and unlevelled, so its FLAC is the
+    // decoded draw as it always was (#180's question, not this one's).
+    let text_mode = a.render.text.is_some();
+    let (title, chunks) = match &a.render.text {
+        Some(text) => (
+            String::new(),
+            vec![PlannedChunk {
                 para: 0,
                 text: text.clone(),
                 punct: String::new(),
                 last_in_para: true,
-            };
-            let mut options = a.render_options(engine.profile()).map_err(|r| r.to_string())?;
+            }],
+        ),
+        None => preplanned.expect("a story was planned before loading"),
+    };
+    let (samples, rate) = {
+        let profile = *engine.profile();
+        let mut timing = StreamTiming::default();
+        let hold_s = a
+            .output
+            .stream_level_seconds
+            .unwrap_or(ggtts_core::stream::DEFAULT_HOLD_S);
+        let raw = a.output.stream_raw;
+        let stream_mode = if raw {
+            StreamMode::Raw
+        } else {
+            StreamMode::Levelled { hold_s }
+        };
+        let trace_level = a.observe.trace_level.unwrap_or(1);
+        let mut trace = a
+            .observe
+            .trace
+            .as_ref()
+            .map(|path| {
+                std::fs::File::create(path)
+                    .map(|file| JsonlEvents::new(file, trace_level))
+                    .map_err(|e| format!("--trace {}: {e}", path.display()))
+            })
+            .transpose()?;
+        let mut null = NullEvents;
+        let events: &mut dyn Events = match trace.as_mut() {
+            Some(writer) => writer,
+            None => &mut null,
+        };
+        let mut events = DeferredEnd {
+            inner: events,
+            end: None,
+        };
+        let mut header = Header::for_engine(engine.as_ref(), trace_level);
+        header.model_sha256 = sha_of(&["talker", "model"]);
+        header.codec_sha256 = sha_of(&["codec"]);
+        header.models = model_files.clone();
+        header.set_reported(&record);
+        emit_header(&mut events, &header);
+        let mut options = a.render_options(&profile).map_err(|r| r.to_string())?;
+        if text_mode {
+            // One draw, kept: no redraw, no trim, no level. The timings feed the draw's log line.
             options.redraw = 0;
             options.trim = false;
             options.level = false;
             options.measure_timings = true;
-            let mut timing = StreamTiming::default();
-            let streaming = stream.is_some();
-            let mut sink = |p: StreamPiece<'_>| match stream.as_mut() {
-                Some(w) => timing.write(w, p.samples, p.sample_rate, t1).map_err(|e| e.to_string()),
-                None => Ok(()),
+        }
+        let given = Given(a.render.seed.unwrap_or(options::DEFAULT_SEED));
+        let story_seeds = StorySeeds {
+            story_id: &title,
+            salt: &options.seed_salt,
+        };
+        let seeds: &dyn SeedSource = if text_mode { &given } else { &story_seeds };
+        let mut kept = DurationJudge;
+        let judge: &mut dyn Judge = if text_mode { &mut kept } else { judge.as_mut() };
+        let mut hooks = Hooks::new();
+        let obs = &mut Observers::new(&mut events, &mut hooks);
+        let streaming = stream.is_some();
+        // The pipeline levels the stream (`StreamMode::Levelled`); this sink only writes what it is handed.
+        let mut sink = |p: StreamPiece<'_>| match stream.as_mut() {
+            Some(w) => timing.write(w, p.samples, p.sample_rate, t1).map_err(|e| e.to_string()),
+            None => Ok(()),
+        };
+        let output = if streaming {
+            Output::Stream {
+                sink: &mut sink,
+                level: stream_mode,
+            }
+        } else {
+            Output::Whole
+        };
+        let read = render_plan(engine.as_mut(), &chunks, seeds, judge, &options, obs, output).map_err(|e| match e {
+            RenderError::Sink(m) if text_mode => format!("--stream: {m}"),
+            other => other.to_string(),
+        })?;
+        let level_ns = read.stream.map_or(0, |s| s.level_ns);
+        let render_ms = t1.elapsed().as_millis();
+        measured_render_ms = render_ms;
+        frames_generated = read.frames_generated;
+        // `--text` measures its timings for its log line; they reach a report only when one is asked for.
+        stage_times = if text_mode && a.observe.timing_report.is_none() {
+            None
+        } else {
+            read.timings
+        };
+        let first_audio_ms = timing.first_audio_ms;
+        let stream_writes = timing.writes;
+        let stream_write_ns = timing.write_ns;
+        if stream.is_some() {
+            stream_stats = Some((first_audio_ms, stream_writes, Some(level_ns), stream_write_ns));
+        }
+        if events.level() > 0 {
+            if let Some(ms) = first_audio_ms {
+                events.emit(Event::Timing {
+                    stage: "first_audio",
+                    chunk: None,
+                    draw: None,
+                    ms: ms as u64,
+                });
+            }
+            events.emit(Event::Timing {
+                stage: "render",
+                chunk: None,
+                draw: None,
+                ms: render_ms as u64,
+            });
+            if let Some((frames, seconds)) = events.end.take() {
+                events.inner.emit(Event::End { frames, seconds });
+            }
+        }
+        if let Some(writer) = trace {
+            let (_, stats) = writer.finish_with_stats().map_err(|e| format!("--trace: {e}"))?;
+            trace_stats = Some((trace_level, stats));
+            if log.enabled(LogLevel::Info) {
+                log.stderr_fields(LogLevel::Info, BINARY, "trace_sink", format_args!("trace sink {} events, {} ns serialization/write, {} ns flush; generation includes trace emission",
+                    stats.events_written, stats.sink_ns, stats.flush_ns), serde_json::json!({"events":stats.events_written,
+                    "sink_ns":stats.sink_ns as u64, "flush_ns":stats.flush_ns as u64, "trace_level":trace_level}));
+            }
+        }
+        if let Some(w) = &stream {
+            let db = |g: Option<f64>| g.map_or("none".to_string(), |g| format!("{:+.4} dB", 20.0 * g.log10()));
+            let what = match read.stream {
+                Some(s) if !raw => format!(
+                    "levelled by the gain of its first {:.1} s (--stream-level-seconds {hold_s}) {}",
+                    s.held_s,
+                    db(s.gain)
+                ),
+                _ => "before the level step".to_string(),
             };
-            let output = if streaming {
-                Output::Stream {
-                    sink: &mut sink,
-                    level: StreamMode::Raw,
-                }
+            let flac = if text_mode {
+                "the --out FLAC is the decoded draw, not levelled".to_string()
             } else {
-                Output::Whole
+                format!("the read's level gain {} (the --out FLAC applies it)", db(read.gain))
             };
-            let mut hooks = Hooks::new();
-            let read = render_plan(
-                engine.as_mut(),
-                std::slice::from_ref(&chunk),
-                &Given(a.render.seed.unwrap_or(options::DEFAULT_SEED)),
-                &mut DurationJudge,
-                &options,
-                &mut Observers::new(&mut NullEvents, &mut hooks),
-                output,
-            )
-            .map_err(|e| match e {
-                RenderError::Sink(m) => format!("--stream: {m}"),
-                other => other.to_string(),
-            })?;
-            frames_generated = read.frames_generated;
+            log.stderr(
+                LogLevel::Info,
+                BINARY,
+                "stream",
+                format_args!(
+                    "streamed {} samples {what}, first audio {}; {flac}",
+                    w.samples(),
+                    first_audio_ms.map_or_else(|| "not written".to_string(), |ms| format!("at {ms} ms")),
+                ),
+            );
+            if log.enabled(LogLevel::Info) {
+                log.stderr_fields(LogLevel::Info, BINARY, "stream_handoff", format_args!("stream handoffs {stream_writes} writes, {level_ns} ns preparing/levelling, {stream_write_ns} ns writing"),
+                    serde_json::json!({"writes":stream_writes, "preparation_ns":level_ns as u64,
+                                       "write_ns":stream_write_ns as u64, "first_audio_ms":first_audio_ms}));
+            }
+        }
+        if text_mode {
             let t = read.timings.unwrap_or_default();
-            if a.observe.timing_report.is_some() {
-                stage_times = read.timings;
-            }
-            if streaming {
-                stream_stats = Some((timing.first_audio_ms, timing.writes, None, timing.write_ns));
-            }
-            measured_render_ms = t1.elapsed().as_millis();
             log.stderr(
                 LogLevel::Info,
                 BINARY,
@@ -809,138 +931,7 @@ fn render_with_models(
                     t.decode_ns / 1_000_000
                 ),
             );
-            (read.samples, read.sample_rate)
-        }
-        (None, Some(_story)) => {
-            let (title, chunks) = preplanned.expect("story was planned before loading");
-            let profile = *engine.profile();
-            let mut timing = StreamTiming::default();
-            let hold_s = a
-                .output
-                .stream_level_seconds
-                .unwrap_or(ggtts_core::stream::DEFAULT_HOLD_S);
-            let raw = a.output.stream_raw;
-            let stream_mode = if raw {
-                StreamMode::Raw
-            } else {
-                StreamMode::Levelled { hold_s }
-            };
-            let trace_level = a.observe.trace_level.unwrap_or(1);
-            let mut trace = a
-                .observe
-                .trace
-                .as_ref()
-                .map(|path| {
-                    std::fs::File::create(path)
-                        .map(|file| JsonlEvents::new(file, trace_level))
-                        .map_err(|e| format!("--trace {}: {e}", path.display()))
-                })
-                .transpose()?;
-            let mut null = NullEvents;
-            let events: &mut dyn Events = match trace.as_mut() {
-                Some(writer) => writer,
-                None => &mut null,
-            };
-            let mut events = DeferredEnd {
-                inner: events,
-                end: None,
-            };
-            let mut header = Header::for_engine(engine.as_ref(), trace_level);
-            header.model_sha256 = sha_of(&["talker", "model"]);
-            header.codec_sha256 = sha_of(&["codec"]);
-            header.models = model_files.clone();
-            header.set_reported(&record);
-            emit_header(&mut events, &header);
-            let options = a.render_options(&profile).map_err(|r| r.to_string())?;
-            let seeds = StorySeeds {
-                story_id: &title,
-                salt: &options.seed_salt,
-            };
-            let mut hooks = Hooks::new();
-            let obs = &mut Observers::new(&mut events, &mut hooks);
-            let streaming = stream.is_some();
-            // The pipeline levels the stream (`StreamMode::Levelled`); this sink only writes what it is handed.
-            let mut sink = |p: StreamPiece<'_>| match stream.as_mut() {
-                Some(w) => timing.write(w, p.samples, p.sample_rate, t1).map_err(|e| e.to_string()),
-                None => Ok(()),
-            };
-            let output = if streaming {
-                Output::Stream {
-                    sink: &mut sink,
-                    level: stream_mode,
-                }
-            } else {
-                Output::Whole
-            };
-            let read = render_plan(engine.as_mut(), &chunks, &seeds, judge.as_mut(), &options, obs, output)
-                .map_err(|e| e.to_string())?;
-            let level_ns = read.stream.map_or(0, |s| s.level_ns);
-            let render_ms = t1.elapsed().as_millis();
-            measured_render_ms = render_ms;
-            frames_generated = read.frames_generated;
-            stage_times = read.timings;
-            let first_audio_ms = timing.first_audio_ms;
-            let stream_writes = timing.writes;
-            let stream_write_ns = timing.write_ns;
-            if stream.is_some() {
-                stream_stats = Some((first_audio_ms, stream_writes, Some(level_ns), stream_write_ns));
-            }
-            if events.level() > 0 {
-                if let Some(ms) = first_audio_ms {
-                    events.emit(Event::Timing {
-                        stage: "first_audio",
-                        chunk: None,
-                        draw: None,
-                        ms: ms as u64,
-                    });
-                }
-                events.emit(Event::Timing {
-                    stage: "render",
-                    chunk: None,
-                    draw: None,
-                    ms: render_ms as u64,
-                });
-                if let Some((frames, seconds)) = events.end.take() {
-                    events.inner.emit(Event::End { frames, seconds });
-                }
-            }
-            if let Some(writer) = trace {
-                let (_, stats) = writer.finish_with_stats().map_err(|e| format!("--trace: {e}"))?;
-                trace_stats = Some((trace_level, stats));
-                if log.enabled(LogLevel::Info) {
-                    log.stderr_fields(LogLevel::Info, BINARY, "trace_sink", format_args!("trace sink {} events, {} ns serialization/write, {} ns flush; generation includes trace emission",
-                        stats.events_written, stats.sink_ns, stats.flush_ns), serde_json::json!({"events":stats.events_written,
-                        "sink_ns":stats.sink_ns as u64, "flush_ns":stats.flush_ns as u64, "trace_level":trace_level}));
-                }
-            }
-            if let Some(w) = &stream {
-                let db = |g: Option<f64>| g.map_or("none".to_string(), |g| format!("{:+.4} dB", 20.0 * g.log10()));
-                let what = match read.stream {
-                    Some(s) if !raw => format!(
-                        "levelled by the gain of its first {:.1} s (--stream-level-seconds {hold_s}) {}",
-                        s.held_s,
-                        db(s.gain)
-                    ),
-                    _ => "before the level step".to_string(),
-                };
-                log.stderr(
-                    LogLevel::Info,
-                    BINARY,
-                    "stream",
-                    format_args!(
-                        "streamed {} samples {what}, first audio {}; the read's level gain {} \
-                     (the --out FLAC applies it)",
-                        w.samples(),
-                        first_audio_ms.map_or_else(|| "not written".to_string(), |ms| format!("at {ms} ms")),
-                        db(read.gain),
-                    ),
-                );
-                if log.enabled(LogLevel::Info) {
-                    log.stderr_fields(LogLevel::Info, BINARY, "stream_handoff", format_args!("stream handoffs {stream_writes} writes, {level_ns} ns preparing/levelling, {stream_write_ns} ns writing"),
-                        serde_json::json!({"writes":stream_writes, "preparation_ns":level_ns as u64,
-                                           "write_ns":stream_write_ns as u64, "first_audio_ms":first_audio_ms}));
-                }
-            }
+        } else {
             log.stderr(
                 LogLevel::Info,
                 BINARY,
@@ -969,9 +960,8 @@ fn render_with_models(
                         .collect::<Vec<_>>(),
                 );
             }
-            (read.samples, read.sample_rate)
         }
-        _ => return Err("give exactly one of --text and --story".into()),
+        (read.samples, read.sample_rate)
     };
     let render_ms = measured_render_ms;
     let duration_data = if a.observe.duration_report.is_some() || instruments.is_some() {
@@ -1346,7 +1336,7 @@ mod tests {
     fn bad_command_lines_are_refused_with_the_messages_they_always_had() {
         // Refused after the command line was read before #289: no usage after the message.
         let late = [
-            "--trace-level requires a story and --trace",
+            "--trace-level requires --trace",
             "--stream-raw needs --stream",
             "--stream-format needs --stream",
             "--stream-level-seconds needs --stream",
@@ -1378,10 +1368,7 @@ mod tests {
             (&["--steer-scale", "nan"][..], "--steer-scale must be a finite number"),
             (&["--steer-scale", "x"][..], "--steer-scale needs a number"),
             (&["--trace-level", "3"][..], "--trace-level must be 1 or 2"),
-            (
-                &["--trace-level", "2"][..],
-                "--trace-level requires a story and --trace",
-            ),
+            (&["--trace-level", "2"][..], "--trace-level requires --trace"),
             (&["--stream-raw"][..], "--stream-raw needs --stream"),
             (&["--stream-format", "s16le"][..], "--stream-format needs --stream"),
             (
@@ -2602,6 +2589,7 @@ mod tests {
 #[cfg(test)]
 mod text_path {
     use super::*;
+    use ggtts_core::capabilities::Capabilities;
     use ggtts_core::engine::{ChunkRequest, Codes, EngineError, EngineInfo, Generated, Pcm};
     use ggtts_core::flac::to_i16;
     use ggtts_core::profile::Profile;
@@ -2706,5 +2694,234 @@ mod text_path {
                 "the FLAC is the decoded draw, not levelled"
             );
         }
+    }
+
+    /// The fake engine under another engine's name and capabilities, for the CLI's paths: steps are emitted only where
+    /// the named engine emits them.
+    struct Named {
+        inner: ggtts_fake::FakeEngine,
+        info: EngineInfo,
+        caps: Capabilities,
+    }
+
+    impl Named {
+        fn new(name: &str) -> Self {
+            let inner = ggtts_fake::FakeEngine::default();
+            let info = EngineInfo {
+                family: name.to_string(),
+                ..inner.info().clone()
+            };
+            Self {
+                inner,
+                info,
+                caps: Capabilities::of(name).unwrap(),
+            }
+        }
+    }
+
+    impl Engine for Named {
+        fn info(&self) -> &EngineInfo {
+            &self.info
+        }
+        fn profile(&self) -> &Profile {
+            self.inner.profile()
+        }
+        fn capabilities(&self) -> Capabilities {
+            self.caps.clone()
+        }
+        fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
+            self.inner.generate(req)
+        }
+        fn generate_traced(
+            &mut self,
+            req: &ChunkRequest<'_>,
+            events: &mut dyn Events,
+        ) -> Result<Generated, EngineError> {
+            if self.caps.step_events {
+                self.inner.generate_traced(req, events)
+            } else {
+                self.inner.generate(req)
+            }
+        }
+        fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
+            self.inner.decode(codes)
+        }
+    }
+
+    fn quiet() -> LogSettings {
+        LogSettings {
+            level: LogLevel::Error,
+            format: LogFormat::Text,
+        }
+    }
+
+    /// `--text` on `engine`, with the given extra arguments, through the CLI with no model files to resolve.
+    fn text_render(engine: &str, extra: &[String]) -> u8 {
+        let mut line = vec![
+            "--engine".to_string(),
+            engine.into(),
+            "--text".into(),
+            "今日天氣好好，我哋去公園行下。".into(),
+        ];
+        line.extend(extra.iter().cloned());
+        let args = options_from(&line, &|_| None).unwrap();
+        let name = engine.to_string();
+        render_with_models(
+            args,
+            quiet(),
+            move |n, _, _| {
+                assert_eq!(n, name);
+                Ok(Box::new(Named::new(&name)) as Box<dyn Engine>)
+            },
+            |_| unreachable!("no story"),
+            open_stream,
+            |_, _, _| Ok(Vec::new()),
+        )
+        .unwrap()
+    }
+
+    /// #294 AC1: `--text --trace F` writes the pipeline event stream on every engine: the header, `chunk_begin`, the
+    /// engine's `step`s where it emits them, `chunk_end` and `end`, each line valid against ggtts-trace/2.
+    #[test]
+    fn text_writes_the_pipeline_trace_on_every_engine() {
+        let dir = std::env::temp_dir().join(format!("ggtts-render-text-trace-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/ggtts-trace-2.schema.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for engine in ["qwen3-tts", "kitten-tts-2", "fake"] {
+            let trace = dir.join(format!("{engine}.jsonl"));
+            let out = dir.join(format!("{engine}.flac"));
+            let code = text_render(
+                engine,
+                &[
+                    "--out".into(),
+                    out.to_string_lossy().into_owned(),
+                    "--trace".into(),
+                    trace.to_string_lossy().into_owned(),
+                ],
+            );
+            assert_eq!(code, 0, "{engine}");
+            // Traced, the chunk is generated through `generate_traced`; the FLAC is the untraced render's.
+            let plain = dir.join(format!("{engine}-untraced.flac"));
+            assert_eq!(
+                text_render(engine, &["--out".into(), plain.to_string_lossy().into_owned()]),
+                0
+            );
+            assert_eq!(
+                std::fs::read(&out).unwrap(),
+                std::fs::read(&plain).unwrap(),
+                "{engine}: the FLAC is the same with or without --trace"
+            );
+            let lines: Vec<serde_json::Value> = std::fs::read_to_string(&trace)
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+            for line in &lines {
+                let errors: Vec<String> = validator.iter_errors(line).map(|e| e.to_string()).collect();
+                assert!(errors.is_empty(), "{engine}: {line}: {errors:?}");
+            }
+            let evs: Vec<&str> = lines.iter().map(|l| l["ev"].as_str().unwrap()).collect();
+            assert_eq!(evs[0], "trace", "{engine}: {evs:?}");
+            assert_eq!(lines[0]["engine"], engine);
+            let begin = evs.iter().position(|e| *e == "chunk_begin").expect("chunk_begin");
+            let end_chunk = evs.iter().position(|e| *e == "chunk_end").expect("chunk_end");
+            assert!(begin < end_chunk, "{engine}: {evs:?}");
+            let steps = evs[begin..end_chunk].iter().filter(|e| **e == "step").count();
+            let emits = Capabilities::of(engine).unwrap().step_events;
+            assert_eq!(steps > 0, emits, "{engine}: steps {steps}, emits {emits}: {evs:?}");
+            assert_eq!(evs.last(), Some(&"end"), "{engine}: {evs:?}");
+            assert_eq!(lines[begin]["seed"], 20260905u64, "{engine}: the text's seed");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// #294 AC2: `--text --stream` is levelled by default, as a story's is; `--stream-raw` is the decoded draw
+    /// exactly, as `--text --stream` wrote it before. AC4: the FLAC is the decoded draw either way.
+    #[test]
+    fn text_streams_levelled_by_default_and_raw_is_the_draw() {
+        let dir = std::env::temp_dir().join(format!("ggtts-render-text-stream-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = "今日天氣好好，我哋去公園行下。";
+        for (tag, extra) in [("levelled", None), ("raw", Some("--stream-raw"))] {
+            let requests = Rc::new(RefCell::new(Vec::new()));
+            let decoded = Rc::new(RefCell::new(Vec::new()));
+            let stream = dir.join(format!("{tag}.s16"));
+            let out = dir.join(format!("{tag}.flac"));
+            let mut line = vec![
+                "--engine".to_string(),
+                "fake".into(),
+                "--text".into(),
+                text.into(),
+                "--out".into(),
+                out.to_string_lossy().into_owned(),
+                "--stream".into(),
+                stream.to_string_lossy().into_owned(),
+                "--stream-format".into(),
+                "s16le".into(),
+            ];
+            line.extend(extra.map(String::from));
+            let args = options_from(&line, &|_| None).unwrap();
+            let (r, d) = (requests.clone(), decoded.clone());
+            let code = render_with_loader(args, quiet(), move |_, _, _| {
+                Ok(Box::new(Recording {
+                    inner: ggtts_fake::FakeEngine::default(),
+                    requests: r,
+                    decoded: d,
+                }) as Box<dyn Engine>)
+            })
+            .unwrap();
+            assert_eq!(code, 0, "{tag}");
+            let decoded = decoded.borrow();
+            let bytes = std::fs::read(&stream).unwrap();
+            let header = ggtts_core::stream::raw_header(24_000);
+            let written: Vec<i16> = bytes[header.len()..]
+                .chunks_exact(2)
+                .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                .collect();
+            let draw: Vec<i16> = decoded[0].iter().map(|&x| to_i16(x)).collect();
+            assert_eq!(written.len(), draw.len(), "{tag}: no sample trimmed");
+            if tag == "raw" {
+                assert_eq!(written, draw, "--stream-raw is the decoded draw");
+            } else {
+                assert_ne!(written, draw, "{tag}: the stream is levelled");
+            }
+            let reference = write_flac(&dir.join(format!("{tag}-want.flac")), &decoded[0], 24_000).unwrap();
+            assert_eq!(
+                std::fs::read(&out).unwrap(),
+                std::fs::read(reference).unwrap(),
+                "{tag}: the FLAC is the decoded draw, not levelled"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `--text --stream-level-seconds` is refused by name: one chunk is levelled by its own gain whatever the hold.
+    #[test]
+    fn text_refuses_a_stream_hold() {
+        let line = [
+            "--engine",
+            "fake",
+            "--text",
+            "你好。",
+            "--stream",
+            "-",
+            "--stream-level-seconds",
+            "0",
+        ];
+        let args = options_from(&line.map(String::from), &|_| None).unwrap();
+        let e = render_with_loader(args, quiet(), |_, _, _| {
+            Ok(Box::new(ggtts_fake::FakeEngine::default()) as Box<dyn Engine>)
+        })
+        .unwrap_err();
+        assert_eq!(e, TEXT_HOLD);
     }
 }

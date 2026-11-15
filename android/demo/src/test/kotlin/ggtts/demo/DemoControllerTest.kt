@@ -29,9 +29,13 @@ class DemoControllerTest {
         val played = mutableListOf<FloatArray>()
         var saved: FloatArray? = null
         var stops = 0
-        override fun begin(rate: Int) { events += "begin $rate" }
+        /** Runs inside [finish], while the last chunks play out. */
+        var duringFinish: () -> Unit = {}
+        /** Runs inside [begin], before the stream begins. */
+        var duringBegin: () -> Unit = {}
+        override fun begin(rate: Int) { duringBegin(); events += "begin $rate" }
         override fun play(samples: FloatArray) { played += samples; events += "play ${samples.size}" }
-        override fun finish() { events += "finish" }
+        override fun finish() { events += "finish"; duringFinish() }
         override fun stop() { stops++; events += "stop" }
         override fun save(samples: FloatArray, rate: Int, engine: String): String {
             saved = samples
@@ -105,6 +109,51 @@ class DemoControllerTest {
     }
 
     @Test
+    fun aStopJustBeforeTheFirstChunkBeginsItsStreamStillStopsThatStream() {
+        val c = controller(FakeBinding())
+        // The worker has read "not stopped"; the Stop arrives before begin, finds nothing playing, and the chunk plays.
+        audio.duringBegin = { c.stop() }
+        c.speak(request, "Hello.", Ggtts.DEFAULT_SEED)
+        assertEquals(listOf("render chunk 0", "stop", "begin 24000", "play 24000", "render chunk 1", "stop"), events)
+        assertTrue(view.statuses.last(), view.statuses.last().startsWith("Stopped after 1 chunk"))
+    }
+
+    @Test
+    fun anErrorFromPlaybackLeavesTheScreenUsable() {
+        val c = controller(FakeBinding())
+        audio.duringFinish = { throw OutOfMemoryError("planted") }
+        c.speak(request, "Hello.", Ggtts.DEFAULT_SEED)
+        assertEquals(listOf("OutOfMemoryError: planted"), view.errors)
+        assertFalse(c.busy)
+        assertFalse(view.shownBusy)
+        assertEquals("playback was stopped", "stop", events.last())
+        audio.duringFinish = {}
+        c.speak(request, "Hello.", Ggtts.DEFAULT_SEED)
+        assertTrue("the next Speak works", view.statuses.last().startsWith("kitten-tts-2: 3.00 s of audio"))
+    }
+
+    @Test
+    fun aRefusedWriteIsShownAsAnErrorNotAFinishedRead() {
+        val c = controller(FakeBinding())
+        audio.duringFinish = { throw PlaybackFailed(-6) }
+        c.speak(request, "Hello.", Ggtts.DEFAULT_SEED)
+        assertEquals(listOf("PlaybackFailed: the audio device refused a write (error -6)"), view.errors)
+        assertFalse(view.statuses.last(), view.statuses.last().startsWith("kitten-tts-2:"))
+        assertFalse(c.busy)
+    }
+
+    @Test
+    fun aStopWhileTheLastChunksPlayReportsStoppedNotFinished() {
+        val c = controller(FakeBinding())
+        audio.duringFinish = { c.stop() }
+        c.speak(request, "Hello.", Ggtts.DEFAULT_SEED)
+        assertTrue("playback stopped", audio.stops >= 1)
+        assertTrue(view.statuses.last(), view.statuses.last().startsWith("Stopped during playback"))
+        assertEquals("the whole read was rendered, so it is saved", 72000, audio.saved!!.size)
+        assertFalse(c.busy)
+    }
+
+    @Test
     fun stopWhenIdleDoesNothing() {
         val c = controller(FakeBinding())
         c.stop()
@@ -134,7 +183,7 @@ class DemoControllerTest {
     @Test
     fun aFileThatIsNotAGgufShowsTheBindingsMessage() {
         val c = controller(FakeBinding(GgttsException(Ggtts.ERR_ENGINE, "/m/voice.json is not a GGUF file")))
-        c.speak(request.copy(model = "/m/voice.json"), "Hello.", Ggtts.DEFAULT_SEED)
+        c.speak(request.with(LoadRequest.LOAD, "model", "/m/voice.json"), "Hello.", Ggtts.DEFAULT_SEED)
         assertEquals(listOf("ggtts error -3: /m/voice.json is not a GGUF file"), view.errors)
         assertFalse(view.shownBusy)
     }
@@ -192,9 +241,9 @@ class DemoControllerTest {
         c.speak(request, "One.", Ggtts.DEFAULT_SEED)
         c.speak(request, "Two.", Ggtts.DEFAULT_SEED)
         assertEquals(1, binding.loads.size)
-        c.speak(request.copy(threads = 8), "Three.", Ggtts.DEFAULT_SEED)
+        c.speak(request.withThreads(8), "Three.", Ggtts.DEFAULT_SEED)
         assertEquals(2, binding.loads.size)
-        c.speak(request.copy(engine = "qwen3-tts", voice = null), "Four.", Ggtts.DEFAULT_SEED)
+        c.speak(request.with(LoadRequest.LOAD, "engine", "qwen3-tts").with(LoadRequest.LOAD, "voice", null), "Four.", Ggtts.DEFAULT_SEED)
         assertEquals(3, binding.loads.size)
     }
 }

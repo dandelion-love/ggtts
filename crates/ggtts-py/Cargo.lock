@@ -182,6 +182,7 @@ name = "ggtts-core"
 version = "0.0.1"
 dependencies = [
  "libm",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",
@@ -202,10 +203,9 @@ name = "ggtts-ffi"
 version = "0.0.1"
 dependencies = [
  "ggtts-core",
- "ggtts-fake",
- "ggtts-kitten",
+ "ggtts-load",
  "ggtts-models",
- "ggtts-qwen3-tts",
+ "serde_json",
 ]
 
 [[package]]
@@ -227,6 +227,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ggtts-load"
+version = "0.0.1"
+dependencies = [
+ "ggtts-core",
+ "ggtts-fake",
+ "ggtts-kitten",
+ "ggtts-models",
+ "ggtts-qwen3-tts",
+]
+
+[[package]]
 name = "ggtts-models"
 version = "0.0.1"
 dependencies = [
@@ -243,10 +254,11 @@ dependencies = [
  "ggtts-core",
  "ggtts-fake",
  "ggtts-ffi",
- "ggtts-kitten",
+ "ggtts-load",
  "ggtts-models",
  "ggtts-qwen3-tts",
  "pyo3",
+ "serde_json",
 ]
 
 [[package]]
@@ -255,6 +267,7 @@ version = "0.0.1"
 dependencies = [
  "ggtts-core",
  "ggtts-ggml-sys",
+ "libc",
  "serde_json",
 ]
 
@@ -595,6 +608,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]

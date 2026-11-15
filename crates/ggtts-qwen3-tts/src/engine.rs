@@ -6,6 +6,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
+use ggtts_core::capabilities::Capabilities;
 use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm};
 use ggtts_core::hooks::{Hooks, Step, StopTrace, TensorHook, Wants};
 use ggtts_core::profile::Profile;
@@ -19,9 +20,11 @@ use crate::talker::{language_id, Sampling, Talker};
 use crate::PROFILE;
 
 /// What a request is rendered with besides its text and seed. The defaults are the reference CLI's, with the
-/// published model's one speaker, on CPU, untraced.
+/// model's default speaker, on CPU, untraced.
 #[derive(Debug, Clone)]
 pub struct Voice {
+    /// A speaker the model has, case ignored. Empty (the default) is the model's default speaker
+    /// ([`Talker::default_speaker`]), resolved at load.
     pub speaker: String,
     /// A language the reference CLI's `-l` accepts, for example `zh` or `auto`.
     pub language: String,
@@ -38,7 +41,7 @@ pub struct Voice {
 impl Default for Voice {
     fn default() -> Self {
         Self {
-            speaker: "hk_cantonese_speaker".into(),
+            speaker: String::new(),
             language: "zh".into(),
             max_frames: 1200,
             sampling: Sampling::default(),
@@ -100,10 +103,20 @@ impl Qwen3Tts {
         language_id: i32,
         codec: &Path,
         threads: i32,
-        voice: Voice,
+        mut voice: Voice,
         instruction: Option<&str>,
     ) -> Result<Self, EngineError> {
-        talker.check_instruction(instruction)?;
+        // A checkpoint that takes no instruction refuses one here, in the words every front end shows.
+        capabilities_of(&talker)
+            .check_instruction(instruction)
+            .map_err(|r| EngineError(r.to_string()))?;
+        // No speaker named: the model's default. Before 2026-11-13 this was always hk_cantonese_speaker, which the
+        // released models do not have, so every model given by path failed without --speaker.
+        if voice.speaker.is_empty() && !talker.skips_default_speaker() {
+            voice.speaker = talker.default_speaker().ok_or_else(|| {
+                EngineError("the talker has no named speakers, so there is no default speaker to use".into())
+            })?;
+        }
         // An unknown speaker fails here, before any text is rendered, with the model's own speaker names.
         talker.speaker(&voice.speaker)?;
         let trace = match &voice.trace {
@@ -132,6 +145,17 @@ impl Qwen3Tts {
             trace,
         })
     }
+}
+
+/// What a Qwen3-TTS engine on `talker` supports: everything the family does, except a style instruction on a
+/// checkpoint that takes none, which then says why (its type and hidden size).
+fn capabilities_of(talker: &Talker) -> Capabilities {
+    let mut c = Capabilities::of("qwen3-tts").expect("qwen3-tts is an engine");
+    if !talker.supports_instruction() {
+        c.instruction = false;
+        c.no_instruction_why = talker.check_instruction(Some("an instruction")).err().map(|e| e.0);
+    }
+    c
 }
 
 /// The voice's language as the talker's id, or the error a user sees for one it does not know.
@@ -284,7 +308,20 @@ impl Qwen3Tts {
     }
 }
 
+impl Qwen3Tts {
+    /// The speaker every request renders with: the one the voice named, or the model's default resolved at load.
+    pub fn speaker(&self) -> &str {
+        &self.voice.speaker
+    }
+}
+
 impl Engine for Qwen3Tts {
+    fn capabilities(&self) -> Capabilities {
+        capabilities_of(&self.talker)
+    }
+    fn speakers(&self) -> Vec<String> {
+        self.talker.speaker_names()
+    }
     fn info(&self) -> &EngineInfo {
         &self.info
     }
@@ -377,6 +414,61 @@ impl Engine for Qwen3Tts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #351 AC4: a greedy sub-talker is refused at load too, with the reason.
+    #[test]
+    fn greedy_subtalker_sampling_is_refused_at_load() {
+        for t in [0.0, -1.0, f32::NAN] {
+            let voice = Voice {
+                sampling: Sampling {
+                    subtalker_temperature: Some(t),
+                    ..Sampling::default()
+                },
+                ..Voice::default()
+            };
+            let e = Qwen3Tts::load(Path::new("no-talker.gguf"), Path::new("no-codec.gguf"), 1, voice)
+                .err()
+                .expect("a greedy sub-talker must be refused");
+            assert!(e.0.contains("greedy decoding of the sub-talker"), "{t}: {}", e.0);
+        }
+    }
+
+    /// Review of #351: a top-k of 1 is greedy decoding, refused at load for the talker and the sub-talker.
+    #[test]
+    fn a_top_k_of_1_is_refused_at_load() {
+        for (sampling, says) in [
+            (
+                Sampling {
+                    top_k: 1,
+                    ..Sampling::default()
+                },
+                "top-k 1 refused",
+            ),
+            (
+                Sampling {
+                    subtalker_top_k: Some(1),
+                    ..Sampling::default()
+                },
+                "sub-talker top-k 1 refused",
+            ),
+        ] {
+            let voice = Voice {
+                sampling,
+                ..Voice::default()
+            };
+            let e = Qwen3Tts::load(Path::new("no-talker.gguf"), Path::new("no-codec.gguf"), 1, voice)
+                .err()
+                .expect("top-k 1 must be refused");
+            assert!(e.0.contains(says) && e.0.contains("greedy decoding"), "{}", e.0);
+        }
+        assert!(Sampling {
+            top_k: 2,
+            subtalker_top_k: Some(0),
+            ..Sampling::default()
+        }
+        .check()
+        .is_ok());
+    }
 
     #[test]
     fn greedy_sampling_is_refused_at_load() {

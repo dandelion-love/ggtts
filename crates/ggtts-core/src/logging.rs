@@ -29,7 +29,8 @@ pub enum Level {
 }
 
 impl Level {
-    fn parse(s: &str) -> Option<Self> {
+    /// The level a name gives: error, warn, info, debug or trace.
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "error" => Some(Self::Error),
             "warn" => Some(Self::Warn),

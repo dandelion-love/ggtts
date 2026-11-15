@@ -26,10 +26,9 @@ reproduced from its command line and its manifest. The core holds the rules and 
 ceilings, the pause table, the judge bars and the level target are a profile the engine declares, named
 `{protocol}/{family}`, for example `story-v1/qwen3-tts`.
 
-**Instruments, opt in.** For a story, `--trace FILE` writes the complete `ggtts-trace/2` event stream as JSON
-Lines, including per-step values the engine supplies (Qwen supplies the token and stop probability). Kitten does not
-yet emit per-step events. For `--text`, Qwen's `--trace` remains its older step-only diagnostic and is not a complete
-event stream for instruments. With tracing off nothing is computed for it. With it on, the output must not change: an
+**Instruments, opt in.** For a story or a `--text` render, `--trace FILE` writes the complete `ggtts-trace/2`
+event stream as JSON Lines, including per-step values the engine supplies (Qwen supplies the token and stop
+probability). Kitten does not yet emit per-step events. With tracing off nothing is computed for it. With it on, the output must not change: an
 instrument never draws from the sampler's random stream. The hook points, the event order and the two instrument
 tiers are in [docs/instruments/hooks.md](docs/instruments/hooks.md), and the stream's JSON schema is
 [schemas/ggtts-trace-2.schema.json](schemas/ggtts-trace-2.schema.json). Current readers also accept v1; older
@@ -196,9 +195,9 @@ to its GGUFs and to audio rendered with it (its outputs may not be used to train
 
 For a Qwen model with named speakers, select the name in its model card with `--speaker NAME`. The Cantonese
 v0.0.5 model uses `--speaker hk_voice_343` (or `hk_voice_777` for its other voice). Without the option, the
-default model uses `hk_voice_343`, and a talker given with `--model` uses the legacy `hk_cantonese_speaker` name,
-as for v0.0.1. An unknown or absent speaker is an error; ggtts does
-not choose an arbitrary voice. `--speaker` applies only to Qwen, while `--voice` supplies Kitten's reference JSON.
+speaker is the model's default: `hk_cantonese_speaker` if the model has it (v0.0.1), otherwise the first of its
+speakers in alphabetical order, so `hk_voice_343` for v0.0.5, whether it is the default model or given with
+`--model`. An unknown speaker is an error that lists the model's speakers. `--speaker` applies only to Qwen, while `--voice` supplies Kitten's reference JSON.
 
 `--instruction TEXT` passes a natural-language style instruction, for example
 `--instruction "Speak slowly and softly."`, to a Qwen3-TTS checkpoint that takes one: a `custom_voice` checkpoint of
@@ -212,7 +211,9 @@ claims what an instruction does to their speech.
 forward hook would: one F32 vector per layer in a safetensors file, named `talker.layer.<i>`, times
 `--steer-scale X` (default 1.0), at the layers `--steer-layers LIST` names (default: all in the file). A render without
 it is unchanged, any other engine refuses it, and every report and trace header records the file's sha256, the layers
-and the scale. See [docs/steering.md](docs/steering.md).
+and the scale. `--steer` also takes an `https://` URL or `hf://<owner>/<repo>/<path>`, downloaded once into the cache
+(`#sha256=<hex>` pins it).
+See [docs/steering.md](docs/steering.md).
 
 ```bash
 # Run from the extracted archive; edit these paths and DEVICE for your machine.

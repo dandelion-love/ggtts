@@ -23,7 +23,7 @@ class GgttsTtsService : TextToSpeechService() {
     override fun onCreate() {
         voices = VoiceStore(prefs(this))
         session = SynthesisSession(
-            GgttsBinding(File(filesDir, "ggtts-cache").path),
+            GgttsBinding(File(filesDir, "ggtts-cache").path, ContentPaths(this)),
             voices,
             log = { Log.i(MainActivity.TAG, it) },
             // The engine the demo's screen loaded, if it is the same request: one model resident, not two.
@@ -53,7 +53,7 @@ class GgttsTtsService : TextToSpeechService() {
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         val text = request.charSequenceText?.toString() ?: request.text ?: ""
         Log.i(MainActivity.TAG, "system engine: synthesize ${request.language}-${request.country}, ${text.length} chars")
-        session.synthesize(request.language ?: "", request.country ?: "", text, Ggtts.DEFAULT_SEED, object : SynthesisOut {
+        val out = object : SynthesisOut {
             override val maxBytes = callback.maxBufferSize
             override fun start(sampleRate: Int) {
                 callback.start(sampleRate, AudioFormat.ENCODING_PCM_16BIT, 1)
@@ -67,7 +67,17 @@ class GgttsTtsService : TextToSpeechService() {
             override fun error(code: Int) {
                 callback.error(code)
             }
-        })
+        }
+        // The framework's speech rate and pitch: refused (ggtts has neither), with a log line when not normal.
+        session.synthesize(
+            request.language ?: "",
+            request.country ?: "",
+            text,
+            Ggtts.DEFAULT_SEED,
+            out,
+            rate = request.speechRate,
+            pitch = request.pitch,
+        )
     }
 
     override fun onGetVoices(): List<Voice> = SystemVoices.ALL.mapNotNull { (name, locale, _) ->

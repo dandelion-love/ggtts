@@ -5,7 +5,8 @@
 //! the redraw, the joins and the level), FLAC output ([`flac`]), in-process tensor hooks ([`hooks`]), and the
 //! instrument events with the trace format, replay and the trace-identity check ([`trace`]), streaming output
 //! ([`stream`], fed by [`pipeline::render_story_streamed`]), and the instruments' report envelope with its merger
-//! ([`report`]), and the steering a request can carry with its safetensors reader ([`steer`]). The provenance manifest
+//! ([`report`]), the steering a request can carry with its safetensors reader ([`steer`]), and the options value
+//! every front end's options are defined in, with its table, schema and provenance record ([`options`]). The provenance manifest
 //! comes next.
 //!
 //! The core holds the rules and no protocol number: the ceilings, the pause table, the judge bars and the level
@@ -15,11 +16,14 @@
 //! its recorded cases in `fixtures/pipeline/` (`cargo test -p ggtts-core --test pipeline_cases`).
 
 pub mod audio;
+pub mod capabilities;
 pub mod engine;
+pub mod fdpath;
 pub mod flac;
 pub mod hooks;
 pub mod logging;
 pub mod numeric;
+pub mod options;
 pub mod pipeline;
 pub mod profile;
 pub mod report;
@@ -27,6 +31,7 @@ pub mod seed;
 pub mod steer;
 pub mod stream;
 pub mod text;
+pub mod textjudge;
 pub mod trace;
 
 /// The release tag embedded at build time, or the workspace version for ordinary local builds.

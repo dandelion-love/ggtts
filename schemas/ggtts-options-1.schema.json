@@ -1,0 +1,677 @@
+{
+  "$id": "https://github.com/dandelion-love/ggtts/schemas/ggtts-options-1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Every option a ggtts front end takes, in sections. Generated from ggtts_core::options::TABLE; docs/options.md describes it.",
+  "properties": {
+    "book": {
+      "additionalProperties": false,
+      "properties": {
+        "include_skippable": {
+          "default": false,
+          "description": "Render the parts a reader may skip (front and back matter) as well.",
+          "type": "boolean",
+          "x-ggtts-flags": [
+            "--include-skippable"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "seed_root": {
+          "description": "The book's seed root: every chunk's seed is derived from it and the chunk's place in the book.",
+          "type": "string",
+          "x-ggtts-flags": [
+            "--seed-root"
+          ],
+          "x-ggtts-phase": "render"
+        }
+      },
+      "type": "object"
+    },
+    "load": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_dir": {
+          "description": "The root of the default model files' cache; unset is the platform's per-user cache.",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-c": [
+            "cache_dir"
+          ],
+          "x-ggtts-env": "GGTTS_CACHE_DIR",
+          "x-ggtts-kotlin": [
+            "cacheDir"
+          ],
+          "x-ggtts-phase": "load"
+        },
+        "codec": {
+          "description": "The codec GGUF (Kitten-TTS 2: the S3Gen GGUF); unset is the engine's pinned default.",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-c": [
+            "codec"
+          ],
+          "x-ggtts-flags": [
+            "--codec"
+          ],
+          "x-ggtts-kotlin": [
+            "codec"
+          ],
+          "x-ggtts-phase": "load",
+          "x-ggtts-python": [
+            "codec"
+          ]
+        },
+        "device": {
+          "description": "cpu or cuda; unset is cpu.",
+          "enum": [
+            "cpu",
+            "cuda"
+          ],
+          "x-ggtts-c": [
+            "device"
+          ],
+          "x-ggtts-flags": [
+            "--device"
+          ],
+          "x-ggtts-phase": "load",
+          "x-ggtts-python": [
+            "device"
+          ]
+        },
+        "engine": {
+          "default": "auto",
+          "description": "The engine: auto picks it from the model's architecture, and is qwen3-tts with no model.",
+          "enum": [
+            "auto",
+            "qwen3-tts",
+            "kitten-tts-2",
+            "fake"
+          ],
+          "x-ggtts-c": [
+            "engine"
+          ],
+          "x-ggtts-flags": [
+            "--engine"
+          ],
+          "x-ggtts-kotlin": [
+            "engine"
+          ],
+          "x-ggtts-phase": "load",
+          "x-ggtts-python": [
+            "engine"
+          ]
+        },
+        "kitten_full_head": {
+          "default": false,
+          "description": "Kitten-TTS 2 only: compute the whole output head, not only the rows a step can sample at the default sampler settings. A diagnostic; the bindings' engine reads GGTTS_KITTEN_FULL_HEAD=1 itself.",
+          "type": "boolean",
+          "x-ggtts-env": "GGTTS_KITTEN_FULL_HEAD",
+          "x-ggtts-flags": [
+            "--kitten-full-head"
+          ],
+          "x-ggtts-phase": "load"
+        },
+        "language": {
+          "description": "Qwen3-TTS only: the language token the talker is prompted with, as the reference CLI's -l takes it (auto prompts with none); unset is zh.",
+          "enum": [
+            "auto",
+            "en",
+            "ru",
+            "zh",
+            "ja",
+            "ko",
+            "de",
+            "fr",
+            "es",
+            "it",
+            "pt"
+          ],
+          "x-ggtts-flags": [
+            "--language"
+          ],
+          "x-ggtts-phase": "load"
+        },
+        "max_frames": {
+          "description": "Qwen3-TTS only: the frame cap of one chunk (12.5 frames a second); unset is 1200, as ggtts has always rendered.",
+          "maximum": 2147483647,
+          "minimum": 1,
+          "type": "integer",
+          "x-ggtts-flags": [
+            "--max-frames"
+          ],
+          "x-ggtts-phase": "load"
+        },
+        "model": {
+          "description": "The model GGUF (Qwen3-TTS: the talker; Kitten-TTS 2: the LM); unset is the engine's pinned default.",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-c": [
+            "model"
+          ],
+          "x-ggtts-flags": [
+            "--model"
+          ],
+          "x-ggtts-kotlin": [
+            "model"
+          ],
+          "x-ggtts-phase": "load",
+          "x-ggtts-python": [
+            "model"
+          ]
+        },
+        "offline": {
+          "default": false,
+          "description": "Never download a default model file. The C ABI and Kotlin spell it negated, as allow_download.",
+          "type": "boolean",
+          "x-ggtts-c": [
+            "allow_download"
+          ],
+          "x-ggtts-flags": [
+            "--offline"
+          ],
+          "x-ggtts-kotlin": [
+            "allowDownload"
+          ],
+          "x-ggtts-phase": "load",
+          "x-ggtts-python": [
+            "offline"
+          ]
+        },
+        "repetition_penalty": {
+          "description": "Qwen3-TTS only: the talker's repetition penalty on codebook 0, above 0; unset is 1.05, the reference CLI's.",
+          "type": "number",
+          "x-ggtts-flags": [
+            "--repetition-penalty"
+          ],
+          "x-ggtts-phase": "load"
+        },
+        "speaker": {
+          "description": "A named Qwen3-TTS speaker; unset is the model's default speaker.",
+          "pattern": "\\S",
+          "type": "string",
+          "x-ggtts-c": [
+            "speaker"
+          ],
+          "x-ggtts-flags": [
+            "--speaker"
+          ],
+          "x-ggtts-kotlin": [
+            "speaker"
+          ],
+          "x-ggtts-phase": "load",
+          "x-ggtts-python": [
+            "speaker"
+          ]
+        },
+        "subtalker_temperature": {
+          "description": "Qwen3-TTS only: the sub-talker's (code predictor's) temperature, above 0 (greedy decoding of the sub-talker does not terminate on this model); unset is the talker's, as in the reference CLI.",
+          "type": "number",
+          "x-ggtts-flags": [
+            "--subtalker-temperature"
+          ],
+          "x-ggtts-phase": "load"
+        },
+        "subtalker_top_k": {
+          "description": "Qwen3-TTS only: the sub-talker's top-k, 0 for off; 1 is greedy decoding, refused since it does not terminate; unset is the talker's.",
+          "maximum": 2147483647,
+          "minimum": 0,
+          "type": "integer",
+          "x-ggtts-flags": [
+            "--subtalker-top-k"
+          ],
+          "x-ggtts-phase": "load"
+        },
+        "subtalker_top_p": {
+          "description": "Qwen3-TTS only: the sub-talker's top-p; 0 and 1.0 are off; unset is the talker's.",
+          "minimum": 0.0,
+          "type": "number",
+          "x-ggtts-flags": [
+            "--subtalker-top-p"
+          ],
+          "x-ggtts-phase": "load"
+        },
+        "temperature": {
+          "description": "Qwen3-TTS only: the talker's sampling temperature, above 0 (greedy decoding does not terminate on this model); unset is 0.9, the reference CLI's.",
+          "type": "number",
+          "x-ggtts-flags": [
+            "--temperature"
+          ],
+          "x-ggtts-phase": "load"
+        },
+        "threads": {
+          "description": "CPU threads asked for, capped at the CPUs this process may use; unset is 4.",
+          "maximum": 2147483647,
+          "minimum": 1,
+          "type": "integer",
+          "x-ggtts-c": [
+            "threads"
+          ],
+          "x-ggtts-flags": [
+            "--threads",
+            "-j"
+          ],
+          "x-ggtts-kotlin": [
+            "threads"
+          ],
+          "x-ggtts-phase": "load",
+          "x-ggtts-python": [
+            "threads"
+          ]
+        },
+        "top_k": {
+          "description": "Qwen3-TTS only: the talker's top-k, 0 for off; 1 is greedy decoding, refused since it does not terminate on this model; unset is 50, the reference CLI's.",
+          "maximum": 2147483647,
+          "minimum": 0,
+          "type": "integer",
+          "x-ggtts-flags": [
+            "--top-k"
+          ],
+          "x-ggtts-phase": "load"
+        },
+        "top_p": {
+          "description": "Qwen3-TTS only: the talker's top-p; 0 and 1.0 are off; unset is 1.0, the reference CLI's.",
+          "minimum": 0.0,
+          "type": "number",
+          "x-ggtts-flags": [
+            "--top-p"
+          ],
+          "x-ggtts-phase": "load"
+        },
+        "voice": {
+          "description": "A reference voice, for an engine that clones one (Kitten-TTS 2).",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-c": [
+            "voice"
+          ],
+          "x-ggtts-flags": [
+            "--voice"
+          ],
+          "x-ggtts-kotlin": [
+            "voice"
+          ],
+          "x-ggtts-phase": "load",
+          "x-ggtts-python": [
+            "voice"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "observe": {
+      "additionalProperties": false,
+      "dependentRequired": {
+        "trace_level": [
+          "trace"
+        ]
+      },
+      "properties": {
+        "duration_report": {
+          "description": "A new file for the per-chunk duration report.",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-flags": [
+            "--duration-report"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "instrument": {
+          "default": [],
+          "description": "An instrument to run on the finished render, NAME[,KEY=VALUE]...; repeatable.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "x-ggtts-flags": [
+            "--instrument"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "instrument_device": {
+          "description": "cpu, cuda or auto, for an instrument that runs a model; unset is auto.",
+          "enum": [
+            "cpu",
+            "cuda",
+            "auto"
+          ],
+          "x-ggtts-flags": [
+            "--instrument-device"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "instrument_timeout": {
+          "description": "Seconds each instrument may run; unset is the instrument's own.",
+          "minimum": 0.0,
+          "type": "number",
+          "x-ggtts-flags": [
+            "--instrument-timeout"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "instruments": {
+          "description": "An instruments file (YAML); a flag always overrides it.",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-flags": [
+            "--instruments"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "log_format": {
+          "description": "text or json; unset is text.",
+          "enum": [
+            "text",
+            "json"
+          ],
+          "x-ggtts-env": "GGTTS_LOG_FORMAT",
+          "x-ggtts-flags": [
+            "--log-format"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "log_level": {
+          "description": "error, warn, info, debug or trace; unset is info.",
+          "enum": [
+            "error",
+            "warn",
+            "info",
+            "debug",
+            "trace"
+          ],
+          "x-ggtts-env": "GGTTS_LOG_LEVEL",
+          "x-ggtts-flags": [
+            "--log-level"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "on_instrument_error": {
+          "description": "continue or abort (skip the rest); unset is continue.",
+          "enum": [
+            "continue",
+            "abort"
+          ],
+          "x-ggtts-flags": [
+            "--on-instrument-error"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "report": {
+          "description": "The instruments' report directory; unset is the output's name with .report.",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-flags": [
+            "--report"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "require": {
+          "default": [],
+          "description": "An instrument that must be ok for exit 0; repeatable.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "x-ggtts-flags": [
+            "--require"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "run": {
+          "description": "The run's identity in every envelope; unset is the output's name and the time.",
+          "pattern": "\\S",
+          "type": "string",
+          "x-ggtts-flags": [
+            "--run"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "timing_report": {
+          "description": "A new file for the stage timing report.",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-flags": [
+            "--timing-report"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "trace": {
+          "description": "Where the trace (ggtts-trace/2 JSON lines) goes.",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-flags": [
+            "--trace"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "trace_level": {
+          "description": "1 or 2 (2 adds every codebook); unset is 1.",
+          "maximum": 2,
+          "minimum": 1,
+          "type": "integer",
+          "x-ggtts-flags": [
+            "--trace-level"
+          ],
+          "x-ggtts-phase": "render"
+        }
+      },
+      "type": "object"
+    },
+    "output": {
+      "additionalProperties": false,
+      "dependentRequired": {
+        "stream_format": [
+          "stream"
+        ],
+        "stream_level_seconds": [
+          "stream"
+        ],
+        "stream_raw": [
+          "stream"
+        ]
+      },
+      "properties": {
+        "out": {
+          "description": "The FLAC to write.",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-flags": [
+            "--out",
+            "-o"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "stream": {
+          "description": "Stream the audio as it is produced, to a file or - for stdout.",
+          "pattern": "\\S",
+          "type": "string",
+          "x-ggtts-flags": [
+            "--stream"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "stream_format": {
+          "description": "wav (plays as it arrives) or s16le after a one-line header (raw is s16le too); unset is wav.",
+          "enum": [
+            "wav",
+            "s16le",
+            "raw"
+          ],
+          "x-ggtts-flags": [
+            "--stream-format"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "stream_level_seconds": {
+          "description": "Seconds of audio that set the levelled stream's gain; 0 is the first chunk alone; unset is 5.",
+          "minimum": 0.0,
+          "type": "number",
+          "x-ggtts-flags": [
+            "--stream-level-seconds"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "stream_raw": {
+          "default": false,
+          "description": "Stream the pieces before the level step, bit-exact to the batch read.",
+          "type": "boolean",
+          "x-ggtts-flags": [
+            "--stream-raw"
+          ],
+          "x-ggtts-phase": "render"
+        }
+      },
+      "type": "object"
+    },
+    "render": {
+      "additionalProperties": false,
+      "dependentRequired": {
+        "steer_layers": [
+          "steer"
+        ],
+        "steer_scale": [
+          "steer"
+        ]
+      },
+      "properties": {
+        "edge_s": {
+          "description": "Seconds of silence kept at each edge of a chunk; unset is the engine profile's.",
+          "minimum": 0.0,
+          "type": "number",
+          "x-ggtts-phase": "render"
+        },
+        "instruction": {
+          "description": "A style instruction for every chunk; empty is none. The bindings take it at load, as every render's.",
+          "type": "string",
+          "x-ggtts-c": [
+            "instruction"
+          ],
+          "x-ggtts-flags": [
+            "--instruction"
+          ],
+          "x-ggtts-kotlin": [
+            "instruction"
+          ],
+          "x-ggtts-phase": "render",
+          "x-ggtts-python": [
+            "instruction"
+          ]
+        },
+        "judge": {
+          "description": "An ASR that reads each draw back; a draw that lost or repeated a run of its text is redrawn: asr-qwen,model=DIR[,device=cpu|cuda][,min_run=N]. Needs --redraw. Unset: the duration judge alone.",
+          "pattern": "\\S",
+          "type": "string",
+          "x-ggtts-flags": [
+            "--judge"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "measure_timings": {
+          "default": false,
+          "description": "Collect wall-clock stage durations; also on whenever observe.timing_report is given.",
+          "type": "boolean",
+          "x-ggtts-phase": "render"
+        },
+        "redraw": {
+          "description": "Redraws allowed for a chunk the judge rejects; unset is the engine profile's.",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer",
+          "x-ggtts-flags": [
+            "--redraw"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "seed": {
+          "description": "The sampler seed of a one-chunk plan only (ggtts-render --text); unset is 20260905.",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer",
+          "x-ggtts-flags": [
+            "--seed"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "seed_salt": {
+          "description": "The story seed derivation's salt, appended to every chunk's seed key; what each binding's seed is.",
+          "type": "string",
+          "x-ggtts-c": [
+            "seed"
+          ],
+          "x-ggtts-kotlin": [
+            "seed"
+          ],
+          "x-ggtts-phase": "render",
+          "x-ggtts-python": [
+            "seed"
+          ]
+        },
+        "steer": {
+          "description": "A steering file (safetensors, one F32 vector per talker layer): a path, or an https:// URL or hf://owner/repo[@rev]/path downloaded once into the cache (#sha256=<hex> pins it).",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-flags": [
+            "--steer"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "steer_layers": {
+          "description": "The layers of the steering file to apply; unset is every layer in it.",
+          "items": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true,
+          "x-ggtts-flags": [
+            "--steer-layers"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "steer_scale": {
+          "description": "Multiplies every steering vector; unset is 1.0.",
+          "type": "number",
+          "x-ggtts-flags": [
+            "--steer-scale"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "story": {
+          "description": "A story file to render: a title line, then one paragraph per line.",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-flags": [
+            "--story"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "text": {
+          "description": "The text to render, one paragraph per line.",
+          "pattern": "\\S",
+          "type": "string",
+          "x-ggtts-c": [
+            "text"
+          ],
+          "x-ggtts-flags": [
+            "--text",
+            "-t"
+          ],
+          "x-ggtts-kotlin": [
+            "text"
+          ],
+          "x-ggtts-phase": "render",
+          "x-ggtts-python": [
+            "text"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "version": {
+      "const": 1
+    }
+  },
+  "title": "ggtts options, version 1",
+  "type": "object"
+}

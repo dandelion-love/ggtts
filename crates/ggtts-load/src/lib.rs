@@ -11,6 +11,11 @@
 //!
 //! Without the `ggml` feature only the fake engine loads; `qwen3-tts` and `kitten-tts-2` are refused with a named
 //! reason, and nothing is downloaded for a build that cannot render it.
+//!
+//! [`binding`] is the engine glue the bindings share: the C-ABI (`ggtts-ffi`, and Kotlin over it) and Python
+//! (`ggtts-py`) load, refuse, render and guard against panics through it, with the codes and messages they give.
+
+pub mod binding;
 
 use std::path::PathBuf;
 
@@ -32,23 +37,14 @@ pub fn engines_built() -> bool {
     cfg!(feature = "ggml")
 }
 
-/// What to load. The paths are in the order an engine takes them: model (the talker or LM), codec, voice.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Request {
-    pub engine: String,
-    pub model: Option<PathBuf>,
-    pub codec: Option<PathBuf>,
-    /// A reference voice, for an engine that clones one (kitten-tts-2).
-    pub voice: Option<PathBuf>,
-    /// A named speaker in a Qwen3-TTS talker.
-    pub speaker: Option<String>,
-    /// `cpu` (the default) or `cuda`.
-    pub device: Option<String>,
-    /// CPU threads; 4 when not given.
-    pub threads: Option<i32>,
-    /// Never download a default file.
-    pub offline: bool,
+/// Whether this build carries the CUDA backend.
+pub fn cuda_built() -> bool {
+    cfg!(feature = "cuda")
 }
+
+/// What to load: the options value's load section ([`ggtts_core::options::Load`]), one type for every front end. The
+/// paths are in the order an engine takes them: model (the talker or LM), codec, voice.
+pub use ggtts_core::options::Load as Request;
 
 /// A loaded engine and the files it was loaded from, for provenance.
 pub struct Loaded {
@@ -135,6 +131,7 @@ fn load_model_engine(req: &Request) -> Result<Box<dyn Engine>, String> {
             if let Some(speaker) = &req.speaker {
                 voice.speaker.clone_from(speaker);
             }
+            Tuning::of(req).apply(&mut voice);
             ggtts_qwen3_tts::engine::Qwen3Tts::load(model, codec, threads, voice)
                 .map(|e| Box::new(e) as Box<dyn Engine>)
                 .map_err(|e| e.to_string())
@@ -151,8 +148,10 @@ fn load_model_engine(req: &Request) -> Result<Box<dyn Engine>, String> {
                 "cpu" => ggtts_kitten::backend::Device::Cpu,
                 other => return Err(format!("--device must be cpu or cuda, not {other}")),
             };
-            ggtts_kitten::engine::KittenEngine::open(model, codec, voice, threads as usize, device)
-                .map(|e| Box::new(e) as Box<dyn Engine>)
+            ggtts_kitten::engine::KittenEngine::open(model, codec, voice, threads as usize, device).map(|mut e| {
+                e.full_head = req.kitten_full_head;
+                Box::new(e) as Box<dyn Engine>
+            })
         }
         other => Err(format!("unknown engine {other:?}")),
     }
@@ -163,11 +162,62 @@ fn load_model_engine(_req: &Request) -> Result<Box<dyn Engine>, String> {
     Err(NO_ENGINES.into())
 }
 
-/// [`resolve`] with the per-user cache and HTTPS (notices to stderr), then [`load`].
+/// The cache root: `cache_dir` when given, else the per-user cache (`GGTTS_CACHE_DIR`, else the platform's).
+pub fn cache_root(cache_dir: Option<&std::path::Path>) -> Result<PathBuf, String> {
+    match cache_dir {
+        Some(dir) => Ok(dir.to_path_buf()),
+        None => Cache::default_root(),
+    }
+}
+
+/// A steering file named by URL (`render.steer` `https://...`, optionally `#sha256=<hex>`), swapped for its copy in
+/// the cache: downloaded once into the options' cache (`load.cache_dir`, else the per-user cache), never when
+/// `load.offline`, and checked against the pin when there is one ([`ggtts_models::Cache::fetch_url`]). A path is left
+/// as it is. Every front end calls this before it reads the steering file, so the URL form is one option everywhere.
+/// `say` gets the download and the file's sha256.
+pub fn resolve_steer(
+    o: &mut ggtts_core::options::Options,
+    say: &mut dyn FnMut(&str),
+) -> Result<(), ggtts_core::options::Refusal> {
+    let cache_dir = o.load.cache_dir.clone();
+    resolve_steer_with(
+        o,
+        &|| cache_root(cache_dir.as_deref()).map(Cache::new),
+        &ggtts_models::Http::default(),
+        say,
+    )
+}
+
+/// [`resolve_steer`] with the cache and the fetcher passed in, for tests.
+pub fn resolve_steer_with(
+    o: &mut ggtts_core::options::Options,
+    cache: &dyn Fn() -> Result<Cache, String>,
+    fetch: &dyn Fetch,
+    say: &mut dyn FnMut(&str),
+) -> Result<(), ggtts_core::options::Refusal> {
+    let refusal = |message: String| ggtts_core::options::Refusal {
+        key: "render.steer".into(),
+        message,
+    };
+    let Some(text) = o.render.steer.as_ref().map(|p| p.to_string_lossy().into_owned()) else {
+        return Ok(());
+    };
+    let spec = match ggtts_models::UrlSpec::parse(&text) {
+        None => return Ok(()),
+        Some(parsed) => parsed.map_err(refusal)?,
+    };
+    let cache = cache().map_err(refusal)?;
+    let file = cache.fetch_url(&spec, o.load.offline, fetch, say).map_err(refusal)?;
+    o.render.steer = Some(file.path);
+    Ok(())
+}
+
+/// [`resolve`] with the request's cache (`cache_dir`, else the per-user cache) and HTTPS (notices to stderr), then [`load`].
 pub fn load_default(mut req: Request) -> Result<Loaded, String> {
+    let cache_dir = req.cache_dir.clone();
     let files = resolve(
         &mut req,
-        &|| Cache::default_root().map(Cache::new),
+        &|| cache_root(cache_dir.as_deref()).map(Cache::new),
         &ggtts_models::Http::default(),
         &mut |m| eprintln!("ggtts: {m}"),
     )?;
@@ -177,4 +227,157 @@ pub fn load_default(mut req: Request) -> Result<Loaded, String> {
         files,
         speaker: req.speaker,
     })
+}
+
+/// The Qwen3-TTS sampler settings, frame cap and language of a load ([`ggtts_core::options::SAMPLER`]), each unset
+/// when not given. Every front end hands the load section's values here, and [`Tuning::apply`] is the one place they
+/// reach the engine's [`Voice`](ggtts_qwen3_tts::engine::Voice).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Tuning {
+    pub temperature: Option<f64>,
+    pub top_k: Option<i32>,
+    pub top_p: Option<f64>,
+    pub repetition_penalty: Option<f64>,
+    pub subtalker_temperature: Option<f64>,
+    pub subtalker_top_k: Option<i32>,
+    pub subtalker_top_p: Option<f64>,
+    pub max_frames: Option<i32>,
+    /// One of [`ggtts_core::options::LANGUAGES`].
+    pub language: Option<&'static str>,
+}
+
+impl Tuning {
+    /// The settings `load` gives. A language the table does not list is left unset here: the table refuses it when
+    /// the options are read.
+    pub fn of(load: &ggtts_core::options::Load) -> Self {
+        Tuning {
+            temperature: load.temperature,
+            top_k: load.top_k,
+            top_p: load.top_p,
+            repetition_penalty: load.repetition_penalty,
+            subtalker_temperature: load.subtalker_temperature,
+            subtalker_top_k: load.subtalker_top_k,
+            subtalker_top_p: load.subtalker_top_p,
+            max_frames: load.max_frames,
+            language: load
+                .language
+                .as_deref()
+                .and_then(|l| ggtts_core::options::LANGUAGES.iter().copied().find(|k| *k == l)),
+        }
+    }
+
+    /// Writes the settings given into `voice`; the rest keep its defaults (the reference CLI's, 1200 frames, `zh`).
+    #[cfg(feature = "ggml")]
+    pub fn apply(&self, voice: &mut ggtts_qwen3_tts::engine::Voice) {
+        let s = &mut voice.sampling;
+        if let Some(t) = self.temperature {
+            s.temperature = t as f32;
+        }
+        if let Some(k) = self.top_k {
+            s.top_k = k;
+        }
+        if let Some(p) = self.top_p {
+            s.top_p = p as f32;
+        }
+        if let Some(p) = self.repetition_penalty {
+            s.repetition_penalty = p as f32;
+        }
+        s.subtalker_temperature = self.subtalker_temperature.map(|t| t as f32);
+        s.subtalker_top_k = self.subtalker_top_k;
+        s.subtalker_top_p = self.subtalker_top_p.map(|p| p as f32);
+        if let Some(n) = self.max_frames {
+            voice.max_frames = n;
+        }
+        if let Some(l) = self.language {
+            voice.language = l.to_string();
+        }
+    }
+}
+
+#[cfg(all(test, feature = "ggml"))]
+mod tuning_tests {
+    use super::Tuning;
+    use ggtts_core::options::Options;
+    use ggtts_qwen3_tts::engine::Voice;
+
+    fn voice(args: &[&str]) -> Voice {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let o = Options::from_args(&args).unwrap();
+        let mut v = Voice::default();
+        Tuning::of(&o.load).apply(&mut v);
+        v
+    }
+
+    /// Review of #351: the settings never touch the speaker (resolved before, from the load section and the default
+    /// model, #332), the device or the trace.
+    #[test]
+    fn the_settings_leave_the_speaker_device_and_trace_alone() {
+        let args: Vec<String> = ["--temperature", "0.7", "--language", "en", "--max-frames", "600"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let o = Options::from_args(&args).unwrap();
+        let mut v = Voice {
+            speaker: "a_speaker".into(),
+            ..Voice::default()
+        };
+        let before = (v.speaker.clone(), format!("{:?}", v.device), v.trace.clone());
+        Tuning::of(&o.load).apply(&mut v);
+        assert_eq!((v.speaker.clone(), format!("{:?}", v.device), v.trace.clone()), before);
+    }
+
+    /// #351 AC1: with none given, the voice is the engine's default, the one every render used before.
+    #[test]
+    fn no_setting_leaves_the_default_voice() {
+        let (a, b) = (voice(&[]), Voice::default());
+        assert_eq!(
+            (a.sampling, a.max_frames, a.language),
+            (b.sampling, b.max_frames, b.language)
+        );
+    }
+
+    #[test]
+    fn each_setting_reaches_the_voice() {
+        let v = voice(&[
+            "--temperature",
+            "0.7",
+            "--top-k",
+            "30",
+            "--top-p",
+            "0.95",
+            "--repetition-penalty",
+            "1.1",
+            "--subtalker-temperature",
+            "0.8",
+            "--subtalker-top-k",
+            "40",
+            "--subtalker-top-p",
+            "0.9",
+            "--max-frames",
+            "600",
+            "--language",
+            "en",
+        ]);
+        let s = v.sampling;
+        assert_eq!(
+            (s.temperature, s.top_k, s.top_p, s.repetition_penalty),
+            (0.7, 30, 0.95, 1.1)
+        );
+        assert_eq!(
+            (s.subtalker_temperature, s.subtalker_top_k, s.subtalker_top_p),
+            (Some(0.8), Some(40), Some(0.9))
+        );
+        assert_eq!((v.max_frames, v.language.as_str()), (600, "en"));
+        // The sub-talker samples with its own settings, and with the talker's where none is given.
+        let sub = s.subtalker();
+        assert_eq!(
+            (sub.temperature, sub.top_k, sub.top_p, sub.repetition_penalty),
+            (0.8, 40, 0.9, 1.0)
+        );
+        let talker_only = voice(&["--temperature", "0.7"]).sampling.subtalker();
+        assert_eq!(
+            (talker_only.temperature, talker_only.top_k, talker_only.top_p),
+            (0.7, 50, 1.0)
+        );
+    }
 }

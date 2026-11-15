@@ -76,6 +76,103 @@ private fun qwenSettings() {
     )
 }
 
+/** A refusal of one option: GGTTS_ERR_ARG with [key] as the exception's key (null: the whole document). */
+private inline fun refusesKey(key: String?, what: String, block: () -> Unit) {
+    try {
+        block()
+        check(false, "$what: no exception")
+    } catch (e: GgttsException) {
+        check(e.code == Ggtts.ERR_ARG && e.key == key, "$what: code ${e.code} key ${e.key} (want ${Ggtts.ERR_ARG} $key): ${e.message}")
+    }
+}
+
+/** The options documents: `load(options = ...)`, `render(text, options = ...)` and `renderStream(..., options = ...)`. */
+private fun optionsDocuments() {
+    val fake = """{"load": {"engine": "fake"}}"""
+    // Nothing given but the engine: the old render, at the default seed and at a seed.
+    check(
+        samplesOf(Ggtts.load(options = fake), TEXT).contentEquals(samplesOf(Ggtts.load("fake"), TEXT)),
+        "a load document: the same samples as load(\"fake\")",
+    )
+    Ggtts.load(options = fake).use { a ->
+        Ggtts.load("fake").use { b ->
+            check(
+                a.render(TEXT, seed = 7, options = "{}").samples.contentEquals(b.render(TEXT, seed = 7).samples),
+                "an empty render document at seed 7: the same samples as render(seed = 7)",
+            )
+        }
+    }
+    // The load's render defaults reach every render: the edge kept at each chunk changes the read's length.
+    val edged = Ggtts.load(options = """{"load": {"engine": "fake"}, "render": {"edge_s": 1.5}}""").use { it.render(TEXT, seed = 7).samples }
+    check(edged.size != samplesOf(Ggtts.load("fake"), TEXT).size, "a load document's render.edge_s reaches the render")
+    // A document's instruction reaches the engine: the fake engine's capabilities refuse it, by its key.
+    Ggtts.load(options = fake).use { g ->
+        refusesKey("render.instruction", "an instruction in a render document reaches the fake engine") {
+            g.render(TEXT, options = """{"render": {"instruction": "Speak slowly."}}""")
+        }
+        refusesKey("render.steer", "steering in a render document reaches the fake engine") {
+            g.render(TEXT, options = """{"render": {"steer": "s.safetensors"}}""")
+        }
+        refusesKey("render.nonesuch", "an unknown key") { g.render(TEXT, options = """{"render": {"nonesuch": 1}}""") }
+        refusesKey(null, "malformed JSON") { g.render(TEXT, options = "{") }
+        refusesKey("load.threads", "a load key in a render document") { g.render(TEXT, options = """{"load": {"threads": 2}}""") }
+        refusesKey("observe.trace", "the trace (a desktop observer)") {
+            g.render(TEXT, options = """{"observe": {"trace": "t.jsonl"}}""")
+        }
+        refusesKey("observe.instruments", "instruments") {
+            g.render(TEXT, options = """{"observe": {"instruments": "instruments"}}""")
+        }
+        refusesKey("output.stream", "a stream on a whole read") { g.render(TEXT, options = """{"output": {"stream": "raw"}}""") }
+        refusesKey("render.seed_salt", "a seed beside render.seed_salt") {
+            g.render(TEXT, seed = 3, options = """{"render": {"seed_salt": "3"}}""")
+        }
+        // A stream through a document: the pieces before the level step, as renderStream hands them.
+        var pieces = 0
+        check(g.renderStream(TEXT, options = """{"output": {"stream": "raw"}}""") { _, _ -> pieces++; true } && pieces >= 2, "a stream document streams ($pieces pieces)")
+    }
+    // Steering on Kitten-TTS 2 is refused before any file is read.
+    refusesKey("render.steer", "steering on kitten-tts-2") {
+        Ggtts.load(options = """{"load": {"engine": "kitten-tts-2", "model": "/no/such.gguf"}, "render": {"steer": "s.safetensors"}}""")
+    }
+    refusesKey("load.device", "a device (CPU only)") { Ggtts.load(options = """{"load": {"engine": "fake", "device": "cpu"}}""") }
+    refusesKey("load.engine", "an engine given twice") { Ggtts.load("fake", options = fake) }
+    refusesKey("load.bogus", "an unknown load key") { Ggtts.load(options = """{"load": {"engine": "fake", "bogus": 1}}""") }
+    // A refusal through the parameters carries its key too.
+    refusesKey("load.speaker", "a refused speaker parameter") { Ggtts.load("fake", speaker = "hk_voice_777") }
+}
+
+/** A document stream is levelled unless it asks for the pieces before the level step; no document is the old call. */
+private fun streamModes() {
+    fun joined(options: String?): FloatArray {
+        val out = mutableListOf<Float>()
+        Ggtts.load("fake").use { it.renderStream(TEXT, seed = 7, options = options) { s, _ -> out.addAll(s.toList()); true } }
+        return out.toFloatArray()
+    }
+    val old = joined(null)
+    val levelled = joined("{}")
+    check(joined("""{"output": {"stream": "raw"}}""").contentEquals(old), "a raw document stream is the old stream")
+    check(!levelled.contentEquals(old) && levelled.size == old.size, "a document stream is levelled by default")
+    check(
+        !joined("""{"output": {"stream": "levelled", "stream_level_seconds": 0}}""").contentEquals(levelled),
+        "the hold reaches the level step",
+    )
+}
+
+/** The options schema and an engine's capability statement, from the library. */
+private fun introspection() {
+    val schema = Ggtts.optionsSchema()
+    check(schema.contains("\"https://json-schema.org/") && schema.contains("\"steer\""), "the options schema is the library's")
+    val g = Ggtts.load("fake")
+    val caps = g.capabilities()
+    check(
+        caps.contains("\"format\":\"ggtts-capabilities/1\"") && caps.contains("\"family\":\"fake\"") &&
+            caps.contains("\"speaker_names\":[]"),
+        "the fake engine states its capabilities: $caps",
+    )
+    g.close()
+    throwsCode(Ggtts.ERR_HANDLE, "capabilities after close") { g.capabilities() }
+}
+
 /** The default model files without a network: whatever the build, nothing is downloaded unless asked. */
 private fun defaultModel() {
     val empty = java.nio.file.Files.createTempDirectory("ggtts-binding-cache").toFile()
@@ -178,6 +275,9 @@ fun main() {
     throwsCode(Ggtts.ERR_ARG, "an instruction on the fake engine", "takes no style instruction") {
         Ggtts.load("fake", instruction = "Speak slowly and softly.")
     }
+    optionsDocuments()
+    introspection()
+    streamModes()
     qwenSettings()
     defaultModel()
 

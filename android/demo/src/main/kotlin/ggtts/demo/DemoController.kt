@@ -23,7 +23,7 @@ interface AudioOut {
     /** Queue [samples] for playback and return at once; playback runs on its own. */
     fun play(samples: FloatArray)
 
-    /** Wait until everything queued has played. */
+    /** Wait until everything queued has played. Throws if playback failed before the end (the read is not finished). */
     fun finish()
 
     /** Drop what is queued and stop playing now. Safe from any thread, and when nothing is playing. */
@@ -81,7 +81,7 @@ class DemoController(
         busy = true
         stopRequested = false
         view.setBusy(true)
-        view.showStatus("Loading ${request.engine}...")
+        view.showStatus("Preparing the voice...")
         background(Runnable {
             val outcome: Result<String> = try {
                 Result.success(run(request, text, seed))
@@ -94,6 +94,11 @@ class DemoController(
                 Result.failure(IllegalStateException("Not started: ${e.message}."))
             } catch (e: RuntimeException) {
                 audio.stop()
+                log("error: $e")
+                Result.failure(IllegalStateException("${e.javaClass.simpleName}: ${e.message}"))
+            } catch (e: Throwable) {
+                // An Error (out of memory, say) too: shown, and the screen is left usable rather than busy for good.
+                runCatching { audio.stop() }
                 log("error: $e")
                 Result.failure(IllegalStateException("${e.javaClass.simpleName}: ${e.message}"))
             }
@@ -130,7 +135,7 @@ class DemoController(
     }
 
     private fun read(tts: TtsEngine, request: LoadRequest, text: String, seed: Long): String {
-        main(Runnable { view.showStatus("Rendering the first chunk...") })
+        main(Runnable { view.showStatus("Writing the first sentence (this takes 20 to 60 s)...") })
         val t0 = clock()
         var firstMs = -1L
         var rate = 0
@@ -147,12 +152,15 @@ class DemoController(
             audio.play(samples)
             val n = pieces.size
             main(Runnable {
-                view.showStatus("Speaking: chunk $n ready (first audio after %.1f s); rendering the next...".format(firstMs / 1000.0))
+                view.showStatus("Speaking: chunk $n ready (first audio after %.1f s); preparing the rest...".format(firstMs / 1000.0))
             })
             true
         }
         val renderMs = (clock() - t0) / 1_000_000
         if (!finished) {
+            // A Stop can land after the worker read stopRequested and before the first chunk began its stream; that
+            // stream plays on unless it is stopped here (stop is idempotent).
+            audio.stop()
             log("stopped after ${pieces.size} chunks, $renderMs ms")
             return "Stopped after ${pieces.size} chunk(s)."
         }
@@ -172,6 +180,11 @@ class DemoController(
         // The files rendered: remember them now (the system engine can use them while this read still plays).
         onSpoke(request)
         audio.finish()
+        // A Stop while the last chunks play out cuts the playback short: say so, not that the read finished.
+        if (stopRequested) {
+            log("stopped during playback, after rendering ${pieces.size} chunks")
+            return "Stopped during playback. The whole read was rendered and saved to $path."
+        }
         return "${request.engine}: %.2f s of audio in %.1f s (RTF %.2f); first audio after %.1f s. Saved to $path".format(
             seconds, renderMs / 1000.0, rtf, firstMs / 1000.0,
         )

@@ -73,9 +73,11 @@ with ggtts.load(engine, model=model, codec=codec, voice=voice) as tts:
 ## Loading
 
 ```text
-ggtts.load(engine="qwen3-tts", model=None, codec=None, voice=None, speaker=None, instruction=None,
-           device="cpu", threads=None, offline=False, progress=None) -> ggtts.TTS
+ggtts.load(engine=None, model=None, codec=None, voice=None, speaker=None, instruction=None,
+           device=None, threads=None, offline=None, progress=None, options=None) -> ggtts.TTS
 ```
+
+An argument left None is not given: the [options document's](#options) value, else the default the table names.
 
 | Argument | Meaning |
 |---|---|
@@ -85,10 +87,11 @@ ggtts.load(engine="qwen3-tts", model=None, codec=None, voice=None, speaker=None,
 | `voice` | Kitten-TTS 2's prepared reference voice (a JSON file). |
 | `speaker` | A Qwen3-TTS speaker the model has, such as `"hk_voice_777"`. Case is ignored. |
 | `instruction` | A Qwen3-TTS style instruction for every chunk, such as `"Speak slowly and softly."` |
-| `device` | `"cpu"` or `"cuda"`. See [CUDA](#cuda). |
+| `device` | `"cpu"` (the default) or `"cuda"`. See [CUDA](#cuda). |
 | `threads` | CPU threads. None means 4. Before each graph, ggtts lowers the count to the CPUs the process may use at that moment, re-read at most every 100 ms, and says so once on stderr. On Windows only the processor count is seen, not affinity or job objects. |
 | `offline` | True: never download. A default model file missing from the cache is then an error naming it and its URL. |
 | `progress` | A function called with each download message. By default they go to stderr. |
+| `options` | A load document, a dict or a JSON string: every option a load takes, and render defaults. See [Options](#options). |
 
 A setting the engine does not take is refused (`ERR_ARG`), never ignored. For `speaker` and `instruction`, an empty
 string is the same as None: no setting. That is not true of `model`, `codec` and `voice`: an empty one is taken as a
@@ -119,8 +122,8 @@ the model's card before you use its voice; its licence is the model's, not this 
   [default model files](../../README.md#default-model-files-what-ggtts-downloads-and-when) section lists the files,
   their hashes and how a download is checked.
 * **The speaker.** The default model's speakers are `hk_voice_343` (used when you give none) and `hk_voice_777`. A
-  model you give by path uses `hk_cantonese_speaker` when you give none, so a talker without that speaker needs
-  `speaker=`. An unknown speaker is `ERR_ENGINE`, and the message lists the model's speakers.
+  model you give by path uses its own default when you give none: `hk_cantonese_speaker` if it has one, otherwise
+  the first of its speakers in alphabetical order (`hk_voice_343` for the v0.0.5 talker). An unknown speaker is `ERR_ENGINE`, and the message lists the model's speakers.
 
 ### Kitten-TTS 2
 
@@ -142,13 +145,19 @@ python first_render.py kitten-tts-2 kitten-lm.gguf kitten-s3gen.gguf prepared-vo
 
 ## Rendering
 
-`tts.render(text, seed=ggtts.DEFAULT_SEED)` renders the whole text and returns an `ggtts.Audio`.
+`tts.render(text, seed=None, options=None)` renders the whole text and returns an `ggtts.Audio`.
 
 * **Text** is one paragraph per line. Empty lines are skipped. Text with nothing to say (empty, or only punctuation)
   is `ERR_ARG`, refused before any rendering.
 * **The render** splits the text into chunks, renders each, checks it, trims it, joins them and levels the whole read,
   as `ggtts-render --story` does. It is the C library's render: the same text and seed give the same samples.
-* **The seed** fixes the random draws. `ggtts.DEFAULT_SEED` is 20260905.
+* **The seed** fixes the random draws. It is the **seed salt**: each chunk's sampler seed is derived from the text, a
+  fixed story id and this salt, so it is not the sampler seed of `ggtts-render --text --seed`. In an options document
+  its key is `render.seed_salt` (a string). With no `seed` and no `options`, the salt is `ggtts.DEFAULT_SEED`,
+  20260905. With `options` and no salt given (by `seed`, the document or the load's defaults), the salt is empty, as
+  the C library's `ggtts_render_opts` leaves it, so the same document renders the same samples in both. Pass `seed`
+  to keep a render the same with and without a document.
+* **`options`** is a render document, laid over the load's render defaults. See [Options](#options).
 
 An `Audio` holds mono float32 samples:
 
@@ -168,14 +177,16 @@ An `Audio` holds mono float32 samples:
 
 Two ways to get each chunk as soon as it is ready, so playback can start before the render ends:
 
-* **`tts.stream(text, seed=...)`** is a generator of `Audio` chunks, in order. `break` stops the render after the
+* **`tts.stream(text, seed=..., options=...)`** is a generator of `Audio` chunks, in order. `break` stops the render after the
   chunk in progress. It renders on a background thread, and at most one finished chunk waits for you.
-* **`tts.render_stream(text, on_chunk, seed=...)`** calls `on_chunk(audio)` with each chunk, on the calling thread.
+* **`tts.render_stream(text, on_chunk, seed=..., options=...)`** calls `on_chunk(audio)` with each chunk, on the calling thread.
   Return `False` to stop. An exception in `on_chunk` stops the render and is raised from `render_stream`. It returns
   True when the whole text was rendered, False when stopped.
 
-Stopping is not an error in Python: neither raises `ERR_STOPPED`. The chunks are the render's samples *before* its
-final level step. Joined, they have the render's length, but not its exact values.
+Stopping is not an error in Python: neither raises `ERR_STOPPED`. Without `options`, the chunks are the render's
+samples *before* its final level step: joined, they have the render's length, but not its exact values. With
+`options`, a stream is levelled by default, as `ggtts-render --stream` levels it, so it plays at the loudness a
+listener expects: use that for listening ([Options](#options)).
 
 This script streams, stops early both ways, tries a render from inside the callback, and shows three errors:
 
@@ -237,9 +248,85 @@ except ggtts.GgttsError as e:
     assert e.code == ggtts.ERR_HANDLE
 ```
 
+## Options
+
+Every option of ggtts's options table reaches Python through one argument, `options`, so an option added to the table
+needs no new keyword. A document is a dict, or the same as a JSON string. It is the C library's options document
+([C: options documents](c.md#options-documents)), checked by the same code: the schema is
+`schemas/ggtts-options-1.schema.json`, and [docs/options.md](../options.md) describes the sections.
+
+* **`ggtts.load(options=...)`** takes the `load` section (every argument of `load` has its key there, and
+  `cache_dir`, the cache a default model file is looked up in), and `render` defaults that every render on the engine
+  starts from. `"engine"` may be `"auto"`, the document's default: the model's architecture, read from its GGUF, and
+  with no model `"qwen3-tts"`. The whole document is checked against the engine before any file is read.
+* **`tts.render(text, options=...)`**, **`tts.render_stream(..., options=...)`** and **`tts.stream(..., options=...)`**
+  take a render document, laid over the load's defaults: `render` `seed_salt`, `instruction`, `steer` with
+  `steer_scale` and `steer_layers`, `redraw` and `edge_s`, and `observe` `trace` with `trace_level` (a trace file as
+  `ggtts-render --trace` writes it). A stream through a document is levelled as `ggtts-render --stream` levels it: held until the first `output.stream_level_seconds` of audio (5 s unless given) set one gain, then each piece at that gain.
+  `{"output": {"stream": "raw"}}` (or `"stream_raw": true`) hands the pieces over before the level step instead,
+  as a stream with no `options` does. `render` refuses `output.stream`: stream with `render_stream` or `stream`.
+* **Refused:** a `load` key in a render document, `render.seed` (use `seed_salt`), `render.text` and `render.story`,
+  `render.judge`, `render.measure_timings`, the reports and logging, `output.out` and `output.stream_format`,
+  instruments, and the book options.
+* **Given twice:** a value given both as an argument (`speaker=`, `instruction=`, `device=`, `threads=`, `offline=`,
+  `engine=`, `model=`, `codec=`, `voice=`, or a render's `seed=`) and under its key in the document is refused,
+  naming both. Neither wins, so say which you meant.
+
+**What the library states.** `ggtts.options_schema()` is the options schema as a dict: every option a document may
+give, with its type, default and phase, from the library (the C library's `ggtts_options_schema`), so no schema file
+ships with the package. `tts.capabilities()` is what a loaded engine supports, as a dict (`ggtts-capabilities/1`, the
+C library's `ggtts_capabilities`): `family`, `instruction` and `no_instruction_why`, `steering`, `speakers` and
+`speaker_names` (the model's speakers), `devices`, `hooks` and `step_events`. Read them to offer only what the engine
+takes.
+
+A refused option is a `ggtts.OptionError`: a `GgttsError` with `ERR_ARG` and a `ValueError`. Its `key` is the option's
+schema key, read from the library and never parsed from the message: `render.steer` for steering on an engine that has
+none, `render.nonesuch` for an unknown key. A document that is not JSON is refused whole, with `key` None.
+
+This script loads with a document, renders and streams with render documents, and catches a refusal:
+
+<!-- example: examples/python/options.py -->
+```python
+"""options.py: every option through one argument, `options`, at load and per render; a refused option names its key.
+
+    python options.py                                   Qwen3-TTS with its default model (downloaded once, 2.33 GB)
+    python options.py qwen3-tts talker.gguf codec.gguf  Qwen3-TTS with model files you already have
+    python options.py fake                              the test engine: no files, a tone instead of speech
+"""
+import sys
+
+import ggtts
+
+engine, model, codec = (sys.argv[1:] + [None] * 3)[:3]
+load = {"engine": engine or "qwen3-tts"}
+if model:
+    load.update(model=model, codec=codec)
+
+# The load document: the load section, and render defaults every render on this engine starts from.
+with ggtts.load(options={"load": load, "render": {"edge_s": 0.25}}) as tts:
+    # A render document, laid over those defaults. seed= is the same value as "render": {"seed_salt": "7"}.
+    audio = tts.render("今日天氣好好。", seed=7, options={"render": {"redraw": 1}})
+    print(f"{audio.duration:.2f} s at {audio.sample_rate} Hz")
+
+    # A stream through a document is levelled as ggtts-render --stream levels it: one gain from the first 5 s.
+    pieces = list(tts.stream("今日天氣好好。\n我哋去海邊行下。", options={}))
+    # "raw" asks for the pieces before the level step, as a stream with no document hands them.
+    raw = list(tts.stream("今日天氣好好。\n我哋去海邊行下。", options={"output": {"stream": "raw"}}))
+    print(f"{len(pieces)} levelled pieces, {len(raw)} raw")
+
+    # A refused option is an OptionError: a ValueError and a GgttsError, whose key is the option's schema key.
+    try:
+        tts.render("今日天氣好好。", options={"render": {"nonesuch": 1}})
+    except ValueError as e:
+        print(f"refused {e.key}: {e.message}")
+        assert e.key == "render.nonesuch"
+```
+
 ## Errors
 
-Every failure is a `ggtts.GgttsError` with `code` (one of the constants below, the C library's codes) and `message`.
+Every failure is a `ggtts.GgttsError` with `code` (one of the constants below, the C library's codes), `message`, and
+`key`: the schema key of the one option refused, or None. A refused option is a `ggtts.OptionError`, which is also a
+`ValueError` ([Options](#options)).
 
 | Code | Value | What happened | What to do |
 |---|---|---|---|
@@ -269,6 +356,7 @@ Every failure is a `ggtts.GgttsError` with `code` (one of the constants below, t
 
 ## What it does not do
 
-* Per-render speakers or instructions: the settings are per engine. Load another engine to change them.
-* A cache directory argument: use `GGTTS_CACHE_DIR`.
+* Per-render speakers: the speaker is per engine. Load another engine to change it. (An instruction may be given
+  per render, as `render.instruction` in a render document.)
+* A cache directory argument: use `GGTTS_CACHE_DIR`, or `load.cache_dir` in a load document.
 * Play audio. Pass `audio.samples` and `audio.sample_rate` to the audio library you use.

@@ -16,8 +16,8 @@ use jni::sys::{jboolean, jint, jlong};
 use jni::JNIEnv;
 
 use crate::{
-    ggtts_free, ggtts_load, ggtts_load_with, ggtts_pcm_free, ggtts_render, ggtts_render_stream, last_error,
-    GgttsSettings, GGTTS_ERR_ARG, GGTTS_ERR_PANIC, GGTTS_SETTINGS_V2_SIZE,
+    ggtts_free, ggtts_load, ggtts_load_with, ggtts_pcm_free, ggtts_render, ggtts_render_stream, kotlin, last_error,
+    last_error_key, GgttsSettings, GGTTS_ERR_ARG, GGTTS_ERR_PANIC, GGTTS_SETTINGS_V2_SIZE,
 };
 
 /// Whether an exception is pending. A failed check is read as pending, so nothing is thrown over an unknown state.
@@ -25,18 +25,32 @@ fn pending(env: &mut JNIEnv) -> bool {
     env.exception_check().unwrap_or(true)
 }
 
-/// Throw `ggtts.GgttsException(code, message)`, unless an exception is already pending: that one goes to Kotlin as it
-/// is. Building the exception can itself fail (out of memory, a missing class), and then whatever that left pending is
-/// thrown instead.
+/// Throw `ggtts.GgttsException(code, message)`, with no refused key.
 fn throw(env: &mut JNIEnv, code: i32, msg: &str) {
+    throw_keyed(env, code, msg, None);
+}
+
+/// Throw the error the last C-ABI call on this thread recorded: its message and the key of the option it refused.
+fn throw_last(env: &mut JNIEnv, code: i32) {
+    throw_keyed(env, code, &last_error(), last_error_key().as_deref());
+}
+
+/// Throw `ggtts.GgttsException(code, message, key)`, `key` the schema key of the option refused or null, unless an
+/// exception is already pending: that one goes to Kotlin as it is. Building the exception can itself fail (out of
+/// memory, a missing class), and then whatever that left pending is thrown instead.
+fn throw_keyed(env: &mut JNIEnv, code: i32, msg: &str, key: Option<&str>) {
     if pending(env) {
         return;
     }
     let built = env.new_string(msg).and_then(|m| {
+        let k = match key {
+            Some(k) => env.new_string(k)?,
+            None => JString::from(JObject::null()),
+        };
         env.new_object(
             "ggtts/GgttsException",
-            "(ILjava/lang/String;)V",
-            &[JValue::Int(code), JValue::Object(&m)],
+            "(ILjava/lang/String;Ljava/lang/String;)V",
+            &[JValue::Int(code), JValue::Object(&m), JValue::Object(&k)],
         )
     });
     match built {
@@ -129,7 +143,7 @@ pub extern "system" fn Java_ggtts_Native_load<'l>(
                 )
             };
             if code != 0 {
-                throw(env, code, &last_error());
+                throw_last(env, code);
                 return 0;
             }
             handle as jlong
@@ -196,7 +210,7 @@ fn load_with(env: &mut JNIEnv, a: LoadArgs) -> jlong {
         )
     };
     if code != 0 {
-        throw(env, code, &last_error());
+        throw_last(env, code);
         return 0;
     }
     handle as jlong
@@ -303,7 +317,7 @@ pub extern "system" fn Java_ggtts_Native_render<'l>(
             )
         };
         if code != 0 {
-            throw(env, code, &last_error());
+            throw_last(env, code);
             return null();
         }
         let samples = unsafe { std::slice::from_raw_parts(pcm, len) };
@@ -410,12 +424,257 @@ pub extern "system" fn Java_ggtts_Native_renderStream<'l>(
                 crate::GGTTS_ERR_STOPPED => 0,
                 // `throw` lets an exception a failed JNI call left pending through instead.
                 _ => {
-                    throw(env, code, &last_error());
+                    throw_last(env, code);
                     0
                 }
             }
         },
     )
+}
+
+/// A Java string as a Rust string; `None` for a Java null. An unusable string throws and returns `Err`.
+fn string(env: &mut JNIEnv, s: &JString, name: &str) -> Result<Option<String>, ()> {
+    if s.is_null() {
+        return Ok(None);
+    }
+    match env.get_string(s) {
+        Ok(t) => Ok(Some(t.into())),
+        Err(_) => {
+            throw(env, GGTTS_ERR_ARG, &format!("{name} is not a readable string"));
+            Err(())
+        }
+    }
+}
+
+/// `Native.loadOpts`: `Ggtts.load` with an options document ([`kotlin::load`]). `threads` 0 or less and
+/// `allowDownload` -1 are not given; a null string is not given.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_ggtts_Native_loadOpts<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    options_json: JString<'l>,
+    engine: JString<'l>,
+    model: JString<'l>,
+    codec: JString<'l>,
+    voice: JString<'l>,
+    threads: jint,
+    speaker: JString<'l>,
+    instruction: JString<'l>,
+    cache_dir: JString<'l>,
+    allow_download: jint,
+) -> jlong {
+    jni_guard(
+        &mut env,
+        || 0,
+        |env| {
+            let mut s = Vec::new();
+            for (j, name) in [
+                (&options_json, "optionsJson"),
+                (&engine, "engine"),
+                (&model, "model"),
+                (&codec, "codec"),
+                (&voice, "voice"),
+                (&speaker, "speaker"),
+                (&instruction, "instruction"),
+                (&cache_dir, "cacheDir"),
+            ] {
+                let Ok(v) = string(env, j, name) else {
+                    return 0;
+                };
+                s.push(v);
+            }
+            let mut s = s.into_iter();
+            let Some(json) = s.next().flatten() else {
+                throw(env, GGTTS_ERR_ARG, "optionsJson is null");
+                return 0;
+            };
+            let mut next = || s.next().flatten();
+            let args = kotlin::LoadArgs {
+                engine: next(),
+                model: next(),
+                codec: next(),
+                voice: next(),
+                speaker: next(),
+                instruction: next(),
+                cache_dir: next(),
+                threads: (threads > 0).then_some(threads),
+                allow_download: (allow_download >= 0).then_some(allow_download != 0),
+            };
+            let mut handle = 0u64;
+            let code = crate::guard(|| {
+                handle = kotlin::load(&json, &args)?;
+                Ok(())
+            });
+            if code != 0 {
+                throw_last(env, code);
+                return 0;
+            }
+            handle as jlong
+        },
+    )
+}
+
+/// The seed a Kotlin document render passes: `None` when `seedGiven` is false.
+fn given_seed(seed: jlong, seed_given: jboolean) -> Option<u64> {
+    (seed_given != 0).then_some(seed as u64)
+}
+
+/// `Native.renderOpts`: the whole read of `text` with a render document ([`kotlin::render_opts`]); a null document is
+/// the empty one.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_ggtts_Native_renderOpts<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    text: JString<'l>,
+    options_json: JString<'l>,
+    seed: jlong,
+    seed_given: jboolean,
+    rate_out: JIntArray<'l>,
+) -> JFloatArray<'l> {
+    let null = || JFloatArray::from(JObject::null());
+    jni_guard(&mut env, null, |env| {
+        let Ok(Some(text)) = string(env, &text, "text") else {
+            throw(env, GGTTS_ERR_ARG, "text is null");
+            return null();
+        };
+        let Ok(json) = string(env, &options_json, "optionsJson") else {
+            return null();
+        };
+        let mut read = None;
+        let code = crate::guard(|| {
+            read = Some(kotlin::render_opts(
+                handle as u64,
+                &text,
+                json.as_deref(),
+                given_seed(seed, seed_given),
+            )?);
+            Ok(())
+        });
+        let Some((samples, rate)) = read.filter(|_| code == 0) else {
+            throw_last(env, code);
+            return null();
+        };
+        let out = env
+            .new_float_array(samples.len() as jint)
+            .and_then(|a| env.set_float_array_region(&a, 0, &samples).map(|_| a));
+        let Ok(out) = out else {
+            throw(env, GGTTS_ERR_ARG, "could not allocate the sample array");
+            return null();
+        };
+        if !rate_out.is_null() && env.set_int_array_region(&rate_out, 0, &[rate as jint]).is_err() {
+            throw(
+                env,
+                GGTTS_ERR_ARG,
+                "could not write the rate (rateOut must have room for one Int)",
+            );
+            return null();
+        }
+        out
+    })
+}
+
+/// `Native.renderStreamOpts`: each kept chunk's piece to `listener` with a render document, levelled unless the
+/// document asks for the pieces before the level step ([`kotlin::render_stream_opts`]). Returns false when the listener stopped it (returning false, or throwing, whose
+/// exception goes to Kotlin as it is).
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_ggtts_Native_renderStreamOpts<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    text: JString<'l>,
+    options_json: JString<'l>,
+    seed: jlong,
+    seed_given: jboolean,
+    listener: JObject<'l>,
+) -> jboolean {
+    jni_guard(
+        &mut env,
+        || 0,
+        |env| {
+            let Ok(Some(text)) = string(env, &text, "text") else {
+                throw(env, GGTTS_ERR_ARG, "text is null");
+                return 0;
+            };
+            let Ok(json) = string(env, &options_json, "optionsJson") else {
+                return 0;
+            };
+            if listener.is_null() {
+                throw(env, GGTTS_ERR_ARG, "listener is null");
+                return 0;
+            }
+            let mut finished = false;
+            let code = {
+                let mut stream = Stream {
+                    env: &mut *env,
+                    listener: &listener,
+                };
+                let user = &mut stream as *mut Stream as *mut c_void;
+                let mut piece = |samples: &[f32], rate: u32| on_piece(user, samples.as_ptr(), samples.len(), rate) == 0;
+                crate::guard(|| {
+                    finished = kotlin::render_stream_opts(
+                        handle as u64,
+                        &text,
+                        json.as_deref(),
+                        given_seed(seed, seed_given),
+                        &mut piece,
+                    )?;
+                    Ok(())
+                })
+            };
+            if code != 0 {
+                throw_last(env, code);
+                return 0;
+            }
+            // Stopped by the listener: returning false, or throwing, whose exception is still pending and goes to
+            // Kotlin as it is.
+            finished as jboolean
+        },
+    )
+}
+
+/// `Native.optionsSchema`: the options schema as JSON ([`kotlin::options_schema`]).
+#[no_mangle]
+pub extern "system" fn Java_ggtts_Native_optionsSchema<'l>(mut env: JNIEnv<'l>, _class: JClass<'l>) -> JString<'l> {
+    let null = || JString::from(JObject::null());
+    jni_guard(&mut env, null, |env| match env.new_string(kotlin::options_schema()) {
+        Ok(s) => s,
+        Err(_) => {
+            throw(env, GGTTS_ERR_ARG, "could not allocate the schema string");
+            null()
+        }
+    })
+}
+
+/// `Native.capabilities`: the engine's capability statement as JSON ([`kotlin::capabilities`]).
+#[no_mangle]
+pub extern "system" fn Java_ggtts_Native_capabilities<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+) -> JString<'l> {
+    let null = || JString::from(JObject::null());
+    jni_guard(&mut env, null, |env| {
+        let mut text = None;
+        let code = crate::guard(|| {
+            text = Some(kotlin::capabilities(handle as u64)?);
+            Ok(())
+        });
+        let Some(text) = text.filter(|_| code == 0) else {
+            throw_last(env, code);
+            return null();
+        };
+        match env.new_string(text) {
+            Ok(s) => s,
+            Err(_) => {
+                throw(env, GGTTS_ERR_ARG, "could not allocate the statement string");
+                null()
+            }
+        }
+    })
 }
 
 #[no_mangle]
@@ -426,7 +685,7 @@ pub extern "system" fn Java_ggtts_Native_free<'l>(mut env: JNIEnv<'l>, _class: J
         |env| {
             let code = ggtts_free(handle as u64);
             if code != 0 {
-                throw(env, code, &last_error());
+                throw_last(env, code);
             }
         },
     )

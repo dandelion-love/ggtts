@@ -1,5 +1,6 @@
-// The demo's one screen. It lists the model files in the app's models directory (put there with "Import a model
-// file", or with adb push; see android/README.md), loads the ones picked, and speaks one line with the chosen engine.
+// The demo's one screen. It lists the voices the model files in the app's models directory make (put there with
+// "Import a model file", or with adb push; see android/README.md; Voices says how files make a voice), and speaks one
+// line with the chosen voice. The engine and its files stay reachable under "Advanced", closed by default.
 //
 // A debug build can also be driven from adb, for scripted checks (a release build ignores these extras): every extra
 // is optional, and `speak` presses Speak once loaded.
@@ -18,6 +19,7 @@ import android.graphics.Color
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -30,6 +32,7 @@ import android.util.Log
 import android.view.View
 import android.view.Window
 import android.view.WindowManager
+import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
@@ -78,6 +81,13 @@ class MainActivity : Activity(), DemoView {
     private lateinit var importButton: Button
     private lateinit var status: TextView
     private lateinit var gettingStarted: TextView
+    private lateinit var voiceList: Spinner
+    private lateinit var voiceNote: TextView
+    private lateinit var playSample: Button
+    private var found = Found(emptyList(), emptyList())
+    /** The voice last applied to the Advanced controls, so a refresh does not undo a choice made there. */
+    private var applied: Voice? = null
+    private var sample: MediaPlayer? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -152,6 +162,7 @@ class MainActivity : Activity(), DemoView {
 
     override fun onDestroy() {
         platformTts?.shutdown()
+        sample?.release()
         // The read and the loaded engine stay with the process (see Reader); only this screen goes.
         if (Reader.screen === this) Reader.screen = null
         worker.shutdown()
@@ -199,6 +210,31 @@ class MainActivity : Activity(), DemoView {
         col.addView(gettingStarted)
         col.addView(label("No model ships with this app. Model files are read from:\n${modelsDir.path}"))
 
+        // One choice: a voice. Picking one fills in the Advanced controls below, which Speak reads.
+        voiceList = Spinner(this)
+        voiceList.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                found.voices.getOrNull(position)?.takeIf { it != applied }?.let(::applyVoice)
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+        col.addView(label("Voice")); col.addView(voiceList)
+        voiceNote = TextView(this)
+        col.addView(voiceNote)
+        playSample = Button(this).apply { text = "Play a sample"; isEnabled = false }
+        playSample.setOnClickListener { playSample() }
+        col.addView(playSample)
+
+        val adv = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
+        val toggle = Button(this).apply { text = "Advanced: engine, files, speaker, threads  ▸" }
+        toggle.setOnClickListener {
+            val open = adv.visibility != View.VISIBLE
+            adv.visibility = if (open) View.VISIBLE else View.GONE
+            toggle.text = "Advanced: engine, files, speaker, threads  " + if (open) "▾" else "▸"
+        }
+        col.addView(toggle)
+        col.addView(adv)
+
         engines = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
         ENGINES.forEachIndexed { i, name ->
             engines.addView(RadioButton(this).apply { id = 100 + i; text = name })
@@ -210,16 +246,16 @@ class MainActivity : Activity(), DemoView {
             text.setText(LINES[engine])
             cost.text = EngineCosts.describe(engine)
         }
-        col.addView(label("Engine"))
-        col.addView(engines)
-        col.addView(cost)
+        adv.addView(label("Engine"))
+        adv.addView(engines)
+        adv.addView(cost)
 
         model = Spinner(this); codec = Spinner(this); voice = Spinner(this)
-        col.addView(label("Model (Qwen3-TTS talker, or Kitten-TTS 2 LM)")); col.addView(model)
-        col.addView(label("Codec (Qwen3-TTS 12 Hz codec, or Kitten-TTS 2 S3Gen)")); col.addView(codec)
-        col.addView(label("Voice (Kitten-TTS 2 only: the prepared voice JSON)")); col.addView(voice)
+        adv.addView(label("Model (Qwen3-TTS talker, or Kitten-TTS 2 LM)")); adv.addView(model)
+        adv.addView(label("Codec (Qwen3-TTS 12 Hz codec, or Kitten-TTS 2 S3Gen)")); adv.addView(codec)
+        adv.addView(label("Voice file (Kitten-TTS 2 only: the prepared voice JSON)")); adv.addView(voice)
         speaker = EditText(this).apply { hint = "the model's default"; setSingleLine() }
-        col.addView(label("Speaker (Qwen3-TTS only, for example hk_voice_343)")); col.addView(speaker)
+        adv.addView(label("Speaker (Qwen3-TTS only, for example hk_voice_343)")); adv.addView(speaker)
 
         importButton = Button(this).apply { text = "Import a model file..." }
         importButton.setOnClickListener {
@@ -236,7 +272,7 @@ class MainActivity : Activity(), DemoView {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, THREADS.map { "$it threads" })
             setSelection(THREADS.indexOf(DEFAULT_THREADS))
         }
-        col.addView(label("CPU threads")); col.addView(threads)
+        adv.addView(label("CPU threads")); adv.addView(threads)
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         speak = Button(this).apply { text = "Speak" }
         speak.setOnClickListener {
@@ -275,6 +311,53 @@ class MainActivity : Activity(), DemoView {
             val keep = s.selectedItem as String?
             s.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, files)
             keep?.let { files.indexOf(it).takeIf { i -> i >= 0 }?.let(s::setSelection) }
+        }
+        refreshVoices(listed)
+    }
+
+    /** Lists the voices the files make; keeps the voice chosen, else selects the first complete one. */
+    private fun refreshVoices(listed: List<String>) {
+        val samples = modelsDir.list()?.filter { it.endsWith(Voices.SAMPLE_SUFFIX) }?.toSet() ?: emptySet()
+        found = Voices.group(Voices.scan(modelsDir, listed.filter { !it.endsWith(Voices.SAMPLE_SUFFIX) }), samples)
+        val labels = found.voices.map { it.label }.ifEmpty { listOf("(no complete voice yet)") }
+        voiceList.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
+        voiceList.isEnabled = found.voices.isNotEmpty()
+        val keep = applied?.let { a -> found.voices.indexOfFirst { it.label == a.label } }?.takeIf { it >= 0 }
+        val i = keep ?: 0
+        voiceList.setSelection(i, false)
+        // Applied here, not in the listener, which Android calls later: after adb extras have set the controls.
+        found.voices.getOrNull(i)?.let { if (keep == null) applyVoice(it) else showVoice(it) }
+        val gaps = found.incomplete.joinToString("\n") { "Not complete yet: ${it.name} needs ${it.missing}." }
+        voiceNote.text = gaps
+        voiceNote.visibility = if (gaps.isEmpty()) View.GONE else View.VISIBLE
+        Log.i(TAG, "voices: ${found.voices.map { it.label }}, incomplete: ${found.incomplete}")
+    }
+
+    /** Sets the Advanced controls to the voice's files, which is all Speak reads. */
+    private fun applyVoice(v: Voice) {
+        applied = v
+        engines.check(100 + ENGINES.indexOf(v.engine))
+        pick(model, v.model)
+        pick(codec, v.codec)
+        pick(voice, v.voiceFile ?: NONE)
+        speaker.setText(v.speaker ?: "")
+        showVoice(v)
+        Log.i(TAG, "voice: ${v.label}")
+    }
+
+    private fun showVoice(v: Voice) {
+        playSample.isEnabled = v.sample != null
+        playSample.text = if (v.sample != null) "Play a sample" else "No sample for this voice"
+    }
+
+    private fun playSample() {
+        val name = applied?.sample ?: return
+        sample?.release()
+        sample = MediaPlayer().apply {
+            setDataSource(File(modelsDir, name).path)
+            setOnCompletionListener { it.release(); if (sample === it) sample = null }
+            prepare()
+            start()
         }
     }
 

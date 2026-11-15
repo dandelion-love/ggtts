@@ -1,5 +1,11 @@
 # Log
 
+## 2026-11-14
+
+- Gap 3 closed: the app lists voices made from what its files say they are, selects the first, and keeps the
+  engine's parts under "Advanced". On the phone, Speak with no files named read through hk_voice_343 (first audio at
+  18 s). The files declare no language, so a Kitten-TTS 2 Cantonese voice shows as English.
+
 ## 2026-11-13
 
 - The app read as a store listing would be: eight gaps, ranked. The first, no stated purpose, is closed: the screen

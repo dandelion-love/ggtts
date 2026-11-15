@@ -16,6 +16,11 @@ that a merge places under a released heading is caught.
 - **The Android app says what it is for before anything technical**: it reads text aloud in Cantonese or English,
   on the phone only, slowly, and is not for screen readers. A fresh install also lists the steps to a first read.
   A test fails if the app gains the internet permission while the screen says it has none.
+- **The Android app offers voices, not an engine and its files.** It reads what each file in its models directory is
+  from the file itself (a GGUF's architecture, a talker's speaker names, a voice JSON's fields), lists the voices the
+  files make, and selects the first complete one, so Speak works on opening. Files that make no voice yet are named
+  with what they lack. The engine, file pickers, speaker and threads are under "Advanced", closed by default, and the
+  adb extras still set them.
 - **The Android app and its text-to-speech engine are named "ggtts Text-to-Speech"** in the launcher and in the phone's
   text-to-speech settings, where they were "ggtts demo" and "ggtts (on-device, slow)". The speed warning is unchanged
   on the app's screen before a load.

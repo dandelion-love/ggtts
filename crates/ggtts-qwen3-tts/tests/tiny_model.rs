@@ -180,6 +180,7 @@ fn a_quiet_hook_changes_no_token_and_a_drawing_hook_is_red_on_the_tiny_model() {
 
 /// AC1's check: an engine loaded with no speaker named renders with `want`, the model's default, and its codes equal
 /// the same request with `want` named. `Err` says what failed, so the planted removal can be shown to fail it.
+#[cfg(feature = "plant")]
 fn default_speaker_check(
     unnamed: Result<Qwen3Tts, ggtts_core::engine::EngineError>,
     named: impl FnOnce() -> Qwen3Tts,
@@ -210,6 +211,7 @@ fn default_speaker_check(
     Ok(())
 }
 
+#[cfg(feature = "plant")]
 fn voice(speaker: &str) -> Voice {
     Voice {
         speaker: speaker.into(),

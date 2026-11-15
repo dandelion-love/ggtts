@@ -15,6 +15,11 @@
     <string name="paste">Paste</string>
     <string name="clear">Clear</string>
     <string name="characters">%1$d characters</string>
+    <!-- What TalkBack says for a control whose text carries a symbol, or that has no text of its own. -->
+    <string name="read_aloud_label">Read aloud</string>
+    <string name="stop_label">Stop</string>
+    <string name="play_sample">Play a sample of %1$s</string>
+    <string name="close_sheet">Close the voices</string>
     <string name="read_aloud_button">▶  Read aloud</string>
     <string name="stop_button">■  Stop</string>
     <string name="status_elapsed">%1$s  ·  %2$d s</string>

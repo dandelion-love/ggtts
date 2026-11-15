@@ -320,6 +320,12 @@ class MainActivity : AppCompatActivity(), DemoView {
     private fun layout(): View {
         val pad = dp(16)
         fun label(s: String) = words(s, M.style.TextAppearance_Material3_BodyLarge).apply { setPadding(0, pad / 2, 0, 0) }
+        // A label that names [control] for TalkBack (labelFor): a spinner is announced as what it chooses, not only
+        // as the file it shows.
+        fun labelling(s: String, control: View) = label(s).apply {
+            if (control.id == View.NO_ID) control.id = View.generateViewId()
+            labelFor = control.id
+        }
         fun lp(w: Int = ViewGroup.LayoutParams.MATCH_PARENT, h: Int = ViewGroup.LayoutParams.WRAP_CONTENT, top: Int = 0) =
             LinearLayout.LayoutParams(w, h).apply { topMargin = top }
 
@@ -425,9 +431,9 @@ class MainActivity : AppCompatActivity(), DemoView {
         adv.addView(engines)
         adv.addView(cost)
         model = AppCompatSpinner(this); codec = AppCompatSpinner(this); voice = AppCompatSpinner(this)
-        adv.addView(label(getString(R.string.model_label))); adv.addView(model)
-        adv.addView(label(getString(R.string.codec_label))); adv.addView(codec)
-        adv.addView(label(getString(R.string.voice_file_label))); adv.addView(voice)
+        adv.addView(labelling(getString(R.string.model_label), model)); adv.addView(model)
+        adv.addView(labelling(getString(R.string.codec_label), codec)); adv.addView(codec)
+        adv.addView(labelling(getString(R.string.voice_file_label), voice)); adv.addView(voice)
         val speakerField = TextInputLayout(this, null, M.attr.textInputOutlinedStyle).apply {
             hint = getString(R.string.speaker_hint)
             placeholderText = getString(R.string.speaker_placeholder)
@@ -439,7 +445,7 @@ class MainActivity : AppCompatActivity(), DemoView {
             adapter = choices(THREADS.map { getString(R.string.threads_choice, it) })
             setSelection(THREADS.indexOf(DEFAULT_THREADS))
         }
-        adv.addView(label(getString(R.string.cpu_threads))); adv.addView(threads)
+        adv.addView(labelling(getString(R.string.cpu_threads), threads)); adv.addView(threads)
         importButton = MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
             text = getString(R.string.import_model_file); setOnClickListener { pickFile() }
         }
@@ -486,6 +492,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         footer.addView(progress)
         speak = MaterialButton(this).apply {
             text = getString(R.string.read_aloud_button)
+            contentDescription = getString(R.string.read_aloud_label)
             textSize = 18f
         }
         speak.setOnClickListener {
@@ -494,6 +501,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         }
         stop = MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
             text = getString(R.string.stop_button); visibility = View.GONE; isEnabled = false
+            contentDescription = getString(R.string.stop_label)
             textSize = 18f
         }
         stop.setOnClickListener { controller.stop() }
@@ -642,6 +650,7 @@ class MainActivity : AppCompatActivity(), DemoView {
             row.addView(lines, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             row.addView(Chip(this).apply {
                 text = getString(if (v.sample != null) R.string.sample else R.string.no_sample)
+                if (v.sample != null) contentDescription = getString(R.string.play_sample, v.name)
                 isEnabled = v.sample != null
                 setOnClickListener { playSample(v) }
             })
@@ -657,6 +666,8 @@ class MainActivity : AppCompatActivity(), DemoView {
             .apply { topMargin = dp(12) })
         // The sheet scrolls itself (it is a NestedScrollView's child), and opens fully: it is short.
         dialog.setContentView(NestedScrollView(this).apply { addView(sheet) })
+        // The area around the sheet closes it; Material gives it no label, so TalkBack would say only "button".
+        dialog.findViewById<View>(M.id.touch_outside)?.contentDescription = getString(R.string.close_sheet)
         dialog.behavior.state = com.google.android.material.bottomsheet.BottomSheetBehavior.STATE_EXPANDED
         dialog.behavior.skipCollapsed = true
         dialog.show()

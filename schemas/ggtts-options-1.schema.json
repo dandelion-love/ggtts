@@ -438,6 +438,9 @@
         ],
         "steer_scale": [
           "steer"
+        ],
+        "steer_scales": [
+          "steer_layers"
         ]
       },
       "properties": {
@@ -542,6 +545,18 @@
           "type": "number",
           "x-ggtts-flags": [
             "--steer-scale"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "steer_scales": {
+          "description": "One scale per layer of --steer-layers, in its order: layer L is pushed by its scale times the file's vector there. For a file of unit-length directions, the push lengths. Not with --steer-scale.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 1,
+          "type": "array",
+          "x-ggtts-flags": [
+            "--steer-scales"
           ],
           "x-ggtts-phase": "render"
         },

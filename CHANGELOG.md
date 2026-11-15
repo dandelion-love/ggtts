@@ -13,6 +13,13 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **A steering scale per layer: `--steer-scales` (`render.steer_scales`).** One scale per layer of `--steer-layers`,
+  in its order, so a file of unit-length directions can carry the per-layer push lengths that unit-vector steering
+  methods use; at `s × |v_L|` it renders what `--steer-scale s` renders over the unnormalised vectors. Every front
+  end that takes steering takes it. It is refused when its length differs from `--steer-layers`, when a value is not
+  finite, without `--steer-layers`, and together with `--steer-scale`. A render with it records `scales` in place of
+  `scale` in its `steer` record (the trace header, the timing and duration reports, a book's manifest); the three
+  schemas allow it, within their format versions.
 - **A model file can be given as an open descriptor, `/proc/self/fd/<n>`.** Every front end's model, codec and
   voice paths take that form, and the engine reads through descriptor `n` without reopening the path. This is how an
   Android app hands over a file the user picked with the system picker: reopening the path fails with "Permission

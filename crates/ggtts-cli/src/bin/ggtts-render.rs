@@ -3,7 +3,7 @@
 //! ```text
 //! ggtts-render [--model M.gguf] [--codec C.gguf] [--offline] --out x.flac [--engine auto|qwen3-tts|kitten-tts-2|fake]
 //!              [--threads N] [--device cpu|cuda] [--trace trace.jsonl [--trace-level 1|2]] [--timing-report FILE] [--voice REF.json] [--speaker NAME]
-//!              [--instruction TEXT] [--steer FILE [--steer-scale X] [--steer-layers LIST]]
+//!              [--instruction TEXT] [--steer FILE [--steer-scale X] [--steer-layers LIST [--steer-scales LIST]]]
 //!              [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text "..." [--seed S] | --story story.txt)
 //!              [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE.yaml] [--require NAME]...
 //!              [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID]
@@ -137,7 +137,7 @@ impl StreamTiming {
 }
 const USAGE: &str = "usage: ggtts-render [--model M.gguf] [--codec C.gguf] [--offline] --out x.flac \
 [--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N (capped at the CPUs allowed)] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--kitten-full-head] [--speaker NAME] [--instruction TEXT] \
-[--steer FILE [--steer-scale X] [--steer-layers LIST]] \
+[--steer FILE [--steer-scale X] [--steer-layers LIST [--steer-scales LIST]]] \
 [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE [--redraw N [--judge asr-qwen,model=DIR]]) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
 [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID] \
@@ -1305,20 +1305,30 @@ mod tests {
             .filter_map(|d| d.flags.first().copied())
             .collect();
         assert_eq!(usage, table, "USAGE and the table's ggtts-render flags differ");
+        let sample = |d: &options::Descriptor| match d.kind {
+            options::Kind::Bool => None,
+            options::Kind::Int { min, .. } => Some(min.max(1).to_string()),
+            options::Kind::Seed | options::Kind::Number { .. } => Some("1".into()),
+            options::Kind::Choice(list) => Some(list[0].into()),
+            options::Kind::Layers => Some("3".into()),
+            options::Kind::Numbers => Some("1.5".into()),
+            _ => Some("x".into()),
+        };
         for d in options::TABLE.iter().filter(|d| !d.flags.is_empty()) {
-            let value = match d.kind {
-                options::Kind::Bool => None,
-                options::Kind::Int { min, .. } => Some(min.max(1).to_string()),
-                options::Kind::Seed | options::Kind::Number { .. } => Some("1".into()),
-                options::Kind::Choice(list) => Some(list[0].into()),
-                options::Kind::Layers => Some("3".into()),
-                _ => Some("x".into()),
-            };
-            let needed = d
-                .requires
-                .and_then(|r| options::TABLE.iter().find(|n| n.section == d.section && n.name == r))
-                .map(|n| vec![n.flags[0].to_string(), "x".to_string()])
-                .unwrap_or_default();
+            let value = sample(d);
+            // What it requires, and what that requires in turn (`steer_scales` needs `steer_layers`, which needs
+            // `steer`), each with a value of its own kind.
+            let mut needed = Vec::new();
+            let mut at = d.requires;
+            while let Some(r) = at {
+                let n = options::TABLE
+                    .iter()
+                    .find(|n| n.section == d.section && n.name == r)
+                    .expect("a required option is a row");
+                needed.push(n.flags[0].to_string());
+                needed.extend(sample(n));
+                at = n.requires;
+            }
             for f in d.flags {
                 let mut line = vec![f.to_string()];
                 line.extend(value.clone());

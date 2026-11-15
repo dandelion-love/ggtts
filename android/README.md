@@ -128,9 +128,10 @@ threads. A choice there is what Speak uses until another voice is chosen.
 | Qwen3-TTS | the talker GGUF | the 12 Hz codec GGUF | (none) | one the talker has |
 | Kitten-TTS 2 | the LM GGUF | the S3Gen GGUF | the prepared voice JSON | (none) |
 
-A Qwen3-TTS talker picked as a file uses the speaker `hk_cantonese_speaker` when the Speaker box is empty. The default
-model's talker has `hk_voice_343` and `hk_voice_777` instead, so type one of those; with an unknown speaker the screen
-shows the library's error, which lists the talker's speakers.
+A Qwen3-TTS talker picked as a file uses its default speaker when the Speaker box is empty: `hk_cantonese_speaker` if
+it has one, otherwise the first of its speakers in alphabetical order (`hk_voice_343` for the released talkers, which
+also have `hk_voice_777`). With an unknown speaker the screen shows the library's error, which lists the talker's
+speakers.
 
 * **Qwen3-TTS.** The default model's two files are
   [`qwen-talker-hk-cantonese-cc0-v0.0.5-q8_0.gguf` and `qwen-tokenizer-12hz-q8_0.gguf`](https://huggingface.co/jmtl/hk-cantonese-cc0-qwen3-tts-GGUF)
@@ -206,7 +207,12 @@ user picks it in the phone's text-to-speech settings. The app does not change th
 
 - **Voices:** Cantonese (Hong Kong), `yue-HK`, from Qwen3-TTS, and English (US) from Kitten-TTS 2. Each voice uses
   the model files of that engine's last finished Speak in the demo. Until there has been one, the engine reports the
-  language as missing data, and a request gets `ERROR_NOT_INSTALLED_YET`.
+  language as missing data, and a request gets `ERROR_NOT_INSTALLED_YET`. A voice is saved as its whole options
+  document (the files, the speaker, the threads, and any other option the request carries). A saved voice the
+  binding refuses (a key it does not take, say) is reported unusable with the binding's message. It is not listed,
+  and a request gets `ERROR_INVALID_REQUEST` until the next finished Speak saves the voice again.
+- **Speech rate and pitch** are not available: ggtts has no option for either. A request at a rate or pitch other than
+  normal is spoken at normal, and the app logs one line naming what it ignored.
 - **Latency:** every voice is declared `LATENCY_VERY_HIGH`, so a client that reads voice latency can see it before
   choosing it. It streams like the demo: the platform gets each chunk as it is rendered.
 - **Not for screen readers.** The first audio takes tens of seconds.

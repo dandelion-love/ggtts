@@ -217,8 +217,8 @@ Read the model's card before you use its voice; its licence is the model's, not 
   [default model files](../../README.md#default-model-files-what-ggtts-downloads-and-when) section lists the files,
   their hashes and how a download is checked.
 * **The speaker.** The default model's speakers are `hk_voice_343` (used when you give none) and `hk_voice_777`. A
-  model you give by path uses `hk_cantonese_speaker` when you give none, so a talker without that speaker needs
-  `speaker` set. An unknown speaker is `GGTTS_ERR_ENGINE`, and the message lists the model's speakers.
+  model you give by path uses its own default when you give none: `hk_cantonese_speaker` if it has one, otherwise
+  the first of its speakers in alphabetical order (`hk_voice_343` for the v0.0.5 talker). An unknown speaker is `GGTTS_ERR_ENGINE`, and the message lists the model's speakers.
 
 `ggtts_load`, NULL settings and a version-2 struct never use the default model: with no model they are
 `GGTTS_ERR_ARG`.
@@ -390,7 +390,10 @@ laid over the load's defaults. NULL is the empty document.
   `ggtts_render` gives them.
 * **A stream** has `on_piece` set. Each kept chunk goes to it, levelled as `ggtts-render --stream` levels it: held until the first `output.stream_level_seconds` of audio (5 s unless given) set one gain, then each piece at that gain. Use it for listening.
   `{"output": {"stream": "raw"}}` (or `"stream_raw": true`) hands each piece over before the level step instead, as
-  `ggtts_render_stream` does; `"levelled"` names the default. `pcm`, `len` and `rate` are all NULL or all set (then
+  `ggtts_render_stream` does; `"levelled"` names the default. `stream_raw: true` makes any stream raw,
+  `"levelled"` included, as `ggtts-render --stream FILE --stream-raw` does: `output.stream` says that the call
+  streams, `stream_raw` how. `stream_raw` and `stream_level_seconds` need `output.stream`, so a whole read refuses
+  them. `pcm`, `len` and `rate` are all NULL or all set (then
   they also get the whole read). **`ggtts_render_stream` itself is unchanged**: it streams the pieces before the
   level step, as it always has, because an exported function never changes its behaviour.
 * **What a render document takes:**

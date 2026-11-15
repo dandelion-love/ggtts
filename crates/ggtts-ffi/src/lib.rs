@@ -494,6 +494,12 @@ unsafe fn load(
 /// value is a load document, checked whole against the engine before anything is read ([`ggtts_core::options::check`]);
 /// otherwise only a speaker or instruction the engine does not take is refused first, as the struct loads always have.
 fn load_options(o: &Options, default_files: bool, document: bool) -> Result<u64, Fail> {
+    let e = open_options(o, default_files, document)?;
+    Ok(register(o, e))
+}
+
+/// [`load_options`]' first half: the engine an options value names, opened, not yet registered.
+fn open_options(o: &Options, default_files: bool, document: bool) -> Result<Held, Fail> {
     let path = |p: &Option<PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned());
     let (model, codec, voice) = (path(&o.load.model), path(&o.load.codec), path(&o.load.voice));
     // "auto" is a document's engine only: a struct load names its engine, and "auto" is no engine there.
@@ -518,7 +524,7 @@ fn load_options(o: &Options, default_files: bool, document: bool) -> Result<u64,
         }),
         tuning: ggtts_load::Tuning::of(&o.load),
     };
-    let e = open_engine(
+    open_engine(
         &engine,
         model.as_deref(),
         codec.as_deref(),
@@ -526,13 +532,18 @@ fn load_options(o: &Options, default_files: bool, document: bool) -> Result<u64,
         o.load.threads.unwrap_or(0),
         settings,
         if document { &DOCUMENT_WORDING } else { &WORDING },
-    )?;
+    )
+}
+
+/// [`load_options`]' second half: an opened engine registered under a new handle, with the load's cache settings
+/// kept for the renders on it.
+fn register(o: &Options, e: Held) -> u64 {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     registry().get_or_insert_with(HashMap::new).insert(id, binding::slot(e));
     load_cache()
         .get_or_insert_with(HashMap::new)
         .insert(id, binding::LoadCache::of(o));
-    Ok(id)
+    id
 }
 
 /// Load an engine from an options document (C-ABI version 4): the `load` section, and `render` defaults every render
@@ -560,12 +571,18 @@ pub unsafe extern "C" fn ggtts_load_opts(options_json: *const c_char, handle: *m
 /// Load the engine a checked load document names and keep its render defaults with the handle: the body of
 /// [`ggtts_load_opts`], which the Kotlin binding's document load calls too.
 fn load_document(o: &Options) -> Result<u64, Fail> {
-    let id = load_options(o, true, true)?;
-    // The render defaults, kept with the handle: the render section, marked as given where the document gave it.
+    let e = open_options(o, true, true)?;
+    Ok(register_document(o, e))
+}
+
+/// An opened engine registered as a document load: [`register`], and the document's render defaults kept with the
+/// handle (the render section, marked as given where the document gave it).
+fn register_document(o: &Options, e: Held) -> u64 {
+    let id = register(o, e);
     defaults()
         .get_or_insert_with(HashMap::new)
         .insert(id, binding::render_defaults(o));
-    Ok(id)
+    id
 }
 
 /// Render `text` to mono f32 PCM. Free the buffer with [`ggtts_pcm_free`].

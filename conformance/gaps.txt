@@ -55,4 +55,3 @@ render-text	observe.trace_level	#294
 render-text	output.stream_level_seconds	#294
 render-text	output.stream_raw	#294
 render-text	render.edge_s	#180
-render-text	render.redraw	#294

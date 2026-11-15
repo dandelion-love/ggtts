@@ -117,6 +117,14 @@ that a merge places under a released heading is caught.
   `--story`, `--seed`, `--stream` and its settings, the timing and duration reports, the log settings and the
   instruments. An engine name the table does not list is refused as `load.engine` rather than "unknown engine", and
   `--threads` also takes the table's spelling `-j`.
+- **`ggtts-render --text --redraw N` is refused** (`--redraw (render.redraw): --text renders one draw and keeps it;
+  redraws are a story's (--story)`). It was accepted and did nothing: `--text` renders one draw.
+- **`ggtts-book`'s public Rust API** (for a caller of the library, not the command):
+  - `book_render_options` is removed; a book's options are read with the shared table (`ggtts_book::options::parse`);
+  - `render::render_chunk` returns a `manifest::ChunkOutput` (the chunk file's bytes and the draws it made, with
+    the kept draw's verdict) instead of the bytes alone;
+  - `ChapterPlan` has a public `redraw` field, so a struct literal must set it;
+  - `ChapterOutcome::Written` has a `rejudged` field, so an exhaustive pattern must name it or use `..`.
 
 ### Changed
 

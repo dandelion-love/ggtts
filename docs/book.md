@@ -325,7 +325,8 @@ before it existed, is a render with no instruction and no steering: it resumes a
 for a run with either.
 
 **Redraws.** `--redraw N` (the shared table's `render.redraw`; unset is the engine profile's, which is 0 for
-`qwen3-tts`, so a book redraws only when asked, as a story does) is how many times a chunk the judge rejects is drawn
+`qwen3-tts`, so a book redraws only when asked, as a story does; `ggtts-render --text` refuses it, since a text
+renders one draw) is how many times a chunk the judge rejects is drawn
 again. A render with redraws records `redraw` in each chapter manifest and, per done chunk, `kept_draw`, `draws` (the
 number made) and `verdict` (the judge's verdict on the kept draw, `null` when it passed). A render at redraw 0 writes
 none of them, so its manifests are the bytes they were before redraws existed. A changed `--redraw` does not refuse a
@@ -334,6 +335,9 @@ judge and is within the new setting, or it is the new setting's last draw. Any o
 the new setting and rendered again, counted as `rejudged` in the report. So raising `--redraw` gives the chunks the
 judge rejected their further draws, a chunk recorded without draws (rendered at redraw 0) is judged again once
 redraws are on, and lowering it renders again the chunks kept at a draw the new setting does not reach.
+The same holds for the engine profile's default: when a profile's `redraw` goes up, a book resumed without
+`--redraw` judges its done chunks again under the new default, and those the judge rejects are rendered again. Pass
+`--redraw 0` to resume such a book as it was rendered.
 
 **The ASR judge.** The duration judge cannot hear a skipped clause: a chunk that drops one gets shorter, not longer.
 `--judge asr-qwen,model=DIR[,device=cpu|cuda][,min_run=N][,timeout=S][,start_timeout=S]` (the shared table's

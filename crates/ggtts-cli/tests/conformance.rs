@@ -108,6 +108,7 @@ const ENGINE_READS_ENV: &str =
 const NEVER_DOWNLOADS: &str = "the app never downloads: its models are installed with it";
 const PARITY_TOOL: &str = "an engine parity tool; render with ggtts-render --engine kitten-tts-2";
 const TEXT_JUDGE: &str = "--text renders one draw and keeps it; the judge redraws a story's chunks (--story)";
+const TEXT_REDRAW: &str = "--text renders one draw and keeps it; redraws are a story's (--story)";
 const NO_JUDGE: &str =
     "the ASR judge starts a Python process beside the render: judge with ggtts-render --story or ggtts-book";
 // `ggtts_book::options::refusal`'s reasons, word for word (checked by `book_refusals_are_the_books_own`).
@@ -167,7 +168,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.story"], Refused(ONE_OF)),
             (&["render.seed_salt"], Refused(TEXT_SALT)),
             (&["render.judge"], Refused(TEXT_JUDGE)),
-            (&["render.redraw"], Gap(294)),
+            (&["render.redraw"], Refused(TEXT_REDRAW)),
             (&["render.edge_s"], Gap(180)),
             (TRACE, Gap(294)),
             (REPORTS, Carried),
@@ -625,6 +626,12 @@ fn render_probes() -> Vec<Probe> {
                 Seen::Dropped
             },
         );
+
+        // Redraws on --text: refused by name (a story's redraws are probed by the judge above).
+        if mode == "text" {
+            let r = render(&p("redraw"), mode, &["--redraw", "1"]);
+            push("render.redraw", by_front_end_refusal(&r, "--redraw"));
+        }
 
         // The seed: two renders with the trace, at two seeds. Carried when the chunks' recorded seeds differ.
         let seeds = |n: &str| {

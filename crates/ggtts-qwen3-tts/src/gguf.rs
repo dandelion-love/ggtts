@@ -16,14 +16,16 @@ fn err(msg: impl Into<String>) -> EngineError {
 }
 
 /// `gguf_init_from_file` for a `/proc/self/fd/<n>` path: the descriptor duplicated and rewound
-/// (`ggtts_core::fdpath::open`) and handed to ggml as a `FILE*`. None for any other path; a null context when the
-/// descriptor cannot be read, as `gguf_init_from_file` gives for a file it cannot open.
+/// (`ggtts_core::fdpath::open`) and handed to ggml as a `FILE*`. None for any other path; the error fdpath gives
+/// (a closed descriptor, or one that cannot seek, with what to do) when it refuses the descriptor; a null context
+/// when ggml cannot read it, as `gguf_init_from_file` gives for a file it cannot open.
 #[cfg(unix)]
-fn init_from_descriptor(path: &Path, params: g::gguf_init_params) -> Option<*mut g::gguf_context> {
+fn init_from_descriptor(path: &Path, params: g::gguf_init_params) -> Option<Result<*mut g::gguf_context, String>> {
     use std::os::fd::IntoRawFd;
     ggtts_core::fdpath::fd_of(path)?;
-    let Ok(file) = ggtts_core::fdpath::open(path) else {
-        return Some(ptr::null_mut());
+    let file = match ggtts_core::fdpath::open(path) {
+        Ok(f) => f,
+        Err(e) => return Some(Err(format!("{}: {e}", path.display()))),
     };
     let raw = file.into_raw_fd();
     // SAFETY: raw is a descriptor this function owns; fdopen takes it over, and fclose closes both.
@@ -31,16 +33,16 @@ fn init_from_descriptor(path: &Path, params: g::gguf_init_params) -> Option<*mut
         let fp = libc::fdopen(raw, c"rb".as_ptr());
         if fp.is_null() {
             libc::close(raw);
-            return Some(ptr::null_mut());
+            return Some(Ok(ptr::null_mut()));
         }
         let ctx = g::gguf_init_from_file_ptr(fp.cast(), params);
         libc::fclose(fp);
-        Some(ctx)
+        Some(Ok(ctx))
     }
 }
 
 #[cfg(not(unix))]
-fn init_from_descriptor(_path: &Path, _params: g::gguf_init_params) -> Option<*mut g::gguf_context> {
+fn init_from_descriptor(_path: &Path, _params: g::gguf_init_params) -> Option<Result<*mut g::gguf_context, String>> {
     None
 }
 
@@ -61,7 +63,7 @@ impl Gguf {
         };
         // A /proc/self/fd/<n> path is read through that descriptor, never reopened (ggtts_core::fdpath).
         let ctx = match init_from_descriptor(path, params) {
-            Some(ctx) => ctx,
+            Some(r) => r.map_err(err)?,
             // SAFETY: c is a valid C string; meta receives a context owned by Self.
             None => unsafe { g::gguf_init_from_file(c.as_ptr(), params) },
         };

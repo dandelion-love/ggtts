@@ -106,13 +106,16 @@ class StorageTest {
     }
 
     @Test
-    fun aDocumentThatCannotSeekIsCopiedUnderItsOwnNameKeptApartByPlace() {
-        val a = Storage.fallbackName(uri("talker.gguf"))
+    fun aDocumentThatCannotSeekIsCopiedUnderItsOwnNameKeptApartByPlaceAndVersion() {
+        val a = Storage.fallbackName(uri("talker.gguf"), 2_000L, 1_700_000_000_000L)
         assertTrue(a, a.endsWith("-talker.gguf"))
-        assertEquals(a, Storage.fallbackName(uri("talker.gguf")))
+        assertEquals(a, Storage.fallbackName(uri("talker.gguf"), 2_000L, 1_700_000_000_000L))
         val elsewhere = uri("talker.gguf").replace("Download", "Documents")
-        assertTrue(Storage.fallbackName(elsewhere) != a)
-        for (n in listOf(a, Storage.fallbackName("content://x/document/..%2F..%2Fescape.gguf"))) {
+        assertTrue("another place shares the copy", Storage.fallbackName(elsewhere, 2_000L, 1_700_000_000_000L) != a)
+        // The same document replaced in place (a new size, or a new change time) is copied again, never the stale copy.
+        assertTrue("a resized document reuses the stale copy", Storage.fallbackName(uri("talker.gguf"), 2_001L, 1_700_000_000_000L) != a)
+        assertTrue("a changed document reuses the stale copy", Storage.fallbackName(uri("talker.gguf"), 2_000L, 1_700_000_000_001L) != a)
+        for (n in listOf(a, Storage.fallbackName("content://x/document/..%2F..%2Fescape.gguf", null, null))) {
             assertTrue(n, ModelImport.isPlainName(n))
         }
     }

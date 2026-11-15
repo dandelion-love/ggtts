@@ -84,6 +84,23 @@ data class LoadRequest(val options: Options) {
     }
 }
 
+/** A path the engine can open (Storage.kt's ContentPaths makes one for a picked file), and what keeps it open (closed when the engine is). */
+class Opened(val path: String, private val handle: AutoCloseable? = null) : AutoCloseable {
+    override fun close() {
+        handle?.close()
+    }
+}
+
+/** Turns a model location into a path the engine opens. */
+fun interface PathResolver {
+    fun open(location: String): Opened
+
+    companion object {
+        /** Paths only: what the JVM tests and a binding with no picked folder use. */
+        val PLAIN = PathResolver { Opened(it) }
+    }
+}
+
 /** Loads an engine. A failure is a ggtts.GgttsException carrying the binding's code, message and key. */
 fun interface TtsBinding {
     fun load(request: LoadRequest): TtsEngine

@@ -38,12 +38,13 @@ object Storage {
 
     /**
      * The cache file name for a picked document whose descriptor cannot seek ([ContentPaths]): the document's own
-     * name, after a hash of its whole location, so two documents of one name in different places never share a copy.
+     * name, after a hash of its whole location, its [size] and when it last changed ([modified]), so two documents of
+     * one name in different places never share a copy, and a document replaced in place is copied again.
      */
-    fun fallbackName(location: String): String {
+    fun fallbackName(location: String, size: Long?, modified: Long?): String {
         val base = java.net.URLDecoder.decode(location.substringAfterLast('/'), "UTF-8").substringAfterLast('/')
             .filter { it != '\\' && it != '\u0000' }.ifEmpty { "picked" }
-        return "%08x-%s".format(location.hashCode(), base)
+        return "%08x-%s".format("$location|$size|$modified".hashCode(), base)
     }
 
     /** A saved read's file name: the engine and when the read was saved, so saves never collide or overwrite. */
@@ -98,23 +99,6 @@ class Catalog private constructor(private val byName: Map<String, String>) {
     }
 }
 
-/** A path the engine can open, and what keeps it open (closed when the engine is). */
-class Opened(val path: String, private val handle: AutoCloseable? = null) : AutoCloseable {
-    override fun close() {
-        handle?.close()
-    }
-}
-
-/** Turns a model location into a path the engine opens. */
-fun interface PathResolver {
-    fun open(location: String): Opened
-
-    companion object {
-        /** Paths only: what the JVM tests and a binding with no picked folder use. */
-        val PLAIN = PathResolver { Opened(it) }
-    }
-}
-
 /**
  * A picked-folder document as `/proc/self/fd/<n>`: the descriptor stays open as long as the engine that loaded it,
  * and the engine reads through it, never reopening the path. A plain path passes through.
@@ -135,7 +119,18 @@ class ContentPaths(context: Context) : PathResolver {
         if (seekable(pfd)) return Opened(Storage.fdPath(pfd.fd), pfd)
         pfd.close()
         val dir = File(app.cacheDir, "picked").apply { mkdirs() }
-        val copy = File(dir, Storage.fallbackName(location))
+        var size: Long? = null
+        var modified: Long? = null
+        runCatching {
+            resolver.query(uri, arrayOf(DocumentsContract.Document.COLUMN_SIZE, DocumentsContract.Document.COLUMN_LAST_MODIFIED),
+                null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    size = if (c.isNull(0)) null else c.getLong(0)
+                    modified = if (c.isNull(1)) null else c.getLong(1)
+                }
+            }
+        }
+        val copy = File(dir, Storage.fallbackName(location, size, modified))
         if (!copy.isFile) {
             val part = File(dir, copy.name + ModelImport.PART)
             try {

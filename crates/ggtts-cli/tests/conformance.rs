@@ -1537,7 +1537,7 @@ const ANDROID_SEAM: &str = "android/demo/src/main/kotlin/ggtts/demo/TtsBinding.k
 /// What `GgttsBinding` must hand the Kotlin binding for the app to carry its document: the load document at load, and
 /// the request's render and stream documents on every render.
 const ANDROID_HANDOVER: [&str; 3] = [
-    "Ggtts.load(allowDownload = false, options = request.loadDocument(cacheDir))",
+    "Ggtts.load(allowDownload = false, options = resolved.loadDocument(cacheDir))",
     "tts.render(text, seed, options = whole)",
     "tts.renderStream(text, seed, options = stream)",
 ];

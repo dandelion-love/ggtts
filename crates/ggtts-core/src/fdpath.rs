@@ -100,9 +100,6 @@ mod tests {
         }
     }
 
-    /// The case Android makes: the descriptor is readable, the file behind it is not. A mutant that reopens the path
-    /// (`File::open` on `/proc/self/fd/<n>`) gets "Permission denied" here and fails the test. Root reads any file,
-    /// so the test says so rather than passing for the wrong reason.
     /// Gives the file its mode back however the test ends, so a failed assertion leaves no mode-000 file behind.
     struct Restore(std::path::PathBuf);
     impl Drop for Restore {
@@ -112,6 +109,9 @@ mod tests {
         }
     }
 
+    /// The case Android makes: the descriptor is readable, the file behind it is not. A mutant that reopens the path
+    /// (`File::open` on `/proc/self/fd/<n>`) gets "Permission denied" here and fails the test. Root reads any file,
+    /// so the test says so rather than passing for the wrong reason.
     #[test]
     fn a_descriptor_whose_file_may_not_be_opened_is_read_without_reopening() {
         let p = temp("model.gguf", b"GGUFsome bytes");

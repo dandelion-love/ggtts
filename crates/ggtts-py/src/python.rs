@@ -51,9 +51,9 @@ struct PyEngine {
 #[pymethods]
 impl PyEngine {
     /// Render `text` (one paragraph per non-empty line) at `seed`: `(pcm, sample_rate)`, `pcm` a bytearray of
-    /// float32 mono samples. `seed` is the story seed's salt (`render.seed_salt`), `DEFAULT_SEED` when neither it nor
-    /// `options` gives one. `options` is a render document (JSON), laid over the load's render defaults. The GIL is
-    /// released while it renders.
+    /// float32 mono samples. `seed` is the story seed's salt (`render.seed_salt`): not given, it is `DEFAULT_SEED`
+    /// without a document, and the document's salt with one (empty when nothing gives it, as the C-ABI's). `options`
+    /// is a render document (JSON), laid over the load's render defaults. The GIL is released while it renders.
     #[pyo3(signature = (text, seed=None, options=None))]
     fn render<'py>(
         &self,

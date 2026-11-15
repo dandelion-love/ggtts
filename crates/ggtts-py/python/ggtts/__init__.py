@@ -77,10 +77,12 @@ def _document(options: Optional[Options]) -> Optional[str]:
 
 
 def _refused(e: GgttsError, options: Optional[str]) -> GgttsError:
-    """``e`` as an ``OptionError`` when it refuses an option: it names one, or a document was given and the call
-    failed with ``ERR_ARG``. Any other error is ``e`` as it is."""
+    """``e`` as an ``OptionError`` when it refuses an option: the library recorded the option's key, or the document
+    given was refused whole (not JSON, not an object: the message names ``$``). Any other error, such as empty text
+    beside a document, is ``e`` as it is, as it would be without one."""
     key = getattr(e, "key", None)
-    if key is None and not (options is not None and getattr(e, "code", None) == ERR_ARG):
+    whole = options is not None and getattr(e, "code", None) == ERR_ARG and getattr(e, "message", "").startswith("$: ")
+    if key is None and not whole:
         return e
     err = OptionError(*e.args)
     err.code, err.message, err.key = e.code, e.message, key
@@ -187,7 +189,8 @@ class TTS:
         """Render ``text`` (one paragraph per non-empty line), as the C-ABI's ``ggtts_render`` does.
 
         ``seed`` is the salt of the story seed every chunk's sampler seed is derived from (the document's
-        ``render.seed_salt``), ``DEFAULT_SEED`` when neither it nor ``options`` gives one. ``options`` is a render
+        ``render.seed_salt``). Without a document, None is ``DEFAULT_SEED``; with one, the document's salt, which the
+        C library leaves empty when nothing gives it. ``options`` is a render
         document (``ggtts_render_opts``'s), laid over the load's ``render`` defaults: steering, an edge, redraws, a
         trace. A load option in it, or one this binding does not take, is an ``OptionError``.
         """
@@ -284,8 +287,9 @@ def load(
 ) -> TTS:
     """Load an engine, with the settings of the C-ABI's ``ggtts_load_with``, or an options document.
 
-    engine:      ``qwen3-tts`` (the default unless ``options`` names one), ``kitten-tts-2``, or ``fake`` (a test
-                 engine that needs no files).
+    engine:      ``qwen3-tts``, ``kitten-tts-2``, or ``fake`` (a test engine that needs no files). Without
+                 ``options``, None is ``qwen3-tts``. With ``options``, None is the document's ``load.engine``, whose
+                 default is ``"auto"``: the model's GGUF architecture, or ``qwen3-tts`` with no model.
     model:       the model GGUF (Qwen3-TTS: the talker; Kitten-TTS 2: the LM). For Qwen3-TTS, a model or codec not
                  given is the pinned default model's, from the per-user cache (``GGTTS_CACHE_DIR`` overrides where),
                  downloaded and verified first unless ``offline``. With the default model and no speaker, the speaker

@@ -276,6 +276,13 @@ pub const TABLE: &[Descriptor] = &[
         help: "The root of the default model files' cache; unset is the platform's per-user cache.",
         ..row("cache_dir", SL, L, path(), "null")
     },
+    Descriptor {
+        flags: &["--kitten-full-head"],
+        env: Some("GGTTS_KITTEN_FULL_HEAD"),
+        help: "Kitten-TTS 2 only: compute the whole output head, not only the rows a step can sample at the default \
+               sampler settings. A diagnostic; the bindings' engine reads GGTTS_KITTEN_FULL_HEAD=1 itself.",
+        ..row("kitten_full_head", SL, L, Kind::Bool, "false")
+    },
     // ── render ──
     Descriptor {
         flags: &["--text", "-t"],
@@ -564,6 +571,9 @@ pub struct Load {
     /// The root of the default model files' cache; the per-user cache when not given.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_dir: Option<PathBuf>,
+    /// Kitten-TTS 2 computes its whole output head (`GGTTS_KITTEN_FULL_HEAD`).
+    #[serde(skip_serializing_if = "is_false")]
+    pub kitten_full_head: bool,
 }
 
 impl Default for Load {
@@ -578,6 +588,7 @@ impl Default for Load {
             threads: None,
             offline: false,
             cache_dir: None,
+            kitten_full_head: false,
         }
     }
 }
@@ -1108,6 +1119,9 @@ fn lacking(o: &Options, caps: &Capabilities) -> Vec<&'static str> {
     if o.render.steer.is_some() && !caps.steering {
         out.push("render.steer");
     }
+    if o.load.kitten_full_head && !caps.full_head {
+        out.push("load.kitten_full_head");
+    }
     out
 }
 
@@ -1153,8 +1167,8 @@ pub fn check(options: &Options, caps: &Capabilities) -> Result<Checked, Refusal>
 
 /// The provenance record of a render with `options` on the engine `info` describes: the engine, backend and parity;
 /// the instruction (when not empty) and the steering record, as the trace header and every report write them; the
-/// seed keys given; the speaker given; the device; the trace level (0 untraced); and the environment values the
-/// engine ignored. A steering file not yet read is recorded by its path.
+/// seed keys given; the speaker given; `kitten_full_head` when it is on; the device; the trace level (0 untraced);
+/// and the environment values the engine ignored. A steering file not yet read is recorded by its path.
 pub fn record(options: &Options, info: &EngineInfo) -> Value {
     let mut m = Map::new();
     m.insert("engine".into(), info.family.clone().into());
@@ -1185,6 +1199,9 @@ pub fn record(options: &Options, info: &EngineInfo) -> Value {
     if let Some(speaker) = &options.load.speaker {
         m.insert("speaker".into(), speaker.clone().into());
     }
+    if options.load.kitten_full_head {
+        m.insert("kitten_full_head".into(), true.into());
+    }
     m.insert(
         "device".into(),
         options.load.device.clone().unwrap_or_else(|| "cpu".into()).into(),
@@ -1209,7 +1226,7 @@ pub fn record(options: &Options, info: &EngineInfo) -> Value {
 
 /// The fields of a [`record`] that every `ggtts-render` report (timing, duration, each instrument's inputs) and its
 /// trace header carry beside the model files: what the render was asked to do differently.
-pub const REPORTED: [&str; 2] = ["instruction", "steer"];
+pub const REPORTED: [&str; 3] = ["instruction", "steer", "kitten_full_head"];
 
 /// The [`REPORTED`] fields of `record`, those it has. A report writes these, so it cannot disagree with the record.
 pub fn reported(record: &Value) -> Map<String, Value> {

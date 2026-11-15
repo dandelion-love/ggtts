@@ -101,6 +101,16 @@
             "engine"
           ]
         },
+        "kitten_full_head": {
+          "default": false,
+          "description": "Kitten-TTS 2 only: compute the whole output head, not only the rows a step can sample at the default sampler settings. A diagnostic; the bindings' engine reads GGTTS_KITTEN_FULL_HEAD=1 itself.",
+          "type": "boolean",
+          "x-ggtts-env": "GGTTS_KITTEN_FULL_HEAD",
+          "x-ggtts-flags": [
+            "--kitten-full-head"
+          ],
+          "x-ggtts-phase": "load"
+        },
         "model": {
           "description": "The model GGUF (Qwen3-TTS: the talker; Kitten-TTS 2: the LM); unset is the engine's pinned default.",
           "minLength": 1,

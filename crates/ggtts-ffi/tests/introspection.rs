@@ -59,6 +59,7 @@ fn expected(caps: &Capabilities, speakers: &[String]) -> Value {
         "devices": caps.devices,
         "hooks": {"p_stop": caps.hooks.p_stop, "logits": caps.hooks.logits},
         "step_events": caps.step_events,
+        "full_head": caps.full_head,
     })
 }
 

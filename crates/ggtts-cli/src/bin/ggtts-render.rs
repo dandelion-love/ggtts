@@ -136,7 +136,7 @@ impl StreamTiming {
     }
 }
 const USAGE: &str = "usage: ggtts-render [--model M.gguf] [--codec C.gguf] [--offline] --out x.flac \
-[--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N (capped at the CPUs allowed)] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--speaker NAME] [--instruction TEXT] \
+[--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N (capped at the CPUs allowed)] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--kitten-full-head] [--speaker NAME] [--instruction TEXT] \
 [--steer FILE [--steer-scale X] [--steer-layers LIST]] \
 [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE [--redraw N [--judge asr-qwen,model=DIR]]) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
@@ -376,8 +376,10 @@ fn load_engine(name: &str, a: &Options, model: &Path) -> Result<Box<dyn Engine>,
                 "cuda" => ggtts_kitten::backend::Device::Cuda,
                 _ => ggtts_kitten::backend::Device::Cpu,
             };
-            ggtts_kitten::engine::KittenEngine::open(model, codec, voice, threads as usize, device)
-                .map(|e| Box::new(e) as Box<dyn Engine>)
+            ggtts_kitten::engine::KittenEngine::open(model, codec, voice, threads as usize, device).map(|mut e| {
+                e.full_head = a.load.kitten_full_head;
+                Box::new(e) as Box<dyn Engine>
+            })
         }
         #[cfg(not(feature = "ggml"))]
         name if ENGINES.contains(&name) => {

@@ -102,6 +102,18 @@
     <string name="tts_no_model">ggtts 仲未有 %1$s 嘅模型檔案（代碼 %2$d）：請先用 %3$s 撳一次朗讀。</string>
     <string name="tts_error">Android 文字轉語音報告 ggtts 出錯（%1$d）。</string>
 
+    <!-- Licences and privacy -->
+    <string name="menu_licences">授權及私隱</string>
+    <string name="licences_title">授權及私隱</string>
+    <string name="privacy_heading">私隱</string>
+    <string name="privacy_statement">呢個應用程式唔會收集任何資料。佢冇使用互聯網嘅權限，所以你輸入、朗讀或者儲存嘅嘢都唔會離開呢部手機，亦唔會保存任何帳戶或者使用記錄。</string>
+    <string name="model_note_heading">聲音</string>
+    <string name="model_note">呢個應用程式冇附帶模型。聲音嚟自你加入嘅模型檔案，每個模型都有自己嘅授權：用佢嘅聲音之前，請先睇清楚模型嘅說明。</string>
+    <string name="icon_note">圖示上嘅「粵」字取自 Noto Sans HK（SIL Open Font License 1.1）。應用程式冇附帶字型檔案。</string>
+    <string name="notices_heading">聲明</string>
+    <string name="notices_intro">ggtts 同埋呢個應用程式內置嘅程式庫，以及佢哋嘅授權：</string>
+    <string name="notice_missing">呢個版本缺少 %1$s。</string>
+
     <!-- The reading notification -->
     <string name="notification_channel">朗讀</string>
     <string name="notification_starting">開始緊…</string>

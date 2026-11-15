@@ -458,12 +458,14 @@ class MainActivity : AppCompatActivity(), DemoView {
         header.menu.add(0, 4, 1, getString(R.string.menu_models_folder))
         val aboutItem = header.menu.add(0, 2, 2, getString(R.string.about_heading))
         val advItem = header.menu.add(0, 3, 3, getString(R.string.advanced))
+        header.menu.add(0, 5, 4, getString(R.string.menu_licences))
         header.setOnMenuItemClickListener { item: MenuItem ->
             when (item.itemId) {
                 1 -> pickFile()
                 2 -> aboutItem.title = getString(if (toggleSection(scroll, about)) R.string.hide_about else R.string.about_heading)
                 3 -> advItem.title = getString(if (toggleSection(scroll, adv)) R.string.hide_advanced else R.string.advanced)
                 4 -> chooseFolder()
+                5 -> showLicences()
             }
             true
         }
@@ -605,6 +607,44 @@ class MainActivity : AppCompatActivity(), DemoView {
     private fun badge(v: Voice) = when (v.language) { "Cantonese" -> "粵"; "English" -> "EN"; else -> v.language.take(2) }
 
     /** The voices as a sheet of cards from the bottom: tap one to choose it; a sample plays without a render. */
+    /**
+     * Licences and privacy: what the app collects (nothing; held to the manifest by LicencesTest), whose the voices
+     * are, where the icon's glyph comes from, and every notice the AAR carries, read from this APK (Licences).
+     */
+    private fun showLicences() {
+        val dialog = BottomSheetDialog(this)
+        val sheet = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), 0, dp(16), dp(24))
+        }
+        sheet.addView(BottomSheetDragHandleView(this))
+        sheet.addView(words(getString(R.string.licences_title), M.style.TextAppearance_Material3_TitleLarge))
+        fun section(heading: String, body: String) {
+            sheet.addView(words(heading, M.style.TextAppearance_Material3_TitleMedium).apply { setPadding(0, dp(16), 0, dp(4)) })
+            sheet.addView(words(body, M.style.TextAppearance_Material3_BodyMedium))
+        }
+        section(getString(R.string.privacy_heading), getString(R.string.privacy_statement))
+        section(getString(R.string.model_note_heading), getString(R.string.model_note) + "\n\n" + getString(R.string.icon_note))
+        section(getString(R.string.notices_heading), getString(R.string.notices_intro))
+        val apk = java.util.zip.ZipFile(applicationInfo.sourceDir)
+        val notices = apk.use { zip ->
+            val entries = zip.entries().asSequence().map { it.name }.toList()
+            Licences.notices(entries) { path -> zip.getEntry(path)?.let { e -> zip.getInputStream(e).readBytes().inputStream() } }
+        }
+        for (n in notices) {
+            sheet.addView(words(n.name, M.style.TextAppearance_Material3_TitleSmall).apply { setPadding(0, dp(12), 0, dp(4)) })
+            sheet.addView(
+                if (n.text != null) secondary(n.text, M.style.TextAppearance_Material3_BodySmall).apply { setTextIsSelectable(true) }
+                else words(getString(R.string.notice_missing, n.name), M.style.TextAppearance_Material3_BodyMedium, androidx.appcompat.R.attr.colorError),
+            )
+        }
+        Log.i(TAG, "licences: ${notices.size} notices, ${notices.count { it.text == null }} missing")
+        dialog.setContentView(NestedScrollView(this).apply { addView(sheet) })
+        dialog.behavior.state = com.google.android.material.bottomsheet.BottomSheetBehavior.STATE_EXPANDED
+        dialog.behavior.skipCollapsed = true
+        dialog.show()
+    }
+
     private fun showVoiceSheet() {
         if (found.voices.isEmpty()) return
         val dialog = BottomSheetDialog(this)

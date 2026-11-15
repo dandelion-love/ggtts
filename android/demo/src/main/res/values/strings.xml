@@ -103,6 +103,18 @@
     <string name="tts_no_model">ggtts has no model files for %1$s yet (code %2$d): press Speak with %3$s first.</string>
     <string name="tts_error">Android\'s TTS reported error %1$d from ggtts.</string>
 
+    <!-- Licences and privacy -->
+    <string name="menu_licences">Licences and privacy</string>
+    <string name="licences_title">Licences and privacy</string>
+    <string name="privacy_heading">Privacy</string>
+    <string name="privacy_statement">This app collects no data. It has no permission to use the internet, so nothing you type, read or save leaves the phone, and it keeps no account or usage record.</string>
+    <string name="model_note_heading">The voices</string>
+    <string name="model_note">No model ships with this app. The voices come from model files you add, and each model\'s licence is its own: read the model\'s card before you use its voice.</string>
+    <string name="icon_note">The icon\'s 粵 is drawn from Noto Sans HK (SIL Open Font License 1.1). No font file ships with the app.</string>
+    <string name="notices_heading">Notices</string>
+    <string name="notices_intro">ggtts and the libraries built into this app, with their licences:</string>
+    <string name="notice_missing">%1$s is missing from this build.</string>
+
     <!-- The reading notification -->
     <string name="notification_channel">Reading</string>
     <string name="notification_starting">Starting...</string>

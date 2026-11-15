@@ -509,6 +509,9 @@ pub fn render_document(
     let mut o = options::check(options, &engine.capabilities())
         .map_err(refusal_err)?
         .options;
+    // A steering file named by URL is downloaded into the per-user cache first; a binding writes no log, so it is
+    // silent, and a failure is the refusal of render.steer.
+    crate::resolve_steer(&mut o, &mut |_| {}).map_err(refusal_err)?;
     o.read_steering().map_err(refusal_err)?;
     let opts = o.render_options(engine.profile()).map_err(refusal_err)?;
     let level = o.observe.trace_level.unwrap_or(1);

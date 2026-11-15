@@ -211,7 +211,9 @@ claims what an instruction does to their speech.
 forward hook would: one F32 vector per layer in a safetensors file, named `talker.layer.<i>`, times
 `--steer-scale X` (default 1.0), at the layers `--steer-layers LIST` names (default: all in the file). A render without
 it is unchanged, any other engine refuses it, and every report and trace header records the file's sha256, the layers
-and the scale. See [docs/steering.md](docs/steering.md).
+and the scale. `--steer` also takes an `https://` URL or `hf://<owner>/<repo>/<path>`, downloaded once into the cache
+(`#sha256=<hex>` pins it).
+See [docs/steering.md](docs/steering.md).
 
 ```bash
 # Run from the extracted archive; edit these paths and DEVICE for your machine.

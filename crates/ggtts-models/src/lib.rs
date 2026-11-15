@@ -560,6 +560,267 @@ impl Cache {
     }
 }
 
+// ── files named by URL ──
+
+/// The most a file named by URL may hold. A steering preset is a few kilobytes to a few megabytes; this stops a wrong
+/// URL from filling the disk.
+pub const URL_FILE_MAX: u64 = 256 << 20;
+
+/// A file named by an `https://` URL, or by the Hugging Face Hub shorthand `hf://<owner>/<repo>[@<revision>]/<path>`
+/// (the Hub's `resolve` URL, at `main` unless a revision is given), with an optional pin: `...#sha256=<64 hex>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UrlSpec {
+    /// The URL without the pin.
+    pub url: String,
+    /// The pinned sha256, lower-case hex.
+    pub sha256: Option<String>,
+}
+
+impl UrlSpec {
+    /// `Some` when `text` names a URL: `https://...` or `hf://owner/repo[@revision]/path`, optionally ending in
+    /// `#sha256=<64 hex>`. `http://` is refused, as every download here is HTTPS; any other text is `None` (a path).
+    pub fn parse(text: &str) -> Option<Result<UrlSpec, String>> {
+        let lower = text.to_ascii_lowercase();
+        if lower.starts_with("hf://") {
+            return Some(Self::hub(text));
+        }
+        if lower.starts_with("http://") {
+            return Some(Err(format!("{text}: only https:// URLs are downloaded")));
+        }
+        if !lower.starts_with("https://") {
+            return None;
+        }
+        let (url, fragment) = match text.split_once('#') {
+            Some((u, f)) => (u, Some(f)),
+            None => (text, None),
+        };
+        let sha256 = match fragment {
+            None => None,
+            Some(f) => {
+                let hex = f.strip_prefix("sha256=").unwrap_or("");
+                if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Some(Err(format!("{text}: a pin is #sha256= and 64 hex digits, not #{f}")));
+                }
+                Some(hex.to_ascii_lowercase())
+            }
+        };
+        Some(Ok(UrlSpec {
+            url: url.to_string(),
+            sha256,
+        }))
+    }
+
+    /// `hf://owner/repo[@revision]/path[#sha256=...]` as the Hub's `resolve` URL.
+    fn hub(text: &str) -> Result<UrlSpec, String> {
+        let (body, fragment) = match text[5..].split_once('#') {
+            Some((b, f)) => (b, Some(f)),
+            None => (&text[5..], None),
+        };
+        let mut parts = body.splitn(3, '/');
+        let (owner, repo, path) = match (parts.next(), parts.next(), parts.next()) {
+            (Some(o), Some(r), Some(p)) if !o.is_empty() && !r.is_empty() && !p.is_empty() => (o, r, p),
+            _ => return Err(format!("{text}: a hub file is hf://<owner>/<repo>[@<revision>]/<path>")),
+        };
+        let (repo, revision) = repo.split_once('@').unwrap_or((repo, "main"));
+        if repo.is_empty() || revision.is_empty() {
+            return Err(format!("{text}: a hub file is hf://<owner>/<repo>[@<revision>]/<path>"));
+        }
+        let url = format!("https://huggingface.co/{owner}/{repo}/resolve/{revision}/{path}");
+        let full = match fragment {
+            Some(f) => format!("{url}#{f}"),
+            None => url,
+        };
+        match Self::parse(&full) {
+            Some(r) => r,
+            None => unreachable!("an https:// URL parses"),
+        }
+    }
+
+    /// The file name the URL ends in, or `file` when it ends in none.
+    fn file_name(&self) -> String {
+        let path = self.url.split(['?', '#']).next().unwrap_or("");
+        let name = path.rsplit('/').next().unwrap_or("");
+        if name.is_empty() || name.contains(['\\', ':']) || name == "." || name == ".." {
+            "file".to_string()
+        } else {
+            name.to_string()
+        }
+    }
+}
+
+/// A file a URL named, in the cache: where it is and its sha256.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UrlFile {
+    pub path: PathBuf,
+    pub sha256: String,
+    /// Whether this call downloaded it (false: it was already in the cache).
+    pub downloaded: bool,
+}
+
+impl Cache {
+    /// Where a URL's file lives in the cache, present or not: `urls/<sha256 of the URL>/<file name>`, so one URL is
+    /// one entry, whatever it serves.
+    pub fn path_for_url(&self, spec: &UrlSpec) -> PathBuf {
+        let key = format!("{:x}", Sha256::digest(spec.url.as_bytes()));
+        self.root.join("urls").join(key).join(spec.file_name())
+    }
+
+    /// The sha256 recorded for a cached URL file, when its sidecar names this URL and the file's size and
+    /// modification time are the ones recorded. Otherwise the file is hashed again.
+    fn url_entry(&self, spec: &UrlSpec, path: &Path) -> Result<Option<String>, String> {
+        let meta = match fs::metadata(path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        };
+        let recorded = fs::read_to_string(Self::sidecar(path))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .filter(|r| {
+                r["url"] == spec.url.as_str()
+                    && r["size"] == meta.len()
+                    && mtime_ns(&meta).is_some_and(|m| r["mtime_ns"].as_str() == Some(m.to_string().as_str()))
+            })
+            .and_then(|r| r["sha256"].as_str().map(str::to_string));
+        match recorded {
+            Some(sha) => Ok(Some(sha)),
+            None => {
+                let (_, sha) = hash_file(path)?;
+                Self::write_url_sidecar(path, spec, &sha)?;
+                Ok(Some(sha))
+            }
+        }
+    }
+
+    fn write_url_sidecar(path: &Path, spec: &UrlSpec, sha256: &str) -> Result<(), String> {
+        let meta = fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let Some(mtime) = mtime_ns(&meta) else {
+            return Ok(());
+        };
+        let record = serde_json::json!({
+            "format": "ggtts-cache-url/1", "url": spec.url, "sha256": sha256,
+            "size": meta.len(), "mtime_ns": mtime.to_string(),
+        });
+        let sidecar = Self::sidecar(path);
+        let tmp = sidecar.with_extension(format!("verified.tmp-{}", unique_suffix()));
+        fs::write(&tmp, format!("{record}\n")).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        fs::rename(&tmp, &sidecar).map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            format!("{}: {e}", sidecar.display())
+        })
+    }
+
+    /// The file `spec` names, from the cache, downloading it first when it is not there (never when `offline`: then
+    /// a missing file is an error naming the URL and where it would be). A URL is downloaded once and the cached file
+    /// reused; a pin refuses a file whose sha256 differs, cached or downloaded, and a downloaded file that differs
+    /// is removed. `say` gets what is downloaded and the sha256 either way.
+    pub fn fetch_url(
+        &self,
+        spec: &UrlSpec,
+        offline: bool,
+        fetch: &dyn Fetch,
+        say: &mut dyn FnMut(&str),
+    ) -> Result<UrlFile, String> {
+        let path = self.path_for_url(spec);
+        let pinned = |sha: &str| match &spec.sha256 {
+            Some(want) if want != sha => Err(format!("{}: sha256 {sha}, not the pinned {want}", spec.url)),
+            _ => Ok(()),
+        };
+        if let Some(sha) = self.url_entry(spec, &path)? {
+            pinned(&sha).map_err(|e| {
+                format!(
+                    "{e} (the cached copy at {}; delete it to download again)",
+                    path.display()
+                )
+            })?;
+            say(&format!("{}: sha256 {sha}, cached at {}", spec.url, path.display()));
+            return Ok(UrlFile {
+                path,
+                sha256: sha,
+                downloaded: false,
+            });
+        }
+        if offline {
+            return Err(format!(
+                "{} is not in the cache ({}) and offline mode does not download it",
+                spec.url,
+                path.display()
+            ));
+        }
+        let dir = path.parent().expect("a cache path has a directory");
+        fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let name = spec.file_name();
+        let tmp = dir.join(format!("{name}.partial-{}", unique_suffix()));
+        let partial = Partial(tmp.clone());
+        let mut out = Some(create_locked(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?);
+        say(&format!("downloading {} into {}", spec.url, path.display()));
+        let mut body = fetch
+            .open(&spec.url)
+            .map_err(|e| format!("downloading {} failed: {e}", spec.url))?;
+        let mut hasher = Sha256::new();
+        let mut buf = vec![0u8; 1 << 16];
+        let mut n = 0u64;
+        loop {
+            let read = body
+                .read(&mut buf)
+                .map_err(|e| format!("{}: download interrupted after {n} bytes: {e}", spec.url))?;
+            if read == 0 {
+                break;
+            }
+            n += read as u64;
+            if n > URL_FILE_MAX {
+                return Err(format!(
+                    "{}: more than {} bytes; refused",
+                    spec.url,
+                    human(URL_FILE_MAX)
+                ));
+            }
+            hasher.update(&buf[..read]);
+            out.as_mut()
+                .expect("open until the rename")
+                .write_all(&buf[..read])
+                .map_err(|e| format!("{}: {e}", tmp.display()))?;
+        }
+        out.as_ref()
+            .expect("open until the rename")
+            .sync_all()
+            .map_err(|e| format!("{}: {e}", tmp.display()))?;
+        let sha = format!("{:x}", hasher.finalize());
+        pinned(&sha).map_err(|e| format!("{e}; the download was refused and removed"))?;
+        if cfg!(windows) {
+            out = None;
+        }
+        let renamed = fs::rename(&tmp, &path);
+        drop(out);
+        let sha = match renamed {
+            Ok(()) => {
+                Self::write_url_sidecar(&path, spec, &sha)?;
+                sha
+            }
+            // Another process may have put its copy there first (on Windows a file in use cannot be replaced).
+            Err(e) => match self.url_entry(spec, &path)? {
+                Some(theirs) => {
+                    pinned(&theirs)?;
+                    theirs
+                }
+                None => return Err(format!("{}: {e}", path.display())),
+            },
+        };
+        drop(partial);
+        say(&format!(
+            "{}: {}, sha256 {sha}, stored at {}",
+            spec.url,
+            human(n),
+            path.display()
+        ));
+        Ok(UrlFile {
+            path,
+            sha256: sha,
+            downloaded: true,
+        })
+    }
+}
+
 /// The files a render uses: `given[i]` when it is a path, else `defaults.files[i]` from the cache, downloading what
 /// is missing first. `given` is in the order of `defaults.files`. Offline, a missing file is an error naming it and
 /// its URL. `say` receives what is about to be downloaded, from where, how much and where it goes, before it starts.

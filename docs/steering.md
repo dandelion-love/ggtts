@@ -29,11 +29,36 @@ vectors.
 
 | Flag | Meaning |
 |---|---|
-| `--steer FILE` | The steering file. Without it the render is exactly the render without steering. |
+| `--steer FILE` | The steering file: a path, or an `https://` URL (see below). Without it the render is exactly the render without steering. |
 | `--steer-scale X` | One scale for every layer, default 1.0. Each vector is multiplied by it, in f32. |
 | `--steer-layers LIST` | The layers of the file to apply, for example `23,24,25`. Default: every layer in the file. One file can then serve a comparison of layer subsets. |
 
 A different scale per layer is not a flag: write the vectors pre-scaled.
+
+### A steering file named by URL
+
+`--steer` (and `render.steer` in an options document, so every binding too) takes an `https://` URL, or the Hub
+shorthand `hf://<owner>/<repo>[@<revision>]/<path>` (the Hub's `resolve` URL, at `main` unless a revision is given),
+for example a published preset:
+
+```bash
+ggtts-render --steer https://huggingface.co/jmtl/hk-cantonese-cc0-qwen3-tts-emotion-steering/resolve/main/presets/angry.safetensors \
+  --steer-scale 0.1875 --steer-layers 21,22,23,24,25 --text "夠喇！呢個爛攤子你自己即刻執返佢！" --out angry.flac
+```
+
+* **Downloaded once.** The file goes into the same per-user cache as the model files (`GGTTS_CACHE_DIR` overrides
+  it; `load.cache_dir` in a document), at `urls/<sha256 of the URL>/<file name>`, and later runs reuse it without
+  asking the network. The log line names the URL and the file's sha256 every time, as it does for the codec.
+  ggtts-render and ggtts-book print it; the bindings write no log, so their download is silent.
+* **The shorthand.** The same preset is
+  `--steer hf://jmtl/hk-cantonese-cc0-qwen3-tts-emotion-steering/presets/angry.safetensors`; `...-steering@<commit>/...`
+  pins a revision.
+* **One URL, one entry.** A URL whose content later changes upstream (a `resolve/main` link) keeps the copy first
+  downloaded. Delete that cache entry to fetch the new one, or pin a revision in the URL.
+* **A pin.** `URL#sha256=<64 hex>` refuses a file whose sha256 differs. A download that differs is removed; a cached
+  copy that differs is refused, naming where it is.
+* **Offline.** `--offline` (`load.offline`) refuses a URL that is not cached yet, naming it and its cache path.
+* **Limits.** HTTPS only, every redirect too; at most 256 MB. A local path behaves exactly as before.
 
 ## Where it is applied
 

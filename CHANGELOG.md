@@ -13,6 +13,13 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **`--steer` takes an `https://` URL or `hf://<owner>/<repo>[@<revision>]/<path>`, downloaded once into the
+  cache.** A published steering preset renders in one command, with no separate download. The file goes into the same per-user cache as the model files
+  (`GGTTS_CACHE_DIR`, or `load.cache_dir`), at `urls/<sha256 of the URL>/<file name>`, and later runs reuse it.
+  `URL#sha256=<hex>` pins it, refusing a file whose sha256 differs, and the log names the sha256 either way.
+  `--offline` refuses a URL that is not cached yet, naming it. It is the options table's `render.steer`, so
+  ggtts-book and every binding take the URL too. A local path is unchanged.
+
 - **A stream through an options document is levelled by default, as `ggtts-render --stream` is.** The C ABI's
   `ggtts_render_opts` with a callback, Python's `render_stream` and `stream` with `options=`, and Kotlin's
   `renderStream` with `options` now hand each piece levelled by one gain from the first 5 s of audio

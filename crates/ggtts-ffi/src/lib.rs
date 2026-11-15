@@ -498,7 +498,6 @@ fn load_options(o: &Options, default_files: bool, document: bool) -> Result<u64,
     Ok(register(o, e))
 }
 
-/// [`load_options`]' first half: the engine an options value names, opened, not yet registered.
 /// The engine a load document names, with the document checked whole against that engine's capabilities: the one
 /// check a document load makes before anything is read or opened. [`open_options`] and the Kotlin binding's test
 /// seam (`kotlin::load_over`) both call it, so the two cannot drift apart.
@@ -510,6 +509,7 @@ pub(crate) fn checked_document_engine(o: &Options) -> Result<String, Fail> {
     Ok(engine)
 }
 
+/// [`load_options`]' first half: the engine an options value names, opened, not yet registered.
 fn open_options(o: &Options, default_files: bool, document: bool) -> Result<Held, Fail> {
     let path = |p: &Option<PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned());
     let (model, codec, voice) = (path(&o.load.model), path(&o.load.codec), path(&o.load.voice));

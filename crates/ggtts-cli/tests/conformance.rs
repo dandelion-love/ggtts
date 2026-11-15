@@ -654,6 +654,14 @@ struct Run {
     dir: PathBuf,
 }
 
+// Tests in this file run at the same time and call the same probes. What they share, and why it is safe:
+// - scratch folders: one per call (`unique_dir`), removed only by the call that made it;
+// - C-ABI and Kotlin handles: one per probe, held by `Freed`, so a panic leaves none in the registry. The
+//   registry and its per-handle defaults and load cache are keyed by handle id, so separate handles never meet;
+// - the last error and the refused key: thread-local;
+// - the process environment: never written here. A probe that needs an environment value must pass it to the
+//   child process (`Command::env`), never `std::env::set_var`.
+
 /// A scratch folder path unique to this call: the process id, a counter and `name`. Tests run at the same time
 /// (several of them call the same probes) so a folder per process would be shared, and one probe's clean-up could
 /// remove another's files.

@@ -175,3 +175,96 @@ fn a_quiet_hook_changes_no_token_and_a_drawing_hook_is_red_on_the_tiny_model() {
     }
     assert!(failures.is_empty(), "the no-change check failed on {failures:?}");
 }
+
+// ── the default speaker (#400) ──
+
+/// AC1's check: an engine loaded with no speaker named renders with `want`, the model's default, and its codes equal
+/// the same request with `want` named. `Err` says what failed, so the planted removal can be shown to fail it.
+fn default_speaker_check(
+    unnamed: Result<Qwen3Tts, ggtts_core::engine::EngineError>,
+    named: impl FnOnce() -> Qwen3Tts,
+    want: &str,
+) -> Result<(), String> {
+    let mut unnamed = unnamed.map_err(|e| format!("no speaker named: the load failed: {}", e.0))?;
+    if unnamed.speaker() != want {
+        return Err(format!(
+            "no speaker named: renders with {:?}, not {want:?}",
+            unnamed.speaker()
+        ));
+    }
+    let req = ChunkRequest {
+        text: "今日天氣好好。",
+        seed: SEED,
+        chunk: 0,
+        draw: 0,
+        instruction: None,
+        steer: None,
+    };
+    let a = unnamed.generate(&req).map_err(|e| e.0)?;
+    drop(unnamed);
+    let mut named = named();
+    let b = named.generate(&req).map_err(|e| e.0)?;
+    if a.codes != b.codes {
+        return Err(format!("no speaker named: the codes differ from {want:?} named"));
+    }
+    Ok(())
+}
+
+fn voice(speaker: &str) -> Voice {
+    Voice {
+        speaker: speaker.into(),
+        max_frames: FRAMES,
+        ..Default::default()
+    }
+}
+
+/// AC1: with no speaker named, the engine resolves the model's default and renders with it. The tiny model has the
+/// legacy `hk_cantonese_speaker`; with only `hk_voice_*` speakers (planted, as the released models name theirs) the
+/// default is the first alphabetically, `hk_voice_343`. One engine is loaded at a time.
+#[test]
+#[cfg(feature = "plant")]
+#[ignore = "needs GGTTS_TINY_TALKER and GGTTS_CODEC (scripts/tiny_fixture.sh)"]
+fn with_no_speaker_named_the_engine_renders_with_the_models_default() {
+    let (talker, codec) = (talker_path(), codec_path());
+    default_speaker_check(
+        Qwen3Tts::load(&talker, &codec, 4, voice("")),
+        || Qwen3Tts::load(&talker, &codec, 4, voice("hk_cantonese_speaker")).unwrap(),
+        "hk_cantonese_speaker",
+    )
+    .unwrap();
+    let planted = |speaker: &str| Qwen3Tts::load_planted(&talker, &codec, 4, voice(speaker), Plant::VoiceSpeakersOnly);
+    default_speaker_check(planted(""), || planted("hk_voice_343").unwrap(), "hk_voice_343").unwrap();
+}
+
+/// AC2: a model with no named speakers, and no speaker given, is refused by the engine at load, in its own words.
+#[test]
+#[cfg(feature = "plant")]
+#[ignore = "needs GGTTS_TINY_TALKER and GGTTS_CODEC (scripts/tiny_fixture.sh)"]
+fn with_no_speaker_named_a_model_with_none_is_refused() {
+    let (talker, codec) = (talker_path(), codec_path());
+    let e = match Qwen3Tts::load_planted(&talker, &codec, 4, voice(""), Plant::NoSpeakers) {
+        Ok(_) => panic!("a model with no named speakers loaded with no speaker"),
+        Err(e) => e.0,
+    };
+    assert_eq!(
+        e,
+        "the talker has no named speakers, so there is no default speaker to use"
+    );
+}
+
+/// AC3: with the resolution removed from `with_talker` (planted), AC1's check fails: the unset speaker is looked up
+/// as it is and the load is refused. So the check sees the removal.
+#[test]
+#[cfg(feature = "plant")]
+#[ignore = "needs GGTTS_TINY_TALKER and GGTTS_CODEC (scripts/tiny_fixture.sh)"]
+fn the_default_speaker_check_fails_with_the_resolution_removed() {
+    let (talker, codec) = (talker_path(), codec_path());
+    let removed = Qwen3Tts::load_planted(&talker, &codec, 4, voice(""), Plant::NoDefaultSpeaker);
+    let e = default_speaker_check(
+        removed,
+        || Qwen3Tts::load(&talker, &codec, 4, voice("hk_cantonese_speaker")).unwrap(),
+        "hk_cantonese_speaker",
+    )
+    .unwrap_err();
+    assert!(e.contains("no speaker named: the load failed"), "{e}");
+}

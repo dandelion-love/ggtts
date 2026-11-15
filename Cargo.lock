@@ -414,6 +414,7 @@ dependencies = [
  "ggtts-kitten",
  "ggtts-load",
  "ggtts-models",
+ "ggtts-py",
  "ggtts-qwen3-tts",
  "jsonschema",
  "serde_json",
@@ -524,6 +525,16 @@ dependencies = [
  "serde_json",
  "sha2",
  "ureq",
+]
+
+[[package]]
+name = "ggtts-py"
+version = "0.0.1"
+dependencies = [
+ "ggtts-core",
+ "ggtts-load",
+ "ggtts-models",
+ "ggtts-qwen3-tts",
 ]
 
 [[package]]

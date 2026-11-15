@@ -7,18 +7,26 @@
         audio.write_flac("out.flac")
         samples = audio.samples               # float32: a numpy array when numpy is installed
 
-Errors are ``GgttsError``, with ``code`` (one of the ``ERR_*`` constants, the C-ABI's codes) and ``message``. A panic
-inside ggtts never crosses into Python: it is a ``GgttsError`` with ``ERR_PANIC``. The GIL is released while an
-engine loads and renders.
+Every option of ggtts's options table reaches Python through ``options``: a dict (or a JSON string) shaped as the
+C-ABI's options documents, given to ``load`` (the ``load`` section, and ``render`` defaults) and to each render::
+
+    with ggtts.load("qwen3-tts", options={"render": {"edge_s": 0.5}}) as tts:
+        audio = tts.render("今日天氣好好。", options={"render": {"steer": "calm.safetensors"}})
+
+Errors are ``GgttsError``, with ``code`` (one of the ``ERR_*`` constants, the C-ABI's codes), ``message`` and
+``key``. A refused option is an ``OptionError``, which is a ``GgttsError`` and a ``ValueError``, with ``key`` the
+option's schema key (``render.steer``). A panic inside ggtts never crosses into Python: it is a ``GgttsError`` with
+``ERR_PANIC``. The GIL is released while an engine loads and renders.
 """
 
 from __future__ import annotations
 
 import array
+import json
 import os
 import queue
 import threading
-from typing import Callable, Iterator, List, Optional, Union
+from typing import Any, Callable, Iterator, List, Mapping, Optional, Union
 
 from . import _native
 from ._native import (
@@ -42,13 +50,53 @@ except ImportError:  # pragma: no cover - exercised by the fallback test
     _np = None
 
 __all__ = [
-    "Audio", "TTS", "GgttsError", "load", "write_flac", "DEFAULT_SEED", "ENGINES", "VERSION", "COMMIT",
+    "Audio", "TTS", "GgttsError", "OptionError", "load", "options_schema", "write_flac", "DEFAULT_SEED", "ENGINES", "VERSION", "COMMIT",
     "OK", "ERR_ARG", "ERR_HANDLE", "ERR_ENGINE", "ERR_PANIC", "ERR_STOPPED", "ERR_BUSY",
 ]
 
 __version__ = VERSION
 
 PathLike = Union[str, "os.PathLike[str]"]
+#: An options document: a dict shaped as the C-ABI's (``{"render": {"edge_s": 0.5}}``), or the same as a JSON string.
+Options = Union[Mapping[str, Any], str]
+
+
+class OptionError(GgttsError, ValueError):
+    """An option refused: an unknown key, a value of the wrong type, an option the engine or this binding does not
+    take, or one given both as an argument and in ``options``. ``key`` is the option's schema key (``render.steer``),
+    or None when the whole document is refused (not JSON, not an object)."""
+
+
+def _document(options: Optional[Options]) -> Optional[str]:
+    """An options document as the JSON string the library reads."""
+    if options is None or isinstance(options, str):
+        return options
+    if isinstance(options, Mapping):
+        return json.dumps(options)
+    raise TypeError(f"options must be a dict or a JSON string, not {type(options).__name__}")
+
+
+def _refused(e: GgttsError, options: Optional[str]) -> GgttsError:
+    """``e`` as an ``OptionError`` when it refuses an option: the library recorded the option's key, or the document
+    given was refused whole (not JSON, not an object: the message names ``$``). Any other error, such as empty text
+    beside a document, is ``e`` as it is, as it would be without one."""
+    key = getattr(e, "key", None)
+    whole = options is not None and getattr(e, "code", None) == ERR_ARG and getattr(e, "message", "").startswith("$: ")
+    if key is None and not whole:
+        return e
+    err = OptionError(*e.args)
+    err.code, err.message, err.key = e.code, e.message, key
+    return err
+
+
+def _call(f, doc: Optional[str], /, *args, **kwargs):
+    try:
+        return f(*args, **kwargs)
+    except GgttsError as e:
+        refused = _refused(e, doc)
+        if refused is e:
+            raise
+        raise refused from None
 
 
 def _path(p: Optional[PathLike]) -> Optional[str]:
@@ -137,23 +185,46 @@ class TTS:
         """Each model file: ``role``, ``path``, and ``source`` (``path`` if given, ``cache`` for the default)."""
         return [{"role": r, "path": p, "source": s} for r, p, s in self._engine.model_files]
 
-    def render(self, text: str, seed: int = DEFAULT_SEED) -> Audio:
-        """Render ``text`` (one paragraph per non-empty line) at ``seed``, as the C-ABI's ``ggtts_render`` does."""
-        pcm, rate = self._engine.render(text, seed)
+    def capabilities(self) -> dict:
+        """What the loaded engine supports, as the library states it (the C-ABI's ``ggtts_capabilities``, format
+        ``ggtts-capabilities/1``): ``family``, ``instruction`` (and ``no_instruction_why``), ``steering``,
+        ``speakers`` and ``speaker_names`` (the model's speakers), ``devices``, ``hooks`` and ``step_events``."""
+        return json.loads(self._engine.capabilities())
+
+    def render(self, text: str, seed: Optional[int] = None, options: Optional[Options] = None) -> Audio:
+        """Render ``text`` (one paragraph per non-empty line), as the C-ABI's ``ggtts_render`` does.
+
+        ``seed`` is the salt of the story seed every chunk's sampler seed is derived from (the document's
+        ``render.seed_salt``). Without a document, None is ``DEFAULT_SEED``; with one, the document's salt, which the
+        C library leaves empty when nothing gives it. ``options`` is a render
+        document (``ggtts_render_opts``'s), laid over the load's ``render`` defaults: steering, an edge, redraws, a
+        trace. A load option in it, or one this binding does not take, is an ``OptionError``.
+        """
+        doc = _document(options)
+        pcm, rate = _call(self._engine.render, doc, text, seed, doc)
         return Audio(pcm, rate)
 
-    def render_stream(self, text: str, on_chunk: Callable[[Audio], Optional[bool]], seed: int = DEFAULT_SEED) -> bool:
+    def render_stream(
+        self,
+        text: str,
+        on_chunk: Callable[[Audio], Optional[bool]],
+        seed: Optional[int] = None,
+        options: Optional[Options] = None,
+    ) -> bool:
         """Render ``text``, calling ``on_chunk(audio)`` with each chunk, in order, as soon as it is ready.
 
         ``on_chunk`` returning ``False`` stops the render; an exception it raises stops it and is raised here.
         Returns True when the whole text was rendered, False when stopped. The chunks are the render's own samples
         before its final level step, so their concatenation has the render's length, not its exact values.
+        ``seed`` and ``options`` are as ``render``'s.
         """
-        return self._engine.render_stream(text, seed, lambda pcm, rate: on_chunk(Audio(pcm, rate)))
+        doc = _document(options)
+        return _call(self._engine.render_stream, doc, text, lambda pcm, rate: on_chunk(Audio(pcm, rate)), seed, doc)
 
-    def stream(self, text: str, seed: int = DEFAULT_SEED) -> Iterator[Audio]:
+    def stream(self, text: str, seed: Optional[int] = None, options: Optional[Options] = None) -> Iterator[Audio]:
         """Iterate over the chunks of a render, in order. Stop early with ``break`` (or ``close()`` the generator):
-        the render stops after the chunk it is generating."""
+        the render stops after the chunk it is generating. ``seed`` and ``options`` are as ``render``'s."""
+        doc = _document(options)
         chunks: "queue.Queue" = queue.Queue(maxsize=1)
         stop = threading.Event()
         done = object()
@@ -170,7 +241,9 @@ class TTS:
 
         def run():
             try:
-                self._engine.render_stream(text, seed, lambda pcm, rate: put(Audio(pcm, rate)))
+                self._engine.render_stream(text, lambda pcm, rate: put(Audio(pcm, rate)), seed, doc)
+            except GgttsError as e:
+                failure.append(_refused(e, doc))
             except BaseException as e:  # noqa: BLE001 - handed to the consumer
                 failure.append(e)
             finally:
@@ -206,20 +279,23 @@ class TTS:
 
 
 def load(
-    engine: str = "qwen3-tts",
+    engine: Optional[str] = None,
     model: Optional[PathLike] = None,
     codec: Optional[PathLike] = None,
     voice: Optional[PathLike] = None,
     speaker: Optional[str] = None,
     instruction: Optional[str] = None,
-    device: str = "cpu",
+    device: Optional[str] = None,
     threads: Optional[int] = None,
-    offline: bool = False,
+    offline: Optional[bool] = None,
     progress: Optional[Callable[[str], None]] = None,
+    options: Optional[Options] = None,
 ) -> TTS:
-    """Load an engine, with the settings of the C-ABI's ``ggtts_load_with``.
+    """Load an engine, with the settings of the C-ABI's ``ggtts_load_with``, or an options document.
 
-    engine:      ``qwen3-tts`` (default), ``kitten-tts-2``, or ``fake`` (a test engine that needs no files).
+    engine:      ``qwen3-tts``, ``kitten-tts-2``, or ``fake`` (a test engine that needs no files). Without
+                 ``options``, None is ``qwen3-tts``. With ``options``, None is the document's ``load.engine``, whose
+                 default is ``"auto"``: the model's GGUF architecture, or ``qwen3-tts`` with no model.
     model:       the model GGUF (Qwen3-TTS: the talker; Kitten-TTS 2: the LM). For Qwen3-TTS, a model or codec not
                  given is the pinned default model's, from the per-user cache (``GGTTS_CACHE_DIR`` overrides where),
                  downloaded and verified first unless ``offline``. With the default model and no speaker, the speaker
@@ -228,14 +304,22 @@ def load(
     voice:       Kitten-TTS 2's reference voice JSON (``ggtts-kitten prepare`` writes it).
     speaker:     a Qwen3-TTS speaker name (case is ignored). An unknown one is refused with the model's speakers.
     instruction: a Qwen3-TTS style instruction ("Speak slowly and softly."); a checkpoint that takes none refuses it.
-    device:      ``cpu`` or ``cuda`` (``cuda`` needs a build with CUDA).
+    device:      ``cpu`` (the default) or ``cuda`` (``cuda`` needs a build with CUDA).
     threads:     CPU threads; None for 4.
     offline:     never download: a default model file missing from the cache is an error naming it.
     progress:    called with each download message; by default they go to stderr.
+    options:     a load document, the C-ABI's ``ggtts_load_opts`` document as a dict or JSON string: the ``load``
+                 section (every argument above has its key there, and ``cache_dir`` too) and ``render`` defaults
+                 every render on the engine starts from. The whole document is checked against the engine before
+                 anything is read.
 
-    A setting the engine does not take is refused (``ERR_ARG``), never ignored; an empty string is no setting.
+    A setting the engine does not take is refused (``ERR_ARG``), never ignored; an empty string is no setting. A value
+    given both as an argument and in ``options`` is an ``OptionError`` naming both.
     """
-    native = _native.load(
+    doc = _document(options)
+    native = _call(
+        _native.load,
+        doc,
         engine,
         model=_path(model),
         codec=_path(codec),
@@ -245,9 +329,16 @@ def load(
         device=device,
         threads=threads,
         offline=offline,
+        options=doc,
         progress=progress,
     )
     return TTS(native)
+
+
+def options_schema() -> dict:
+    """The JSON Schema of an options document, as the library states it (the C-ABI's ``ggtts_options_schema``): every
+    option ``options=`` may give, with its type, default and phase. No schema file ships with the package."""
+    return json.loads(_native.options_schema())
 
 
 def write_flac(path: PathLike, samples, sample_rate: Optional[int] = None) -> str:

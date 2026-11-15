@@ -386,11 +386,13 @@ unless `"offline": true`, which is the struct's `allow_download = 0`.
 `ggtts_render_opts(handle, text, json, on_piece, user, &pcm, &len, &rate)` renders `text` with a render document,
 laid over the load's defaults. NULL is the empty document.
 
-* **A whole read** has no `output.stream`: `on_piece` must be NULL, and `pcm`, `len` and `rate` get the samples, as
+* **A whole read** has `on_piece` NULL and no `output.stream`: `pcm`, `len` and `rate` get the samples, as
   `ggtts_render` gives them.
-* **A stream** is `{"output": {"stream": "raw"}}`: each kept chunk goes to `on_piece` before the level step, as
-  `ggtts_render_stream` hands it. `on_piece` is required, and `pcm`, `len` and `rate` are all NULL or all set (then
-  they also get the whole read).
+* **A stream** has `on_piece` set. Each kept chunk goes to it, levelled as `ggtts-render --stream` levels it: held until the first `output.stream_level_seconds` of audio (5 s unless given) set one gain, then each piece at that gain. Use it for listening.
+  `{"output": {"stream": "raw"}}` (or `"stream_raw": true`) hands each piece over before the level step instead, as
+  `ggtts_render_stream` does; `"levelled"` names the default. `pcm`, `len` and `rate` are all NULL or all set (then
+  they also get the whole read). **`ggtts_render_stream` itself is unchanged**: it streams the pieces before the
+  level step, as it always has, because an exported function never changes its behaviour.
 * **What a render document takes:**
   * `render`: `seed_salt` (`ggtts_render`'s seed, as a string), `instruction`, `steer` with `steer_scale` and
     `steer_layers`, `redraw` and `edge_s`.
@@ -400,11 +402,10 @@ laid over the load's defaults. NULL is the empty document.
   * `render.text`, `render.story` and `render.seed`: the text is the argument, and the seed is `seed_salt`;
   * `render.measure_timings`, the reports and logging: the C ABI returns PCM, not timings or files;
   * `output.out` and `output.stream_format`;
-  * the book options.
-  * A levelled stream (`"levelled"`, `stream_raw` and `stream_level_seconds`) is not taken yet.
+  * the book options;
+  * `output.stream_level_seconds` on a raw stream, which has no level step to hold.
 
-An unknown key, a value of the wrong type, a malformed document, a stream with no `on_piece`, a whole read with one,
-and an option the engine does not support (steering on Kitten-TTS 2, say) are each `GGTTS_ERR_ARG`, refused before
+An unknown key, a value of the wrong type, a malformed document, `output.stream` with no `on_piece`, and an option the engine does not support (steering on Kitten-TTS 2, say) are each `GGTTS_ERR_ARG`, refused before
 anything is rendered, and the message names the option.
 
 <!-- example: examples/c/options.c -->
@@ -461,11 +462,18 @@ int main(int argc, char **argv) {
     ok &= code == GGTTS_OK && len > 0;
     ggtts_pcm_free(pcm, len);
 
-    /* A stream: output.stream "raw" hands each kept chunk to on_piece before the level step; pcm may be NULL. */
+    /* A stream: on_piece gets each kept chunk, levelled as ggtts-render --stream levels it (one gain from the first
+     * 5 s); pcm may be NULL. This is the one to play. */
     struct counter c = {0};
-    code = ggtts_render_opts(tts, text, "{\"output\": {\"stream\": \"raw\"}}", count, &c, NULL, NULL, NULL);
-    printf("stream: %d, %d pieces\n", (int)code, c.pieces);
+    code = ggtts_render_opts(tts, text, NULL, count, &c, NULL, NULL, NULL);
+    printf("levelled stream: %d, %d pieces\n", (int)code, c.pieces);
     ok &= code == GGTTS_OK && c.pieces > 0;
+
+    /* output.stream "raw" hands each piece over before the level step instead, as ggtts_render_stream does. */
+    struct counter raw = {0};
+    code = ggtts_render_opts(tts, text, "{\"output\": {\"stream\": \"raw\"}}", count, &raw, NULL, NULL, NULL);
+    printf("raw stream: %d, %d pieces\n", (int)code, raw.pieces);
+    ok &= code == GGTTS_OK && raw.pieces == c.pieces;
 
     /* Refused before anything is rendered, each GGTTS_ERR_ARG, the message naming the option. */
     const char *refused[] = {

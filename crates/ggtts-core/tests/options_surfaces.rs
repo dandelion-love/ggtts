@@ -92,7 +92,8 @@ fn every_exemption_is_still_on_its_surface() {
 fn binding_load_arguments_are_load_options_except_the_instruction() {
     let py = read("crates/ggtts-py/python/ggtts/__init__.py");
     let load = names(between(&py, "\ndef load(", ") -> TTS:"));
-    for name in load.iter().filter(|n| *n != "progress") {
+    // `progress` is a callback and `options` the options document itself, not one option.
+    for name in load.iter().filter(|n| *n != "progress" && *n != "options") {
         let d = TABLE.iter().find(|d| d.python.contains(&name.as_str())).unwrap();
         let expect = if name == "instruction" { "render" } else { "load" };
         assert_eq!(d.phase.name(), expect, "python {name}");

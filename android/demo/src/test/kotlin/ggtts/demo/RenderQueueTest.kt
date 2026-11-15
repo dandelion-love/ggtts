@@ -126,6 +126,34 @@ class RenderQueueTest {
         assertEquals(1, sink.saved.size)
     }
 
+    /**
+     * AC3's other half. Plant: a save that fails (storage full) left RENDERING or retried forever. The failure comes
+     * after the render, from the sink; the entry is FAILED with that reason, nothing is counted as saved, and the queue
+     * moves on. (That MediaStore removes the pending item when its write throws is MusicFolder.save, read, not run.)
+     */
+    @Test
+    fun aSaveThatFailsForStorageFailsTheEntryWithItsReasonAndTheQueueMovesOn() {
+        val q = RenderQueue(Store())
+        q.add(request, "storage full")
+        q.add(request, "fine")
+        var first = true
+        val saved = mutableListOf<String>()
+        val sink = ReadSink { name, _, _ ->
+            if (first) { first = false; throw java.io.IOException("No space left on device") }
+            saved += name
+            "content://media/1"
+        }
+        val w = QueueWorker(q, EngineCache(TtsBinding { Engine(2) }), sink, seed = 1, now = { 1_700_000_000_000L })
+        val o = w.step()
+        assertTrue(o.toString(), o is QueueWorker.Outcome.Failed)
+        assertEquals(RenderQueue.State.FAILED, q.all[0].state)
+        assertTrue(q.all[0].note, "No space left on device" in q.all[0].note)
+        assertTrue(saved.isEmpty())
+        assertTrue(w.step() is QueueWorker.Outcome.Done)
+        assertEquals(1, saved.size)
+        assertEquals(RenderQueue.State.DONE, q.all[1].state)
+    }
+
     /** Plant: a stop that saves what was rendered so far. A stopped render saves nothing, and its entry waits. */
     @Test
     fun aStopSavesNothingAndTheEntryWaits() {

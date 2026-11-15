@@ -98,13 +98,21 @@ object Voices {
         return Found(voices, incomplete)
     }
 
-    /** Reads what each listed file is. A file that cannot be read is [Kind.OTHER]. */
-    fun scan(dir: File, names: List<String>): List<ModelFile> = names.map { name ->
-        val f = File(dir, name)
+    /** Reads what each listed file in [dir] is. A file that cannot be read is [Kind.OTHER]. */
+    fun scan(dir: File, names: List<String>): List<ModelFile> = scan(names) { File(dir, it).inputStream() }
+
+    /**
+     * Reads what each listed file is, opening each name with [open]: the app's directory and the picked folder
+     * (Storage's [Catalog]) are read the same way. A file that cannot be read is [Kind.OTHER].
+     */
+    fun scan(names: List<String>, open: (String) -> InputStream): List<ModelFile> = names.map { name ->
         runCatching {
             when {
-                name.endsWith(".gguf", true) -> f.inputStream().use { GgufInfo.read(it) }.toModelFile(name)
-                name.endsWith(".json", true) -> ModelFile(name, if (isKittenVoice(f.readText())) Kind.KITTEN_VOICE else Kind.OTHER)
+                name.endsWith(".gguf", true) -> open(name).use { GgufInfo.read(it) }.toModelFile(name)
+                name.endsWith(".json", true) -> {
+                    val text = open(name).use { it.readBytes().toString(Charsets.UTF_8) }
+                    ModelFile(name, if (isKittenVoice(text)) Kind.KITTEN_VOICE else Kind.OTHER)
+                }
                 else -> ModelFile(name, Kind.OTHER)
             }
         }.getOrElse { ModelFile(name, Kind.OTHER) }

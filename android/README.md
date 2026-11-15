@@ -197,6 +197,14 @@ allows either 6 hours a day per app: at 7 to 13 s of rendering per second of spe
 speech a day. When that time runs out the render in progress stops cleanly and waits, and the queue resumes when the
 app is next opened. Both service types are permissions Android grants at install; nothing is asked.
 
+## Saved reads
+
+"Saved reads" in the ⋮ menu lists the reads in `Music/ggtts/`, newest first: each with its title, length and date,
+and Play, Share and Delete. The title and length come from the file itself (a FLAC's TITLE tag and STREAMINFO, a
+WAV's header), so the list is right after a restart. It lists this install's reads with no permission. Reads saved
+before the app was reinstalled are no longer the app's to Android's media library; choosing the `Music/ggtts` folder
+once with the system's folder picker (the list offers it) lists and deletes those too, still with no permission.
+
 ## Leaving the screen during a read
 
 A read belongs to the app, not its screen. Leave the screen and the read goes on, in a foreground service. Its

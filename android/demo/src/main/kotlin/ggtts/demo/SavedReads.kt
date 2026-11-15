@@ -70,9 +70,9 @@ object SavedReads {
     }
 
     /** The row's second line: its length and when it was saved. */
-    fun describe(r: SavedRead, zone: TimeZone = TimeZone.getDefault()): String {
+    fun describe(r: SavedRead, zone: TimeZone = TimeZone.getDefault(), locale: Locale = Locale.getDefault()): String {
         val length = r.seconds?.let { if (it < 60) "%.1f s".format(it) else "%d min %02d s".format((it / 60).toInt(), (it % 60).toInt()) } ?: "length unknown"
-        val date = SimpleDateFormat("d MMM yyyy HH:mm", Locale.ROOT).apply { timeZone = zone }.format(Date(r.dateMillis))
+        val date = SimpleDateFormat("d MMM yyyy HH:mm", locale).apply { timeZone = zone }.format(Date(r.dateMillis))
         return "$length · $date"
     }
 

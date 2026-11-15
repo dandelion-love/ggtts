@@ -71,8 +71,8 @@ class SavedReadsTest {
     @Test
     fun aRowSaysItsLengthAndWhenItWasSaved() {
         val r = SavedRead("u", "ggtts-a.flac", "t", 9.56, 1_763_200_000_000L, true)
-        assertEquals("9.6 s · 15 Nov 2025 09:46", SavedReads.describe(r, TimeZone.getTimeZone("UTC")))
-        assertEquals("2 min 05 s · 15 Nov 2025 09:46", SavedReads.describe(r.copy(seconds = 125.0), TimeZone.getTimeZone("UTC")))
-        assertTrue(SavedReads.describe(r.copy(seconds = null), TimeZone.getTimeZone("UTC")).startsWith("length unknown"))
+        assertEquals("9.6 s · 15 Nov 2025 09:46", SavedReads.describe(r, TimeZone.getTimeZone("UTC"), java.util.Locale.UK))
+        assertEquals("2 min 05 s · 15 Nov 2025 09:46", SavedReads.describe(r.copy(seconds = 125.0), TimeZone.getTimeZone("UTC"), java.util.Locale.UK))
+        assertTrue(SavedReads.describe(r.copy(seconds = null), TimeZone.getTimeZone("UTC"), java.util.Locale.UK).startsWith("length unknown"))
     }
 }

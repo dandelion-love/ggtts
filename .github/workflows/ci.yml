@@ -135,6 +135,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --features ggtts-cli/ggml,ggtts-qwen3-tts/plant,ggtts-ffi/ggml,ggtts-ffi/jni,ggtts-ffi/plant --locked -- -D warnings
       - name: Test with the engines (the identity checks need model files and stay opt-in, so they report ignored)
         run: cargo test --workspace --features ggtts-cli/ggml --locked -- --nocapture
+      - name: The C ABI's tests with its engines (the options-document tests behind ggtts-ffi's ggml feature)
+        run: cargo test --locked -p ggtts-ffi --features ggml -- --nocapture
       - name: ggml links and computes (one ggml_add through the bindings)
         run: cargo test --locked -p ggtts-ggml-sys --features ggml tests::links_and_runs_one_op -- --exact
       - name: ggtts-render refuses a file that is not a model

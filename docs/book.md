@@ -223,7 +223,54 @@ no other finished chunk is.
 ggtts-book render BOOK.epub --out DIR [--engine qwen3-tts|kitten-tts-2|fake] [--seed-root R]
                  [--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME]
                  [--device cpu|cuda] [--threads N] [--offline]
+                 [--instruction TEXT] [--steer FILE [--steer-scale X] [--steer-layers L,L]]
+                 [--trace FILE [--trace-level 1|2]] [--redraw N [--judge asr-qwen,model=DIR[,device=cpu|cuda][,min_run=N]]] [--include-skippable]
+                 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE.yaml] [--require NAME]...
+                 [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort]
+                 [--instrument-timeout S] [--report DIR] [--run ID]
 ```
+
+**The flags are the shared options table's** (`ggtts_core::options`, described in `docs/options.md`), read by its
+parser, so each means in a book what it means in `ggtts-render`. A book takes the load section (the engine and its
+files), the style instruction (`--instruction`), steering (`--steer` and its scale and layers), the trace (`--trace`,
+`--trace-level`), the instruments, `--out`, and the book's own `--seed-root` and `--include-skippable`. Any other
+option of the table is refused by its flag and schema name with the reason, before anything is read or written:
+`--text` and `--story` (a book renders its chapters), `--seed` (a book's seeds come from `--seed-root`), `--stream`
+and its settings (a book is one FLAC per chapter), the timing and duration reports and the log settings. An option a
+book does not
+take that is set only in the environment (`GGTTS_LOG_LEVEL`, for example) is ambient and is dropped, not refused.
+
+The instruction and the steering reach every chunk's request, as they reach a story's. An engine that cannot take
+one refuses the request (the fake engine and Kitten-TTS 2 refuse steering, the fake engine an instruction), so the
+render stops at the first chunk with the engine's reason and no chunk file is written. A steering file that does not
+read is refused before the engine is loaded. `--trace` writes one ggtts-trace/2 stream for the chunks this run renders
+(a header naming the engine, instruction and steering, then each chunk's events); chunks taken from an earlier run
+are not in it. Chunk numbers in it restart at each chapter, and it replays with `ggtts_core::trace::replay`.
+
+**Instruments** are `ggtts-render`'s, run by the same library call (`ggtts_instruments::options`) on each chapter
+FLAC, after every chapter is rendered and the engine is released. A chapter is measured unless its report directory
+holds a `measured.json` from an earlier run with the same chapter FLAC (by SHA-256) and the same instrument settings:
+a resumed book measures the chapters an earlier, interrupted run never measured, and a re-run with other instruments
+measures every chapter again. Each chapter is one render of the run, named by its directory (`NNN-<chapter id>`), with
+its report beside its FLAC
+(`NNN-<chapter id>.report/`: the envelopes, `report.json`, `.md`, `.html` and `run.log`), or in
+`--report DIR/NNN-<chapter id>/`. The run is `--run`, else `book-<unix seconds>`, one for the whole book. The
+render report gives each written chapter an `instruments` entry: its report directory, `measured` (`this run`,
+`earlier run` or `no`, with the reason), each instrument's status, and why the measurement is incomplete. The book
+gets a `measurement` of `complete` or `incomplete`. A `--require`d instrument that is not ok on any chapter, or a
+chapter left unmeasured while an instrument is required, makes the measurement incomplete and the exit 3, with every
+chapter FLAC written, as for `ggtts-render`. An unknown instrument is refused before the engine loads.
+
+* **Reference text.** An instrument that compares the audio with a reference (`asr-qwen`, `asr-sensevoice`) is given
+  each chapter's own text: the book writes it to `reference.txt` in the chapter's report directory and passes it as
+  `arg.reference_file`. A `reference_file` given on the command line or in the instruments file is refused in a book,
+  before anything is rendered: one file cannot be every chapter's text.
+* **`--on-instrument-error abort`** skips the rest of the instruments on the chapter where one failed, and every
+  chapter after it: they are reported `measured: no`, and are measured by the next run.
+* **Timeouts are per instrument, per chapter.** `--instrument-timeout` (or an entry's `timeout_s`; 60 s when
+  unset) bounds one instrument on one chapter FLAC. An ASR instrument on a long chapter needs more: set it.
+* **No event stream.** The book's trace covers every chapter, so no chapter is handed one: an instrument that needs
+  it is recorded as `skipped` with that reason (#341 would give each chapter its own).
 
 The engine is `qwen3-tts` by default, as for `ggtts-render`, and the model flags mean what they mean there: a file
 not given is the engine's pinned default, taken from the per-user cache (`GGTTS_CACHE_DIR` overrides where) and
@@ -239,7 +286,11 @@ planned with the loaded engine's own profile (its ceiling and split marks).
 For each chapter that is not front or back matter:
 
 1. `DIR/NNN-<chapter id>/` holds the chapter's `manifest.json` and one `chunk-NNNNN.flac` per chunk. Each chunk is
-   generated at its planned seed (draw 0), decoded, and trimmed at its edges by the profile's rule.
+   rendered by the core chunk step (`ggtts_core::pipeline::render_chunk`, the step every render is made of):
+   generated at its planned seed (draw 0), decoded and judged. A draw the judge rejects (a runaway or a silent draw,
+   by its seconds of speech per character) is redrawn at the chunk's seed for draw 1, 2, ..., up to `--redraw` times,
+   as in a story; the first draw the judge passes is kept, else the last. The kept draw is trimmed at its edges by the
+   profile's rule.
 2. When every chunk is done, the chunks are read back from their files, joined with the profile's pauses (as the
    story path joins them), levelled by the story path's level step, and written as `DIR/NNN-<chapter id>.flac`.
 
@@ -259,6 +310,86 @@ as done (a run killed between writing the file and saving the manifest), and any
 chunk is rendered again. A resume with another engine, backend, model file, speaker or ggtts build does not splice two
 renders into one chapter: the earlier manifest is refused (`for engine ...`) and the chapter is rendered again.
 
+A render with an instruction or steering records them in every chapter manifest (`render`: the non-empty instruction,
+and the steering as the trace header writes it, the file's SHA-256, the layers and the scale). A render with neither
+writes no `render` field, so its manifests are the bytes they were before the field existed. A resume under a
+different instruction or steering is refused the same way, naming the difference (`for instruction "calm", not
+"brisk"`, `for steering ...`), and the chapter is rendered again. A manifest without the field, including one written
+before it existed, is a render with no instruction and no steering: it resumes a run with neither, and is refused
+for a run with either.
+
+**Redraws.** `--redraw N` (the shared table's `render.redraw`; unset is the engine profile's, which is 0 for
+`qwen3-tts`, so a book redraws only when asked, as a story does) is how many times a chunk the judge rejects is drawn
+again. A render with redraws records `redraw` in each chapter manifest and, per done chunk, `kept_draw`, `draws` (the
+number made) and `verdict` (the judge's verdict on the kept draw, `null` when it passed). A render at redraw 0 writes
+none of them, so its manifests are the bytes they were before redraws existed. A changed `--redraw` does not refuse a
+manifest. A done chunk is kept when a render at the new setting would end at the same draw: its kept draw passed the
+judge and is within the new setting, or it is the new setting's last draw. Any other done chunk is judged again under
+the new setting and rendered again, counted as `rejudged` in the report. So raising `--redraw` gives the chunks the
+judge rejected their further draws, a chunk recorded without draws (rendered at redraw 0) is judged again once
+redraws are on, and lowering it renders again the chunks kept at a draw the new setting does not reach.
+
+**The ASR judge.** The duration judge cannot hear a skipped clause: a chunk that drops one gets shorter, not longer.
+`--judge asr-qwen,model=DIR[,device=cpu|cuda][,min_run=N][,timeout=S][,start_timeout=S]` (the shared table's
+`render.judge`, which `ggtts-render --story` takes too) adds an ASR
+that reads every draw the duration judge keeps back and compares it with the chunk's text
+(`ggtts_core::textjudge`, `ggtts_instruments::judge`):
+
+* Both texts are compared as tokens: CJK characters folded to simplified (OpenCC's character table, vendored), and
+  numbers, written out or in digits, as the digits of their value. A recogniser writing a traditional sentence in
+  simplified characters, or 三百五十六 as 356, is not losing text. A chunk with no CJK characters or numbers gives
+  the judge nothing to compare, and is kept; one of fewer than `min_run` tokens can never be rejected.
+* A draw is rejected as `lost-text` when its read-back lost a run of at least `min_run` tokens (4 unless set), a
+  quarter of a chunk of 8 tokens or more, or 8 tokens in a row lost or misread; and as `repeated-text` when it said a
+  stretch of `min_run` tokens twice, found through a misread token or a filler at the join. It is redrawn at the chunk's next seed, up to `--redraw`, like any
+  rejection. A single misread or missing character is counted, never a rejection. A draw the ASR answers with an
+  error is kept, with the error in its read.
+* **A worker that dies or stops answering stops the render** (exit 2, `judge: ...`), as a failed chunk does: no
+  draw it could not read is kept as passed, what was finished is kept, and running the same command again resumes
+  and reads what it renders. Each answer has a deadline, `timeout=S` per draw (120 s unless set) and
+  `start_timeout=S` for the model to load (600 s); a worker that misses one is stopped.
+* Each chunk's manifest entry records `reads`: for every draw read back, its `draw`, the `transcript`, the counts
+  (`compared`, `lost`, `longest_lost`, `wrong`, `longest_damaged`, `extra`, `longest_repeat`), the reading's `read_verdict` and any `error`. The trace
+  records the same in a `read` event after each draw's `chunk_end`.
+* The judge is part of what a chapter's manifest records as its render: a resume under another judge, or none,
+  starts the chapter again, naming the difference. The model's path and the device are where the ASR runs, not what
+  it decides, and are not.
+* It is refused, by `--judge (render.judge)`, before the engine loads or anything is drawn: without `--redraw N` (a
+  rejection is for redrawing), when the spec does not read, and when the ASR does not start (no model, no Python, no
+  `qwen-asr`), with the ASR's reason. `ggtts-render --text` refuses it (one draw, nothing to redraw), and so do the
+  bindings' options documents, by name (`render.judge`): the judge starts a Python process beside the render.
+* The ASR runs as one process for the whole render: `instruments/examples/python/asr-qwen/judge_worker.py`, which
+  loads a local Qwen3-ASR snapshot once (Python 3 with `qwen-asr` and PyTorch; ggtts never downloads it; see that
+  directory's README). `device=cuda` runs it on the GPU beside the engine.
+* Known limit: the fold is many-to-one, so a swap between two traditional characters that share a simplified form
+  (乾 and 幹) reads as correct.
+
+**The default is off, on every front end.** Decided in #306: the judge needs a local ASR model and a Python with
+`qwen-asr`, which ggtts does not ship or fetch; it adds an ASR read to every kept draw (seconds per chunk on a CPU);
+and it only acts with redraws, which are off by default for `qwen3-tts` (#317). A book is where an unheard skipped
+line costs the most, so a Cantonese book is best rendered with it on:
+`ggtts-book render BOOK.epub --out DIR --redraw 2 --judge asr-qwen,model=DIR`.
+
+**Measured on a real model (#347).** A two-chapter Cantonese EPUB of 14 chunks (395 characters), rendered with the
+`qwen3-tts` q8_0 talker and a Cantonese voice baked into it, `--redraw 2`, the judge on Qwen3-ASR-1.7B, everything on
+CPU (`--device cpu --threads 4`, the worker at its 4 torch threads; a 12th-gen Intel desktop under `nice`):
+
+* The ASR read of a kept draw took 8.7 s on average (2.2 to 14.8 s; the trace's `judge` timing), about 30% of the
+  render: 121 s of the 441 s run, beside 139 s generating and 133 s decoding.
+* The worker loads its model in float32: it peaked at 12.6 GiB resident while loading and held about 8.7 GiB through
+  the render, beside the engine's 3.4 GiB peak. It loads first, and the engine loads after it says it is ready, so
+  the two loads never overlap.
+* One worker served the whole run. Every chunk had a read with a non-empty transcript; none was rejected. The longest
+  run lost was 3 tokens, below `min_run` 4: a misread is counted, never a rejection.
+* A draw with the middle 40% of its audio cut out (a skipped clause, planted in front of the real ASR) was rejected as
+  `lost-text` on all three draws (13 to 16 of 36 tokens lost, the longest run 13 or 14), and kept as the last draw
+  with that verdict. The other 13 chunks, rendered at the same seeds, read exactly as in the unplanted run.
+* A missing model directory and a Python without `qwen-asr` were each refused before the engine loaded, with the
+  ASR's reason.
+
+So the default stays off: on a CPU the judge costs about 9 s a kept draw and 13 GiB free while its model loads,
+and the setup (a model and a Python with `qwen-asr`) is the user's. CUDA was not measured.
+
 **What a resume can match, and what has been observed.** Chapters are always joined from the stored chunk files, so
 a resumed chapter can match an uninterrupted one byte for byte only when both of these hold:
 
@@ -277,7 +408,8 @@ on CPU, on one Linux machine with the same build and `--threads`, a 13-chunk cha
 Each resume exported byte-identically to the uninterrupted run, and every chunk file matched. That is evidence at
 those three points, not a proof for every kill point, engine or device; CUDA was not tried.
 
-Redraws of chunks the judge rejects are not done yet: every chunk is a first draw.
+The judge reads duration only: it cannot hear a chunk that dropped or repeated words at a normal pace. A judge that
+listens (an ASR round trip) plugs into the same step.
 
 `DIR/book.json` names the book rendered into `DIR` and lists the chapters the last render planned (`chapters`, the
 directory names, in order). A `DIR` holding another book, or a non-empty `DIR` with no `book.json`, is refused before

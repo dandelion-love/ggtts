@@ -11,7 +11,8 @@
  * GGTTS_ERR_ARG).
  *   1  ggtts_load, ggtts_render, ggtts_render_stream, ggtts_pcm_free, ggtts_free, ggtts_last_error
  *   2  ggtts_load_with and ggtts_settings (a Qwen3-TTS speaker and style instruction), ggtts_abi_version
- *   3  ggtts_settings.device, .cache_dir and .allow_download (the device; the default model files) */
+ *   3  ggtts_settings.device, .cache_dir and .allow_download (the device; the default model files)
+ *   4  ggtts_load_opts and ggtts_render_opts (options documents); ggtts_settings is frozen at version 3 */
 #ifndef GGTTS_H
 #define GGTTS_H
 
@@ -22,7 +23,7 @@
 extern "C" {
 #endif
 
-#define GGTTS_ABI_VERSION 3
+#define GGTTS_ABI_VERSION 4
 
 #define GGTTS_OK 0
 #define GGTTS_ERR_ARG (-1)
@@ -39,7 +40,8 @@ typedef int32_t (*ggtts_piece_fn)(void *user, const float *samples, size_t len, 
 int32_t ggtts_load(const char *engine, const char *model, const char *codec, const char *voice, int32_t threads,
                    uint64_t *handle);
 
-/* Settings for ggtts_load_with. Set size to sizeof(ggtts_settings); start from GGTTS_SETTINGS_INIT so a field you do
+/* Settings for ggtts_load_with. FROZEN at version 3: no field is ever added; a new option goes in an options
+ * document (ggtts_load_opts, ggtts_render_opts). Set size to sizeof(ggtts_settings); start from GGTTS_SETTINGS_INIT so a field you do
  * not set is NULL or 0. Later versions accept any earlier sizeof(ggtts_settings) and treat the fields it lacks as
  * unset, so a version-2 struct (size, speaker, instruction) loads exactly as it did; a size this library does not
  * know is GGTTS_ERR_ARG. Strings are UTF-8 and NUL-terminated, owned by the caller and read only during the call. A
@@ -92,6 +94,28 @@ int32_t ggtts_render_stream(uint64_t handle, const char *text, uint64_t seed, gg
 void ggtts_pcm_free(float *pcm, size_t len);
 int32_t ggtts_free(uint64_t handle);
 const char *ggtts_last_error(void);
+
+/* Version 4: options documents. Every option in the shared options table (schemas/ggtts-options-1.schema.json) as
+ * JSON, so a new option needs no new field, function or ABI version. A document and a ggtts_settings never meet in one
+ * call. An unknown key, a wrong type, a malformed document, or an option the engine does not support is
+ * GGTTS_ERR_ARG, before anything is loaded or rendered.
+ *
+ * ggtts_load_opts: the load section ({"load": {"engine": "qwen3-tts", "model": ..., "speaker": ..., "device": ...,
+ * "threads": ..., "offline": ..., "cache_dir": ...}}), and render defaults every render on the handle starts from
+ * (for example {"render": {"instruction": "Speak slowly."}}). "engine" may be "auto" (the default): the model's
+ * architecture, read from its GGUF, and with no model "qwen3-tts" (the struct loads take no "auto"). A document with no
+ * model loads the engine's default files, downloading a missing one unless "offline" is true (the struct's
+ * allow_download, negated). */
+int32_t ggtts_load_opts(const char *options_json, uint64_t *handle);
+
+/* ggtts_render_opts: render text with a render document, laid over the load's render defaults; NULL is the empty
+ * document. Without "output": {"stream": "raw"} it is a whole read: on_piece must be NULL, and pcm, len and rate get
+ * the samples (free them with ggtts_pcm_free). With it, each kept chunk goes to on_piece before the level step, as
+ * ggtts_render_stream; on_piece is required, and pcm, len and rate are all NULL or all set (then they also get the
+ * whole read). A load option in a render document is
+ * GGTTS_ERR_ARG. The seed of ggtts_render is "seed_salt" (a string) here. */
+int32_t ggtts_render_opts(uint64_t handle, const char *text, const char *options_json, ggtts_piece_fn on_piece,
+                          void *user, float **pcm, size_t *len, uint32_t *rate);
 
 #ifdef __cplusplus
 }

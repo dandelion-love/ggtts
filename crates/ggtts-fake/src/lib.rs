@@ -194,6 +194,11 @@ impl FakeEngine {
 }
 
 impl Engine for FakeEngine {
+    /// The fake exports `p_stop` and logits to hooks and emits step events; it takes no instruction, steering or
+    /// speaker, and runs on the CPU only.
+    fn capabilities(&self) -> ggtts_core::capabilities::Capabilities {
+        ggtts_core::capabilities::Capabilities::of("fake").expect("fake is an engine")
+    }
     fn p_stop_semantics(&self) -> Option<&'static str> {
         Some("fake-synthetic/1")
     }

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "load": {
+    "engine": "qwen3-tts",
+    "model": "talker.gguf",
+    "codec": "codec.gguf",
+    "speaker": "hk_voice_343",
+    "device": "cuda",
+    "threads": 8,
+    "offline": true,
+    "cache_dir": "cache"
+  }
+}

@@ -314,7 +314,8 @@ class MainActivity : AppCompatActivity(), DemoView {
         // The header: what this is, and a ⋮ menu for everything that is not reading.
         val header = MaterialToolbar(this).apply {
             title = "Read aloud"
-            subtitle = "On this phone · no internet"
+            // What the app is for, before anything technical (About.kt; the full sentences are under About).
+            subtitle = About.HEADER_SUBTITLE
             setTitleTextAppearance(context, M.style.TextAppearance_Material3_TitleLarge)
             setSubtitleTextAppearance(context, M.style.TextAppearance_Material3_BodyMedium)
             setSubtitleTextColor(color(M.attr.colorOnSurfaceVariant))
@@ -382,8 +383,10 @@ class MainActivity : AppCompatActivity(), DemoView {
             override fun afterTextChanged(s: Editable?) {
                 val n = s?.length ?: 0
                 count.text = if (n == 0) "" else "$n characters"
+                field.helperText = if (n == 0) About.EMPTY_TEXT_HINT else null
             }
         })
+        field.helperText = if (text.text.isNullOrEmpty()) About.EMPTY_TEXT_HINT else null
 
         // About and Advanced: closed, opened from the ⋮ menu.
         fun heading(s: String) = words(s, M.style.TextAppearance_Material3_TitleLarge).apply { setPadding(0, dp(24), 0, 0) }

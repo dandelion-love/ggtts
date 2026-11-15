@@ -18,7 +18,25 @@ class ReadingLifecycleTest {
     private val events = mutableListOf<String>()
     private val gate = ForegroundGate(startService = { events += "start" }, stopService = { events += "stop" })
     private fun command(action: String? = null, stopRead: () -> Unit = { events += "stopRead" }) =
-        gate.onCommand(action, stopRead) { events += "foreground" }
+        gate.onCommand(action, stopRead, goForeground = { events += "foreground" }, control = { events += "control $it" })
+
+    /** Plant: Pause or Play treated as a start. Neither may start the service or go foreground; each is a control. */
+    @Test
+    fun theNotificationsPauseAndPlayAreControlsNotStarts() {
+        gate.readStarted()
+        command()
+        events.clear()
+        command(ForegroundGate.ACTION_PAUSE)
+        command(ForegroundGate.ACTION_PLAY)
+        assertEquals(listOf("control ${ForegroundGate.ACTION_PAUSE}", "control ${ForegroundGate.ACTION_PLAY}"), events)
+    }
+
+    /** Plant: a stale Pause left running. One that reaches a service with no read stops it again, as a stale Stop does. */
+    @Test
+    fun aPauseThatReachesAServiceWithNoReadStopsItAgain() {
+        command(ForegroundGate.ACTION_PAUSE)
+        assertEquals(listOf("control ${ForegroundGate.ACTION_PAUSE}", "stop"), events)
+    }
 
     @Test
     fun aReadThatFailsFastStopsTheServiceOnlyAfterItWentForeground() {

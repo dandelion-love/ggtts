@@ -200,7 +200,11 @@ app is next opened. Both service types are permissions Android grants at install
 ## Leaving the screen during a read
 
 A read belongs to the app, not its screen. Leave the screen and the read goes on, in a foreground service. Its
-notification shows the progress and has Stop, and reopening the app shows where the read is. The loaded model stays
+notification is a media notification, with Pause or Play and Stop, and reopening the app shows where the read is.
+The read publishes a media session, so the lock screen, a headset or Bluetooth play/pause button, and
+`adb shell cmd media_session dispatch pause` (or `play`) control it too. Pause holds what is still to play:
+rendering goes on while paused, and Play plays on from where it stopped, nothing skipped. Stop ends the read as
+before. No permission is added for this. The loaded model stays
 loaded between reads, shared with the system engine below, and is released when Android asks for memory back while
 nothing is being read.
 
@@ -214,6 +218,22 @@ nothing is being read.
 - **One read at a time.** The screen and the system engine share one loaded engine, and one of them reads with it at
   a time. While one reads, the other is refused with a message (the screen) or `ERROR_SERVICE` (the system engine)
   rather than load a second model beside it. Android's memory trims never release the engine during either read.
+
+## Text from other apps
+
+Text can reach the app three ways, and none of them needs a permission:
+
+- **Share:** share plain text to "ggtts Text-to-Speech" from another app's share sheet (`ACTION_SEND`, `text/plain`).
+- **Selection menu:** select text in another app and pick **Read aloud** from the menu (`ACTION_PROCESS_TEXT`).
+- **Open a file:** open a `.txt` file with the app, or share one to it. It must be UTF-8 and at most 256 KB.
+
+Each fills the text card, keeps the voice as it is, and says where the text came from and whether it replaced what
+the card held. **Nothing starts a read by itself**: you press Read aloud. Another app chooses what it sends, so a read
+it could start would be that app speaking through this one. Text over 20,000 characters (counted as a reader counts
+them: an emoji is one) is refused with that limit named, not cut short. A file that is not UTF-8 is refused too, and so
+is anything that is not plain text. The text is taken once: if the screen is re-created later (dark mode or the
+language changed), or the app is opened again from Recents, it keeps what you have in the card rather than taking the
+shared text again.
 
 ## ggtts as Android's text-to-speech engine
 

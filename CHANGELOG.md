@@ -38,7 +38,8 @@ that a merge places under a released heading is caught.
   `--redraw`. CJK characters (folded to simplified) and numbers (by value) are compared. An ASR that dies or misses its deadline
   (`timeout=S`, 120 s per draw; `start_timeout=S`, 600 s to load) stops the render, which a rerun resumes. The trace records each reading in a new
   `read` event, and a book's chapter manifest in each chunk's `reads`. Off by default. It needs `--redraw N`, and is
-  refused before anything is drawn when its ASR cannot start; `--text` and the bindings refuse it. A trace with
+  refused before anything is drawn when its ASR cannot start; `--text` and the bindings refuse it. When the ASR's Python lacks a package, the
+  refusal names the missing module (`the model did not load (ModuleNotFoundError: qwen_asr)`). A trace with
   text verdicts replays, taking them as recorded.
 - **A text judge in the `ggtts-core` library: `textjudge::TextJudge`.** It judges a draw for duration as before,
   then reads it back with a recogniser the caller supplies (`textjudge::Recogniser`) and rejects a draw that lost

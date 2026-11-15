@@ -34,7 +34,10 @@ class StreamPlayerTest {
         override fun play() {
             call("play")
             if (playThrows) throw IllegalStateException("play() called on an uninitialized AudioTrack")
+            isPaused = false
         }
+        /** Samples the device has taken, in all. */
+        val taken = java.util.concurrent.atomic.AtomicInteger()
         /** Runs inside write(), on the player thread, before the write takes anything. */
         var beforeWrite: () -> Unit = {}
         @Volatile var isPaused = false
@@ -42,7 +45,9 @@ class StreamPlayerTest {
             call("write")
             beforeWrite()
             // A paused device takes nothing, as a full AudioTrack buffer does; with blockWrites a running one is full too.
-            return if (isPaused || blockWrites) 0 else writeResult ?: count
+            val n = if (isPaused || blockWrites) 0 else writeResult ?: count
+            if (n > 0) taken.addAndGet(n)
+            return n
         }
         override fun pause() { call("pause"); isPaused = true; paused.countDown() }
         override fun flush() = call("flush")
@@ -205,5 +210,68 @@ class StreamPlayerTest {
         assertEquals(2, sinks.size)
         assertTrue(sinks[1].calls.any { it.startsWith("write@") })
         sinks.forEach { assertTrue(it.released.await(2, TimeUnit.SECONDS)); assertEquals(emptyList<String>(), it.misuse) }
+    }
+
+    // ---- Pause and resume (#324). Each test names the planted fault it catches.
+
+    /** Plant: pause() that does not pause the device. The device must stop taking audio at once. */
+    @Test
+    fun pauseHoldsTheDeviceAndResumePlaysOn() {
+        player.begin(24000)
+        val sink = sinks.single()
+        player.pause()
+        assertTrue("the device was not paused", sink.isPaused)
+        assertTrue(player.paused)
+        player.resume()
+        assertTrue("the device was not played again", !sink.isPaused)
+        assertTrue(!player.paused)
+        player.stop()
+    }
+
+    /** Plant: a drain that ignores the pause. The stream must not end, nor finish() return, while it is held. */
+    @Test
+    fun aHeldStreamDoesNotEndUntilResumedAndPlaysEverything() {
+        player.begin(24000)
+        val sink = sinks.single()
+        player.pause()
+        // Rendering goes on while paused: pieces arrive and wait.
+        player.play(FloatArray(100))
+        player.play(FloatArray(50))
+        assertTrue("finish() returned while the stream was paused", !returnsWithin(300) { player.finish() })
+        assertEquals("the paused device took audio", 0, sink.taken.get())
+        player.resume()
+        assertTrue("the stream did not end after Resume", sink.released.await(2, TimeUnit.SECONDS))
+        assertEquals("a piece held during the pause was lost", 150, sink.taken.get())
+        assertEquals(emptyList<String>(), sink.misuse)
+    }
+
+    /** Plant: begin() that forgets a pause made before the first piece. The new stream must start held. */
+    @Test
+    fun aPauseBeforeTheFirstAudioHoldsTheStreamThatBegins() {
+        player.pause()
+        player.begin(24000)
+        val sink = sinks.single()
+        assertTrue("the stream began playing though Pause was pressed first", sink.isPaused)
+        player.play(FloatArray(10))
+        Thread.sleep(50)
+        assertEquals(0, sink.taken.get())
+        player.resume()
+        player.finish()
+        assertEquals(10, sink.taken.get())
+    }
+
+    /** Plant: stop() that leaves the pause set. Stop ends a held stream, and the next read is not held. */
+    @Test
+    fun stopEndsAHeldStreamAndTheNextOneIsNotHeld() {
+        player.begin(24000)
+        val first = sinks.single()
+        player.pause()
+        player.play(FloatArray(10))
+        assertTrue(returnsWithin(1000) { player.stop() })
+        assertTrue(first.released.await(2, TimeUnit.SECONDS))
+        assertTrue(!player.paused)
+        player.begin(24000)
+        assertTrue("the next read began held", !sinks[1].isPaused)
+        player.stop()
     }
 }

@@ -31,6 +31,15 @@ interface AudioOut {
 
     /** Save the whole read for [engine] and return where it went. */
     fun save(samples: FloatArray, rate: Int, engine: String): String
+
+    /** Hold playback where it is; what arrives meanwhile waits. Safe from any thread. */
+    fun pause() {}
+
+    /** Play on from where [pause] held it. Safe from any thread. */
+    fun resume() {}
+
+    /** Whether playback is held. */
+    val paused: Boolean get() = false
 }
 
 class DemoController(
@@ -118,6 +127,26 @@ class DemoController(
         view.showStatus("Stopping after the chunk in progress...")
     }
 
+    /** Whether the read's playback is held ([pause]). */
+    val paused: Boolean get() = busy && audio.paused
+
+    /**
+     * Hold the read's playback (a media session's Pause, a headset button). Rendering goes on, and what it makes
+     * waits; [resume] plays on from there. Nothing happens when no read runs. Main thread.
+     */
+    fun pause() {
+        if (!busy || audio.paused) return
+        audio.pause()
+        view.showStatus("Paused. The rest is still being prepared; press Play to listen on.")
+    }
+
+    /** Play on from where [pause] held it. Main thread. */
+    fun resume() {
+        if (!busy || !audio.paused) return
+        audio.resume()
+        view.showStatus("Playing on.")
+    }
+
     /** Release the loaded engine, if any, unless a read (this screen's or the system engine's) is using it. */
     fun close() {
         if (!busy) cache.release()
@@ -152,7 +181,8 @@ class DemoController(
             audio.play(samples)
             val n = pieces.size
             main(Runnable {
-                view.showStatus("Speaking: chunk $n ready (first audio after %.1f s); preparing the rest...".format(firstMs / 1000.0))
+                val doing = if (audio.paused) "Paused" else "Speaking"
+                view.showStatus("$doing: chunk $n ready (first audio after %.1f s); preparing the rest...".format(firstMs / 1000.0))
             })
             true
         }

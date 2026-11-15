@@ -1,8 +1,9 @@
 //! The restricted head (`Model::head_rows`) against the full head, on the same forward.
 //!
 //! Generation computes the head for the ids a step can sample only. Inside that range its logits must be the full
-//! head's, bit for bit (the same rows through the same kernel), and every id outside it must read `f32::MIN`. Whether
-//! that changes a draw is a separate question, measured by `examples/head_rows_check.rs` on a test set.
+//! head's, bit for bit (the same rows through the same kernel), and every id outside it must read `f32::MIN`. Rows
+//! outside the head are refused. Whether the subset changes a draw is a separate question, measured by
+//! `examples/head_rows_check.rs` on a test set.
 //!
 //! Needs a converted Kitten-TTS 2 LM GGUF, which is never in this repository, so it is `#[ignore]`d: run it with
 //! `GGTTS_KITTEN_LM=LM.gguf cargo test -p ggtts-kitten --features ggml --test head_rows -- --ignored`. Without the
@@ -22,7 +23,7 @@ fn the_restricted_head_is_the_full_head_inside_its_rows() {
     let be = Backend::new(Device::Cpu, 4).expect("backend");
     let gguf = Gguf::open(std::path::Path::new(&path)).expect("open the GGUF");
     let mut model = Model::load(&gguf, Weights::Ternary, be).expect("load");
-    let tm = TokenMap::from_meta(&model.meta).expect("token map");
+    let tm = TokenMap::from_meta(&model.meta, model.hp.n_vocab).expect("token map");
     // As KittenEngine::head_rows: from the first end id to the end of the vocabulary.
     let rows = tm.speech_end.min(tm.stop).min(tm.audio_base) as usize..model.hp.n_vocab;
     let n = model.hp.n_embd;
@@ -57,5 +58,18 @@ fn the_restricted_head_is_the_full_head_inside_its_rows() {
                 assert_eq!(*b, f32::MIN, "step {step}, id {i} is outside the rows");
             }
         }
+    }
+
+    // Rows outside the head, or none, are refused by forward, not widened to the whole head (or left to ggml's view
+    // bounds check, which aborts).
+    let v = model.hp.n_vocab;
+    for bad in [rows.start..v + 1, v..v] {
+        model.head_rows = Some(bad.clone());
+        let mut s = Session::new(&model, 64).expect("session");
+        let e = s
+            .forward(&embd[..20 * n], 1, false)
+            .err()
+            .unwrap_or_else(|| panic!("head_rows {bad:?} was not refused"));
+        assert!(e.contains("head_rows"), "{e}");
     }
 }

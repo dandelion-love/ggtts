@@ -8,3 +8,5 @@
 * [Off-screen reads run on the little cores](/research/off-screen-reads.md) - off screen the app gets three little cores, and more threads than cores stalls
 * [Other on-device TTS on Android](/research/android-tts-landscape.md) - Google, Samsung, eSpeak NG, RHVoice, sherpa-onnx and the Kokoro apps, with Play ratings and speeds
 * [Our limitations](/research/limitations.md) - where ggtts on a phone stands against those engines, stated plainly
+* [How read-aloud apps lay out their screens](/research/tts-app-screens.md) - ten apps screen by screen: they are built around a player, not a form; the wait shown as a job, the sentence being read highlighted, a docked player, voice cards with samples
+* [What a store app would need that this one lacks](/research/store-readiness.md) - eight gaps ranked, from a stated purpose (done) to getting a voice in the app, and what they say about the models

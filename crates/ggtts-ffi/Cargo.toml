@@ -18,11 +18,12 @@ ggtts-core.workspace = true
 ggtts-load.workspace = true
 # The pinned default model files, their cache and their verified download: the same as ggtts-render's.
 ggtts-models.workspace = true
+# The options schema and the capability statement, as the JSON text ggtts_options_schema and ggtts_capabilities return.
+serde_json.workspace = true
 jni = { version = "0.21", optional = true, default-features = false }
 
 [dev-dependencies]
 ggtts-fake.workspace = true
-serde_json.workspace = true
 
 [features]
 default = []

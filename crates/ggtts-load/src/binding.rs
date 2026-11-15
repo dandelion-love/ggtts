@@ -59,6 +59,29 @@ fn arg_err(msg: impl Into<String>) -> Fail {
     (ERR_ARG, msg.into())
 }
 
+thread_local! {
+    /// The schema key of the last refusal of one option on this thread ([`refusal_err`]), until taken.
+    static REFUSED_KEY: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A refusal of the one option `key`, as [`ERR_ARG`] with `msg`; the key is kept for [`take_refused_key`].
+fn key_err(key: &str, msg: impl Into<String>) -> Fail {
+    REFUSED_KEY.with(|k| *k.borrow_mut() = Some(key.to_string()));
+    arg_err(msg)
+}
+
+/// An options refusal ([`options::Refusal`]) as [`ERR_ARG`], its message as every front end shows it and its schema key kept
+/// for [`take_refused_key`].
+pub fn refusal_err(r: options::Refusal) -> Fail {
+    key_err(&r.key, r.to_string())
+}
+
+/// The schema key of the last refusal of one option on this thread, cleared by the taking: a front end clears it before
+/// a call and takes it after one that failed with [`ERR_ARG`], so it never reports a key an earlier call left.
+pub fn take_refused_key() -> Option<String> {
+    REFUSED_KEY.with(|k| k.borrow_mut().take())
+}
+
 fn engine_err(msg: impl Into<String>) -> Fail {
     (ERR_ENGINE, msg.into())
 }
@@ -308,15 +331,18 @@ pub fn document_refusal(key: &str, at_load: bool) -> Option<&'static str> {
 pub fn check_document(o: &Options, at_load: bool) -> Result<(), Fail> {
     for key in o.marks.sources.keys() {
         if let Some(why) = document_refusal(key, at_load) {
-            return Err(arg_err(format!("{key}: {why}")));
+            return Err(key_err(key, format!("{key}: {why}")));
         }
     }
     match o.output.stream.as_deref() {
         None | Some("raw") => Ok(()),
-        Some(other) => Err(arg_err(format!(
-            "output.stream: a binding streams to its callback: \"raw\" hands it the pieces before the level step \
+        Some(other) => Err(key_err(
+            "output.stream",
+            format!(
+                "output.stream: a binding streams to its callback: \"raw\" hands it the pieces before the level step \
              (a levelled stream is not taken yet), not {other:?}"
-        ))),
+            ),
+        )),
     }
 }
 
@@ -337,10 +363,10 @@ pub fn render_document(
 ) -> Result<(Vec<f32>, u32), Fail> {
     let chunks = plan(engine, text)?;
     let mut o = options::check(options, &engine.capabilities())
-        .map_err(|r| arg_err(r.to_string()))?
+        .map_err(refusal_err)?
         .options;
-    o.read_steering().map_err(|r| arg_err(r.to_string()))?;
-    let opts = o.render_options(engine.profile()).map_err(|r| arg_err(r.to_string()))?;
+    o.read_steering().map_err(refusal_err)?;
+    let opts = o.render_options(engine.profile()).map_err(refusal_err)?;
     let level = o.observe.trace_level.unwrap_or(1);
     let mut trace = match &o.observe.trace {
         Some(path) => Some(JsonlEvents::new(
@@ -408,9 +434,7 @@ pub fn refuse_settings(engine: &str, speaker: Option<&str>, instruction: Option<
     let mut o = Options::default();
     o.load.speaker = speaker.map(str::to_string);
     o.render.instruction = instruction.map(str::to_string);
-    options::check(&o, &caps)
-        .map(|_| ())
-        .map_err(|r| arg_err(r.to_string()))
+    options::check(&o, &caps).map(|_| ()).map_err(refusal_err)
 }
 
 /// The order a load checks the model files given as paths.

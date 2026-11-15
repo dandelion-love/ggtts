@@ -10,6 +10,20 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MediaControlsTest {
+    /**
+     * #409. Plant: the screen's refresh dropped from showStatus (a pause from the notification posts a status and nothing
+     * else reaches the screen) or from setBusy (the button stays after the read ends). The layout is not built on the
+     * JVM, so the source is held to the calls, as AboutTest holds the subtitle.
+     */
+    @Test
+    fun theScreenRefreshesItsPauseButtonWhenTheReadChangesElsewhere() {
+        val src = java.io.File("src/main/kotlin/ggtts/demo/MainActivity.kt").readText()
+        fun body(sig: String) = src.substring(src.indexOf(sig)).let { it.substring(0, it.indexOf("\n    }\n")) }
+        assertTrue("a pause from the notification reaches the screen through showStatus",
+            "refreshPause()" in body("override fun showStatus(text: String)"))
+        assertTrue("the button hides when the read ends", "refreshPause()" in body("override fun setBusy("))
+    }
+
     /** Plant: a state that reads "playing" while paused, which shows the wrong lock-screen button. */
     @Test
     fun theSessionStateFollowsTheRead() {

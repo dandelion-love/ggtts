@@ -30,10 +30,12 @@ android {
     }
 }
 
-// AboutTest reads the manifest to hold the screen's "no internet permission" sentence to it. Declared as an input so
-// a manifest change re-runs the tests instead of reusing an up-to-date result.
+// AboutTest reads the manifest to hold the screen's "no internet permission" sentence to it, and the screen's tests
+// read MainActivity.kt's source. Declared as inputs so a change to either re-runs the tests instead of reusing an
+// up-to-date result.
 tasks.withType<Test>().configureEach {
     inputs.file("src/main/AndroidManifest.xml").withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.file("src/main/kotlin/ggtts/demo/MainActivity.kt").withPathSensitivity(PathSensitivity.RELATIVE)
 }
 
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }

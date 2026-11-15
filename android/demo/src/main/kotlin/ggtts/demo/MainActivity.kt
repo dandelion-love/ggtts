@@ -257,9 +257,12 @@ class MainActivity : AppCompatActivity(), DemoView {
     /** The screen's Pause or Play, from the read's state whatever changed it (this button, the notification, a headset). */
     private fun refreshPause() {
         if (!::pause.isInitialized) return
-        val label = MediaControls.screenLabel(playerState())
+        val state = playerState()
+        val label = MediaControls.screenLabel(state)
         pause.visibility = if (label == null) View.GONE else View.VISIBLE
         if (label != null) pause.text = label
+        // TalkBack reads the word, not the symbols.
+        pause.contentDescription = MediaControls.toggleLabel(state)
     }
 
     override fun showStatus(text: String) {

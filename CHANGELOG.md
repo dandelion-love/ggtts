@@ -18,6 +18,17 @@ that a merge places under a released heading is caught.
   them changes no sample. A line holds the `frames`, `codebooks` and `codes` keys the Qwen3-TTS decode example reads,
   so a chunk can be decoded again on its own (`docs/codes.md`). `ggtts-book` and the bindings refuse it: they write
   no codes file.
+- **A model file can be given as an open descriptor, `/proc/self/fd/<n>`.** Every front end's model, codec and
+  voice paths take that form, and the engine reads through descriptor `n` without reopening the path. This is how an
+  Android app hands over a file the user picked with the system picker: reopening the path fails with "Permission
+  denied" for an app without a storage permission. Any other path opens as before. The Android demo uses it to load
+  voices from a folder chosen once (⋮ "Choose a models folder…") in place, with no copy.
+- **`--steer` takes an `https://` URL or `hf://<owner>/<repo>[@<revision>]/<path>`, downloaded once into the
+  cache.** A published steering preset renders in one command, with no separate download. The file goes into the same per-user cache as the model files
+  (`GGTTS_CACHE_DIR`, or `load.cache_dir`), at `urls/<sha256 of the URL>/<file name>`, and later runs reuse it.
+  `URL#sha256=<hex>` pins it, refusing a file whose sha256 differs, and the log names the sha256 either way.
+  `--offline` refuses a URL that is not cached yet, naming it. It is the options table's `render.steer`, so
+  ggtts-book and every binding take the URL too. A local path is unchanged.
 - **The Android demo and its system TTS engine carry the options document.** The app's request, its saved voices and
   its render calls are one options document, handed to the Kotlin binding as `options`. Any option the binding takes
   (a style instruction, steering, an edge, redraws, a levelled stream) now reaches the app and the system engine with

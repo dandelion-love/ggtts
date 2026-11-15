@@ -26,6 +26,10 @@ ggtts-core.workspace = true
 ggtts-ggml-sys = { path = "../ggtts-ggml-sys", version = "0.0.1" }
 serde_json.workspace = true
 
+# fdopen, to hand ggml a model that arrives as an open descriptor (gguf.rs, init_from_descriptor).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 sha2 = "0.10"
 

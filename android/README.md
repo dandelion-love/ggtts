@@ -16,13 +16,15 @@ with GGUF's magic bytes), and checks both refusals on planted APKs every time it
 
 **Reads text aloud in Cantonese or English, entirely on this phone.** You type or paste a passage and listen to it
 in a neural voice; nothing you type leaves the phone, because the app has no permission to use the internet. It is
-slow: a sentence takes 30 to 60 seconds before it starts on a recent phone, so it suits listening to a passage you
-have chosen, not reading the screen as you go, and it is not for screen readers. Other apps can use it as a
-text-to-speech engine in Android's settings.
+slow: on a Galaxy Z Fold5 the first sound takes 30 to 50 seconds with a Cantonese voice and 45 to 60 with an English
+one, so it suits listening to a passage you have chosen, not reading the screen as you go, and it is not for screen
+readers. Other apps can use it as a text-to-speech engine in Android's settings.
 
-The app's screen opens with these words, and with the steps still ahead when no model files are present yet. They
-live in `About.kt`, and `AboutTest` holds them to the app: adding the `INTERNET` permission, or measuring a wait
-outside 30 to 60 seconds, fails the test until the words change too.
+The reading screen opens with the first line as its subtitle, the wait on the player ("First sound in about…"), and,
+while the text box is empty, a hint that other apps can use it; the rest is under ⋮ › About this app, with the steps
+still ahead when no model files are present yet. They live in `About.kt`, and `AboutTest` holds them to the app:
+adding the `INTERNET` permission, or a measured wait in `EngineCosts` that About does not state, fails the test until
+the words change too.
 
 ## Build
 
@@ -73,17 +75,17 @@ The app asks for no storage permission. It reads model files from two places, an
 
 * **A folder you choose once** (the easiest to fill): "Choose a models folder…" in the ⋮ menu opens the system's
   folder picker; pick or create one such as `Download/ggtts`, and copy model files into it with a file manager or
-  over USB from a computer. The app keeps read access to that folder across restarts. When the folder is chosen,
-  and each time the app opens, it copies the folder's model files that it does not have yet into its own directory,
-  with the same checks as an import (below); a voice's sample in the folder plays from there. Choosing another
-  folder replaces the first. The copy doubles the space a model takes, so delete the folder's copy once the app has
-  it if space is short; the voice stays.
+  over USB from a computer. The app keeps read access to that folder across restarts, lists the voices its files
+  make, and loads them where they are, never copying them. Choosing another folder replaces the first.
 
-  Why a copy: the engine opens a model by path, and a picked file reaches it only as `/proc/self/fd/<n>`. Opening
-  that path checks access to the file underneath, which is on shared storage the app may not read without a storage
-  permission. On a Galaxy Z Fold5 (Android 17) all three loads that way failed with "Permission denied (os error
-  13)". The copy itself is quick there: 0.55 s for the 291 MB codec and 3.5 s for the 2.04 GB talker. A load from the
-  app's directory took 2.3 to 2.8 s, the same as before.
+  How: Android hands the app a picked file as an open descriptor, which reaches the engine as `/proc/self/fd/<n>`.
+  Reopening that path would check access to the file underneath, which an app without a storage permission may not
+  read ("Permission denied"). So the engine reads a path of exactly that form through the descriptor itself, without
+  reopening it (`ggtts_core::fdpath`). On a Galaxy Z Fold5 (Android 17), the Qwen3-TTS talker and codec loaded from a
+  picked folder in 1.94 to 1.96 s when cached (2.82 s the first time), against 2.04 to 2.14 s from the app's
+  directory. A Kitten-TTS 2 voice (language model, decoder and voice JSON) loaded and spoke from the folder too.
+  A provider that hands back a descriptor that cannot seek (some stream a document from elsewhere, as a pipe) gets
+  the fallback: the app copies that one file into its cache once and loads the copy. A local folder never needs it.
 * **Its own directory**, which Android 11 and later hide from file managers and USB, so it is filled from the app or
   with adb:
 

@@ -266,6 +266,24 @@ mod tuning_tests {
         v
     }
 
+    /// Review of #351: the settings never touch the speaker (resolved before, from the load section and the default
+    /// model, #332), the device or the trace.
+    #[test]
+    fn the_settings_leave_the_speaker_device_and_trace_alone() {
+        let args: Vec<String> = ["--temperature", "0.7", "--language", "en", "--max-frames", "600"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let o = Options::from_args(&args).unwrap();
+        let mut v = Voice {
+            speaker: "a_speaker".into(),
+            ..Voice::default()
+        };
+        let before = (v.speaker.clone(), format!("{:?}", v.device), v.trace.clone());
+        Tuning::of(&o.load).apply(&mut v);
+        assert_eq!((v.speaker.clone(), format!("{:?}", v.device), v.trace.clone()), before);
+    }
+
     /// #351 AC1: with none given, the voice is the engine's default, the one every render used before.
     #[test]
     fn no_setting_leaves_the_default_voice() {

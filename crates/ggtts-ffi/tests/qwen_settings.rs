@@ -197,7 +197,7 @@ fn an_instruction_on_a_base_checkpoint_is_refused() {
 
 /// #164: with no paths and no speaker, a version-3 load finds the pinned default files in the cache, verifies them,
 /// and renders with the default model's default speaker: the same samples as the same files given as paths with
-/// `hk_voice_343`. A given model keeps `ggtts_load`'s default speaker, and a given codec is used as it is. Nothing is
+/// `hk_voice_343`. A given model with no speaker uses its own default, the same `hk_voice_343`, and a given codec is used as it is. Nothing is
 /// downloaded (downloading stays off).
 #[test]
 #[ignore = "needs GGTTS_TALKER and GGTTS_CODEC to be the pinned v0.0.5 talker and codec"]
@@ -233,14 +233,11 @@ fn the_default_model_and_its_default_speaker_come_from_the_cache() {
     assert_eq!(code, GGTTS_OK, "{}", last_error());
     assert_eq!(render_once(h, "a given codec"), explicit);
 
-    // A given talker keeps ggtts_load's default speaker, which the v0.0.5 talker does not have.
+    // A given talker with no speaker uses the model's default, hk_voice_343 for the v0.0.5 talker: the same voice
+    // as the default model. Until 2026-11-13 this failed, asking for hk_cantonese_speaker, which it does not have.
     let (code, h) = load_v3(Some(&talker), None, st);
-    assert_eq!((code, h), (GGTTS_ERR_ENGINE, 0));
-    assert!(
-        last_error().contains("no speaker hk_cantonese_speaker"),
-        "{}",
-        last_error()
-    );
+    assert_eq!(code, GGTTS_OK, "{}", last_error());
+    assert_eq!(render_once(h, "a given talker, no speaker"), explicit);
     let _ = std::fs::remove_dir_all(&root);
 }
 

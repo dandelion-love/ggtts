@@ -212,7 +212,7 @@
           "x-ggtts-phase": "load"
         },
         "subtalker_top_k": {
-          "description": "Qwen3-TTS only: the sub-talker's top-k, 0 for off; unset is the talker's.",
+          "description": "Qwen3-TTS only: the sub-talker's top-k, 0 for off; 1 is greedy decoding, refused since it does not terminate; unset is the talker's.",
           "maximum": 2147483647,
           "minimum": 0,
           "type": "integer",
@@ -222,7 +222,7 @@
           "x-ggtts-phase": "load"
         },
         "subtalker_top_p": {
-          "description": "Qwen3-TTS only: the sub-talker's top-p; unset is the talker's.",
+          "description": "Qwen3-TTS only: the sub-talker's top-p; 0 and 1.0 are off; unset is the talker's.",
           "minimum": 0.0,
           "type": "number",
           "x-ggtts-flags": [
@@ -259,7 +259,7 @@
           ]
         },
         "top_k": {
-          "description": "Qwen3-TTS only: the talker's top-k, 0 for off; unset is 50, the reference CLI's.",
+          "description": "Qwen3-TTS only: the talker's top-k, 0 for off; 1 is greedy decoding, refused since it does not terminate on this model; unset is 50, the reference CLI's.",
           "maximum": 2147483647,
           "minimum": 0,
           "type": "integer",
@@ -269,7 +269,7 @@
           "x-ggtts-phase": "load"
         },
         "top_p": {
-          "description": "Qwen3-TTS only: the talker's top-p; unset is 1.0 (off), the reference CLI's.",
+          "description": "Qwen3-TTS only: the talker's top-p; 0 and 1.0 are off; unset is 1.0, the reference CLI's.",
           "minimum": 0.0,
           "type": "number",
           "x-ggtts-flags": [

@@ -105,7 +105,9 @@ class Ggtts private constructor(private var handle: Long) : AutoCloseable {
         fun optionsSchema(): String = Native.optionsSchema()
 
         /**
-         * [engine]: "qwen3-tts", "kitten-tts-2" or "fake". [voice] is Kitten-TTS 2's reference voice.
+         * [engine]: "qwen3-tts", "kitten-tts-2" or "fake". Without [options], null is "qwen3-tts"; with them, null is
+         * the document's `load.engine`, whose default is "auto": the model file's GGUF architecture, or "qwen3-tts"
+         * when the document gives no model. [voice] is Kitten-TTS 2's reference voice.
          *
          * [speaker] and [instruction] are Qwen3-TTS settings; null or empty is no setting, and the result is the same
          * as without them. [speaker] is a speaker the model has (for example "hk_voice_777"); an unknown one throws
@@ -128,8 +130,9 @@ class Ggtts private constructor(private var handle: Long) : AutoCloseable {
          * parameter above has its key there) and `render` defaults every render on the engine starts from. With it,
          * a parameter left null is not given, and one given both here and in the document throws GGTTS_ERR_ARG naming
          * both. A refused option throws GGTTS_ERR_ARG with its [GgttsException.key]; so do `load.device` (CPU only)
-         * and the trace (no file sink a phone user can read). Without it, null [engine] is "qwen3-tts", [threads] 4
-         * and [allowDownload] false, and the load is the one this function always made.
+         * and the trace (no file sink a phone user can read). With it, [threads] 0 or less is not given (the
+         * document's `load.threads`, else 4), as 0 or less has always meant the default. Without it, null [engine] is
+         * "qwen3-tts", [threads] 4 and [allowDownload] false, and the load is the one this function always made.
          */
         fun load(
             engine: String? = null,
@@ -243,9 +246,12 @@ class Ggtts private constructor(private var handle: Long) : AutoCloseable {
     fun render(text: String, seed: Long = DEFAULT_SEED): Pcm = render(text, seed, null)
 
     /**
-     * Render [text], handing each kept chunk's piece to [listener] as it is produced (before the level step).
-     * Returns false if the listener stopped it. [seed] and [options] are as [render]'s; a stream's document may say
-     * `"output": {"stream": "raw"}`, which is what it streams anyway.
+     * Render [text], handing each kept chunk's piece to [listener] as it is produced. Returns false if the listener
+     * stopped it. [seed] and [options] are as [render]'s. Without [options], the pieces are the render's samples before
+     * its level step, as this call has always handed them. With [options], they are levelled by default as
+     * `ggtts-render --stream` levels them (one gain from the first `output.stream_level_seconds`, 5 s unless given),
+     * which is the stream to play; `"output": {"stream": "raw"}` (or `"stream_raw": true`) asks for the pieces before
+     * the level step instead.
      */
     fun renderStream(text: String, seed: Long? = null, options: String? = null, listener: PieceListener): Boolean =
         if (options == null) {

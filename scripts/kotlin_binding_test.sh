@@ -27,6 +27,14 @@ kotlinc android/ggtts/src/main/kotlin/ggtts/Ggtts.kt android/ggtts/src/test/kotl
 stdlib=$(dirname "$(readlink -f "$(command -v kotlinc)")")/../lib/kotlin-stdlib.jar
 java -Dggtts.lib="$lib" -cp "$out/classes:$stdlib" ggtts.BindingTestKt
 
+# The demo app's binding seam (its request as an options document, android/demo/src/hostTest), compiled against the
+# same binding and run on the fake engine: the app's documents meet the library here, not only a fake binding.
+kotlinc -cp "$out/classes" android/demo/src/main/kotlin/ggtts/demo/Options.kt \
+    android/demo/src/main/kotlin/ggtts/demo/TtsBinding.kt android/demo/src/hostTest/kotlin/ggtts/demo/AppBindingTest.kt \
+    -d "$out/app" 2>&1 | grep -v "^warning: unable to find kotlin-stdlib" || true
+[ -f "$out/app/ggtts/demo/AppBindingTestKt.class" ] || { echo "kotlin_binding_test: the app test did not compile" >&2; exit 1; }
+java -Dggtts.lib="$lib" -cp "$out/app:$out/classes:$stdlib" ggtts.demo.AppBindingTestKt
+
 # The documentation's examples, compiled against the binding's classes, then each run on the fake engine from an
 # empty directory (FirstRender writes its WAV there).
 kotlinc -cp "$out/classes" docs/bindings/examples/kotlin/*.kt -d "$out/examples" 2>&1 \

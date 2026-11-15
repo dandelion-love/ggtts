@@ -1068,6 +1068,30 @@ mod planted {
 
 #[cfg(test)]
 mod tests {
+
+    /// Every key EXACT_SEED_EXCLUDES lists is reset, value and mark, when a render document gives render.seed: a key
+    /// added to the list without its reset in layer_render fails here, at test time, not in a user's render.
+    #[test]
+    fn every_excluded_default_is_reset_under_an_exact_seed() {
+        let defaults = render_defaults(
+            &Options::from_json(r#"{"render": {"seed_salt": "x", "redraw": 2, "edge_s": 0.3}}"#).unwrap(),
+        );
+        for (key, _) in EXACT_SEED_EXCLUDES {
+            assert!(defaults.marks.sources.contains_key(key), "the fixture sets {key}");
+        }
+        let doc = Options::from_render_json(r#"{"render": {"seed": 5}}"#).unwrap();
+        let o = layer_render(&defaults, doc).unwrap();
+        for (key, _) in EXACT_SEED_EXCLUDES {
+            assert!(!o.marks.sources.contains_key(key), "{key} is still marked");
+            let value = &o.to_json()["render"][&key["render.".len()..]];
+            assert!(value.is_null(), "{key} kept its value {value}");
+        }
+        assert_eq!(o.render.seed, Some(5));
+        // Without render.seed the defaults stand.
+        let story = layer_render(&defaults, Options::from_render_json("{}").unwrap()).unwrap();
+        assert_eq!(story.render.redraw, Some(2));
+    }
+
     use super::*;
 
     const TEXT: &str = "今日天氣好好，我哋去海邊行下。\n行完之後，去食飯。";

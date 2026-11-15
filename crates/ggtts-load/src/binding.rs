@@ -420,25 +420,27 @@ pub fn refuse_given_twice(o: &Options, given: &[(&str, &str)]) -> Result<(), Fai
     Ok(())
 }
 
+/// The options of a story's render an exact seed cannot be given with, and why.
+const EXACT_SEED_EXCLUDES: [(&str, &str); 3] = [
+    (
+        "render.seed_salt",
+        "render.seed renders one chunk at that seed, and render.seed_salt salts a story's seeds (the render call's \
+         seed argument is the salt): give one",
+    ),
+    (
+        "render.redraw",
+        "render.seed renders one draw and keeps it: redraws are a story's",
+    ),
+    (
+        "render.edge_s",
+        "render.seed keeps its one draw whole, untrimmed: an edge is a story's",
+    ),
+];
+
 /// What an exact seed (`render.seed`: one chunk, one draw, kept whole) cannot be given with, refused under
 /// `render.seed`: a story seed's salt (the call's own `seed` argument is one), redraws, and an edge to trim to.
 fn refuse_with_exact_seed(o: &Options) -> Result<(), Fail> {
-    let why = [
-        (
-            "render.seed_salt",
-            "render.seed renders one chunk at that seed, and render.seed_salt salts a story's seeds (the render call's \
-             seed argument is the salt): give one",
-        ),
-        (
-            "render.redraw",
-            "render.seed renders one draw and keeps it: redraws are a story's",
-        ),
-        (
-            "render.edge_s",
-            "render.seed keeps its one draw whole, untrimmed: an edge is a story's",
-        ),
-    ];
-    for (key, message) in why {
+    for (key, message) in EXACT_SEED_EXCLUDES {
         if o.marks.sources.contains_key(key) {
             return Err(key_err("render.seed", format!("render.seed: {message}")));
         }
@@ -500,9 +502,21 @@ impl LoadCache {
     }
 }
 
-/// A render document laid over a load's render defaults ([`render_defaults`]): what the document gives wins.
+/// A render document laid over a load's render defaults ([`render_defaults`]): what the document gives wins. A
+/// document that gives `render.seed` (one chunk at an exact seed) is laid over the defaults less those of a story's
+/// render that an exact draw has no use for (its seed salt, redraws and edge): a load document's defaults are for
+/// stories, and never refuse an exact seed. The render document's own are refused ([`render_document`]).
 pub fn layer_render(defaults: &Options, doc: Options) -> Result<Options, Fail> {
-    defaults.clone().layer(doc).map_err(refusal_err)
+    let mut defaults = defaults.clone();
+    if doc.render.seed.is_some() {
+        defaults.render.seed_salt = None;
+        defaults.render.redraw = None;
+        defaults.render.edge_s = None;
+        for (key, _) in EXACT_SEED_EXCLUDES {
+            defaults.marks.sources.remove(key);
+        }
+    }
+    defaults.layer(doc).map_err(refusal_err)
 }
 
 /// A binding's render call as a render document: `options` (JSON; `None` is the empty document) read and checked

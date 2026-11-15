@@ -171,6 +171,25 @@ fn what_an_exact_seed_cannot_render_is_refused_by_key() {
     assert_eq!(last_key().as_deref(), Some("render.seed"), "{}", last_error());
 }
 
+/// Review of #350: a load document's render defaults (a story's salt, redraws, an edge) are for stories. They never
+/// refuse an exact seed: the render is the same as on a handle loaded without them. The render document's own are
+/// still refused.
+#[test]
+fn a_load_documents_story_defaults_do_not_refuse_an_exact_seed() {
+    let plain = load(r#"{"load": {"engine": "fake"}}"#);
+    let want = render(plain, "多謝晒", r#"{"render": {"seed": 5}}"#).unwrap();
+    ggtts_free(plain);
+    let defaults = load(r#"{"load": {"engine": "fake"}, "render": {"seed_salt": "x", "redraw": 2, "edge_s": 0.3}}"#);
+    let got = render(defaults, "多謝晒", r#"{"render": {"seed": 5}}"#)
+        .unwrap_or_else(|e| panic!("refused: {e:?} {}", last_error()));
+    assert_eq!(got, want, "the load's story defaults change nothing in an exact draw");
+    match render(defaults, "多謝晒", r#"{"render": {"seed": 5, "redraw": 1}}"#) {
+        Err((ggtts_ffi::GGTTS_ERR_ARG, Some(k))) => assert_eq!(k, "render.seed"),
+        other => panic!("the render document's own redraw: {:?}", other.map(|(s, _)| s.len())),
+    }
+    ggtts_free(defaults);
+}
+
 /// The model files of a real-model run: the tiny cut, or the full talker, with the codec.
 fn real_model() -> (String, String) {
     let talker = std::env::var("GGTTS_TINY_TALKER")

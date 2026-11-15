@@ -282,11 +282,10 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.seed"], Refused(BINDING_SEED)),
             (&["render.judge"], Refused(NO_JUDGE)),
             (&["render.steer"], Carried),
-            // Read only by an engine that steers, which the fake engine is not: probed on a real model only.
-            (&["render.steer_scale", "render.steer_layers"], Gap(292)),
+            // Probed on `Recorder`, an engine that steers and redraws, loaded through `kotlin::load_over`.
+            (&["render.steer_scale", "render.steer_layers"], Carried),
             (&["render.edge_s"], Carried),
-            // A redraw needs a draw the judge rejects, which the fake engine never gives.
-            (&["render.redraw"], Gap(292)),
+            (&["render.redraw"], Carried),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Refused(ANDROID_TRACE)),
             (REPORTS, Refused(NO_TIMINGS)),
@@ -326,12 +325,9 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.judge"], Refused(NO_JUDGE)),
             (&["render.steer", "render.edge_s"], Carried),
             // Handed to the binding in the document like the rest, so the app carries them exactly when the Kotlin
-            // binding does, and the binding has them as gaps (#292: no probe on the fake engine). The app cannot carry
-            // more than the binding: `the_app_carries_no_more_than_its_binding` holds the two rows together.
-            (
-                &["render.steer_scale", "render.steer_layers", "render.redraw"],
-                Gap(282),
-            ),
+            // binding does (its probes on `Recorder`). The app cannot carry more than the binding:
+            // `the_app_carries_no_more_than_its_binding` holds the two rows together.
+            (&["render.steer_scale", "render.steer_layers", "render.redraw"], Carried),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Refused(ANDROID_TRACE)),
             (REPORTS, Refused(NO_TIMINGS)),
@@ -1563,6 +1559,105 @@ fn kotlin_probes() -> Vec<Probe> {
             other => panic!("kotlin: load.device gave {:?}", other.is_ok()),
         },
     );
+    out.extend(kotlin_engine_probes());
+    out
+}
+
+/// Kotlin's `load(options=…)` through its native load path (`ggtts_ffi::kotlin::load_over`) over [`Recorder`], loaded
+/// as qwen3-tts so the document is checked against an engine that steers, and rendered through `render_opts` as the
+/// binding renders: `render.steer_scale` and `render.steer_layers` are seen in the steering the engine is handed,
+/// `render.redraw` in the draws it is asked for, and `load.cache_dir` in the offline refusal of an uncached steering
+/// URL, which names the cache the load gave. As Python's ([`python_engine_probes`]).
+fn kotlin_engine_probes() -> Vec<Probe> {
+    use ggtts_ffi::kotlin::{load_over, render_opts, LoadArgs};
+    use ggtts_py::core::guard_keyed;
+    let dir = unique_dir("kotlin-engine");
+    std::fs::create_dir_all(&dir).unwrap();
+    let text = "你好。";
+    let steer = dir.join("steer.safetensors");
+    let v = [0.5f32; 8];
+    std::fs::write(
+        &steer,
+        ggtts_core::steer::write_safetensors(&[("talker.layer.0", &v), ("talker.layer.1", &v)]),
+    )
+    .unwrap();
+    let steer = serde_json::to_string(&steer.to_string_lossy()).unwrap();
+    // Render `text` with the render document `doc` on a fresh recorder loaded with `load_doc`: what it saw, and the
+    // render's result.
+    let run = |load_doc: &str, doc: &str| {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Recorded::default()));
+        let engine = Recorder {
+            fake: ggtts_fake::FakeEngine::default(),
+            seen: seen.clone(),
+        };
+        let result = guard_keyed(|| {
+            let h = Freed(load_over(load_doc, &LoadArgs::default(), Box::new(engine))?);
+            render_opts(h.0, text, Some(doc), Some(7))
+        });
+        let seen = std::sync::Arc::try_unwrap(seen).ok().unwrap().into_inner().unwrap();
+        (seen, result)
+    };
+    let qwen = r#"{"load": {"engine": "qwen3-tts"}}"#;
+    let mut out = Vec::new();
+    let mut push = |key: &str, seen| out.push(("kotlin", key.to_string(), seen));
+    // Steering: the scale and the layers the engine is handed are the document's (the file has layers 0 and 1).
+    let (plain, r) = run(qwen, &format!(r#"{{"render": {{"steer": {steer}, "redraw": 0}}}}"#));
+    assert!(r.is_ok(), "kotlin: a steered render failed: {r:?}");
+    let (scaled, _) = run(
+        qwen,
+        &format!(r#"{{"render": {{"steer": {steer}, "steer_scale": 0.25, "redraw": 0}}}}"#),
+    );
+    let (layered, _) = run(
+        qwen,
+        &format!(r#"{{"render": {{"steer": {steer}, "steer_layers": [1], "redraw": 0}}}}"#),
+    );
+    let first = |s: &Recorded| s.steer.first().cloned();
+    push(
+        "render.steer_scale",
+        match (first(&plain), first(&scaled)) {
+            (Some((1.0, _)), Some((0.25, _))) => Seen::Carried,
+            _ => Seen::Dropped,
+        },
+    );
+    push(
+        "render.steer_layers",
+        match (first(&plain), first(&layered)) {
+            (Some((_, all)), Some((_, one))) if all == vec![0, 1] && one == vec![1] => Seen::Carried,
+            _ => Seen::Dropped,
+        },
+    );
+    // Redraws: with none allowed the runaway first draw is the only one; with one allowed, a second draw is asked for.
+    let (none, _) = run(qwen, r#"{"render": {"redraw": 0}}"#);
+    let (one, _) = run(qwen, r#"{"render": {"redraw": 1}}"#);
+    push(
+        "render.redraw",
+        if none.draws == vec![0] && one.draws == vec![0, 1] {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        },
+    );
+    // The load's cache directory: an offline engine refuses an uncached steering URL, naming that cache. The host is
+    // `.invalid`, so a resolution that ignored the load would fail on the network instead.
+    let cache = dir.join("kotlin-cache");
+    let load_doc =
+        serde_json::json!({"load": {"engine": "qwen3-tts", "offline": true, "cache_dir": cache}}).to_string();
+    let (_, r) = run(
+        &load_doc,
+        r#"{"render": {"steer": "https://example.invalid/presets/x.safetensors"}}"#,
+    );
+    push(
+        "load.cache_dir",
+        match r {
+            Err(((_, msg), _))
+                if msg.contains("offline mode does not download it") && msg.contains(&cache.display().to_string()) =>
+            {
+                Seen::Carried
+            }
+            _ => Seen::Dropped,
+        },
+    );
+    let _ = std::fs::remove_dir_all(dir);
     out
 }
 
@@ -1762,11 +1857,12 @@ fn the_app_carries_no_more_than_its_binding() {
     let mut cells = cells(TABLE, FRONT_ENDS).unwrap();
     let wrong = wider_than_its_binding(&cells);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    cells.insert(("android".to_string(), "render.steer_scale".to_string()), Carried);
+    // The plant: the app claims a timing measurement, which the binding refuses (it returns samples, not timings).
+    cells.insert(("android".to_string(), "render.measure_timings".to_string()), Carried);
     let planted = wider_than_its_binding(&cells);
     assert_eq!(planted.len(), 1, "{planted:?}");
     assert!(
-        planted[0].starts_with("render.steer_scale: android is Carried, kotlin is Gap(292)"),
+        planted[0].starts_with("render.measure_timings: android is Carried, kotlin is Refused("),
         "{planted:?}"
     );
 }

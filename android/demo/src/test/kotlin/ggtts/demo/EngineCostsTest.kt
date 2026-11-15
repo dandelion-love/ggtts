@@ -76,13 +76,13 @@ class EngineCostsTest {
         assertEquals(1, view.errors.size)
 
         // A different request warns again before its own load.
-        c.speak(kitten.copy(threads = 8), "Hello.", Ggtts.DEFAULT_SEED)
+        c.speak(kitten.withThreads(8), "Hello.", Ggtts.DEFAULT_SEED)
         assertEquals(2, view.errors.size)
         assertEquals(1, loads.size)
 
         // With room, no warning at all.
         available = 8_000_000_000L
-        c.speak(kitten.copy(threads = 6), "Hello.", Ggtts.DEFAULT_SEED)
+        c.speak(kitten.withThreads(6), "Hello.", Ggtts.DEFAULT_SEED)
         assertEquals(2, view.errors.size)
         assertEquals(2, loads.size)
     }

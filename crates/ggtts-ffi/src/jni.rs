@@ -576,8 +576,8 @@ pub extern "system" fn Java_ggtts_Native_renderOpts<'l>(
     })
 }
 
-/// `Native.renderStreamOpts`: each kept chunk's piece to `listener` before the level step, with a render document
-/// ([`kotlin::render_stream_opts`]). Returns false when the listener stopped it (returning false, or throwing, whose
+/// `Native.renderStreamOpts`: each kept chunk's piece to `listener` with a render document, levelled unless the
+/// document asks for the pieces before the level step ([`kotlin::render_stream_opts`]). Returns false when the listener stopped it (returning false, or throwing, whose
 /// exception goes to Kotlin as it is).
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]

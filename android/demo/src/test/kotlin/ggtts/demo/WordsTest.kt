@@ -166,6 +166,8 @@ class WordsTest {
             "Cantonese", "English", "EN", "models", "ggtts-check", "\\n", "unnamed", "read", "\$engine.wav",
             "RIFF", "WAVEfmt ", "data",
             "model", "codec", "voice", "engine", "speaker", "threads", "stop", "speak_system", "text", "speak",
+            // The saved-state keys and the cache file that carry the card's text across a re-creation.
+            "ggtts.demo.text", "ggtts.demo.text-file", "card-text.txt",
         )
     }
 

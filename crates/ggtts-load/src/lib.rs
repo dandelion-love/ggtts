@@ -131,6 +131,7 @@ fn load_model_engine(req: &Request) -> Result<Box<dyn Engine>, String> {
             if let Some(speaker) = &req.speaker {
                 voice.speaker.clone_from(speaker);
             }
+            Tuning::of(req).apply(&mut voice);
             ggtts_qwen3_tts::engine::Qwen3Tts::load(model, codec, threads, voice)
                 .map(|e| Box::new(e) as Box<dyn Engine>)
                 .map_err(|e| e.to_string())
@@ -226,4 +227,157 @@ pub fn load_default(mut req: Request) -> Result<Loaded, String> {
         files,
         speaker: req.speaker,
     })
+}
+
+/// The Qwen3-TTS sampler settings, frame cap and language of a load ([`ggtts_core::options::SAMPLER`]), each unset
+/// when not given. Every front end hands the load section's values here, and [`Tuning::apply`] is the one place they
+/// reach the engine's [`Voice`](ggtts_qwen3_tts::engine::Voice).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Tuning {
+    pub temperature: Option<f64>,
+    pub top_k: Option<i32>,
+    pub top_p: Option<f64>,
+    pub repetition_penalty: Option<f64>,
+    pub subtalker_temperature: Option<f64>,
+    pub subtalker_top_k: Option<i32>,
+    pub subtalker_top_p: Option<f64>,
+    pub max_frames: Option<i32>,
+    /// One of [`ggtts_core::options::LANGUAGES`].
+    pub language: Option<&'static str>,
+}
+
+impl Tuning {
+    /// The settings `load` gives. A language the table does not list is left unset here: the table refuses it when
+    /// the options are read.
+    pub fn of(load: &ggtts_core::options::Load) -> Self {
+        Tuning {
+            temperature: load.temperature,
+            top_k: load.top_k,
+            top_p: load.top_p,
+            repetition_penalty: load.repetition_penalty,
+            subtalker_temperature: load.subtalker_temperature,
+            subtalker_top_k: load.subtalker_top_k,
+            subtalker_top_p: load.subtalker_top_p,
+            max_frames: load.max_frames,
+            language: load
+                .language
+                .as_deref()
+                .and_then(|l| ggtts_core::options::LANGUAGES.iter().copied().find(|k| *k == l)),
+        }
+    }
+
+    /// Writes the settings given into `voice`; the rest keep its defaults (the reference CLI's, 1200 frames, `zh`).
+    #[cfg(feature = "ggml")]
+    pub fn apply(&self, voice: &mut ggtts_qwen3_tts::engine::Voice) {
+        let s = &mut voice.sampling;
+        if let Some(t) = self.temperature {
+            s.temperature = t as f32;
+        }
+        if let Some(k) = self.top_k {
+            s.top_k = k;
+        }
+        if let Some(p) = self.top_p {
+            s.top_p = p as f32;
+        }
+        if let Some(p) = self.repetition_penalty {
+            s.repetition_penalty = p as f32;
+        }
+        s.subtalker_temperature = self.subtalker_temperature.map(|t| t as f32);
+        s.subtalker_top_k = self.subtalker_top_k;
+        s.subtalker_top_p = self.subtalker_top_p.map(|p| p as f32);
+        if let Some(n) = self.max_frames {
+            voice.max_frames = n;
+        }
+        if let Some(l) = self.language {
+            voice.language = l.to_string();
+        }
+    }
+}
+
+#[cfg(all(test, feature = "ggml"))]
+mod tuning_tests {
+    use super::Tuning;
+    use ggtts_core::options::Options;
+    use ggtts_qwen3_tts::engine::Voice;
+
+    fn voice(args: &[&str]) -> Voice {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let o = Options::from_args(&args).unwrap();
+        let mut v = Voice::default();
+        Tuning::of(&o.load).apply(&mut v);
+        v
+    }
+
+    /// Review of #351: the settings never touch the speaker (resolved before, from the load section and the default
+    /// model, #332), the device or the trace.
+    #[test]
+    fn the_settings_leave_the_speaker_device_and_trace_alone() {
+        let args: Vec<String> = ["--temperature", "0.7", "--language", "en", "--max-frames", "600"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let o = Options::from_args(&args).unwrap();
+        let mut v = Voice {
+            speaker: "a_speaker".into(),
+            ..Voice::default()
+        };
+        let before = (v.speaker.clone(), format!("{:?}", v.device), v.trace.clone());
+        Tuning::of(&o.load).apply(&mut v);
+        assert_eq!((v.speaker.clone(), format!("{:?}", v.device), v.trace.clone()), before);
+    }
+
+    /// #351 AC1: with none given, the voice is the engine's default, the one every render used before.
+    #[test]
+    fn no_setting_leaves_the_default_voice() {
+        let (a, b) = (voice(&[]), Voice::default());
+        assert_eq!(
+            (a.sampling, a.max_frames, a.language),
+            (b.sampling, b.max_frames, b.language)
+        );
+    }
+
+    #[test]
+    fn each_setting_reaches_the_voice() {
+        let v = voice(&[
+            "--temperature",
+            "0.7",
+            "--top-k",
+            "30",
+            "--top-p",
+            "0.95",
+            "--repetition-penalty",
+            "1.1",
+            "--subtalker-temperature",
+            "0.8",
+            "--subtalker-top-k",
+            "40",
+            "--subtalker-top-p",
+            "0.9",
+            "--max-frames",
+            "600",
+            "--language",
+            "en",
+        ]);
+        let s = v.sampling;
+        assert_eq!(
+            (s.temperature, s.top_k, s.top_p, s.repetition_penalty),
+            (0.7, 30, 0.95, 1.1)
+        );
+        assert_eq!(
+            (s.subtalker_temperature, s.subtalker_top_k, s.subtalker_top_p),
+            (Some(0.8), Some(40), Some(0.9))
+        );
+        assert_eq!((v.max_frames, v.language.as_str()), (600, "en"));
+        // The sub-talker samples with its own settings, and with the talker's where none is given.
+        let sub = s.subtalker();
+        assert_eq!(
+            (sub.temperature, sub.top_k, sub.top_p, sub.repetition_penalty),
+            (0.8, 40, 0.9, 1.0)
+        );
+        let talker_only = voice(&["--temperature", "0.7"]).sampling.subtalker();
+        assert_eq!(
+            (talker_only.temperature, talker_only.top_k, talker_only.top_p),
+            (0.7, 50, 1.0)
+        );
+    }
 }

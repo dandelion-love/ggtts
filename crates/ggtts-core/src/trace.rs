@@ -94,6 +94,9 @@ pub struct Header {
     pub steer: Option<Value>,
     /// Kitten-TTS 2 computed its whole output head (`load.kitten_full_head`). Absent from the line when false.
     pub kitten_full_head: bool,
+    /// The Qwen3-TTS sampler settings, frame cap and language given (`load.temperature` and the rest, by their name
+    /// in the load section), as the record's `sampling`. Absent from the line when none is given.
+    pub sampling: Option<Value>,
 }
 
 impl Header {
@@ -104,6 +107,7 @@ impl Header {
         self.instruction = reported.get("instruction").and_then(Value::as_str).map(str::to_string);
         self.steer = reported.get("steer").cloned();
         self.kitten_full_head = reported.get("kitten_full_head") == Some(&Value::Bool(true));
+        self.sampling = reported.get("sampling").cloned();
     }
 
     /// A header for `engine` at `trace_level`, including declared measurement semantics.
@@ -126,6 +130,7 @@ impl Header {
             instruction: None,
             steer: None,
             kitten_full_head: false,
+            sampling: None,
         }
     }
 }
@@ -235,6 +240,7 @@ impl Event<'_> {
                 if h.kitten_full_head {
                     m.insert("kitten_full_head".into(), true.into());
                 }
+                put(&mut m, "sampling", h.sampling.clone());
             }
             Event::ChunkBegin {
                 chunk,

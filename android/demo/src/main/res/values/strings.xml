@@ -80,6 +80,9 @@
     <string name="stopping">Stopping after the chunk in progress...</string>
     <string name="writing_first">Writing the first sentence (this takes 20 to 60 s)...</string>
     <string name="speaking_chunk">Speaking: chunk %1$d ready (first audio after %2$.1f s); preparing the rest...</string>
+    <string name="paused_chunk">Paused: chunk %1$d ready (first audio after %2$.1f s); preparing the rest...</string>
+    <string name="paused_status">Paused. The rest is still being prepared; press Play to listen on.</string>
+    <string name="playing_on">Playing on.</string>
     <string name="stopped_after">Stopped after %1$d chunk(s).</string>
     <string name="stopped_during_playback">Stopped during playback. The whole read was rendered and saved to %1$s.</string>
     <string name="read_done">%1$s: %2$.2f s of audio in %3$.1f s (RTF %4$.2f); first audio after %5$.1f s. Saved to %6$s</string>
@@ -108,5 +111,23 @@
     <string name="notification_starting">Starting...</string>
     <string name="notification_stop">Stop</string>
     <string name="notification_title">ggtts is reading</string>
-    <string name="notification_off_screen">%1$s\nOff screen, Android runs the read on the phone\'s slow cores: it continues, several times slower. Open the app to speed it up.</string>
+    <string name="notification_pause">Pause</string>
+    <string name="notification_play">Play</string>
+    <string name="notification_off_screen">%1$s Off screen it continues several times slower; open the app to speed it up.</string>
+    <!-- Text from other apps (Incoming.kt). -->
+    <string name="incoming_not_plain_shared">Only plain text can be shared to this app, not %1$s.</string>
+    <string name="incoming_no_text_shared">The shared item had no text in it.</string>
+    <string name="incoming_not_plain_file">Only a plain text (.txt) file can be opened in this app, not %1$s.</string>
+    <string name="incoming_file_too_big">That file is over %1$d KB. This app opens text files up to %1$d KB and %2$d characters.</string>
+    <string name="incoming_not_utf8">That file is not UTF-8 text, so it was not opened.</string>
+    <string name="incoming_empty">There was no text to read in what was %1$s.</string>
+    <string name="incoming_too_long">That text is %1$d characters. This app takes up to %2$d at a time; share a shorter part.</string>
+    <string name="incoming_path">This app opens text files shared through Android, not a path (%1$s).</string>
+    <string name="incoming_status">Text %1$s from another app: %2$d characters. Press Read aloud to hear it.</string>
+    <string name="incoming_status_replaced">Text %1$s from another app: %2$d characters, in place of what the card held. Press Read aloud to hear it.</string>
+    <string name="incoming_source_selected">selected</string>
+    <string name="incoming_source_shared">shared</string>
+    <string name="incoming_source_opened">opened</string>
+    <string name="file_unopened">That file could not be opened.</string>
+    <string name="file_unopened_why">That file could not be opened: %1$s</string>
 </resources>

@@ -3,11 +3,5 @@
 # It is exactly the table's gaps: a gap not listed here fails, and so does a line whose gap has closed (remove the
 # line in the pull request that closes it). A new option enters the table only as Carried or Refused, never as a gap:
 # scripts/check_conformance_base.py --base REF refuses a line that is not in this file at REF, so it only shrinks.
-android	render.redraw	#282
-android	render.steer_layers	#282
-android	render.steer_scale	#282
-kotlin	render.redraw	#292
-kotlin	render.steer_layers	#292
-kotlin	render.steer_scale	#292
 render-story	render.seed	#215
 render-text	render.edge_s	#180

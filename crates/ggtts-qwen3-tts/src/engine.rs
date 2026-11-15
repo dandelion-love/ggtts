@@ -415,6 +415,61 @@ impl Engine for Qwen3Tts {
 mod tests {
     use super::*;
 
+    /// #351 AC4: a greedy sub-talker is refused at load too, with the reason.
+    #[test]
+    fn greedy_subtalker_sampling_is_refused_at_load() {
+        for t in [0.0, -1.0, f32::NAN] {
+            let voice = Voice {
+                sampling: Sampling {
+                    subtalker_temperature: Some(t),
+                    ..Sampling::default()
+                },
+                ..Voice::default()
+            };
+            let e = Qwen3Tts::load(Path::new("no-talker.gguf"), Path::new("no-codec.gguf"), 1, voice)
+                .err()
+                .expect("a greedy sub-talker must be refused");
+            assert!(e.0.contains("greedy decoding of the sub-talker"), "{t}: {}", e.0);
+        }
+    }
+
+    /// Review of #351: a top-k of 1 is greedy decoding, refused at load for the talker and the sub-talker.
+    #[test]
+    fn a_top_k_of_1_is_refused_at_load() {
+        for (sampling, says) in [
+            (
+                Sampling {
+                    top_k: 1,
+                    ..Sampling::default()
+                },
+                "top-k 1 refused",
+            ),
+            (
+                Sampling {
+                    subtalker_top_k: Some(1),
+                    ..Sampling::default()
+                },
+                "sub-talker top-k 1 refused",
+            ),
+        ] {
+            let voice = Voice {
+                sampling,
+                ..Voice::default()
+            };
+            let e = Qwen3Tts::load(Path::new("no-talker.gguf"), Path::new("no-codec.gguf"), 1, voice)
+                .err()
+                .expect("top-k 1 must be refused");
+            assert!(e.0.contains(says) && e.0.contains("greedy decoding"), "{}", e.0);
+        }
+        assert!(Sampling {
+            top_k: 2,
+            subtalker_top_k: Some(0),
+            ..Sampling::default()
+        }
+        .check()
+        .is_ok());
+    }
+
     #[test]
     fn greedy_sampling_is_refused_at_load() {
         for temperature in [0.0, -1.0, f32::NAN] {

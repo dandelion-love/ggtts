@@ -35,6 +35,8 @@ pub struct Capabilities {
     pub hooks: Wants,
     /// Emits a `step` event per frame into a trace.
     pub step_events: bool,
+    /// Can compute its whole output head instead of a measured subset of it (`load.kitten_full_head`).
+    pub full_head: bool,
 }
 
 impl Capabilities {
@@ -50,6 +52,7 @@ impl Capabilities {
             devices: vec!["cpu"],
             hooks: Wants::NONE,
             step_events: false,
+            full_head: false,
         }
     }
 
@@ -72,6 +75,7 @@ impl Capabilities {
             }),
             "kitten-tts-2" => Some(Self {
                 devices: vec!["cpu", "cuda"],
+                full_head: true,
                 ..Self::none(name)
             }),
             "fake" => Some(Self {
@@ -99,6 +103,9 @@ impl Capabilities {
                 format!("the {family} engine cannot apply steering, which is only supported by the qwen3-tts engine")
             }
             "load.speaker" => format!("a speaker is only supported by the qwen3-tts engine, not {family}"),
+            "load.kitten_full_head" => {
+                format!("the whole output head is a kitten-tts-2 engine option; the {family} engine has no such head")
+            }
             "load.device" => format!(
                 "the {family} engine runs on {}, not {}",
                 self.devices.join(" or "),

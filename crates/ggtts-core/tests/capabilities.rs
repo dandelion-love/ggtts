@@ -257,3 +257,107 @@ fn an_environment_value_the_engine_lacks_is_ignored_and_a_flag_is_refused() {
     render_asking(&mut e, None).unwrap();
     assert!(draws.get() > 0);
 }
+
+/// #296 AC4: `GGTTS_KITTEN_FULL_HEAD` exported in the environment, on an engine without the whole-head switch
+/// (qwen3-tts, fake), is ignored: the render goes ahead, one warning names the variable, and the record lists it as
+/// ignored. The same option by flag or in a document is refused by the uniform check, under its key.
+#[test]
+fn the_kitten_full_head_variable_is_ignored_elsewhere_and_its_flag_refused() {
+    let var = |name: &str| (name == "GGTTS_KITTEN_FULL_HEAD").then(|| "1".to_string());
+    for engine in ["qwen3-tts", "fake"] {
+        let caps = Capabilities::of(engine).unwrap();
+        let ambient = Options::from_env(&var).unwrap();
+        assert!(ambient.load.kitten_full_head);
+        let checked = options::check(&ambient, &caps).unwrap();
+        assert!(
+            !checked.options.load.kitten_full_head,
+            "{engine}: the ambient value is reset"
+        );
+        assert_eq!(checked.warnings.len(), 1, "{engine}: {:?}", checked.warnings);
+        assert!(
+            checked.warnings[0].contains("GGTTS_KITTEN_FULL_HEAD"),
+            "{engine}: {:?}",
+            checked.warnings
+        );
+        let record = options::record(&checked.options, FakeEngine::default().info());
+        assert_eq!(
+            record["ignored"][0]["key"], "load.kitten_full_head",
+            "{engine}: {record}"
+        );
+        assert_eq!(
+            record["ignored"][0]["variable"], "GGTTS_KITTEN_FULL_HEAD",
+            "{engine}: {record}"
+        );
+        assert!(record.get("kitten_full_head").is_none(), "{engine}: {record}");
+        // And the render goes on.
+        let (mut e, draws) = Counting::new(caps.clone());
+        render_asking(&mut e, None).unwrap();
+        assert!(draws.get() > 0, "{engine}");
+
+        let by_flag = Options::from_args(&["--kitten-full-head".to_string()]).unwrap();
+        let r = options::check(&by_flag, &caps).unwrap_err();
+        assert_eq!(r.key, "load.kitten_full_head", "{engine}");
+        assert_eq!(
+            r,
+            caps.refusal("load.kitten_full_head", None),
+            "{engine}: the uniform wording"
+        );
+        let by_doc = Options::from_json(r#"{"load": {"kitten_full_head": true}}"#).unwrap();
+        assert_eq!(
+            options::check(&by_doc, &caps).unwrap_err().key,
+            "load.kitten_full_head",
+            "{engine}"
+        );
+        // The flag wins over the environment, and is still a request: refused.
+        let both = Options::from_env(&var).unwrap().layer(by_flag).unwrap();
+        assert_eq!(
+            options::check(&both, &caps).unwrap_err().key,
+            "load.kitten_full_head",
+            "{engine}"
+        );
+    }
+}
+
+/// #296 AC3: on kitten-tts-2 the switch is kept, from the environment or a flag, and the provenance record carries it
+/// in the fields every report and the trace header write (`options::REPORTED`). Off, it is absent from both.
+#[test]
+fn a_kitten_render_with_the_whole_head_records_it() {
+    let caps = Capabilities::of("kitten-tts-2").unwrap();
+    assert!(caps.full_head);
+    let var = |name: &str| (name == "GGTTS_KITTEN_FULL_HEAD").then(|| "1".to_string());
+    let info = EngineInfo {
+        family: "kitten-tts-2".into(),
+        backend: "test".into(),
+        parity: "distribution".into(),
+    };
+    for o in [
+        Options::from_env(&var).unwrap(),
+        Options::from_args(&["--kitten-full-head".to_string()]).unwrap(),
+    ] {
+        let checked = options::check(&o, &caps).unwrap();
+        assert!(checked.warnings.is_empty(), "{:?}", checked.warnings);
+        assert!(checked.options.load.kitten_full_head);
+        let record = options::record(&checked.options, &info);
+        assert_eq!(record["kitten_full_head"], true, "{record}");
+        assert!(record.get("ignored").is_none(), "{record}");
+        let reported = options::reported(&record);
+        assert_eq!(reported.get("kitten_full_head"), Some(&serde_json::Value::Bool(true)));
+        let mut header = ggtts_core::trace::Header::for_engine(&FakeEngine::default(), 1);
+        header.set_reported(&record);
+        assert!(header.kitten_full_head);
+        let line = ggtts_core::trace::Event::Trace(&header).to_json();
+        assert_eq!(
+            line.get("kitten_full_head"),
+            Some(&serde_json::Value::Bool(true)),
+            "{line:?}"
+        );
+    }
+    let off = options::record(&Options::default(), &info);
+    assert!(off.get("kitten_full_head").is_none(), "{off}");
+    let mut header = ggtts_core::trace::Header::for_engine(&FakeEngine::default(), 1);
+    header.set_reported(&off);
+    assert!(ggtts_core::trace::Event::Trace(&header)
+        .to_json()
+        .get("kitten_full_head")
+        .is_none());
+}

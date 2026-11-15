@@ -300,11 +300,11 @@ pub fn render_command_with(
 }
 
 /// The render options that change the audio, from the provenance record ([`ggtts_core::options::record`]): the
-/// style instruction (when not empty) and the steering. `Null` when there are neither. Every chapter manifest records
+/// style instruction (when not empty), the steering, and Kitten-TTS 2's whole output head when it is on. `Null` when there are neither. Every chapter manifest records
 /// it, and a resume under other render options is refused ([`crate::manifest::ManifestError::Mismatch`]).
 pub fn render_identity(options: &Options, info: &EngineInfo) -> serde_json::Value {
     let record = ggtts_core::options::record(options, info);
-    let mut kept: serde_json::Map<String, serde_json::Value> = ["instruction", "steer"]
+    let mut kept: serde_json::Map<String, serde_json::Value> = ["instruction", "steer", "kitten_full_head"]
         .into_iter()
         .filter_map(|k| record.get(k).map(|v| (k.to_string(), v.clone())))
         .collect();
@@ -357,6 +357,20 @@ pub fn render_command_options(
         files,
         speaker,
     } = load()?;
+    // The load section against what the engine supports, in the words every front end shows (`options::check`): a
+    // load option it lacks is refused when asked for, and ignored with one warning and listed in the record when it
+    // came only from the environment. The render section is checked by `render_plan` before anything is drawn.
+    let load_only = Options {
+        load: options.load.clone(),
+        marks: options.marks.clone(),
+        ..Options::default()
+    };
+    let checked = ggtts_core::options::check(&load_only, &engine.capabilities()).map_err(|r| r.to_string())?;
+    for w in &checked.warnings {
+        eprintln!("{w}");
+    }
+    options.load = checked.options.load;
+    options.marks = checked.options.marks;
     let profile = *engine.profile();
     let settings = BookRender {
         include_skippable: options.book.include_skippable,

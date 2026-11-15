@@ -2,6 +2,8 @@
 
 ## 2026-11-14
 
+- Surveyed how ten read-aloud apps and engines lay out their screens. They are built around a player, not a form,
+  so the next screen is a reading view with a docked player and a voice sheet.
 - The screen was reordered for a first-time user: voice, text, Speak and progress first; About and Advanced closed
   below. Dark mode is followed. On the phone, a closed Spinner using the dropdown row layout measured 0 px high under
   the DayNight theme, so the closed view now uses `simple_spinner_item`.

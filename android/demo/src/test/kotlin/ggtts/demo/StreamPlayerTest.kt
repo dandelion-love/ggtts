@@ -245,6 +245,25 @@ class StreamPlayerTest {
         assertEquals(emptyList<String>(), sink.misuse)
     }
 
+    /**
+     * Plant: a drain that ignores the pause. Everything has been written and sits in the device's buffer when Pause
+     * comes; the stream must not end (and release the device with that audio unplayed) until Resume.
+     */
+    @Test
+    fun aPauseAfterTheLastWriteStillHoldsTheEndOfTheStream() {
+        player.begin(24000)
+        val sink = sinks.single()
+        player.play(FloatArray(80))
+        val deadline = System.nanoTime() + 2_000_000_000L
+        while (sink.taken.get() < 80 && System.nanoTime() < deadline) Thread.sleep(1)
+        assertEquals(80, sink.taken.get())
+        player.pause()
+        assertTrue("finish() returned while the buffered end was paused", !returnsWithin(300) { player.finish() })
+        assertEquals("the device was released with paused audio in it", 1L, sink.released.count)
+        player.resume()
+        assertTrue(sink.released.await(2, TimeUnit.SECONDS))
+    }
+
     /** Plant: begin() that forgets a pause made before the first piece. The new stream must start held. */
     @Test
     fun aPauseBeforeTheFirstAudioHoldsTheStreamThatBegins() {

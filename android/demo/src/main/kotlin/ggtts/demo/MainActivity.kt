@@ -77,6 +77,11 @@ import java.util.concurrent.Executors
 class MainActivity : AppCompatActivity(), DemoView {
     companion object {
         const val TAG = "ggtts-demo"
+        /** The card's text across a re-creation (onSaveInstanceState), when it fits the saved state. */
+        private const val STATE_TEXT = "ggtts.demo.text"
+        /** The cache file holding the card's text when it is too long for the saved state ([Launch.MAX_SAVED_CHARS]). */
+        private const val STATE_TEXT_FILE = "ggtts.demo.text-file"
+        private const val CARD_FILE = "card-text.txt"
         private const val PICK = 1
         private const val NONE = "(none)"
         val ENGINES = listOf("qwen3-tts", "kitten-tts-2")
@@ -109,6 +114,7 @@ class MainActivity : AppCompatActivity(), DemoView {
     private lateinit var threads: Spinner
     private lateinit var speak: MaterialButton
     private lateinit var stop: MaterialButton
+    private lateinit var pause: MaterialButton
     private lateinit var laterButton: MaterialButton
     /** The ⋮ menu's Saved reads: this install's reads in Music/ggtts/, and an earlier install's once the folder is picked. */
     private val savedReads by lazy {
@@ -162,9 +168,33 @@ class MainActivity : AppCompatActivity(), DemoView {
         setContentView(layout())
         refreshFiles()
         Reader.screen = this
-        applyIntent(intent)
+        // A re-created screen (dark mode or the language changed, or the process restored from Recents) keeps what the
+        // user had in the card and does not take its intent again: that intent is still the original share or adb
+        // extras, and applying it again would put the shared text back over the user's edits, or press Speak again.
+        savedInstanceState?.let { saved ->
+            saved.getString(STATE_TEXT)
+                ?: saved.getString(STATE_TEXT_FILE)?.let { runCatching { File(cacheDir, it).readText() }.getOrNull() }
+        }?.let { text.setText(it) }
+        if (Launch.takesIntent(savedInstanceState, intent.flags)) applyIntent(intent)
         // A queue left by a process that died, or by the service's daily time running out, resumes now.
         RenderService.start(this)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        // The text field is built in code with no id, so the platform does not save it: the screen does. The saved
+        // state crosses the binder, so a long card (pasted or typed; nothing else limits it) goes to a cache file and
+        // only its name is saved: a Bundle over the binder limit would crash the app when the screen stops.
+        val s = text.text.toString()
+        if (Launch.fitsSavedState(s)) {
+            outState.putString(STATE_TEXT, s)
+            // A long card saved earlier is no longer the card: its file goes.
+            File(cacheDir, CARD_FILE).delete()
+        } else {
+            runCatching { File(cacheDir, CARD_FILE).writeText(s) }
+                .onSuccess { outState.putString(STATE_TEXT_FILE, CARD_FILE) }
+                .onFailure { Log.w(TAG, "the card's text (${s.length} characters) was not saved: $it") }
+        }
     }
 
     override fun onTrimMemory(level: Int) {
@@ -230,6 +260,8 @@ class MainActivity : AppCompatActivity(), DemoView {
         // The read and the loaded engine stay with the process (see Reader); only this screen goes.
         if (Reader.screen === this) Reader.screen = null
         worker.shutdown()
+        // The screen is closing for good (not re-created), so nothing will restore a long card's file: it goes.
+        if (isFinishing) File(cacheDir, CARD_FILE).delete()
         super.onDestroy()
     }
 
@@ -255,9 +287,25 @@ class MainActivity : AppCompatActivity(), DemoView {
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         importButton.isEnabled = !busy
         showReadActions(busy)
+        refreshPause()
+    }
+
+    /** The read as the media controls see it: none, playing or paused (MediaControls.state). */
+    private fun playerState() = MediaControls.state(controller.busy, controller.paused)
+
+    /** The screen's Pause or Play, from the read's state whatever changed it (this button, the notification, a headset). */
+    private fun refreshPause() {
+        if (!::pause.isInitialized) return
+        val state = playerState()
+        val label = MediaControls.screenLabel(state)
+        pause.visibility = if (label == null) View.GONE else View.VISIBLE
+        if (label != null) pause.text = label
+        // TalkBack reads the word, not the symbols.
+        pause.contentDescription = MediaControls.toggleLabel(state)
     }
 
     override fun showStatus(text: String) {
+        refreshPause()
         lastStatus = text
         statusIsError = false
         status.visibility = View.VISIBLE
@@ -496,6 +544,18 @@ class MainActivity : AppCompatActivity(), DemoView {
             textSize = 18f
         }
         stop.setOnClickListener { controller.stop() }
+        // Pause or Play beside Stop while a read runs: the same toggle as the notification and the media session
+        // (MediaControls), so a pause from the headset turns this button into Play too.
+        pause = MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
+            visibility = View.GONE; textSize = 18f
+        }
+        pause.setOnClickListener {
+            MediaControls.toggleAction(playerState())?.let { MediaControls.apply(it, controller) }
+            refreshPause()
+        }
+        val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        controls.addView(pause, LinearLayout.LayoutParams(0, dp(56), 1f).apply { rightMargin = dp(8) })
+        controls.addView(stop, LinearLayout.LayoutParams(0, dp(56), 1f))
         footer.addView(speak, lp(h = dp(56), top = dp(10)))
         // Render for later: the passage goes to a background queue and to Music/ggtts/, without playing (#416).
         laterButton = MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
@@ -503,7 +563,7 @@ class MainActivity : AppCompatActivity(), DemoView {
             setOnClickListener { renderLater() }
         }
         footer.addView(laterButton, lp(top = dp(4)))
-        footer.addView(stop, lp(h = dp(56), top = dp(10)))
+        footer.addView(controls, lp(top = dp(10)))
         footer.addView(readActionsRow(), lp(top = dp(8)))
 
         engines.check(100)
@@ -688,7 +748,75 @@ class MainActivity : AppCompatActivity(), DemoView {
         s.setSelection(i)
     }
 
+    /**
+     * Text another app handed over (Incoming.kt): shared, picked from the selection menu, or a .txt opened with the
+     * app. It fills the text card and nothing else: no read starts until the user presses Read aloud. Returns whether
+     * the intent was such a hand-over, so the debug build's adb extras (which can press Speak) are not read from it.
+     */
+    private fun takeIncoming(intent: Intent): Boolean {
+        val stream = if (Build.VERSION.SDK_INT >= 33) {
+            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION") intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+        }
+        val incoming = IncomingText.parse(
+            intent.action,
+            intent.type ?: intent.data?.let { contentResolver.getType(it) },
+            sendText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT),
+            processText = intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT),
+            stream = stream?.toString(),
+            data = intent.data?.toString(),
+        )
+        when (incoming) {
+            is Incoming.None -> return false
+            is Incoming.Refused -> {
+                Log.i(TAG, "incoming refused: ${incoming.why}")
+                showError(incoming.why)
+            }
+            is Incoming.Text -> showIncoming(incoming)
+            is Incoming.File -> {
+                // Off the main thread: a provider may be slow. The file is capped at IncomingText.MAX_FILE_BYTES.
+                val uri = Uri.parse(incoming.uri)
+                Thread {
+                    val read = try {
+                        contentResolver.openInputStream(uri)?.let { IncomingText.readFile(it) }
+                            ?: Incoming.Refused("That file could not be opened.")
+                    } catch (e: Exception) {
+                        Incoming.Refused("That file could not be opened: ${e.message}")
+                    }
+                    runOnUiThread {
+                        // The screen may have been closed while the file was read: then there is nothing to fill.
+                        if (isDestroyed) return@runOnUiThread
+                        when (read) {
+                            is Incoming.Text -> showIncoming(read)
+                            is Incoming.Refused -> {
+                                Log.i(TAG, "incoming file refused: ${read.why}")
+                                showError(read.why)
+                            }
+                            else -> {}
+                        }
+                    }
+                }.start()
+            }
+        }
+        return true
+    }
+
+    /**
+     * Put [incoming]'s text in the card, and say where it came from, how long it is, whether it replaced what the card
+     * held, and that Read aloud starts it.
+     */
+    private fun showIncoming(incoming: Incoming.Text) {
+        val replaced = text.text.toString().let { it.isNotBlank() && it != incoming.text && it !in EXAMPLES.values }
+        text.setText(incoming.text)
+        text.setSelection(0)
+        val n = IncomingText.characters(incoming.text)
+        Log.i(TAG, "incoming ${incoming.source}: $n characters${if (replaced) ", replacing the card's text" else ""}")
+        showStatus(IncomingText.status(incoming.source, n, replaced))
+    }
+
     private fun applyIntent(intent: Intent?) {
+        if (intent != null && takeIncoming(intent)) return
         // The scripted extras (file names in the models directory, and Speak pressed for you) are for testing a debug
         // build from adb. Another app can send this exported activity an intent too, so a release build ignores them,
         // and a debug build takes only names of files already in the models directory (pick).
@@ -898,6 +1026,9 @@ class DeviceAudio(private val dir: File) : AudioOut {
     override fun play(samples: FloatArray) = player.play(samples)
     override fun finish() = player.finish()
     override fun stop() = player.stop()
+    override fun pause() = player.pause()
+    override fun resume() = player.resume()
+    override val paused: Boolean get() = player.paused
 
     override fun save(samples: FloatArray, rate: Int, engine: String): String {
         dir.mkdirs()

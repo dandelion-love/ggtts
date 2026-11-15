@@ -124,6 +124,21 @@ fn without_the_judge_the_trace_has_no_reads() {
 
 /// The judge is refused by name, before anything is written: on `--text` (one draw, nothing to redraw), without
 /// `--redraw`, and when its ASR does not start.
+/// #336: `--redraw` on `--text` is refused by name, before anything is written: a text renders one draw and keeps it.
+#[test]
+fn redraw_is_refused_on_text() {
+    let dir = scratch("text-redraw");
+    let o = render(&dir, &["--text", "你好。", "--out", "o.flac", "--redraw", "1"]);
+    assert_eq!(o.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        stderr.contains("--redraw (render.redraw): --text renders one draw and keeps it"),
+        "{stderr}"
+    );
+    assert!(!dir.join("o.flac").exists(), "wrote output");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn the_judge_is_refused_where_it_cannot_work() {
     let dir = scratch("refused");

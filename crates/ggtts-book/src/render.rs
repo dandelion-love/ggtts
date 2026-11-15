@@ -576,7 +576,9 @@ fn hex(b: &[u8]) -> String {
 /// `book-<unix seconds>`, one for the whole book. An instrument that takes a reference (an ASR) is given the chapter's
 /// own text, written to `reference.txt` in its report directory. The book's trace covers every chapter, so no chapter
 /// is given an event stream, and an instrument that needs one is `skipped` with that reason. Under
-/// `on_instrument_error: abort`, a chapter where an instrument failed stops the chapters after it ([`Measured::No`]).
+/// `on_instrument_error: abort`, a chapter where an instrument failed stops the measuring of the chapters after it
+/// ([`Measured::No`]); a later chapter with a matching stamp is still taken from it. The stamp's signature covers the
+/// chapter FLAC, the settings, and each instrument's version and program ([`ggtts_instruments::runner::identity`]).
 pub fn measure_chapters(
     config: &ggtts_instruments::Config,
     options: &Options,
@@ -606,10 +608,6 @@ pub fn measure_chapters(
             status,
             incomplete,
         };
-        if let Some(why) = &aborted {
-            measured.push(entry(Measured::No(why.clone()), serde_json::Map::new(), Vec::new()));
-            continue;
-        }
         // The chapter's own config: every reference-taking instrument reads the chapter's text.
         let reference = report_dir.join("reference.txt");
         let mut chapter_config = config.clone();
@@ -623,8 +621,20 @@ pub fn measure_chapters(
             }
         }
         let flac = std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()))?;
+        // What the measurement depends on: the audio, the settings, and each instrument's version and program, so an
+        // instrument updated in place (a new catalogue version, an edited command script) measures again.
+        let instruments: Vec<String> = chapter_config
+            .instruments
+            .iter()
+            .map(ggtts_instruments::runner::identity)
+            .collect();
         let signature = hex(&ggtts_core::seed::sha256(
-            format!("{}\n{chapter_config:?}", hex(&ggtts_core::seed::sha256(&flac))).as_bytes(),
+            format!(
+                "{}\n{chapter_config:?}\n{}",
+                hex(&ggtts_core::seed::sha256(&flac)),
+                instruments.join("\n")
+            )
+            .as_bytes(),
         ));
         let stamp_path = report_dir.join(MEASURED_STAMP);
         let stamp = std::fs::read(&stamp_path)
@@ -638,6 +648,11 @@ pub fn measure_chapters(
                 .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
                 .unwrap_or_default();
             measured.push(entry(Measured::EarlierRun, status, incomplete));
+            continue;
+        }
+        // After an abort, a chapter with no kept measurement is not measured; one with a kept one is taken above.
+        if let Some(why) = &aborted {
+            measured.push(entry(Measured::No(why.clone()), serde_json::Map::new(), Vec::new()));
             continue;
         }
         // A stamp that no longer matches is removed before the run, so an interrupted run leaves none.

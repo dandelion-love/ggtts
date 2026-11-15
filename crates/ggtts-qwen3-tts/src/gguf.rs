@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
-use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::ptr;
@@ -14,6 +13,37 @@ use ggtts_ggml_sys as g;
 
 fn err(msg: impl Into<String>) -> EngineError {
     EngineError(msg.into())
+}
+
+/// `gguf_init_from_file` for a `/proc/self/fd/<n>` path: the descriptor duplicated and rewound
+/// (`ggtts_core::fdpath::open`) and handed to ggml as a `FILE*`. None for any other path; the error fdpath gives
+/// (a closed descriptor, or one that cannot seek, with what to do) when it refuses the descriptor; a null context
+/// when ggml cannot read it, as `gguf_init_from_file` gives for a file it cannot open.
+#[cfg(unix)]
+fn init_from_descriptor(path: &Path, params: g::gguf_init_params) -> Option<Result<*mut g::gguf_context, String>> {
+    use std::os::fd::IntoRawFd;
+    ggtts_core::fdpath::fd_of(path)?;
+    let file = match ggtts_core::fdpath::open(path) {
+        Ok(f) => f,
+        Err(e) => return Some(Err(format!("{}: {e}", path.display()))),
+    };
+    let raw = file.into_raw_fd();
+    // SAFETY: raw is a descriptor this function owns; fdopen takes it over, and fclose closes both.
+    unsafe {
+        let fp = libc::fdopen(raw, c"rb".as_ptr());
+        if fp.is_null() {
+            libc::close(raw);
+            return Some(Ok(ptr::null_mut()));
+        }
+        let ctx = g::gguf_init_from_file_ptr(fp.cast(), params);
+        libc::fclose(fp);
+        Some(Ok(ctx))
+    }
+}
+
+#[cfg(not(unix))]
+fn init_from_descriptor(_path: &Path, _params: g::gguf_init_params) -> Option<Result<*mut g::gguf_context, String>> {
+    None
 }
 
 /// An open GGUF file: its key-value metadata and tensor directory. Tensor data is not read here.
@@ -31,8 +61,12 @@ impl Gguf {
             no_alloc: true,
             ctx: &mut meta,
         };
-        // SAFETY: c is a valid C string; meta receives a context owned by Self.
-        let ctx = unsafe { g::gguf_init_from_file(c.as_ptr(), params) };
+        // A /proc/self/fd/<n> path is read through that descriptor, never reopened (ggtts_core::fdpath).
+        let ctx = match init_from_descriptor(path, params) {
+            Some(r) => r.map_err(err)?,
+            // SAFETY: c is a valid C string; meta receives a context owned by Self.
+            None => unsafe { g::gguf_init_from_file(c.as_ptr(), params) },
+        };
         if ctx.is_null() {
             return Err(err(format!("failed to open GGUF file: {}", path.display())));
         }
@@ -205,7 +239,8 @@ impl Gguf {
             }
             g::ggml_backend_buffer_set_usage(buffer, g::GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
 
-            let mut f = File::open(&self.path).map_err(|e| err(format!("{}: {e}", self.path.display())))?;
+            let mut f =
+                ggtts_core::fdpath::open(&self.path).map_err(|e| err(format!("{}: {e}", self.path.display())))?;
             let data_offset = g::gguf_get_data_offset(self.ctx) as u64;
             let mut buf = Vec::new();
             for i in 0..self.n_tensors() {

@@ -955,6 +955,9 @@ class DeviceAudio(private val dir: File) : AudioOut {
     override fun play(samples: FloatArray) = player.play(samples)
     override fun finish() = player.finish()
     override fun stop() = player.stop()
+    override fun pause() = player.pause()
+    override fun resume() = player.resume()
+    override val paused: Boolean get() = player.paused
 
     override fun save(samples: FloatArray, rate: Int, engine: String): String {
         dir.mkdirs()

@@ -91,6 +91,38 @@ class WordsTest {
         assertTrue(found.joinToString("\n"), found.isEmpty())
     }
 
+    /**
+     * #411 AC1, beyond the screen: no source file passes a quoted English literal to a toast, a notification (title,
+     * text, channel, action) or a chooser. Each would reach the user untranslated.
+     */
+    @Test
+    fun noToastOrNotificationTakesAnEnglishLiteral() {
+        val literal = Regex(
+            """(Toast\.makeText\([^,]+,\s*"[A-Za-z])|""" +
+                """((setContentTitle|setContentText|setTicker|createChooser|setSubText)\("[A-Za-z])|""" +
+                """(NotificationChannel\([^,]+,\s*"[A-Za-z])|""" +
+                """(Action\.Builder\([^,]+,\s*"[A-Za-z])""",
+        )
+        val found = File("src/main/kotlin/ggtts/demo").listFiles { f -> f.name.endsWith(".kt") }!!.flatMap { f ->
+            f.readLines().withIndex()
+                .filter { (_, line) -> !line.trimStart().startsWith("//") && literal.containsMatchIn(line) }
+                .map { (i, line) -> "${f.name}:${i + 1}: ${line.trim()}" }
+        }
+        assertTrue(found.joinToString("\n"), found.isEmpty())
+        // The check sees the literal it is for (planted).
+        assertTrue(literal.containsMatchIn("""Notification.Action.Builder(null, "Stop", stop)"""))
+        assertTrue(literal.containsMatchIn("""Toast.makeText(this, "Saved", Toast.LENGTH_SHORT)"""))
+    }
+
+    /** #411: Android 13 and later list the app's languages in its settings (localeConfig), English and zh-HK. */
+    @Test
+    fun theAppDeclaresItsLanguages() {
+        val manifest = File("src/main/AndroidManifest.xml").readText()
+        assertTrue("the manifest names no localeConfig", "android:localeConfig=\"@xml/locales_config\"" in manifest)
+        val config = File("src/main/res/xml/locales_config.xml").readText()
+        for (tag in listOf("en", "zh-HK")) assertTrue("$tag is not in locales_config.xml", "android:name=\"$tag\"" in config)
+    }
+
     /** About's English constants, which its own tests check, are the English resources. */
     @Test
     fun aboutsEnglishIsTheResources() {

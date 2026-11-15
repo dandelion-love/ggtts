@@ -25,6 +25,12 @@ android {
     }
 }
 
+// AboutTest reads the manifest to hold the screen's "no internet permission" sentence to it. Declared as an input so
+// a manifest change re-runs the tests instead of reusing an up-to-date result.
+tasks.withType<Test>().configureEach {
+    inputs.file("src/main/AndroidManifest.xml").withPathSensitivity(PathSensitivity.RELATIVE)
+}
+
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
 
 dependencies {

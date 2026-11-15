@@ -1,5 +1,25 @@
 # Log
 
+## 2026-11-14
+
+- The screen became a reading screen (a voice card and sheet, the text in a card, a docked player), following the
+  survey of read-aloud apps. Voice samples are made on the phone by the app itself, so each is the voice as these
+  files produce it.
+- Surveyed how ten read-aloud apps and engines lay out their screens. They are built around a player, not a form,
+  so the next screen is a reading view with a docked player and a voice sheet.
+- The screen was reordered for a first-time user: voice, text, Speak and progress first; About and Advanced closed
+  below. Dark mode is followed. On the phone, a closed Spinner using the dropdown row layout measured 0 px high under
+  the DayNight theme, so the closed view now uses `simple_spinner_item`.
+- Gap 3 closed: the app lists voices made from what its files say they are, selects the first, and keeps the
+  engine's parts under "Advanced". On the phone, Speak with no files named read through hk_voice_343 (first audio at
+  18 s). The files declare no language, so a Kitten-TTS 2 Cantonese voice shows as English.
+
+## 2026-11-13
+
+- The app read as a store listing would be: eight gaps, ranked. The first, no stated purpose, is closed: the screen
+  opens with what the app does, what it costs and what it is not for, held to the manifest and the measured costs by
+  a test. Getting a voice inside the app and choosing a named voice come next.
+
 ## 2026-11-12
 
 - A Kitten-TTS 2 step profiled in the engine's own graph (desktop): layer products about 27 to 30 ms, the head 16 ms,

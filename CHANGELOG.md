@@ -144,6 +144,41 @@ that a merge places under a released heading is caught.
 
   An empty `GGTTS_LOG_LEVEL` or `GGTTS_LOG_FORMAT` is now unset rather than an error. `--stream-format raw` is still
   s16le.
+- **The Android app says what it is for before anything technical**: it reads text aloud in Cantonese or English,
+  on the phone only, slowly, and is not for screen readers. A fresh install also lists the steps to a first read.
+  A test fails if the app gains the internet permission while the screen says it has none.
+- **The Android app offers voices, not an engine and its files.** It reads what each file in its models directory is
+  from the file itself (a GGUF's architecture, a talker's speaker names, a voice JSON's fields), lists the voices the
+  files make, and selects the first complete one, so Speak works on opening. Files that make no voice yet are named
+  with what they lack. The engine, file pickers, speaker and threads are under "Advanced", closed by default, and the
+  adb extras still set them.
+- **The Android app's screen puts typing and Speak first.** The voice, a multi-line text box and a filled Speak button
+  come right under the title; the purpose paragraphs move under "About this app" and the Android-TTS check under
+  "Advanced". While a read runs, a progress bar and a seconds count show until the first sound, with plain wording
+  ("Preparing the voice", "Writing the first sentence"). The app follows the phone's dark mode on Android 10 and later.
+- **The Android app is laid out as a reading screen.** A voice card opens a sheet of voices, each with its language,
+  engine, size, time to first sound and a Sample button. The text sits in a card with Paste, Clear and a character
+  count, and a player is docked at the bottom: Read aloud, then the stage, a progress bar, the seconds and Stop. Import,
+  About and Advanced are in a ⋮ menu. `scripts/android_voice_samples.sh` makes each voice's sample with the app itself.
+- **The Android app has an icon:** 粵 in Noto Sans HK (SIL Open Font License) on the app's light blue, as an adaptive
+  icon with a monochrome layer, rendered by `scripts/android_icon.py`.
+- **The Android app and its text-to-speech engine are named "ggtts Text-to-Speech"** in the launcher and in the phone's
+  text-to-speech settings, where they were "ggtts demo" and "ggtts (on-device, slow)". The speed warning is unchanged
+  on the app's screen before a load.
+- **A Kitten-TTS 2 model whose token map names ids outside its vocabulary is refused when it loads,** with an error
+  naming the `kitten.token_map` field and both numbers. Such a file used to load and could fail or misbehave later.
+  For code using the engine crate directly: output-head rows set outside the head are now an error from the forward
+  pass, where they used to fall back to the whole head.
+
+### Fixed
+
+- **The Android demo recovers from playback failures.** If the phone's audio output fails to start, it is released
+  instead of held; if it refuses audio partway through, the read shows an error instead of reporting a finished read;
+  and an error such as running out of memory during playback leaves the screen usable instead of busy until restart.
+- **Stop in the Android demo is immediate and safe at any moment.** It no longer holds the screen for up to a second
+  while playback winds down, a Stop pressed while the last chunk plays is reported as stopped rather than as a
+  finished read, and a Stop pressed just as a read starts no longer lets its first chunk play on.
+
 
 ## v0.1.0-rc.12 (2026-11-13)
 

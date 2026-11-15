@@ -193,6 +193,24 @@ print(" ".join(i.filename for i in z.infolist() if not i.is_dir() and z.open(i).
     say "$1 holds lib/arm64-v8a/libggtts_ffi.so and the licence notices, and no model file"
 }
 
+# Refuse a manifest that asks for the internet permission. The demo's privacy statement says it collects no data
+# because it cannot send any; this holds it to the merged manifest (the APK's, dependencies included), parsed as XML,
+# so a comment naming the permission does not trip it and a dependency that adds it does.
+check_permissions() { # MANIFEST
+    python3 - "$1" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+NAME = "{http://schemas.android.com/apk/res/android}name"
+root = ET.parse(sys.argv[1]).getroot()
+asked = [e.get(NAME) for tag in ("uses-permission", "uses-permission-sdk-23") for e in root.iter(tag)]
+if "android.permission.INTERNET" in asked:
+    print(f"android_build: {sys.argv[1]} asks for android.permission.INTERNET; the privacy statement says it does not",
+          file=sys.stderr)
+    sys.exit(1)
+print(f"android_build: {sys.argv[1]} asks for no internet permission ({len(asked)} permissions)")
+PY
+}
+
 # A copy of zip IN at OUT with ENTRY removed (MODE drop) or added with GGUF's magic bytes (MODE add); with MODE
 # drop-jar, ENTRY is removed from the classes.jar inside IN. The planted cases below.
 plant_zip() { # MODE IN OUT ENTRY
@@ -339,6 +357,10 @@ app() { # OUT_DIR
     cp "$root/android/demo/build/outputs/apk/debug/demo-debug.apk" "$out/ggtts-demo-debug.apk"
     check_aar "$out/ggtts.aar"
     check_apk "$out/ggtts-demo-debug.apk"
+    local merged
+    merged=$(find "$root/android/demo/build/intermediates" -path '*merged_manifest*debug*' -name AndroidManifest.xml | head -1)
+    [ -n "$merged" ] || { say "no merged manifest under android/demo/build/intermediates"; return 1; }
+    check_permissions "$merged"
 
     # Planted: each check must refuse what it exists to refuse.
     local p="$tdir/android-planted"
@@ -354,11 +376,16 @@ app() { # OUT_DIR
         say "planted: an APK carrying a GGUF under another name passed"
         return 1
     fi
+    sed 's#<application#<uses-permission android:name="android.permission.INTERNET" />\n    <application#' "$merged" > "$p/internet.xml"
+    if check_permissions "$p/internet.xml" 2>/dev/null; then say "planted: a manifest asking for INTERNET passed"; return 1; fi
+    sed 's#<application#<!-- not android.permission.INTERNET -->\n    <application#' "$merged" > "$p/comment.xml"
+    check_permissions "$p/comment.xml" >/dev/null || { say "planted: a comment naming INTERNET was refused"; return 1; }
     echo 'int ggtts_planted(void) { return 0; }' > "$p/planted.c"
     "$(llvm_bin clang)" --target="$target$api" -shared -Wl,-z,max-page-size=4096 -o "$p/lib4k.so" "$p/planted.c"
     if check_align "$p/lib4k.so" 2>/dev/null; then say "planted: a 4 KB-aligned library passed"; return 1; fi
     say "planted: an AAR without the library, an AAR without its notices, an APK with a .gguf, an APK with GGUF bytes" \
-        "under another name and a 4 KB-aligned library are all refused"
+        "under another name, a manifest asking for INTERNET and a 4 KB-aligned library are all refused (a comment" \
+        "naming INTERNET is not)"
     say "built $out/ggtts.aar and $out/ggtts-demo-debug.apk"
 }
 

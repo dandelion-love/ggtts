@@ -13,6 +13,12 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **A binding renders one chunk at an exact seed: `render.seed` in a render document** (the C ABI's
+  `ggtts_render_opts`, Python's `options=`, Kotlin's `options`). The text is one chunk, drawn once at that seed and
+  kept whole, as `ggtts-render --text TEXT --seed S` renders it, so the samples are the same, and a caller that loaded
+  the engine once pays no process, model load or hash per chunk. `render.seed` was refused in a render document
+  before; it is refused with `seed_salt` (the render call's own seed), `redraw` or `edge_s`, and in a load document,
+  each under `render.seed`, and an empty text under `render.text`.
 - **A steering scale per layer: `--steer-scales` (`render.steer_scales`).** One scale per layer of `--steer-layers`,
   in its order, so a file of unit-length directions can carry the per-layer push lengths that unit-vector steering
   methods use; at `s × |v_L|` it renders what `--steer-scale s` renders over the unnormalised vectors. Every front

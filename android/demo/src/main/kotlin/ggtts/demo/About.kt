@@ -4,7 +4,7 @@
 package ggtts.demo
 
 object About {
-    /** One line, the length of a store's short description (80 characters at most). */
+    /** One line, the length of a store's short description (80 characters at most). English; [tagline] translates. */
     const val TAGLINE = "Reads text aloud in Cantonese or English, entirely on this phone."
 
     /** The reading screen's header subtitle: the store line, so the screen opens saying what the app is for. */
@@ -22,21 +22,26 @@ object About {
      * permission" by [AboutTest] against the manifest, and the wait by [EngineCosts], whose figures are measured: each
      * voice's range is read from there, so it says what the player's "First sound in about…" says for that voice.
      */
-    val PURPOSE = listOf(
-        "Type or paste a passage and listen to it read in a natural voice. Nothing you type leaves the phone: the app has no permission to use the internet.",
-        "It is slow. The first sound takes ${EngineCosts.BY_ENGINE.getValue("qwen3-tts").firstAudioS} seconds with a Cantonese voice and ${EngineCosts.BY_ENGINE.getValue("kitten-tts-2").firstAudioS} with an English one, so it suits listening to a passage you have chosen, not reading the screen as you go.",
-        "Other apps can use it too: it is a text-to-speech engine in Android's settings.",
+    val PURPOSE: List<String> get() = purpose(EnglishWords)
+
+    /** [TAGLINE] in [w]'s language. */
+    fun tagline(w: Words): String = w.get("tagline")
+
+    /** [EMPTY_TEXT_HINT] in [w]'s language. */
+    fun emptyTextHint(w: Words): String = w.get("empty_text_hint")
+
+    /** [PURPOSE] in [w]'s language, with each voice's wait from [EngineCosts]. */
+    fun purpose(w: Words): List<String> = listOf(
+        w.get("purpose_1"),
+        w.get("purpose_2", EngineCosts.firstAudio("qwen3-tts", w), EngineCosts.firstAudio("kitten-tts-2", w)),
+        w.get("purpose_3"),
     )
 
     /**
      * The steps still ahead of a new user, given what the models directory holds: the first thing a store reviewer
      * meets on a fresh install is an app with nothing to speak with. Empty when model files are present.
      */
-    fun gettingStarted(modelFiles: Int): List<String> =
+    fun gettingStarted(modelFiles: Int, w: Words = EnglishWords): List<String> =
         if (modelFiles > 0) emptyList()
-        else listOf(
-            "1. Get a voice's model files on this phone (about 2.5 GB; android/README.md in the ggtts repository says where).",
-            "2. Press \"Import a model file\" and pick each one.",
-            "3. Choose the files below and press Speak.",
-        )
+        else listOf(w.get("start_1"), w.get("start_2"), w.get("start_3"))
 }

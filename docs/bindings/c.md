@@ -398,11 +398,11 @@ laid over the load's defaults. NULL is the empty document.
   level step, as it always has, because an exported function never changes its behaviour.
 * **What a render document takes:**
   * `render`: `seed_salt` (`ggtts_render`'s seed, as a string), `instruction`, `steer` with `steer_scale` and
-    `steer_layers`, `redraw` and `edge_s`.
+    `steer_layers`, `redraw` and `edge_s`; or `seed`: `render.seed` renders the text as one chunk at exactly that seed, drawn once and kept whole (no planning, judge, redraw, trim or level), as `ggtts-render --text TEXT --seed S` renders it: the same model, speaker, device and threads give the same samples, without a process, a model load or a hash per chunk. It cannot be given with `seed_salt` (the render call's own seed argument is one), `redraw` or `edge_s`, and an empty text is refused under `render.text`.
   * `observe`: `trace` with `trace_level`, a trace file as `ggtts-render --trace` writes it.
 * **What it refuses:**
   * any `load` key (they are fixed when the engine loads);
-  * `render.text`, `render.story` and `render.seed`: the text is the argument, and the seed is `seed_salt`;
+  * `render.text` and `render.story`: the text is the argument;
   * `render.measure_timings`, the reports and logging: the C ABI returns PCM, not timings or files;
   * `output.out` and `output.stream_format`;
   * the book options;

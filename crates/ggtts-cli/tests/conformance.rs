@@ -102,7 +102,6 @@ const TEXT_SALT: &str = "a one-chunk plan renders at --seed: there is no story s
 const NO_INSTRUMENTS: &str =
     "instruments are programs run on a finished file; run them with `ggtts-render` or on the file";
 const NO_FILE: &str = "a binding hands the PCM to its caller and writes no file";
-const BINDING_SEED: &str = "a binding's seed is the story seed's salt (render.seed_salt); render.seed is the sampler seed of ggtts-render --text";
 const NO_STORY_FILE: &str = "a binding renders the text it is given; a story file is ggtts-render --story's";
 const NOT_BOOK_FRONT: &str = "ggtts-book's own options";
 const NO_TIMINGS: &str = "a binding returns the samples, not timings or reports";
@@ -219,7 +218,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (SAMPLER, Carried),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
-            (&["render.seed"], Refused(BINDING_SEED)),
+            (&["render.seed"], Carried),
             (&["render.judge"], Refused(NO_JUDGE)),
             (STEER, Carried),
             (&["render.redraw", "render.edge_s"], Carried),
@@ -255,7 +254,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (SAMPLER, Carried),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
-            (&["render.seed"], Refused(BINDING_SEED)),
+            (&["render.seed"], Carried),
             (&["render.judge"], Refused(NO_JUDGE)),
             (STEER, Carried),
             (&["render.edge_s", "render.redraw"], Carried),
@@ -291,7 +290,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (SAMPLER, Carried),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
-            (&["render.seed"], Refused(BINDING_SEED)),
+            (&["render.seed"], Carried),
             (&["render.judge"], Refused(NO_JUDGE)),
             (&["render.steer"], Carried),
             // Probed on `Recorder`, an engine that steers and redraws, loaded through `kotlin::load_over`.
@@ -338,7 +337,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (SAMPLER, Carried),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
-            (&["render.seed"], Refused(BINDING_SEED)),
+            (&["render.seed"], Carried),
             (&["render.judge"], Refused(NO_JUDGE)),
             (&["render.steer", "render.edge_s", "render.steer_scales"], Carried),
             // Handed to the binding in the document like the rest, so the app carries them exactly when the Kotlin
@@ -1346,7 +1345,6 @@ fn python_probes() -> Vec<Probe> {
     // The options a binding does not take, refused by their keys.
     for (key, doc) in [
         ("render.measure_timings", r#"{"render": {"measure_timings": true}}"#),
-        ("render.seed", r#"{"render": {"seed": 3}}"#),
         ("observe.timing_report", r#"{"observe": {"timing_report": "t.json"}}"#),
         (
             "observe.duration_report",
@@ -1658,7 +1656,6 @@ fn kotlin_probes() -> Vec<Probe> {
         ("observe.trace_level", r#"{"observe": {"trace_level": 2}}"#),
         ("observe.instruments", r#"{"observe": {"instruments": "i"}}"#),
         ("render.measure_timings", r#"{"render": {"measure_timings": true}}"#),
-        ("render.seed", r#"{"render": {"seed": 3}}"#),
         ("observe.timing_report", r#"{"observe": {"timing_report": "t.json"}}"#),
         ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
         ("output.out", r#"{"output": {"out": "o.flac"}}"#),
@@ -1935,9 +1932,99 @@ fn probes() -> Vec<Probe> {
     out.extend(c_abi_probes());
     out.extend(python_probes());
     out.extend(kotlin_probes());
+    out.extend(exact_seed_probes());
     out.extend(stream_probes());
     let kotlin: Vec<Probe> = out.iter().filter(|(fe, _, _)| *fe == "kotlin").cloned().collect();
     out.extend(android_probes(&read(ANDROID_SEAM), &kotlin));
+    out
+}
+
+/// `render.seed` in a binding's render document: one chunk at that exact seed (`ggtts_core::pipeline::exact`), as
+/// `ggtts-render --text --seed` renders it. The C ABI and Python are carried when the trace records exactly one draw,
+/// at that seed. Kotlin writes no trace on Android, so it is carried when its samples are the C ABI's exact render's
+/// and not its story render's (which trims and levels). Each render is on a fresh fake engine.
+fn exact_seed_probes() -> Vec<Probe> {
+    use ggtts_ffi::{ggtts_free, ggtts_load_opts, ggtts_pcm_free, ggtts_render_opts, GGTTS_OK};
+    use ggtts_py::core::{guard_keyed, load, LoadRequest};
+    let dir = std::env::temp_dir().join(format!("ggtts-conformance-exact-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let text = "今日天氣好好，我哋去公園行下";
+    let fake = r#"{"load": {"engine": "fake"}}"#;
+    let traced = |name: &str| {
+        let trace = dir.join(format!("{name}.jsonl"));
+        let doc = format!(
+            r#"{{"render": {{"seed": 3}}, "observe": {{"trace": {}}}}}"#,
+            serde_json::to_string(&trace.to_string_lossy()).unwrap()
+        );
+        (trace, doc)
+    };
+    let one_draw_at_3 = |trace: &Path| {
+        if trace_seeds(trace) == [3] {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        }
+    };
+    let c_render = |doc: &str| {
+        let load_doc = CString::new(fake).unwrap();
+        let mut h = 0u64;
+        assert_eq!(
+            unsafe { ggtts_load_opts(load_doc.as_ptr(), &mut h) },
+            GGTTS_OK,
+            "{}",
+            last_error()
+        );
+        let (t, d) = (CString::new(text).unwrap(), CString::new(doc).unwrap());
+        let (mut p, mut n, mut r) = (std::ptr::null_mut(), 0usize, 0u32);
+        let code = unsafe {
+            ggtts_render_opts(
+                h,
+                t.as_ptr(),
+                d.as_ptr(),
+                None,
+                std::ptr::null_mut(),
+                &mut p,
+                &mut n,
+                &mut r,
+            )
+        };
+        assert_eq!(code, GGTTS_OK, "c-abi: {doc}: {}", last_error());
+        let samples = unsafe { std::slice::from_raw_parts(p, n) }.to_vec();
+        unsafe { ggtts_pcm_free(p, n) };
+        ggtts_free(h);
+        samples
+    };
+    let mut out = Vec::new();
+    let (trace, doc) = traced("c-abi");
+    c_render(&doc);
+    out.push(("c-abi", "render.seed".to_string(), one_draw_at_3(&trace)));
+    let (trace, doc) = traced("python");
+    let req = LoadRequest {
+        options: Some(fake.into()),
+        ..Default::default()
+    };
+    let rendered = guard_keyed(|| load(&req, &mut |_| {})?.0.render_with(text, None, Some(&doc)));
+    assert!(rendered.is_ok(), "python: {:?}", rendered.err());
+    out.push(("python", "render.seed".to_string(), one_draw_at_3(&trace)));
+    let kotlin = |doc: &str| {
+        use ggtts_ffi::kotlin::{load, render_opts, LoadArgs};
+        let h = load(fake, &LoadArgs::default()).unwrap();
+        let r = guard_keyed(|| render_opts(h, text, Some(doc), None));
+        ggtts_free(h);
+        r.unwrap_or_else(|e| panic!("kotlin: {doc}: {e:?}")).0
+    };
+    let exact = r#"{"render": {"seed": 3}}"#;
+    let (ours, c_exact, c_story) = (kotlin(exact), c_render(exact), c_render("{}"));
+    out.push((
+        "kotlin",
+        "render.seed".to_string(),
+        if ours == c_exact && ours != c_story {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        },
+    ));
+    let _ = std::fs::remove_dir_all(dir);
     out
 }
 

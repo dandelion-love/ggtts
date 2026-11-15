@@ -4,7 +4,7 @@ package ggtts.demo
 import ggtts.Ggtts
 import ggtts.Pcm
 
-/** Which engine to load, from which files: a path, or a content URI in the picked models folder; null is "none picked". */
+/** Which engine to load, from which files. Paths are files on the device; null is "none picked". */
 data class LoadRequest(
     val engine: String,
     val model: String?,
@@ -34,35 +34,24 @@ interface TtsEngine : AutoCloseable {
 /**
  * The real binding: ggtts.Ggtts over JNI. [cacheDir] is where Qwen3-TTS looks for its default model files when no
  * model is picked; the demo never downloads them (allowDownload = false), so a missing one is the binding's error.
- * [paths] turns each file's location into a path the engine opens: a file in the picked models folder is a content
- * URI, opened as `/proc/self/fd/<n>` and held open until the engine is closed (Storage.kt).
  */
-class GgttsBinding(private val cacheDir: String, private val paths: PathResolver = PathResolver.PLAIN) : TtsBinding {
+class GgttsBinding(private val cacheDir: String) : TtsBinding {
     override fun load(request: LoadRequest): TtsEngine {
-        val held = mutableListOf<Opened>()
-        fun resolve(location: String?): String? = location?.let { paths.open(it).also { o -> held += o }.path }
-        val tts = try {
-            Ggtts.load(
-                request.engine,
-                model = resolve(request.model),
-                codec = resolve(request.codec),
-                voice = resolve(request.voice),
-                threads = request.threads,
-                speaker = request.speaker,
-                cacheDir = cacheDir,
-                allowDownload = false,
-            )
-        } catch (t: Throwable) {
-            held.forEach { runCatching { it.close() } }
-            throw t
-        }
+        val tts = Ggtts.load(
+            request.engine,
+            model = request.model,
+            codec = request.codec,
+            voice = request.voice,
+            threads = request.threads,
+            speaker = request.speaker,
+            cacheDir = cacheDir,
+            allowDownload = false,
+        )
         return object : TtsEngine {
             override fun render(text: String, seed: Long): Pcm = tts.render(text, seed)
             override fun renderStream(text: String, seed: Long, onPiece: (FloatArray, Int) -> Boolean): Boolean =
                 tts.renderStream(text, seed) { samples, rate -> onPiece(samples, rate) }
-            override fun close() {
-                try { tts.close() } finally { held.forEach { runCatching { it.close() } } }
-            }
+            override fun close() = tts.close()
         }
     }
 }

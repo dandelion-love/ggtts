@@ -23,7 +23,7 @@ class GgttsTtsService : TextToSpeechService() {
     override fun onCreate() {
         voices = VoiceStore(prefs(this))
         session = SynthesisSession(
-            GgttsBinding(File(filesDir, "ggtts-cache").path, ContentPaths(this)),
+            GgttsBinding(File(filesDir, "ggtts-cache").path),
             voices,
             log = { Log.i(MainActivity.TAG, it) },
             // The engine the demo's screen loaded, if it is the same request: one model resident, not two.

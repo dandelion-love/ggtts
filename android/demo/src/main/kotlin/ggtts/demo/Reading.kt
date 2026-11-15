@@ -147,7 +147,7 @@ object Reader {
         val handler = Handler(Looper.getMainLooper())
         val log: (String) -> Unit = { Log.i(MainActivity.TAG, it) }
         val c = DemoController(
-            binding = GgttsBinding(File(app.filesDir, "ggtts-cache").path, ContentPaths(app)),
+            binding = GgttsBinding(File(app.filesDir, "ggtts-cache").path),
             view = relay,
             audio = DeviceAudio(File(app.getExternalFilesDir(null) ?: app.filesDir, "out")),
             background = { worker.execute(it) },
@@ -168,7 +168,7 @@ object Reader {
     /** The engine cache the screen and the system engine share. */
     fun shared(context: Context): EngineCache {
         val app = context.applicationContext
-        return SharedEngines.get { EngineCache(GgttsBinding(File(app.filesDir, "ggtts-cache").path, ContentPaths(app))) { Log.i(MainActivity.TAG, it) } }
+        return SharedEngines.get { EngineCache(GgttsBinding(File(app.filesDir, "ggtts-cache").path)) { Log.i(MainActivity.TAG, it) } }
     }
 
     /**

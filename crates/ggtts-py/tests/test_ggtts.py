@@ -389,6 +389,19 @@ def test_an_unknown_load_key_and_a_malformed_document_are_value_errors():
             tts.render(LINE, options=["render"])
 
 
+def test_an_error_beside_a_document_is_an_option_error_only_when_it_refuses_an_option():
+    with fake() as tts:
+        # Empty text is not an option: the same GgttsError with and without a document.
+        for options in (None, {}):
+            with pytest.raises(ggtts.GgttsError) as e:
+                tts.render("", options=options)
+            assert not isinstance(e.value, ggtts.OptionError) and code_of(e) == ggtts.ERR_ARG
+        # A document refused whole names no key, and is still an option error.
+        with pytest.raises(ggtts.OptionError) as e:
+            tts.render(LINE, options="[1]")
+        assert e.value.key is None
+
+
 def test_a_trace_is_written_where_the_document_says(tmp_path):
     trace = tmp_path / "t.jsonl"
     with fake() as tts:
@@ -495,9 +508,17 @@ def test_real_steering_through_options_changes_the_audio(tmp_path):
     """GGTTS_TINY_TALKER and GGTTS_CODEC: the tiny one-layer fixture (scripts/tiny_fixture.sh), hidden size 2048."""
     talker, codec = env("GGTTS_TINY_TALKER"), env("GGTTS_CODEC")
     steer = _safetensors(tmp_path / "steer.safetensors", "talker.layer.0", [4.0] * 2048)
-    doc = {"load": {"engine": "qwen3-tts", "model": talker, "codec": codec, "offline": True}}
-    with ggtts.load(options=doc) as a, ggtts.load(options=doc) as b, ggtts.load(options=doc) as c:
-        plain, again = a.render(LINE, seed=3), b.render(LINE, seed=3)
-        assert plain.pcm == again.pcm, "the unsteered render repeats at its seed: a difference is the steering"
-        steered = c.render(LINE, seed=3, options={"render": {"steer": str(steer)}})
+    doc = {"load": {"engine": "qwen3-tts", "model": talker, "codec": codec, "offline": True, "threads": 4}}
+
+    def render(options=None):
+        # One model at a time: each render loads its own engine and closes it before the next.
+        with ggtts.load(options=doc) as tts:
+            return tts.render(LINE, seed=3, options=options)
+
+    plain, again = render(), render()
+    assert plain.pcm == again.pcm, "the unsteered render repeats at its seed: a difference is the steering"
+    steered = render({"render": {"steer": str(steer)}})
     assert len(steered) > 0 and steered.pcm != plain.pcm
+    # Through a load document's render defaults too.
+    with ggtts.load(options={**doc, "render": {"steer": str(steer)}}) as tts:
+        assert tts.render(LINE, seed=3).pcm == steered.pcm

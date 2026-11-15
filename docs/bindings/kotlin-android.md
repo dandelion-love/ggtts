@@ -192,8 +192,10 @@ no instruction (`ERR_ARG`). Its licence is the model's: audio rendered with it m
 * **The render** splits the text into chunks, renders each, checks it, trims it, joins them and levels the whole read,
   as `ggtts-render --story` does.
 * **The seed** fixes the random draws. It is the **seed salt**: each chunk's sampler seed is derived from the text, a
-  fixed story id and this salt. In an options document its key is `render.seed_salt` (a string). With neither, the
-  salt is `Ggtts.DEFAULT_SEED`, 20260905. The same engine, model, text and seed give the same samples on the same
+  fixed story id and this salt. In an options document its key is `render.seed_salt` (a string). With no `seed` and
+  no `options`, the salt is `Ggtts.DEFAULT_SEED`, 20260905; with `options` and no salt given anywhere, it is empty,
+  as the C library's `ggtts_render_opts` leaves it, so a document renders the same samples in every binding. Pass
+  `seed` to keep a render the same with and without a document. The same engine, model, text and seed give the same samples on the same
   platform.
 * **`options`** is a render document, laid over the load's render defaults. See [Options](#options).
 * **The result** is a `Pcm`: mono float samples in a `FloatArray` the JVM owns, at `sampleRate` Hz (24000 for the

@@ -449,6 +449,31 @@ pub fn render_defaults(o: &Options) -> Options {
     kept
 }
 
+/// What a held engine's renders resolve a steering URL with ([`crate::resolve_steer`]): its load's `load.offline`
+/// and `load.cache_dir`. A render document cannot give load options, so each binding keeps these per engine from the
+/// load, whatever form the load took (a document, a struct, keyword arguments), and lays them into every render.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LoadCache {
+    pub offline: bool,
+    pub cache_dir: Option<PathBuf>,
+}
+
+impl LoadCache {
+    /// The load's settings, from the options it loaded with.
+    pub fn of(o: &Options) -> Self {
+        LoadCache {
+            offline: o.load.offline,
+            cache_dir: o.load.cache_dir.clone(),
+        }
+    }
+
+    /// Lays the settings into a render's options, before [`render_document`] resolves a steering URL with them.
+    pub fn apply(&self, o: &mut Options) {
+        o.load.offline = self.offline;
+        o.load.cache_dir.clone_from(&self.cache_dir);
+    }
+}
+
 /// A render document laid over a load's render defaults ([`render_defaults`]): what the document gives wins.
 pub fn layer_render(defaults: &Options, doc: Options) -> Result<Options, Fail> {
     defaults.clone().layer(doc).map_err(refusal_err)
@@ -511,6 +536,9 @@ pub fn render_document(
     let mut o = options::check(options, &engine.capabilities())
         .map_err(refusal_err)?
         .options;
+    // A steering file named by URL is downloaded into the per-user cache first; a binding writes no log, so it is
+    // silent, and a failure is the refusal of render.steer.
+    crate::resolve_steer(&mut o, &mut |_| {}).map_err(refusal_err)?;
     o.read_steering().map_err(refusal_err)?;
     let opts = o.render_options(engine.profile()).map_err(refusal_err)?;
     let level = o.observe.trace_level.unwrap_or(1);
@@ -760,6 +788,11 @@ fn test_engine(name: &str) -> Option<Held> {
         )),
         #[cfg(feature = "plant")]
         "panic-load" => panic!("planted panic in load"),
+        #[cfg(feature = "plant")]
+        "steerable" => Some(Held::checked(
+            Box::new(planted::Steerable(ggtts_fake::FakeEngine::default())),
+            None,
+        )),
         _ => None,
     }
 }
@@ -923,6 +956,29 @@ mod planted {
         }
         fn generate(&mut self, _req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
             panic!("planted panic in generate")
+        }
+        fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
+            self.0.decode(codes)
+        }
+    }
+
+    /// The fake engine stating Qwen3-TTS's capabilities, so a steering option passes the capability check and
+    /// reaches the steering file's resolution and reading (it never renders steered audio: the render fails at the
+    /// fake engine's own refusal). For the tests of a steering URL through a binding.
+    pub struct Steerable(pub ggtts_fake::FakeEngine);
+
+    impl Engine for Steerable {
+        fn capabilities(&self) -> ggtts_core::capabilities::Capabilities {
+            ggtts_core::capabilities::Capabilities::of("qwen3-tts").expect("qwen3-tts is an engine")
+        }
+        fn info(&self) -> &EngineInfo {
+            self.0.info()
+        }
+        fn profile(&self) -> &Profile {
+            self.0.profile()
+        }
+        fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
+            self.0.generate(req)
         }
         fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
             self.0.decode(codes)

@@ -348,6 +348,8 @@ pub fn render_command_options(
     let seed_root = options.book.seed_root.as_deref().unwrap_or(DEFAULT_SEED_ROOT);
     let book = Book::open(book_path).map_err(|e| e.to_string())?;
     let mut options = options.clone();
+    // A steering file named by URL is downloaded into the cache first (`ggtts_load::resolve_steer`).
+    ggtts_load::resolve_steer(&mut options, &mut |m| eprintln!("ggtts-book: {m}")).map_err(|e| e.to_string())?;
     options.read_steering().map_err(|e| e.to_string())?;
     // An instrument that cannot be found, or a reference a book supplies itself, is refused before the engine
     // loads or any chapter is rendered.

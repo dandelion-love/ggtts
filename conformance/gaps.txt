@@ -9,9 +9,5 @@ android	render.steer_scale	#282
 kotlin	render.redraw	#292
 kotlin	render.steer_layers	#292
 kotlin	render.steer_scale	#292
-python	load.cache_dir	#291
-python	render.redraw	#291
-python	render.steer_layers	#291
-python	render.steer_scale	#291
 render-story	render.seed	#215
 render-text	render.edge_s	#180

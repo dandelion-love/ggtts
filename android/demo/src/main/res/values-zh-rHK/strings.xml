@@ -123,6 +123,8 @@
     <string name="notification_starting">開始緊…</string>
     <string name="notification_stop">停止</string>
     <string name="notification_title">ggtts 朗讀緊</string>
+    <string name="screen_pause">❚❚  暫停</string>
+    <string name="screen_play">▶  播放</string>
     <string name="notification_pause">暫停</string>
     <string name="notification_play">播放</string>
     <string name="notification_off_screen">%1$s 離開畫面之後會慢幾倍繼續朗讀；打開應用程式就會快返。</string>

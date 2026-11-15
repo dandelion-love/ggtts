@@ -499,20 +499,26 @@ fn load_options(o: &Options, default_files: bool, document: bool) -> Result<u64,
 }
 
 /// [`load_options`]' first half: the engine an options value names, opened, not yet registered.
+/// The engine a load document names, with the document checked whole against that engine's capabilities: the one
+/// check a document load makes before anything is read or opened. [`open_options`] and the Kotlin binding's test
+/// seam (`kotlin::load_over`) both call it, so the two cannot drift apart.
+pub(crate) fn checked_document_engine(o: &Options) -> Result<String, Fail> {
+    let engine = binding::document_engine(o)?;
+    if let Some(caps) = ggtts_core::capabilities::Capabilities::of(&engine) {
+        ggtts_core::options::check(o, &caps).map_err(refused)?;
+    }
+    Ok(engine)
+}
+
 fn open_options(o: &Options, default_files: bool, document: bool) -> Result<Held, Fail> {
     let path = |p: &Option<PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned());
     let (model, codec, voice) = (path(&o.load.model), path(&o.load.codec), path(&o.load.voice));
     // "auto" is a document's engine only: a struct load names its engine, and "auto" is no engine there.
     let engine = if document {
-        binding::document_engine(o)?
+        checked_document_engine(o)?
     } else {
         o.load.engine.clone()
     };
-    if document {
-        if let Some(caps) = ggtts_core::capabilities::Capabilities::of(&engine) {
-            ggtts_core::options::check(o, &caps).map_err(refused)?;
-        }
-    }
     let cache_dir = path(&o.load.cache_dir);
     let settings = Settings {
         speaker: o.load.speaker.as_deref().filter(|s| !s.is_empty()),

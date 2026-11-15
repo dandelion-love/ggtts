@@ -39,3 +39,7 @@ cargo run --release -p ggtts-qwen3-tts --features ggml --example decode -- codec
 
 `chunk0.f32` is the decoded samples as little-endian f32. For a `--text` render, which has no trim and no level
 step, they are the FLAC's samples before 16-bit quantisation.
+
+`scripts/codes_decode_check.sh [cpu|cuda]` runs that check end to end on the default model from the cache: it
+renders one `--text` line with and without `--codes` (the FLACs must match), decodes the written codes on the same
+device, and compares them with the render's samples.

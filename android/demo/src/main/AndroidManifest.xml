@@ -5,6 +5,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Rendering queued reads with the screen off (RenderService): mediaProcessing on Android 15+, dataSync below.
+         Both are install-time permissions; nothing is asked. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application
         android:allowBackup="false"
@@ -46,6 +50,11 @@
             android:name=".ReadingService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+        <!-- Renders queued reads to Music/ggtts/ in the background, without playing them. -->
+        <service
+            android:name=".RenderService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProcessing|dataSync" />
         <!-- ggtts as a system TTS engine (Android's TextToSpeech API). Only the system may bind it. -->
         <service
             android:name=".GgttsTtsService"

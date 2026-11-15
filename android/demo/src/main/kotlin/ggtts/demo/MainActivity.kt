@@ -499,18 +499,19 @@ class MainActivity : AppCompatActivity(), DemoView {
 
         val scroll = NestedScrollView(this).apply { addView(col) }
         // The ⋮ menu: everything that is not reading. The two section items say whether they open or close.
-        header.menu.add(0, 1, 0, "Import a voice file…")
-        header.menu.add(0, 4, 1, "Choose a models folder…")
-        header.menu.add(0, 5, 1, "Saved reads")
-        val aboutItem = header.menu.add(0, 2, 2, "About this app")
-        val advItem = header.menu.add(0, 3, 3, "Advanced")
+        // Item ids are MenuIds' names, never numbers: two items with one id open each other's action (MenuIdsTest).
+        header.menu.add(0, MenuIds.IMPORT, 0, "Import a voice file…")
+        header.menu.add(0, MenuIds.MODELS_FOLDER, 1, "Choose a models folder…")
+        header.menu.add(0, MenuIds.SAVED_READS, 1, "Saved reads")
+        val aboutItem = header.menu.add(0, MenuIds.ABOUT, 2, "About this app")
+        val advItem = header.menu.add(0, MenuIds.ADVANCED, 3, "Advanced")
         header.setOnMenuItemClickListener { item: MenuItem ->
             when (item.itemId) {
-                1 -> pickFile()
-                2 -> aboutItem.title = if (toggleSection(scroll, about)) "Hide About" else "About this app"
-                3 -> advItem.title = if (toggleSection(scroll, adv)) "Hide Advanced" else "Advanced"
-                4 -> chooseFolder()
-                5 -> savedReads.show()
+                MenuIds.IMPORT -> pickFile()
+                MenuIds.ABOUT -> aboutItem.title = if (toggleSection(scroll, about)) "Hide About" else "About this app"
+                MenuIds.ADVANCED -> advItem.title = if (toggleSection(scroll, adv)) "Hide Advanced" else "Advanced"
+                MenuIds.MODELS_FOLDER -> chooseFolder()
+                MenuIds.SAVED_READS -> savedReads.show()
             }
             true
         }

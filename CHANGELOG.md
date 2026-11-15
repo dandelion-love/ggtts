@@ -67,7 +67,9 @@ that a merge places under a released heading is caught.
   `measurement`. An ASR instrument is given each chapter's own text as its reference. A `--require`d instrument
   that is not ok, or a chapter left unmeasured under `--require`, exits 3 with every chapter written. An unknown
   instrument, or a `reference_file` given for a book, is refused before anything is rendered. The instrument
-  timeout is per chapter. Without the flags a book renders exactly as before. The instrument run is one library call,
+  timeout is per chapter. A chapter's kept measurement is reused only while its FLAC, the settings and each
+  instrument's version and program (a script's bytes) are unchanged, and a chapter after an aborted one keeps it.
+  Without the flags a book renders exactly as before. The instrument run is one library call,
   `ggtts_instruments::options`, which `ggtts-render` now makes too; its reports and exit codes are unchanged.
 
 ### Changed

@@ -162,7 +162,7 @@ class ReadingLifecycleTest {
     @Test
     fun theScreenAskingForOtherFilesMidReadLoadsNoSecondModel() {
         val (_, out, shown) = systemReadWith { _, screen, _ ->
-            screen.speak(qwen.copy(model = "/m/other.gguf"), "x", Ggtts.DEFAULT_SEED)
+            screen.speak(qwen.with(LoadRequest.LOAD, "model", "/m/other.gguf"), "x", Ggtts.DEFAULT_SEED)
         }
         assertTrue(shown.last().startsWith("error: Not started"))
         assertEquals("one model resident, never two", 1, loads.size)

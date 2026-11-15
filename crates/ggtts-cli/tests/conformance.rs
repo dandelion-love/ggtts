@@ -80,7 +80,6 @@ const INSTRUMENTS: &[&str] = &[
     "observe.report",
     "observe.run",
 ];
-const FILES_OUT: &[&str] = &["output.out", "output.stream", "output.stream_format"];
 const STREAM_LEVEL: &[&str] = &["output.stream_raw", "output.stream_level_seconds"];
 const STREAM: &[&str] = &[
     "output.stream",
@@ -305,6 +304,10 @@ const FRONT_ENDS: &[FrontEnd] = &[
     },
     FrontEnd {
         id: "android",
+        // The app's request, its saved voices and its render calls hold the options document and hand it to the
+        // Kotlin binding unread (android/demo/.../TtsBinding.kt, GgttsBinding), so it carries and refuses what the
+        // binding does, by the binding's own refusal; `android_probes` checks the hand-over and takes the Kotlin
+        // probes' verdicts. The app's own choices: it never downloads, and it streams raw unless the document says.
         cells: &[
             (
                 &[
@@ -314,26 +317,33 @@ const FRONT_ENDS: &[FrontEnd] = &[
                     "load.voice",
                     "load.speaker",
                     "load.threads",
+                    "load.cache_dir",
                 ],
                 Carried,
             ),
             (&["load.device"], Refused(CPU_ONLY)),
             (&["load.offline"], Refused(NEVER_DOWNLOADS)),
-            (&["load.cache_dir"], Gap(282)),
             (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
-            (&["render.text", "render.seed_salt"], Carried),
-            (&["render.instruction"], Gap(282)),
+            (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
             (&["render.judge"], Refused(NO_JUDGE)),
-            (STEER, Gap(282)),
-            (&["render.redraw", "render.edge_s", "render.measure_timings"], Gap(282)),
+            (&["render.steer", "render.edge_s"], Carried),
+            // Handed to the binding in the document like the rest, so the app carries them exactly when the Kotlin
+            // binding does, and the binding has them as gaps (#292: no probe on the fake engine). The app cannot carry
+            // more than the binding: `the_app_carries_no_more_than_its_binding` holds the two rows together.
+            (
+                &["render.steer_scale", "render.steer_layers", "render.redraw"],
+                Gap(282),
+            ),
+            (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Refused(ANDROID_TRACE)),
-            (REPORTS, Gap(282)),
-            (LOG, Gap(282)),
+            (REPORTS, Refused(NO_TIMINGS)),
+            (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
-            (FILES_OUT, Refused(NO_FILE)),
-            (STREAM_LEVEL, Gap(284)),
+            (&["output.out", "output.stream_format"], Refused(NO_FILE)),
+            (&["output.stream"], Carried),
+            (STREAM_LEVEL, Carried),
             (BOOK, Refused(NOT_BOOK_FRONT)),
         ],
     },
@@ -1514,7 +1524,91 @@ fn probes() -> Vec<Probe> {
     out.extend(python_probes());
     out.extend(kotlin_probes());
     out.extend(stream_probes());
+    let kotlin: Vec<Probe> = out.iter().filter(|(fe, _, _)| *fe == "kotlin").cloned().collect();
+    out.extend(android_probes(&read(ANDROID_SEAM), &kotlin));
     out
+}
+
+// ── the Android app: its document handed to the Kotlin binding ──
+
+/// The demo app's binding seam, where its request becomes the binding's call.
+const ANDROID_SEAM: &str = "android/demo/src/main/kotlin/ggtts/demo/TtsBinding.kt";
+
+/// What `GgttsBinding` must hand the Kotlin binding for the app to carry its document: the load document at load, and
+/// the request's render and stream documents on every render.
+const ANDROID_HANDOVER: [&str; 3] = [
+    "Ggtts.load(allowDownload = false, options = request.loadDocument(cacheDir))",
+    "tts.render(text, seed, options = whole)",
+    "tts.renderStream(text, seed, options = stream)",
+];
+
+/// The Android app's probes. The app runs on a phone, not in this test, so it is probed at its seam: when `seam` (the
+/// source of `GgttsBinding`) hands every call its document ([`ANDROID_HANDOVER`]), the app sees each option as the
+/// Kotlin binding does (`kotlin`, that binding's probes); when any call is made without it, every option is dropped.
+/// The app's own JVM tests and `scripts/kotlin_binding_test.sh` (android/demo/src/hostTest) run the seam itself.
+fn android_probes(seam: &str, kotlin: &[Probe]) -> Vec<Probe> {
+    let code = code_only(seam);
+    let handed = ANDROID_HANDOVER.iter().all(|h| code.contains(h));
+    kotlin
+        .iter()
+        .map(|(_, key, seen)| ("android", key.clone(), if handed { *seen } else { Seen::Dropped }))
+        .collect()
+}
+
+/// The options the app claims to carry that its binding does not: the app hands its document to the Kotlin binding,
+/// so where the binding's cell is a gap or a refusal, the app's cannot be Carried.
+fn wider_than_its_binding(cells: &BTreeMap<(String, String), Cell>) -> Vec<String> {
+    let mut wrong = Vec::new();
+    for d in TABLE {
+        let key = d.key();
+        let kotlin = cells[&("kotlin".to_string(), key.clone())];
+        let android = cells[&("android".to_string(), key.clone())];
+        if android == Carried && kotlin != Carried {
+            wrong.push(format!("{key}: android is Carried, kotlin is {kotlin:?}"));
+        }
+    }
+    wrong
+}
+
+/// The app carries no more than its binding, and a planted android cell wider than Kotlin's fails, naming it.
+#[test]
+fn the_app_carries_no_more_than_its_binding() {
+    let mut cells = cells(TABLE, FRONT_ENDS).unwrap();
+    let wrong = wider_than_its_binding(&cells);
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    cells.insert(("android".to_string(), "render.steer_scale".to_string()), Carried);
+    let planted = wider_than_its_binding(&cells);
+    assert_eq!(planted.len(), 1, "{planted:?}");
+    assert!(
+        planted[0].starts_with("render.steer_scale: android is Carried, kotlin is Gap(292)"),
+        "{planted:?}"
+    );
+}
+
+/// #282 AC6: the app's carried options are exercised through its seam, and an app whose binding call drops the
+/// document fails: a planted seam that renders without it sees the instruction dropped.
+#[test]
+fn an_app_that_renders_without_its_document_fails() {
+    let seam = read(ANDROID_SEAM);
+    let kotlin = kotlin_probes();
+    let seen = android_probes(&seam, &kotlin);
+    assert!(!seen.is_empty());
+    let cells = cells(TABLE, FRONT_ENDS).unwrap();
+    for (fe, key, s) in &seen {
+        verdict(fe, key, cells[&(fe.to_string(), key.clone())], *s).unwrap();
+    }
+    let planted = seam.replace("tts.render(text, seed, options = whole)", "tts.render(text, seed)");
+    assert_ne!(
+        planted, seam,
+        "the seam no longer has the render hand-over this test plants out"
+    );
+    let dropped = android_probes(&planted, &kotlin);
+    let instruction = dropped.iter().find(|(_, k, _)| k == "render.instruction").unwrap();
+    let e = verdict("android", "render.instruction", Carried, instruction.2).unwrap_err();
+    assert!(
+        e.contains("render.instruction is Carried in the table, and the probe saw it Dropped"),
+        "{e}"
+    );
 }
 
 fn report(line: &str) {
@@ -1620,12 +1714,12 @@ fn a_new_option_entered_as_a_gap_fails_naming_it() {
 #[test]
 fn a_closed_gap_still_listed_fails() {
     let mut cells = cells(TABLE, FRONT_ENDS).unwrap();
-    let key = ("android".to_string(), "output.stream_raw".to_string());
-    assert_eq!(cells[&key], Gap(284));
+    let key = ("book".to_string(), "render.edge_s".to_string());
+    assert_eq!(cells[&key], Gap(283));
     cells.insert(key, Carried);
     let errors = check_gaps(&cells, &read(GAPS));
     assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(errors[0].contains("android\\toutput.stream_raw\\t#284"), "{errors:?}");
+    assert!(errors[0].contains("book\\trender.edge_s\\t#283"), "{errors:?}");
 }
 
 /// #284 AC3: a document path that ignores `raw` (it levels anyway) fails: the probe sees `output.stream_raw` dropped,

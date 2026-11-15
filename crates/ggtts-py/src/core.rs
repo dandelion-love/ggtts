@@ -162,6 +162,12 @@ impl Handle {
         )
     }
 
+    /// The engine's capability statement, as the C-ABI's `ggtts_capabilities` states it
+    /// (`ggtts_core::capabilities::statement`, format `ggtts-capabilities/1`, with the loaded model's speakers), as JSON.
+    pub fn capabilities(&self) -> Result<String, Fail> {
+        self.with_engine(|e, _| Ok(ggtts_core::capabilities::statement(e).to_string()))
+    }
+
     /// Render `text` (one paragraph per non-empty line) to mono f32 samples and their rate.
     pub fn render(&self, text: &str, seed: u64) -> Result<(Vec<f32>, u32), Fail> {
         self.with_engine(|e, instruction| binding::render(e, text, seed, instruction))
@@ -240,6 +246,11 @@ impl Handle {
             },
         )
     }
+}
+
+/// The options schema, as the C-ABI's `ggtts_options_schema` states it: `ggtts_core::options::schema`, as JSON.
+pub fn options_schema() -> String {
+    ggtts_core::options::schema().to_string()
 }
 
 /// Run `f` as [`guard`] does, and give the schema key of an option it refused ([`binding::guard_keyed`]).
@@ -1016,5 +1027,32 @@ mod tests {
         if cfg!(feature = "ggml") {
             assert!(msg.contains(&root.display().to_string()), "{msg}");
         }
+    }
+
+    /// The schema and an engine's statement are the C-ABI's, text for text, from the same shared pieces.
+    #[test]
+    fn the_schema_and_the_statement_are_the_c_abis() {
+        let c_schema = unsafe { std::ffi::CStr::from_ptr(ggtts_ffi::ggtts_options_schema()) }
+            .to_str()
+            .unwrap()
+            .to_string();
+        let parsed = |t: &str| -> serde_json::Value { serde_json::from_str(t).unwrap() };
+        assert_eq!(parsed(&options_schema()), parsed(&c_schema));
+        let (h, _) = fake();
+        let e = std::ffi::CString::new("fake").unwrap();
+        let mut handle = 0u64;
+        let null = std::ptr::null();
+        assert_eq!(
+            unsafe { ggtts_ffi::ggtts_load(e.as_ptr(), null, null, null, 0, &mut handle) },
+            0
+        );
+        let mut json = std::ptr::null_mut();
+        assert_eq!(unsafe { ggtts_ffi::ggtts_capabilities(handle, &mut json) }, 0);
+        let theirs = unsafe { std::ffi::CStr::from_ptr(json) }.to_str().unwrap().to_string();
+        unsafe { ggtts_ffi::ggtts_string_free(json) };
+        ggtts_ffi::ggtts_free(handle);
+        assert_eq!(h.capabilities().unwrap(), theirs);
+        assert!(h.close());
+        assert_eq!(h.capabilities().unwrap_err().0, ERR_HANDLE);
     }
 }

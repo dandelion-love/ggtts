@@ -397,6 +397,27 @@ def test_a_trace_is_written_where_the_document_says(tmp_path):
     assert len(lines) > 1 and '"trace_level":2' in lines[0]
 
 
+# -- introspection ----------------------------------------------------------------------------------------------
+
+
+def test_the_options_schema_is_the_librarys():
+    schema = ggtts.options_schema()
+    assert schema["$schema"].startswith("https://json-schema.org/")
+    assert "steer" in schema["properties"]["render"]["properties"]
+    assert "seed_salt" in schema["properties"]["render"]["properties"]
+
+
+def test_an_engine_states_its_capabilities():
+    with fake() as tts:
+        caps = tts.capabilities()
+    assert caps["format"] == "ggtts-capabilities/1" and caps["family"] == "fake"
+    assert caps["steering"] is False and caps["instruction"] is False
+    assert caps["speaker_names"] == []
+    with pytest.raises(ggtts.GgttsError) as e:
+        tts.capabilities()
+    assert code_of(e) == ggtts.ERR_HANDLE
+
+
 # -- real models, opt-in -----------------------------------------------------------------------------------------
 
 

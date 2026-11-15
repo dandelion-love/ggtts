@@ -126,6 +126,7 @@ In an app, `load` and `render` block: call them off the main thread. To play a `
 | `Ggtts.load(engine, model, codec, voice, threads, speaker, instruction, cacheDir, allowDownload, options)` | Load an engine. Every argument has a default; name the ones you set. `options` is a load document ([Options](#options)). |
 | `render(text, seed = null, options = null): Pcm` | Render the whole text. `Pcm` has `samples: FloatArray` (mono) and `sampleRate: Int`. |
 | `renderStream(text, seed = null, options = null, listener): Boolean` | Render, handing each piece to `listener` as soon as it is ready. False if the listener stopped it. |
+| `capabilities(): String` | What the engine supports, as JSON. `Ggtts.optionsSchema()` is the options schema. See [Options](#options). |
 | `close()` | Release the engine. `Ggtts` is `AutoCloseable`, so `use { }` works. |
 | `Ggtts.ERR_ARG` ... `Ggtts.ERR_BUSY`, `Ggtts.DEFAULT_SEED` | The error codes, and the default seed, 20260905. |
 
@@ -284,6 +285,13 @@ needs no new parameter. A document is a JSON string, the C library's options doc
 * **Refused:** `load.device` (the binding is CPU only), the trace (`observe.trace`: a desktop observer, with no file a
   phone user can read), instruments, a `load` key in a render document, `render.seed` (use `seed_salt`), the reports
   and logging, `render.measure_timings`, `output.out` and the book options. A levelled stream is not taken yet.
+
+**What the library states.** `Ggtts.optionsSchema()` is the options schema as JSON: every option a document may
+give, with its type, default and phase, from the library (the C library's `ggtts_options_schema`), so no schema file
+ships with the binding. `capabilities()` on an instance is what its engine supports, as JSON (`ggtts-capabilities/1`,
+the C library's `ggtts_capabilities`): `family`, `instruction` and `no_instruction_why`, `steering`, `speakers` and
+`speaker_names` (the model's speakers), `devices`, `hooks` and `step_events`. Read them to offer only what the engine
+takes, for example to show steering only when `steering` is true.
 
 A refused option throws `GgttsException` with `ERR_ARG`, and its `key` is the option's schema key, read from the
 library (`ggtts_last_error_key`) and never parsed from the message: `render.steer` for steering on an engine that has

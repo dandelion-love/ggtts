@@ -258,6 +258,7 @@ dependencies = [
  "ggtts-models",
  "ggtts-qwen3-tts",
  "pyo3",
+ "serde_json",
 ]
 
 [[package]]

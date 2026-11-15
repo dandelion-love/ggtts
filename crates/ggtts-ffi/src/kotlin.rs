@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use ggtts_core::options::{Options, Refusal, Source};
 use ggtts_load::binding;
 
-use crate::{defaults, load_document, refused, render};
+use crate::{defaults, load_document, options_schema_text, refused, render, with_engine};
 
 /// A code and a message.
 pub use ggtts_load::binding::Fail;
@@ -170,6 +170,17 @@ pub fn render_stream_opts(
     }
 }
 
+/// `Native.optionsSchema`: the options schema, the text `ggtts_options_schema` returns.
+pub fn options_schema() -> String {
+    options_schema_text()
+}
+
+/// `Native.capabilities`: the capability statement of the engine `handle` names, the text `ggtts_capabilities`
+/// returns (`ggtts_core::capabilities::statement`).
+pub fn capabilities(handle: u64) -> Result<String, Fail> {
+    with_engine(handle, |e, _| Ok(ggtts_core::capabilities::statement(e).to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,5 +325,20 @@ mod tests {
         let edged = render_opts(h, TEXT, None, Some(7)).unwrap();
         ggtts_free(h);
         assert_ne!(edged.0.len(), struct_render(7).0.len());
+    }
+
+    /// The schema and the statement are the C-ABI's text, byte for byte.
+    #[test]
+    fn the_schema_and_the_statement_are_the_c_abis() {
+        let c = unsafe { std::ffi::CStr::from_ptr(crate::ggtts_options_schema()) };
+        assert_eq!(options_schema(), c.to_str().unwrap());
+        let h = fake_doc(r#"{"load": {"engine": "fake"}}"#);
+        let mut json = std::ptr::null_mut();
+        assert_eq!(unsafe { crate::ggtts_capabilities(h, &mut json) }, 0);
+        let theirs = unsafe { std::ffi::CStr::from_ptr(json) }.to_str().unwrap().to_string();
+        unsafe { crate::ggtts_string_free(json) };
+        assert_eq!(capabilities(h).unwrap(), theirs);
+        ggtts_free(h);
+        assert_eq!(capabilities(h).unwrap_err().0, crate::GGTTS_ERR_HANDLE);
     }
 }

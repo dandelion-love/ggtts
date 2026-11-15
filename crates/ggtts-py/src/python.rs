@@ -101,6 +101,12 @@ impl PyEngine {
         r.map_err(|(e, key)| keyed_error(py, e, key))
     }
 
+    /// The engine's capability statement as JSON (`ggtts-capabilities/1`): what it supports, and the speakers its
+    /// model has. The C-ABI's `ggtts_capabilities`, from the same shared piece.
+    fn capabilities(&self, py: Python<'_>) -> PyResult<String> {
+        self.handle.capabilities().map_err(|e| error(py, e))
+    }
+
     /// Drop the engine. Later calls raise `GgttsError` with `ERR_HANDLE`. A render in progress on another thread
     /// finishes first, and the engine goes when it returns. Returns whether it was open.
     fn close(&self) -> bool {
@@ -229,6 +235,12 @@ fn write_flac(py: Python<'_>, path: PathBuf, pcm: &[u8], sample_rate: u32) -> Py
     r.map(|p| p.to_string_lossy().into_owned()).map_err(|e| error(py, e))
 }
 
+/// The options schema as JSON: every option a document may give, as the C-ABI's `ggtts_options_schema` states it.
+#[pyfunction]
+fn options_schema() -> String {
+    core::options_schema()
+}
+
 /// The engines this build can load: `fake` always, the model engines with the ggml feature, the planted test
 /// engines with the plant feature.
 fn built_engines() -> Vec<&'static str> {
@@ -249,6 +261,7 @@ fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEngine>()?;
     m.add_function(wrap_pyfunction!(load, m)?)?;
     m.add_function(wrap_pyfunction!(write_flac, m)?)?;
+    m.add_function(wrap_pyfunction!(options_schema, m)?)?;
     m.add("OK", core::OK)?;
     m.add("ERR_ARG", core::ERR_ARG)?;
     m.add("ERR_HANDLE", core::ERR_HANDLE)?;

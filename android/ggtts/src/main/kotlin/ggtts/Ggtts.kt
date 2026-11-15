@@ -77,6 +77,8 @@ internal object Native {
         seedGiven: Boolean,
         listener: PieceListener,
     ): Boolean
+    @JvmStatic external fun optionsSchema(): String
+    @JvmStatic external fun capabilities(handle: Long): String
     @JvmStatic external fun free(handle: Long)
 }
 
@@ -95,6 +97,12 @@ class Ggtts private constructor(private var handle: Long) : AutoCloseable {
         /** The engine is rendering: a call on it from its own listener, or from another thread meanwhile. */
         const val ERR_BUSY = -6
         const val DEFAULT_SEED = 20260905L
+
+        /**
+         * The JSON Schema of an options document, as the library states it (the C-ABI's `ggtts_options_schema`):
+         * every option `options` may give, with its type, default and phase. No schema file ships with the binding.
+         */
+        fun optionsSchema(): String = Native.optionsSchema()
 
         /**
          * [engine]: "qwen3-tts", "kitten-tts-2" or "fake". [voice] is Kitten-TTS 2's reference voice.
@@ -249,6 +257,13 @@ class Ggtts private constructor(private var handle: Long) : AutoCloseable {
     @Deprecated("Kept for binary compatibility; call renderStream with options", level = DeprecationLevel.HIDDEN)
     fun renderStream(text: String, seed: Long = DEFAULT_SEED, listener: PieceListener): Boolean =
         renderStream(text, seed, null, listener)
+
+    /**
+     * What this engine supports, as JSON, as the library states it (the C-ABI's `ggtts_capabilities`, format
+     * `ggtts-capabilities/1`): `family`, `instruction` (and `no_instruction_why`), `steering`, `speakers` and
+     * `speaker_names` (the model's speakers), `devices`, `hooks` and `step_events`.
+     */
+    fun capabilities(): String = Native.capabilities(handle)
 
     override fun close() {
         if (handle != 0L) {

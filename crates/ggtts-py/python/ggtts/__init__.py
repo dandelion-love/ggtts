@@ -50,7 +50,7 @@ except ImportError:  # pragma: no cover - exercised by the fallback test
     _np = None
 
 __all__ = [
-    "Audio", "TTS", "GgttsError", "OptionError", "load", "write_flac", "DEFAULT_SEED", "ENGINES", "VERSION", "COMMIT",
+    "Audio", "TTS", "GgttsError", "OptionError", "load", "options_schema", "write_flac", "DEFAULT_SEED", "ENGINES", "VERSION", "COMMIT",
     "OK", "ERR_ARG", "ERR_HANDLE", "ERR_ENGINE", "ERR_PANIC", "ERR_STOPPED", "ERR_BUSY",
 ]
 
@@ -182,6 +182,12 @@ class TTS:
     def model_files(self) -> List[dict]:
         """Each model file: ``role``, ``path``, and ``source`` (``path`` if given, ``cache`` for the default)."""
         return [{"role": r, "path": p, "source": s} for r, p, s in self._engine.model_files]
+
+    def capabilities(self) -> dict:
+        """What the loaded engine supports, as the library states it (the C-ABI's ``ggtts_capabilities``, format
+        ``ggtts-capabilities/1``): ``family``, ``instruction`` (and ``no_instruction_why``), ``steering``,
+        ``speakers`` and ``speaker_names`` (the model's speakers), ``devices``, ``hooks`` and ``step_events``."""
+        return json.loads(self._engine.capabilities())
 
     def render(self, text: str, seed: Optional[int] = None, options: Optional[Options] = None) -> Audio:
         """Render ``text`` (one paragraph per non-empty line), as the C-ABI's ``ggtts_render`` does.
@@ -323,6 +329,12 @@ def load(
         progress=progress,
     )
     return TTS(native)
+
+
+def options_schema() -> dict:
+    """The JSON Schema of an options document, as the library states it (the C-ABI's ``ggtts_options_schema``): every
+    option ``options=`` may give, with its type, default and phase. No schema file ships with the package."""
+    return json.loads(_native.options_schema())
 
 
 def write_flac(path: PathLike, samples, sample_rate: Optional[int] = None) -> str:

@@ -636,6 +636,47 @@ pub extern "system" fn Java_ggtts_Native_renderStreamOpts<'l>(
     )
 }
 
+/// `Native.optionsSchema`: the options schema as JSON ([`kotlin::options_schema`]).
+#[no_mangle]
+pub extern "system" fn Java_ggtts_Native_optionsSchema<'l>(mut env: JNIEnv<'l>, _class: JClass<'l>) -> JString<'l> {
+    let null = || JString::from(JObject::null());
+    jni_guard(&mut env, null, |env| match env.new_string(kotlin::options_schema()) {
+        Ok(s) => s,
+        Err(_) => {
+            throw(env, GGTTS_ERR_ARG, "could not allocate the schema string");
+            null()
+        }
+    })
+}
+
+/// `Native.capabilities`: the engine's capability statement as JSON ([`kotlin::capabilities`]).
+#[no_mangle]
+pub extern "system" fn Java_ggtts_Native_capabilities<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+) -> JString<'l> {
+    let null = || JString::from(JObject::null());
+    jni_guard(&mut env, null, |env| {
+        let mut text = None;
+        let code = crate::guard(|| {
+            text = Some(kotlin::capabilities(handle as u64)?);
+            Ok(())
+        });
+        let Some(text) = text.filter(|_| code == 0) else {
+            throw_last(env, code);
+            return null();
+        };
+        match env.new_string(text) {
+            Ok(s) => s,
+            Err(_) => {
+                throw(env, GGTTS_ERR_ARG, "could not allocate the statement string");
+                null()
+            }
+        }
+    })
+}
+
 #[no_mangle]
 pub extern "system" fn Java_ggtts_Native_free<'l>(mut env: JNIEnv<'l>, _class: JClass<'l>, handle: jlong) {
     jni_guard(

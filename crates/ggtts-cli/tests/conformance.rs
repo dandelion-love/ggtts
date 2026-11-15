@@ -331,6 +331,171 @@ const FRONT_ENDS: &[FrontEnd] = &[
     },
 ];
 
+// ── introspection ──────────────────────────────────────────────────────────────────────────────────────────────
+
+/// What the C ABI states about itself since version 5: the options schema (`ggtts_options_schema`), a loaded engine's
+/// capability statement (`ggtts_capabilities`) and the key of a refused option (`ggtts_last_error_key`).
+const INTROSPECTION: [&str; 3] = ["options_schema", "capabilities", "refused_key"];
+
+const CLI_SCHEMA: &str = "a command-line tool takes flags, which its --help lists; the schema to read is the library's";
+const CLI_CAPABILITIES: &str =
+    "a command-line tool refuses an option its engine lacks before rendering; the statement to read is the library's";
+const CLI_KEY: &str = "a command-line tool prints the refusal and exits; there is no error value to carry a key";
+const APP: &str = "the app is not a programming interface: it sets its options on its own screens";
+
+/// Each front end's cell for the three, in [`INTROSPECTION`]'s order. Carried or refused, never a gap.
+const INTROSPECTION_CELLS: &[(&str, [Cell; 3])] = &[
+    (
+        "render-story",
+        [Refused(CLI_SCHEMA), Refused(CLI_CAPABILITIES), Refused(CLI_KEY)],
+    ),
+    (
+        "render-text",
+        [Refused(CLI_SCHEMA), Refused(CLI_CAPABILITIES), Refused(CLI_KEY)],
+    ),
+    (
+        "book",
+        [Refused(CLI_SCHEMA), Refused(CLI_CAPABILITIES), Refused(CLI_KEY)],
+    ),
+    ("c-abi", [Carried, Carried, Carried]),
+    ("python", [Carried, Carried, Carried]),
+    ("kotlin", [Carried, Carried, Carried]),
+    ("android", [Refused(APP), Refused(APP), Refused(APP)]),
+    (
+        "kitten",
+        [Refused(PARITY_TOOL), Refused(PARITY_TOOL), Refused(PARITY_TOOL)],
+    ),
+];
+
+/// What each binding states, beside the C ABI's own: the schema, the fake engine's statement and the key of a
+/// refused option, through the binding's own core. A binding carries one only when it equals the C ABI's.
+fn introspection_probes() -> Vec<(&'static str, &'static str, bool)> {
+    use ggtts_ffi::{ggtts_capabilities, ggtts_free, ggtts_load, ggtts_options_schema, ggtts_string_free};
+    let value = |t: &str| -> serde_json::Value { serde_json::from_str(t).unwrap() };
+    let c_schema = value(unsafe { CStr::from_ptr(ggtts_options_schema()) }.to_str().unwrap());
+    let c_statement = {
+        let e = CString::new("fake").unwrap();
+        let (mut h, null) = (0u64, std::ptr::null());
+        assert_eq!(unsafe { ggtts_load(e.as_ptr(), null, null, null, 0, &mut h) }, 0);
+        let mut json = std::ptr::null_mut();
+        assert_eq!(unsafe { ggtts_capabilities(h, &mut json) }, 0);
+        let text = unsafe { CStr::from_ptr(json) }.to_str().unwrap().to_string();
+        unsafe { ggtts_string_free(json) };
+        ggtts_free(h);
+        value(&text)
+    };
+    let steer = r#"{"render": {"steer": "s.safetensors"}}"#;
+    let mut out = Vec::new();
+    // The C ABI: its schema is the table's, its statement the shared one's, and a refusal leaves its key.
+    out.push(("c-abi", "options_schema", c_schema == ggtts_core::options::schema()));
+    out.push((
+        "c-abi",
+        "capabilities",
+        c_statement["format"] == ggtts_core::capabilities::STATEMENT_FORMAT,
+    ));
+    let doc = CString::new(r#"{"load": {"engine": "fake"}}"#).unwrap();
+    let mut h = 0u64;
+    assert_eq!(unsafe { ggtts_ffi::ggtts_load_opts(doc.as_ptr(), &mut h) }, 0);
+    let (text, steer_c) = (CString::new("你好。").unwrap(), CString::new(steer).unwrap());
+    let (mut p, mut n, mut r) = (std::ptr::null_mut(), 0usize, 0u32);
+    let code = unsafe {
+        ggtts_ffi::ggtts_render_opts(
+            h,
+            text.as_ptr(),
+            steer_c.as_ptr(),
+            None,
+            std::ptr::null_mut(),
+            &mut p,
+            &mut n,
+            &mut r,
+        )
+    };
+    let key = ggtts_ffi::ggtts_last_error_key();
+    let c_key = (!key.is_null()).then(|| unsafe { CStr::from_ptr(key) }.to_string_lossy().into_owned());
+    out.push((
+        "c-abi",
+        "refused_key",
+        code != 0 && c_key.as_deref() == Some("render.steer"),
+    ));
+    ggtts_free(h);
+    // Python, through its core.
+    {
+        use ggtts_py::core::{guard_keyed, load, LoadRequest};
+        out.push((
+            "python",
+            "options_schema",
+            value(&ggtts_py::core::options_schema()) == c_schema,
+        ));
+        let req = LoadRequest {
+            engine: Some("fake".into()),
+            ..Default::default()
+        };
+        let (handle, _) = load(&req, &mut |_| {}).unwrap();
+        out.push((
+            "python",
+            "capabilities",
+            value(&handle.capabilities().unwrap()) == c_statement,
+        ));
+        let refused = guard_keyed(|| handle.render_with("你好。", None, Some(steer)));
+        out.push((
+            "python",
+            "refused_key",
+            matches!(refused, Err((_, Some(k))) if k == "render.steer"),
+        ));
+    }
+    // Kotlin, through the core under its JNI layer.
+    {
+        use ggtts_ffi::kotlin;
+        out.push(("kotlin", "options_schema", value(&kotlin::options_schema()) == c_schema));
+        let h = kotlin::load(r#"{"load": {"engine": "fake"}}"#, &kotlin::LoadArgs::default()).unwrap();
+        out.push((
+            "kotlin",
+            "capabilities",
+            value(&kotlin::capabilities(h).unwrap()) == c_statement,
+        ));
+        let refused = ggtts_py::core::guard_keyed(|| kotlin::render_opts(h, "你好。", Some(steer), None));
+        out.push((
+            "kotlin",
+            "refused_key",
+            matches!(refused, Err((_, Some(k))) if k == "render.steer"),
+        ));
+        ggtts_free(h);
+    }
+    out
+}
+
+/// #369 AC4: every front end has a cell for each of the three, carried or refused with a reason, and every carried
+/// cell is probed and seen: the binding states what the C ABI states.
+#[test]
+fn every_front_end_carries_or_refuses_the_introspection() {
+    let ids: BTreeSet<&str> = FRONT_ENDS.iter().map(|f| f.id).collect();
+    let rows: BTreeSet<&str> = INTROSPECTION_CELLS.iter().map(|(id, _)| *id).collect();
+    assert_eq!(ids, rows, "every front end has one introspection row, and only they do");
+    let probes = introspection_probes();
+    for (id, cells) in INTROSPECTION_CELLS {
+        for (item, cell) in INTROSPECTION.iter().zip(cells) {
+            match cell {
+                Carried => {
+                    let seen = probes.iter().find(|(f, i, _)| f == id && i == item);
+                    assert!(
+                        matches!(seen, Some((_, _, true))),
+                        "{id}: {item} is Carried and the probe saw {seen:?}"
+                    );
+                }
+                Refused(why) => assert!(!why.is_empty(), "{id}: {item} is refused with no reason"),
+                Gap(i) => panic!("{id}: {item} is a gap (#{i}): the introspection is carried or refused"),
+            }
+        }
+    }
+    report(&format!(
+        "introspection: {} front ends x {} = {} cells, {} probed",
+        INTROSPECTION_CELLS.len(),
+        INTROSPECTION.len(),
+        INTROSPECTION_CELLS.len() * INTROSPECTION.len(),
+        probes.len()
+    ));
+}
+
 /// Each front end's cell per option key, or every defect of the table against `table`: an option with no cell, a key
 /// given twice, a key the options table does not have, a refusal with no reason.
 fn cells(table: &[Descriptor], front_ends: &[FrontEnd]) -> Result<BTreeMap<(String, String), Cell>, Vec<String>> {

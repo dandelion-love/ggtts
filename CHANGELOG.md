@@ -13,6 +13,11 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **Python and Kotlin read the options schema and an engine's capabilities from the library**, as the C ABI does
+  since version 5. Python: `ggtts.options_schema()` and `TTS.capabilities()`, each a dict. Kotlin:
+  `Ggtts.optionsSchema()` and `Ggtts.capabilities()`, each JSON. Both come from the same shared pieces as
+  `ggtts_options_schema` and `ggtts_capabilities`, so every front end states the same thing, and neither binding ships
+  a schema file. A refused option's key was already on Python's `OptionError.key` and Kotlin's `GgttsException.key`.
 - **Kotlin takes every option through one parameter, `options`.** `Ggtts.load(options = ...)` takes a load document,
   and `render(text, options = ...)` and `renderStream(text, options = ...)` a render document laid over the load's
   defaults: steering, `edge_s`, `redraw` and a per-render instruction. It is the C ABI's document, as a JSON string

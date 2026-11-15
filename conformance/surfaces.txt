@@ -28,4 +28,6 @@ kotlin render: handle, text, seed, rateOut
 kotlin renderOpts: handle, text, optionsJson, seed, seedGiven, rateOut
 kotlin renderStream: handle, text, seed, listener
 kotlin renderStreamOpts: handle, text, optionsJson, seed, seedGiven, listener
+kotlin optionsSchema:
+kotlin capabilities: handle
 kotlin free: handle

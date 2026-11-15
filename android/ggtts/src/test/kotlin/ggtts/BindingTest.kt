@@ -145,6 +145,21 @@ private fun optionsDocuments() {
     }
 }
 
+/** The options schema and an engine's capability statement, from the library. */
+private fun introspection() {
+    val schema = Ggtts.optionsSchema()
+    check(schema.contains("\"https://json-schema.org/") && schema.contains("\"steer\""), "the options schema is the library's")
+    val g = Ggtts.load("fake")
+    val caps = g.capabilities()
+    check(
+        caps.contains("\"format\":\"ggtts-capabilities/1\"") && caps.contains("\"family\":\"fake\"") &&
+            caps.contains("\"speaker_names\":[]"),
+        "the fake engine states its capabilities: $caps",
+    )
+    g.close()
+    throwsCode(Ggtts.ERR_HANDLE, "capabilities after close") { g.capabilities() }
+}
+
 /** The default model files without a network: whatever the build, nothing is downloaded unless asked. */
 private fun defaultModel() {
     val empty = java.nio.file.Files.createTempDirectory("ggtts-binding-cache").toFile()
@@ -248,6 +263,7 @@ fun main() {
         Ggtts.load("fake", instruction = "Speak slowly and softly.")
     }
     optionsDocuments()
+    introspection()
     qwenSettings()
     defaultModel()
 

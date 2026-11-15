@@ -266,6 +266,13 @@ needs no new keyword. A document is a dict, or the same as a JSON string. It is 
   `engine=`, `model=`, `codec=`, `voice=`, or a render's `seed=`) and under its key in the document is refused,
   naming both. Neither wins, so say which you meant.
 
+**What the library states.** `ggtts.options_schema()` is the options schema as a dict: every option a document may
+give, with its type, default and phase, from the library (the C library's `ggtts_options_schema`), so no schema file
+ships with the package. `tts.capabilities()` is what a loaded engine supports, as a dict (`ggtts-capabilities/1`, the
+C library's `ggtts_capabilities`): `family`, `instruction` and `no_instruction_why`, `steering`, `speakers` and
+`speaker_names` (the model's speakers), `devices`, `hooks` and `step_events`. Read them to offer only what the engine
+takes.
+
 A refused option is a `ggtts.OptionError`: a `GgttsError` with `ERR_ARG` and a `ValueError`. Its `key` is the option's
 schema key, read from the library and never parsed from the message: `render.steer` for steering on an engine that has
 none, `render.nonesuch` for an unknown key. A document that is not JSON is refused whole, with `key` None.

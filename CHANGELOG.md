@@ -11,6 +11,10 @@ that a merge places under a released heading is caught.
 
 ## Unreleased
 
+## v0.1.0-rc.13 (2026-11-15)
+
+This pre-release is cut from `rc`. Its CUDA promotion gate (`scripts/rc_gate.sh`) has not run yet; the CPU checks in CI passed.
+
 ### Added
 
 - **Qwen3-TTS's sampler settings, frame cap and language are options**: `--temperature`, `--top-k`, `--top-p`,

@@ -111,6 +111,8 @@ pub enum Kind {
     Texts,
     /// A list of layer indices, none twice and at least one; a flag spelling takes `23,24,25`.
     Layers,
+    /// A list of finite numbers, at least one; a flag spelling takes `7.9,9.8,10.6`.
+    Numbers,
 }
 
 /// One option: one row of the table.
@@ -333,6 +335,13 @@ pub const TABLE: &[Descriptor] = &[
         requires: Some("steer"),
         help: "The layers of the steering file to apply; unset is every layer in it.",
         ..row("steer_layers", SR, R, Kind::Layers, "null")
+    },
+    Descriptor {
+        flags: &["--steer-scales"],
+        requires: Some("steer_layers"),
+        help: "One scale per layer of --steer-layers, in its order: layer L is pushed by its scale times the file's \
+               vector there. For a file of unit-length directions, the push lengths. Not with --steer-scale.",
+        ..row("steer_scales", SR, R, Kind::Numbers, "null")
     },
     Descriptor {
         flags: &["--redraw"],
@@ -615,6 +624,9 @@ pub struct Render {
     pub steer_scale: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub steer_layers: Option<Vec<u32>>,
+    /// One scale per layer of [`steer_layers`](Self::steer_layers); not with [`steer_scale`](Self::steer_scale).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steer_scales: Option<Vec<f64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redraw: Option<u32>,
     /// The ASR judge's spec (`ggtts_instruments::judge`); unset is the duration judge alone.
@@ -789,6 +801,7 @@ fn describe(kind: Kind) -> String {
         Kind::Choice(list) => format!("one of {}", list.join(", ")),
         Kind::Texts => "a list of strings".into(),
         Kind::Layers => "a list of layer indices, at least one and none twice".into(),
+        Kind::Numbers => "a list of finite numbers, at least one".into(),
     }
 }
 
@@ -809,6 +822,9 @@ fn check_value(d: &Descriptor, v: &Value) -> Result<(), Refusal> {
                 && layers.iter().all(|&l| l <= u64::from(u32::MAX))
                 && layers.iter().enumerate().all(|(i, l)| !layers[..i].contains(l))
         }),
+        Kind::Numbers => v
+            .as_array()
+            .is_some_and(|a| !a.is_empty() && a.iter().all(|x| x.as_f64().is_some_and(f64::is_finite))),
     };
     if ok {
         Ok(())
@@ -833,6 +849,12 @@ fn from_text(d: &Descriptor, s: &str) -> Result<Value, Refusal> {
         Kind::Text { .. } | Kind::Path | Kind::Choice(_) | Kind::Texts => Value::String(s.into()),
         Kind::Layers => crate::steer::parse_layers(s)
             .map_err(|e| Refusal::new(d.key(), e.0))?
+            .into(),
+        // A NaN or an infinity in the list becomes null, which `check_value` refuses by name.
+        Kind::Numbers => s
+            .split(',')
+            .map(|p| p.trim().parse::<f64>().map(Value::from).map_err(|_| bad()))
+            .collect::<Result<Vec<Value>, _>>()?
             .into(),
     };
     if d.kind == Kind::Texts {
@@ -1056,13 +1078,43 @@ impl Options {
             self.render.steering = None;
             return Ok(());
         };
+        let r = &self.render;
+        if let Some(scales) = &r.steer_scales {
+            // Refused before the file is read: these need no file to be wrong.
+            if r.steer_scale.is_some() {
+                return Err(Refusal::new(
+                    "render.steer_scales",
+                    "render.steer_scale and render.steer_scales are both given: one scale for every layer, or one \
+                     per layer, never both",
+                ));
+            }
+            let Some(layers) = &r.steer_layers else {
+                return Err(Refusal::new(
+                    "render.steer_scales",
+                    "needs render.steer_layers: one scale per layer, in its order",
+                ));
+            };
+            if layers.len() != scales.len() {
+                return Err(Refusal::new(
+                    "render.steer_scales",
+                    format!(
+                        "{} scales for the {} layers of render.steer_layers: give one per layer",
+                        scales.len(),
+                        layers.len()
+                    ),
+                ));
+            }
+        }
         let file = SteerFile::read(path).map_err(|e| Refusal::new("render.steer", e.0))?;
-        let steering = file
-            .select(
-                self.render.steer_layers.as_deref(),
-                self.render.steer_scale.unwrap_or(1.0),
-            )
-            .map_err(|e| Refusal::new("render.steer", e.0))?;
+        let r = &self.render;
+        let steering = match (&r.steer_scales, &r.steer_layers) {
+            (Some(scales), Some(layers)) => file
+                .select_scaled(layers, scales)
+                .map_err(|e| Refusal::new("render.steer_scales", e.0))?,
+            _ => file
+                .select(r.steer_layers.as_deref(), r.steer_scale.unwrap_or(1.0))
+                .map_err(|e| Refusal::new("render.steer", e.0))?,
+        };
         self.render.steering = Some(steering);
         Ok(())
     }
@@ -1256,6 +1308,7 @@ fn kind_schema(kind: Kind) -> Map<String, Value> {
             "minItems": 1,
             "uniqueItems": true
         }),
+        Kind::Numbers => json!({"type": "array", "items": {"type": "number"}, "minItems": 1}),
     };
     match v {
         Value::Object(m) => m,

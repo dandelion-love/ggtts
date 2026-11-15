@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The device's own look. Before Android 10 there is no system dark mode, so light. -->
+<!-- Material 3, light or dark as the phone is (Android 10 and later; light before), with the wallpaper colours on
+     Android 12 and later (MainActivity applies them). The screen has its own toolbar, so no action bar. -->
 <resources>
-    <style name="AppTheme" parent="android:Theme.DeviceDefault.Light.NoActionBar" />
+    <style name="AppTheme" parent="Theme.Material3.DayNight.NoActionBar" />
 </resources>

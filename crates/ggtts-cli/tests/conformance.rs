@@ -1103,12 +1103,43 @@ fn kotlin_probes() -> Vec<Probe> {
             Seen::Dropped
         },
     );
-    // The load document's engine is the engine loaded.
+    // The load document's engine is the engine loaded: "fake" loads, where the document's default ("auto", with no
+    // model) would be qwen3-tts, which this build cannot load from no files.
     push(
         "load.engine",
-        match guard_keyed(|| load(r#"{"load": {"engine": "nonesuch"}}"#, &LoadArgs::default())) {
-            Err(((_, msg), _)) if msg.contains("nonesuch") => Seen::Carried,
+        match guard_keyed(|| load(fake, &LoadArgs::default())) {
+            Ok(h) => {
+                ggtts_ffi::ggtts_free(h);
+                Seen::Carried
+            }
+            Err(_) => Seen::Dropped,
+        },
+    );
+    // The model path reaches the engine's file check, which names it.
+    let dir = std::env::temp_dir().join(format!("ggtts-conformance-kotlin-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let not_gguf = dir.join("not-a-model.gguf");
+    std::fs::write(&not_gguf, b"not a model").unwrap();
+    let doc = format!(
+        r#"{{"load": {{"engine": "qwen3-tts", "model": {0}, "codec": {0}, "offline": true}}}}"#,
+        serde_json::to_string(&not_gguf.to_string_lossy()).unwrap()
+    );
+    push(
+        "load.model",
+        match guard_keyed(|| load(&doc, &LoadArgs::default())) {
+            Err(((_, msg), _)) if msg.contains("not-a-model.gguf") => Seen::Carried,
             _ => Seen::Dropped,
+        },
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    // A speaker reaches the engine's capabilities, which refuse it on the fake engine in their own words.
+    let speaker = caps.refusal("load.speaker", None).to_string();
+    push(
+        "load.speaker",
+        match guard_keyed(|| load(r#"{"load": {"engine": "fake", "speaker": "a"}}"#, &LoadArgs::default())) {
+            Err(((ERR_ARG, msg), Some(k))) if k == "load.speaker" && msg == speaker => Seen::Carried,
+            Err(((ERR_ARG, _), Some(k))) if k == "load.speaker" => Seen::Refused,
+            other => panic!("kotlin: load.speaker gave {:?}", other.is_ok()),
         },
     );
     // The stream: pieces reach the callback.

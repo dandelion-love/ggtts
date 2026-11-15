@@ -69,6 +69,42 @@ impl RenderOptions {
     }
 }
 
+/// A render of one chunk at an exact seed (`render.seed`): `ggtts-render --text`, and a binding's render document
+/// that gives the seed. The text is one chunk, not planned or split; it is drawn once at [`Given`], with the duration
+/// judge's verdict recorded and the draw kept whatever it is (no redraw), untrimmed and unlevelled, so its samples are
+/// the decoded draw. Every front end builds it here, so the same text, seed, model and settings give the same samples
+/// on each.
+pub mod exact {
+    use super::{Given, PlannedChunk, RenderOptions};
+    use crate::options::Refusal;
+
+    /// The one-chunk plan of `text`. Refused under `render.text` when it is empty or holds no speech.
+    pub fn chunks(text: &str) -> Result<Vec<PlannedChunk>, Refusal> {
+        if text.chars().all(crate::text::is_strip_space) {
+            return Err(Refusal::new("render.text", "the chunk is empty"));
+        }
+        crate::text::validate_speech(text).map_err(|e| Refusal::new("render.text", e.to_string()))?;
+        Ok(vec![PlannedChunk {
+            para: 0,
+            text: text.to_string(),
+            punct: String::new(),
+            last_in_para: true,
+        }])
+    }
+
+    /// `options` for that one draw: no redraw, no trim, no level.
+    pub fn options(options: &mut RenderOptions) {
+        options.redraw = 0;
+        options.trim = false;
+        options.level = false;
+    }
+
+    /// The seed source: every draw at `seed`.
+    pub fn seeds(seed: u64) -> Given {
+        Given(seed)
+    }
+}
+
 /// One chunk of a rendered read.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChunkRecord {

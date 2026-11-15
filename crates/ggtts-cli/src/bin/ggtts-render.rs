@@ -77,12 +77,11 @@ use ggtts_core::logging::{Format as LogFormat, Level as LogLevel, Settings as Lo
 use ggtts_core::options::{self, Descriptor, Options, Refusal, Section};
 use ggtts_core::pipeline::DrawRecord;
 use ggtts_core::pipeline::{
-    plan_story, render_plan, DurationJudge, Given, Judge, Observers, Output, RenderError, SeedSource, StorySeeds,
-    StreamMode, StreamPiece,
+    plan_story, render_plan, DurationJudge, Judge, Observers, Output, RenderError, SeedSource, StorySeeds, StreamMode,
+    StreamPiece,
 };
 use ggtts_core::stream::{Container, StreamWriter};
 use ggtts_core::text::read_text;
-use ggtts_core::text::PlannedChunk;
 use ggtts_core::trace::{emit_header, Event, Events, Header, JsonlEvents, NullEvents};
 
 /// One `ggtts-codes/1` line: a chunk's kept draw and its codec tokens, frame-major (`codes[f * codebooks + c]`), with
@@ -164,7 +163,7 @@ const USAGE: &str = "usage: ggtts-render [--model M.gguf] [--codec C.gguf] [--of
 [--temperature X] [--top-k N] [--top-p X] [--repetition-penalty X] [--subtalker-temperature X] [--subtalker-top-k N] \
 [--subtalker-top-p X] [--max-frames N] [--language auto|en|ru|zh|ja|ko|de|fr|es|it|pt] \
 [--steer FILE [--steer-scale X] [--steer-layers LIST]] \
-[--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE [--redraw N [--judge asr-qwen,model=DIR]]) \
+[--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE [--seed-salt S] [--edge-s X] [--redraw N [--judge asr-qwen,model=DIR]]) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
 [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID] \
 [--log-level error|warn|info|debug|trace] [--log-format text|json] [--timing-report FILE] [--duration-report FILE]\n       ggtts-render --version";
@@ -668,6 +667,14 @@ fn render_with_models(
                 .into(),
         );
     }
+    // A story's seeds are salted and its chunks trimmed; the one-chunk --text plan renders at --seed and keeps its
+    // draw whole (#180), so either option there would do nothing.
+    if a.render.seed_salt.is_some() && a.render.text.is_some() {
+        return Err("--seed-salt (render.seed_salt): --text renders at --seed; there is no story seed to salt".into());
+    }
+    if a.render.edge_s.is_some() && a.render.text.is_some() {
+        return Err("--edge-s (render.edge_s): --text keeps its draw whole, with no edge trimmed".into());
+    }
     // Redraws are a story's: the one-chunk --text plan keeps its one draw, so a --redraw there would do nothing.
     if a.render.redraw.is_some() && a.render.text.is_some() {
         return Err(
@@ -788,12 +795,7 @@ fn render_with_models(
     let (title, chunks) = match &a.render.text {
         Some(text) => (
             String::new(),
-            vec![PlannedChunk {
-                para: 0,
-                text: text.clone(),
-                punct: String::new(),
-                last_in_para: true,
-            }],
+            ggtts_core::pipeline::exact::chunks(text).map_err(|r| r.to_string())?,
         ),
         None => preplanned.expect("a story was planned before loading"),
     };
@@ -839,12 +841,10 @@ fn render_with_models(
         let mut options = a.render_options(&profile).map_err(|r| r.to_string())?;
         if text_mode {
             // One draw, kept: no redraw, no trim, no level. The timings feed the draw's log line.
-            options.redraw = 0;
-            options.trim = false;
-            options.level = false;
+            ggtts_core::pipeline::exact::options(&mut options);
             options.measure_timings = true;
         }
-        let given = Given(a.render.seed.unwrap_or(options::DEFAULT_SEED));
+        let given = ggtts_core::pipeline::exact::seeds(a.render.seed.unwrap_or(options::DEFAULT_SEED));
         let story_seeds = StorySeeds {
             story_id: &title,
             salt: &options.seed_salt,

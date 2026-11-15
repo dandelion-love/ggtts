@@ -162,6 +162,7 @@ object Reader {
             background = { worker.execute(it) },
             main = { handler.post(it) },
             log = log,
+            words = ResourceWords(app),
             memory = {
                 val info = ActivityManager.MemoryInfo()
                 (app.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(info)
@@ -207,7 +208,7 @@ class ReadingService : Service() {
                 Reader.controller(this).stop()
             },
             goForeground = {
-                val n = notification(this, Reader.lastStatus.ifEmpty { "Starting..." })
+                val n = notification(this, Reader.lastStatus.ifEmpty { getString(R.string.notification_starting) })
                 if (Build.VERSION.SDK_INT >= 29) {
                     startForeground(ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
                 } else {
@@ -316,7 +317,7 @@ class ReadingService : Service() {
         private fun notification(context: Context, text: String): Notification {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CHANNEL) == null) {
-                nm.createNotificationChannel(NotificationChannel(CHANNEL, "Reading", NotificationManager.IMPORTANCE_LOW))
+                nm.createNotificationChannel(NotificationChannel(CHANNEL, context.getString(R.string.notification_channel), NotificationManager.IMPORTANCE_LOW))
             }
             val stop = command(context, ForegroundGate.ACTION_STOP, 0)
             val open = PendingIntent.getActivity(
@@ -330,8 +331,8 @@ class ReadingService : Service() {
             val state = state(context)
             val toggle = MediaControls.toggleAction(state)
             b.setSmallIcon(android.R.drawable.ic_media_play)
-                .setContentTitle("ggtts is reading")
-                .setContentText("$text Off screen it continues several times slower; open the app to speed it up.")
+                .setContentTitle(context.getString(R.string.notification_title))
+                .setContentText(context.getString(R.string.notification_off_screen, text))
                 .setOngoing(true)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setContentIntent(open)
@@ -339,12 +340,12 @@ class ReadingService : Service() {
             if (toggle != null) {
                 val icon = if (state == MediaControls.State.PLAYING) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
                 b.addAction(Notification.Action.Builder(
-                    android.graphics.drawable.Icon.createWithResource(context, icon), MediaControls.toggleLabel(state), command(context, toggle, 1),
+                    android.graphics.drawable.Icon.createWithResource(context, icon), MediaControls.toggleLabel(state, ResourceWords(context)), command(context, toggle, 1),
                 ).build())
                 compact += 0
             }
             b.addAction(Notification.Action.Builder(
-                android.graphics.drawable.Icon.createWithResource(context, android.R.drawable.ic_menu_close_clear_cancel), "Stop", stop,
+                android.graphics.drawable.Icon.createWithResource(context, android.R.drawable.ic_menu_close_clear_cancel), context.getString(R.string.notification_stop), stop,
             ).build())
             compact += compact.size
             val style = Notification.MediaStyle().setShowActionsInCompactView(*compact.toIntArray())

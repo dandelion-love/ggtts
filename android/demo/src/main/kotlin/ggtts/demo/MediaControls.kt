@@ -21,10 +21,17 @@ object MediaControls {
         State.NONE -> null
     }
 
-    /** The button's label, for [toggleAction]. */
-    fun toggleLabel(state: State): String? = when (state) {
-        State.PLAYING -> "Pause"
-        State.PAUSED -> "Play"
+    /** The app screen's Pause or Play beside Stop: the same toggle, with its symbol, in [w]'s language; none without a read. */
+    fun screenLabel(state: State, w: Words = EnglishWords): String? = when (state) {
+        State.PLAYING -> w.get("screen_pause")
+        State.PAUSED -> w.get("screen_play")
+        State.NONE -> null
+    }
+
+    /** The button's label, for [toggleAction], in [w]'s language. */
+    fun toggleLabel(state: State, w: Words = EnglishWords): String? = when (state) {
+        State.PLAYING -> w.get("notification_pause")
+        State.PAUSED -> w.get("notification_play")
         State.NONE -> null
     }
 

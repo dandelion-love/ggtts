@@ -10,6 +10,20 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MediaControlsTest {
+    /**
+     * #409. Plant: the screen's refresh dropped from showStatus (a pause from the notification posts a status and nothing
+     * else reaches the screen) or from setBusy (the button stays after the read ends). The layout is not built on the
+     * JVM, so the source is held to the calls, as AboutTest holds the subtitle.
+     */
+    @Test
+    fun theScreenRefreshesItsPauseButtonWhenTheReadChangesElsewhere() {
+        val src = java.io.File("src/main/kotlin/ggtts/demo/MainActivity.kt").readText()
+        fun body(sig: String) = src.substring(src.indexOf(sig)).let { it.substring(0, it.indexOf("\n    }\n")) }
+        assertTrue("a pause from the notification reaches the screen through showStatus",
+            "refreshPause()" in body("override fun showStatus(text: String)"))
+        assertTrue("the button hides when the read ends", "refreshPause()" in body("override fun setBusy("))
+    }
+
     /** Plant: a state that reads "playing" while paused, which shows the wrong lock-screen button. */
     @Test
     fun theSessionStateFollowsTheRead() {
@@ -27,6 +41,27 @@ class MediaControlsTest {
         assertEquals(ForegroundGate.ACTION_PLAY, MediaControls.toggleAction(MediaControls.State.PAUSED))
         assertEquals("Play", MediaControls.toggleLabel(MediaControls.State.PAUSED))
         assertNull(MediaControls.toggleAction(MediaControls.State.NONE))
+    }
+
+    /**
+     * #409. Plant: the screen's button labelled from the wrong state (Pause while paused), or shown with no read. It
+     * offers what the notification offers, for playing, paused and idle, and a pause made elsewhere (the controller
+     * paused by the media session) shows Play.
+     */
+    @Test
+    fun theScreensButtonOffersWhatTheNotificationOffers() {
+        assertEquals("❚❚  Pause", MediaControls.screenLabel(MediaControls.State.PLAYING))
+        assertEquals("▶  Play", MediaControls.screenLabel(MediaControls.State.PAUSED))
+        assertNull("a button with no read", MediaControls.screenLabel(MediaControls.State.NONE))
+        for (s in MediaControls.State.values()) {
+            assertEquals(MediaControls.toggleLabel(s), MediaControls.screenLabel(s)?.substringAfter("  "))
+        }
+        val audio = Audio()
+        val c = controller(audio, mutableListOf())
+        c.speak(LoadRequest("qwen3-tts", "/m.gguf", "/c.gguf", null), "line", 1)
+        assertEquals("❚❚  Pause", MediaControls.screenLabel(MediaControls.state(c.busy, c.paused)))
+        MediaControls.apply(ForegroundGate.ACTION_PAUSE, c) // as the media session does
+        assertEquals("▶  Play", MediaControls.screenLabel(MediaControls.state(c.busy, c.paused)))
     }
 
     private class Audio : AudioOut {

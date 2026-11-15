@@ -30,11 +30,16 @@ android {
     }
 }
 
-// AboutTest reads the manifest to hold the screen's "no internet permission" sentence to it. Declared as an input so
-// a manifest change re-runs the tests instead of reusing an up-to-date result.
+// AboutTest reads the manifest to hold the screen's "no internet permission" sentence to it, and the screen's tests
+// read MainActivity.kt's source. Declared as inputs so a change to either re-runs the tests instead of reusing an
+// up-to-date result.
 tasks.withType<Test>().configureEach {
     inputs.file("src/main/AndroidManifest.xml").withPathSensitivity(PathSensitivity.RELATIVE)
-    // IncomingTest reads MainActivity's onCreate to hold its re-creation guard to it (Launch.takesIntent).
+    // WordsTest and AboutTest read the string resources and the screen's source, which a code change alone would miss.
+    inputs.dir("src/main/res/values").withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.dir("src/main/res/values-zh-rHK").withPathSensitivity(PathSensitivity.RELATIVE)
+    // IncomingTest reads MainActivity's onCreate to hold its re-creation guard to it (Launch.takesIntent), and
+    // MediaControlsTest reads its showStatus and setBusy to hold the Pause button's refresh to them.
     inputs.file("src/main/kotlin/ggtts/demo/MainActivity.kt").withPathSensitivity(PathSensitivity.RELATIVE)
 }
 

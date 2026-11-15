@@ -18,6 +18,18 @@ that a merge places under a released heading is caught.
   them changes no sample. A line holds the `frames`, `codebooks` and `codes` keys the Qwen3-TTS decode example reads,
   so a chunk can be decoded again on its own (`docs/codes.md`). `ggtts-book` and the bindings refuse it: they write
   no codes file.
+- **`ggtts-render --story` and `ggtts-book render` take `--edge-s X`** (`render.edge_s`): the seconds of silence kept
+  at each edge of a chunk, which the bindings already took in an options document. **`ggtts-render --story` takes
+  `--seed-salt S`** (`render.seed_salt`), the salt each binding's seed already was, so a story's seeds can be moved
+  together from the command line. `--text` refuses both: it renders at `--seed` and keeps its draw whole. A book
+  keeps its seeds from `--seed-root`, and records its edge in each chapter manifest: a chapter resumed under
+  another `--edge-s` is rendered again, its manifest refused naming the edge.
+- **A binding renders one chunk at an exact seed: `render.seed` in a render document** (the C ABI's
+  `ggtts_render_opts`, Python's `options=`, Kotlin's `options`). The text is one chunk, drawn once at that seed and
+  kept whole, as `ggtts-render --text TEXT --seed S` renders it, so the samples are the same, and a caller that loaded
+  the engine once pays no process, model load or hash per chunk. `render.seed` was refused in a render document
+  before; it is refused with `seed_salt` (the render call's own seed), `redraw` or `edge_s`, and in a load document,
+  each under `render.seed`, and an empty text under `render.text`.
 
 ## v0.1.0-rc.13 (2026-11-15)
 

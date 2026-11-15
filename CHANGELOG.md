@@ -13,6 +13,12 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **`--steer` takes an `https://` URL or `hf://<owner>/<repo>[@<revision>]/<path>`, downloaded once into the
+  cache.** A published steering preset renders in one command, with no separate download. The file goes into the same per-user cache as the model files
+  (`GGTTS_CACHE_DIR`, or `load.cache_dir`), at `urls/<sha256 of the URL>/<file name>`, and later runs reuse it.
+  `URL#sha256=<hex>` pins it, refusing a file whose sha256 differs, and the log names the sha256 either way.
+  `--offline` refuses a URL that is not cached yet, naming it. It is the options table's `render.steer`, so
+  ggtts-book and every binding take the URL too. A local path is unchanged.
 - **The Android demo and its system TTS engine carry the options document.** The app's request, its saved voices and
   its render calls are one options document, handed to the Kotlin binding as `options`. Any option the binding takes
   (a style instruction, steering, an edge, redraws, a levelled stream) now reaches the app and the system engine with

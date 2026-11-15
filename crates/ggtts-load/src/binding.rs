@@ -509,10 +509,15 @@ impl LoadCache {
 pub fn layer_render(defaults: &Options, doc: Options) -> Result<Options, Fail> {
     let mut defaults = defaults.clone();
     if doc.render.seed.is_some() {
-        defaults.render.seed_salt = None;
-        defaults.render.redraw = None;
-        defaults.render.edge_s = None;
+        // Value and mark together, from the one list, so a key added to it cannot keep its value.
         for (key, _) in EXACT_SEED_EXCLUDES {
+            let r = &mut defaults.render;
+            match key {
+                "render.seed_salt" => r.seed_salt = None,
+                "render.redraw" => r.redraw = None,
+                "render.edge_s" => r.edge_s = None,
+                other => unreachable!("{other} is in EXACT_SEED_EXCLUDES with no reset here"),
+            }
             defaults.marks.sources.remove(key);
         }
     }

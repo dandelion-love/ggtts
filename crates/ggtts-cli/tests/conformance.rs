@@ -143,7 +143,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (STEER, Carried),
             (&["render.text"], Refused(ONE_OF)),
             (&["render.seed"], Gap(215)),
-            (&["render.seed_salt", "render.edge_s"], Gap(283)),
+            (&["render.seed_salt", "render.edge_s"], Carried),
             (TRACE, Carried),
             (REPORTS, Carried),
             (LOG, Carried),
@@ -194,7 +194,9 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (STEER, Carried),
             (&["render.text", "render.story"], Refused(BOOK_TEXT)),
             (&["render.seed", "render.seed_salt"], Refused(BOOK_SEED)),
-            (&["render.edge_s"], Gap(283)),
+            // Declared here, not probed: a book render needs an EPUB, which this test does not build. The book's own
+            // test shows it carried and recorded: the_edge_reaches_every_chapter_and_a_resume_under_another_starts_again.
+            (&["render.edge_s"], Carried),
             (&["render.measure_timings"], Refused(BOOK_TIMINGS)),
             (TRACE, Carried),
             (REPORTS, Refused(BOOK_REPORTS)),
@@ -915,6 +917,37 @@ fn render_probes() -> Vec<Probe> {
             let (a, b) = (seeds("1"), seeds("2"));
             assert!(!a.is_empty(), "the story trace records chunk seeds");
             push("render.seed", if a != b { Seen::Carried } else { Seen::Dropped });
+            // The salt: two salts give the chunks different recorded seeds.
+            let salted = |salt: &str| {
+                let r = render(
+                    &p(&format!("salt{salt}")),
+                    mode,
+                    &["--seed-salt", salt, "--trace", "t.jsonl"],
+                );
+                assert!(r.ok, "{}", r.stderr);
+                trace_seeds(&r.dir.join("t.jsonl"))
+            };
+            let (a, b) = (salted("a"), salted("b"));
+            push("render.seed_salt", if a != b { Seen::Carried } else { Seen::Dropped });
+            // The edge: a longer edge kept at each chunk makes a longer read.
+            let flac_len = |edge: &str| {
+                let r = render(&p(&format!("edge{edge}")), mode, &["--edge-s", edge]);
+                assert!(r.ok, "{}", r.stderr);
+                std::fs::metadata(r.dir.join("o.flac")).map(|m| m.len()).unwrap_or(0)
+            };
+            push(
+                "render.edge_s",
+                if flac_len("0") != flac_len("1.5") {
+                    Seen::Carried
+                } else {
+                    Seen::Dropped
+                },
+            );
+        } else {
+            let r = render(&p("salt"), mode, &["--seed-salt", "a"]);
+            push("render.seed_salt", by_front_end_refusal(&r, "--seed-salt"));
+            let r = render(&p("edge"), mode, &["--edge-s", "1"]);
+            push("render.edge_s", by_front_end_refusal(&r, "--edge-s"));
         }
 
         // The options ggtts-render does not take: refused by name.
@@ -2167,12 +2200,12 @@ fn a_new_option_entered_as_a_gap_fails_naming_it() {
 #[test]
 fn a_closed_gap_still_listed_fails() {
     let mut cells = cells(TABLE, FRONT_ENDS).unwrap();
-    let key = ("book".to_string(), "render.edge_s".to_string());
-    assert_eq!(cells[&key], Gap(283));
+    let key = ("render-story".to_string(), "render.seed".to_string());
+    assert_eq!(cells[&key], Gap(215));
     cells.insert(key, Carried);
     let errors = check_gaps(&cells, &read(GAPS));
     assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(errors[0].contains("book\\trender.edge_s\\t#283"), "{errors:?}");
+    assert!(errors[0].contains("render-story\\trender.seed\\t#215"), "{errors:?}");
 }
 
 /// #284 AC3: a document path that ignores `raw` (it levels anyway) fails: the probe sees `output.stream_raw` dropped,

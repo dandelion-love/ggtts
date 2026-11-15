@@ -537,6 +537,9 @@
           "description": "Seconds of silence kept at each edge of a chunk; unset is the engine profile's.",
           "minimum": 0.0,
           "type": "number",
+          "x-ggtts-flags": [
+            "--edge-s"
+          ],
           "x-ggtts-phase": "render"
         },
         "instruction": {
@@ -596,6 +599,9 @@
           "type": "string",
           "x-ggtts-c": [
             "seed"
+          ],
+          "x-ggtts-flags": [
+            "--seed-salt"
           ],
           "x-ggtts-kotlin": [
             "seed"

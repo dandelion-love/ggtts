@@ -139,7 +139,7 @@ const USAGE: &str = "usage: ggtts-render [--model M.gguf] [--codec C.gguf] [--of
 [--temperature X] [--top-k N] [--top-p X] [--repetition-penalty X] [--subtalker-temperature X] [--subtalker-top-k N] \
 [--subtalker-top-p X] [--max-frames N] [--language auto|en|ru|zh|ja|ko|de|fr|es|it|pt] \
 [--steer FILE [--steer-scale X] [--steer-layers LIST]] \
-[--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE [--redraw N [--judge asr-qwen,model=DIR]]) \
+[--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE [--seed-salt S] [--edge-s X] [--redraw N [--judge asr-qwen,model=DIR]]) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
 [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID] \
 [--log-level error|warn|info|debug|trace] [--log-format text|json] [--timing-report FILE] [--duration-report FILE]\n       ggtts-render --version";
@@ -642,6 +642,14 @@ fn render_with_models(
                     chunks (--story)"
                 .into(),
         );
+    }
+    // A story's seeds are salted and its chunks trimmed; the one-chunk --text plan renders at --seed and keeps its
+    // draw whole (#180), so either option there would do nothing.
+    if a.render.seed_salt.is_some() && a.render.text.is_some() {
+        return Err("--seed-salt (render.seed_salt): --text renders at --seed; there is no story seed to salt".into());
+    }
+    if a.render.edge_s.is_some() && a.render.text.is_some() {
+        return Err("--edge-s (render.edge_s): --text keeps its draw whole, with no edge trimmed".into());
     }
     // Redraws are a story's: the one-chunk --text plan keeps its one draw, so a --redraw there would do nothing.
     if a.render.redraw.is_some() && a.render.text.is_some() {

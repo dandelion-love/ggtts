@@ -399,6 +399,7 @@ pub const TABLE: &[Descriptor] = &[
         ..row("seed", SR, R, Kind::Seed, "null")
     },
     Descriptor {
+        flags: &["--seed-salt"],
         python: &["seed"],
         c: &["seed"],
         kotlin: &["seed"],
@@ -451,6 +452,7 @@ pub const TABLE: &[Descriptor] = &[
         ..row("judge", SR, R, named(), "null")
     },
     Descriptor {
+        flags: &["--edge-s"],
         help: "Seconds of silence kept at each edge of a chunk; unset is the engine profile's.",
         ..row("edge_s", SR, R, seconds(), "null")
     },

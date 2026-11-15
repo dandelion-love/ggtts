@@ -820,7 +820,7 @@ pub fn resolve_defaults(
 /// A model file must exist and be a GGUF before any engine is asked to load it.
 fn check_gguf(what: &str, path: &Path) -> Result<(), Fail> {
     let mut magic = [0u8; 4];
-    let read = std::fs::File::open(path).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic));
+    let read = ggtts_core::fdpath::open(path).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic));
     let path = path.display();
     match read {
         Err(e) => Err(engine_err(format!("{what} {path}: {e}"))),

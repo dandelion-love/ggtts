@@ -1,16 +1,13 @@
 // Where the app's files live so a person can reach them, with no storage permission. Audio goes out to Music/ggtts/
 // through MediaStore (Android 10 and later let an app add its own media there without asking), where the Files app
 // and a computer over USB both see it. Model files come in from a folder the user picks once with the system picker
-// (ACTION_OPEN_DOCUMENT_TREE, permission persisted), and are copied into the app's own models directory, checked as an
-// import is (ModelImport), when the folder is picked and each time the screen opens.
+// (ACTION_OPEN_DOCUMENT_TREE, permission persisted) and load in place, never copied: [ContentPaths] opens each one
+// with openFileDescriptor and hands the engine `/proc/self/fd/<n>`, which the engine reads through that descriptor
+// rather than reopening it (ggtts_core::fdpath; reopening fails with "Permission denied" without a storage
+// permission). The app's own models directory stays, and a name in both places is its.
 //
-// Why a copy, not loading in place: the engine opens a model by path. A picked file's descriptor reaches it as
-// /proc/self/fd/<n>, but opening that path re-checks access to the file underneath, which is on shared storage the app
-// may not read without a storage permission. Measured on a Galaxy Z Fold5 (Android 17): "Permission denied (os error
-// 13)", three loads of three. Loading in place needs the engine to take the descriptor itself.
-//
-// The parts apart from Android (naming, merging the two listings, what to copy or export) are in [Storage] and
-// [Catalog], so the JVM tests drive them; the Android parts ([MusicFolder], [ModelsFolder]) are thin.
+// The parts apart from Android (naming, merging the two listings, what to export) are in [Storage] and [Catalog], so
+// the JVM tests drive them; the Android parts ([MusicFolder], [ModelsFolder], [ContentPaths]) are thin.
 package ggtts.demo
 
 import android.content.ContentValues
@@ -36,15 +33,8 @@ object Storage {
     /** Whether [location] is a document in the picked folder (a content URI) rather than a file path. */
     fun isContent(location: String): Boolean = location.startsWith("content://")
 
-    /**
-     * The picked folder's files to copy into the app directory: model files ([ModelImport] takes a `.gguf` or a `.json`)
-     * with plain names, not a copy in progress, and not already there by name ([have]). Samples stay where they are,
-     * played through their URI.
-     */
-    fun toCopy(folder: List<Entry>, have: Set<String>): List<Entry> = folder.filter { e ->
-        ModelImport.isPlainName(e.name) && !e.name.endsWith(ModelImport.PART) && e.name !in have &&
-            (e.name.endsWith(".gguf", true) || e.name.endsWith(".json", true))
-    }.sortedBy { it.name }
+    /** The path the engine reads a descriptor this process holds through (never reopened: ggtts_core::fdpath). */
+    fun fdPath(fd: Int): String = "/proc/self/fd/$fd"
 
     /** A saved read's file name: the engine and when the read was saved, so saves never collide or overwrite. */
     fun readName(engine: String, timeMillis: Long): String {
@@ -95,6 +85,38 @@ class Catalog private constructor(private val byName: Map<String, String>) {
 
         /** The app directory's complete files, as entries. */
         fun appEntries(dir: File): List<Entry> = ModelImport.listed(dir).map { Entry(it, File(dir, it).path) }
+    }
+}
+
+/** A path the engine can open, and what keeps it open (closed when the engine is). */
+class Opened(val path: String, private val handle: AutoCloseable? = null) : AutoCloseable {
+    override fun close() {
+        handle?.close()
+    }
+}
+
+/** Turns a model location into a path the engine opens. */
+fun interface PathResolver {
+    fun open(location: String): Opened
+
+    companion object {
+        /** Paths only: what the JVM tests and a binding with no picked folder use. */
+        val PLAIN = PathResolver { Opened(it) }
+    }
+}
+
+/**
+ * A picked-folder document as `/proc/self/fd/<n>`: the descriptor stays open as long as the engine that loaded it,
+ * and the engine reads through it, never reopening the path. A plain path passes through.
+ */
+class ContentPaths(context: Context) : PathResolver {
+    private val resolver = context.applicationContext.contentResolver
+
+    override fun open(location: String): Opened {
+        if (!Storage.isContent(location)) return Opened(location)
+        val pfd = resolver.openFileDescriptor(Uri.parse(location), "r")
+            ?: throw FileNotFoundException("$location could not be opened")
+        return Opened(Storage.fdPath(pfd.fd), pfd)
     }
 }
 

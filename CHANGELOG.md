@@ -13,6 +13,11 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **A model file can be given as an open descriptor, `/proc/self/fd/<n>`.** Every front end's model, codec and
+  voice paths take that form, and the engine reads through descriptor `n` without reopening the path. This is how an
+  Android app hands over a file the user picked with the system picker: reopening the path fails with "Permission
+  denied" for an app without a storage permission. Any other path opens as before. The Android demo uses it to load
+  voices from a folder chosen once (⋮ "Choose a models folder…") in place, with no copy.
 - **A stream through an options document is levelled by default, as `ggtts-render --stream` is.** The C ABI's
   `ggtts_render_opts` with a callback, Python's `render_stream` and `stream` with `options=`, and Kotlin's
   `renderStream` with `options` now hand each piece levelled by one gain from the first 5 s of audio

@@ -1,6 +1,6 @@
 // Storage's parts apart from Android: which files the screen lists from the app's directory and the picked folder
-// (and from where), which of the folder's files are copied in, what a saved read is called, which voice samples still
-// go to Music/ggtts/, and that the voices are read through the same opener whichever place a file is in.
+// (and from where), the descriptor path a picked file reaches the engine as, what a saved read is called, which voice
+// samples still go to Music/ggtts/, and that the voices are read through the same opener whichever place a file is in.
 package ggtts.demo
 
 import java.io.ByteArrayInputStream
@@ -96,20 +96,13 @@ class StorageTest {
     }
 
     @Test
-    fun onlyModelFilesTheAppDirectoryLacksAreCopiedFromTheFolder() {
-        val folder = listOf(
-            Entry("talker.gguf", uri("talker.gguf"), 2_000_000_000L),
-            Entry("codec.gguf", uri("codec.gguf")),
-            Entry("voice.json", uri("voice.json")),
-            Entry("hk_voice_343.sample.wav", uri("s")),
-            Entry("notes.txt", uri("n")),
-            Entry("lm.gguf.part", uri("p")),
-            Entry("../up.gguf", uri("u")),
-        )
-        val todo = Storage.toCopy(folder, have = setOf("talker.gguf"))
-        assertEquals(listOf("codec.gguf", "voice.json"), todo.map { it.name })
-        assertEquals(uri("codec.gguf"), todo.first().location)
-        assertEquals(emptyList<Entry>(), Storage.toCopy(folder, have = setOf("talker.gguf", "codec.gguf", "voice.json")))
+    fun aPickedFileReachesTheEngineAsItsDescriptorsPathAndAPathPassesThrough() {
+        // The exact form ggtts_core::fdpath takes as a descriptor; any other form would be reopened by path and refused.
+        assertEquals("/proc/self/fd/42", Storage.fdPath(42))
+        assertEquals("/sdcard/x.gguf", PathResolver.PLAIN.open("/sdcard/x.gguf").path)
+        // The folder's model files are listed where they are, not copied: their location is the document URI.
+        val c = Catalog.merge(emptyList(), listOf(Entry("talker.gguf", uri("talker.gguf"))))
+        assertTrue(Storage.isContent(c.location("talker.gguf")!!))
     }
 
     /** A GGUF header with general.architecture and, if any, the talker's speaker names. */

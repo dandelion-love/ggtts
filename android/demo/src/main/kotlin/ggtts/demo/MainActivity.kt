@@ -157,7 +157,6 @@ class MainActivity : AppCompatActivity(), DemoView {
         refreshFiles()
         Reader.screen = this
         applyIntent(intent)
-        syncFolder()
     }
 
     override fun onTrimMemory(level: Int) {
@@ -527,8 +526,8 @@ class MainActivity : AppCompatActivity(), DemoView {
     }
 
     private fun refreshFiles() {
-        // The app's own directory, and the picked folder's samples (its model files are copied in: syncFolder).
-        catalog = Catalog.merge(Catalog.appEntries(modelsDir), folder.entries().filter { it.name.endsWith(Voices.SAMPLE_SUFFIX) })
+        // The app's own directory first, then the picked folder, read in place (a name in both is the app directory's).
+        catalog = Catalog.merge(Catalog.appEntries(modelsDir), folder.entries())
         exportSamples()
         val listed = catalog.names
         val steps = About.gettingStarted(listed.size)
@@ -784,48 +783,10 @@ class MainActivity : AppCompatActivity(), DemoView {
             showError("Could not keep access to that folder: ${it.message}")
             return
         }
-        Log.i(TAG, "models folder: $uri (${folder.entries().size} files)")
+        val n = folder.entries().size
+        Log.i(TAG, "models folder: $uri ($n files)")
         refreshFiles()
-        syncFolder()
-    }
-
-    private var syncing = false
-
-    /**
-     * Copy the picked folder's model files that the app directory lacks into it, checked as an import is, one at a
-     * time on the worker; the voices refresh after each. The engine cannot open a picked file in place (Storage.kt).
-     */
-    private fun syncFolder() {
-        if (syncing) return
-        val todo = Storage.toCopy(folder.entries(), ModelImport.listed(modelsDir).toSet())
-        if (todo.isEmpty()) return
-        syncing = true
-        val where = folder.describe() ?: "the models folder"
-        worker.execute {
-            var failed = 0
-            todo.forEachIndexed { i, e ->
-                handler.post { showStatus("Copying ${e.name} from $where (${i + 1} of ${todo.size})...") }
-                val t0 = SystemClock.elapsedRealtime()
-                val r = runCatching {
-                    (contentResolver.openInputStream(Uri.parse(e.location)) ?: throw ImportException("cannot read ${e.name}"))
-                        .use { ModelImport(modelsDir).importFile(e.name, e.size, it) }
-                }
-                val ms = SystemClock.elapsedRealtime() - t0
-                if (r.isFailure) failed++
-                r.fold({ Log.i(TAG, "folder copy: ${e.name} (${it.length()} bytes) in $ms ms") },
-                    { Log.w(TAG, "folder copy: ${e.name} refused after $ms ms: ${it.message}") })
-                handler.post {
-                    refreshFiles()
-                    r.exceptionOrNull()?.let { showError("Not copied from $where: ${it.message}") }
-                }
-            }
-            val copied = todo.size - failed
-            handler.post {
-                syncing = false
-                // A refusal stays on screen; a clean run says so.
-                if (failed == 0) showStatus("Copied $copied model file(s) from $where; their voices are listed.")
-            }
-        }
+        showStatus("Models folder: ${folder.describe() ?: uri}. $n file(s) there, read in place; its voices are listed.")
     }
 
     /** Save and Share for the last finished read, under the player. */

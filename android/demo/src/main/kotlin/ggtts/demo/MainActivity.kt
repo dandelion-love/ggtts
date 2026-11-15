@@ -86,6 +86,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         const val DEFAULT_THREADS = LoadRequest.DEFAULT_THREADS
         private const val REQUEST_NOTIFICATIONS = 2
         private const val PICK_FOLDER = 3
+        private const val PICK_READS_FOLDER = 4
     }
 
     // Storage (Storage.kt): the picked models folder, Music/ggtts/, and every model file listed from both.
@@ -109,6 +110,10 @@ class MainActivity : AppCompatActivity(), DemoView {
     private lateinit var speak: MaterialButton
     private lateinit var stop: MaterialButton
     private lateinit var laterButton: MaterialButton
+    /** The ⋮ menu's Saved reads: this install's reads in Music/ggtts/, and an earlier install's once the folder is picked. */
+    private val savedReads by lazy {
+        SavedReadsSheet(this, ReadsLibrary(this)) { startActivityForResult(ReadsLibrary.pickIntent(), PICK_READS_FOLDER) }
+    }
     private lateinit var systemSpeak: MaterialButton
     private var platformTts: TextToSpeech? = null
     private var askedForNotifications = false
@@ -448,6 +453,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         // The ⋮ menu: everything that is not reading. The two section items say whether they open or close.
         header.menu.add(0, 1, 0, "Import a voice file…")
         header.menu.add(0, 4, 1, "Choose a models folder…")
+        header.menu.add(0, 5, 1, "Saved reads")
         val aboutItem = header.menu.add(0, 2, 2, "About this app")
         val advItem = header.menu.add(0, 3, 3, "Advanced")
         header.setOnMenuItemClickListener { item: MenuItem ->
@@ -456,6 +462,7 @@ class MainActivity : AppCompatActivity(), DemoView {
                 2 -> aboutItem.title = if (toggleSection(scroll, about)) "Hide About" else "About this app"
                 3 -> advItem.title = if (toggleSection(scroll, adv)) "Hide Advanced" else "Advanced"
                 4 -> chooseFolder()
+                5 -> savedReads.show()
             }
             true
         }
@@ -768,6 +775,14 @@ class MainActivity : AppCompatActivity(), DemoView {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == PICK_FOLDER) {
             data?.data?.takeIf { resultCode == RESULT_OK }?.let { onFolderPicked(it) }
+            return
+        }
+        if (requestCode == PICK_READS_FOLDER) {
+            data?.data?.takeIf { resultCode == RESULT_OK }?.let { uri ->
+                runCatching { ReadsLibrary(this).choose(uri) }.onFailure { showError("Could not keep access to that folder: ${it.message}") }
+                Log.i(TAG, "saved reads: folder $uri")
+            }
+            savedReads.show()
             return
         }
         val uri = data?.data

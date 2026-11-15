@@ -268,9 +268,12 @@ class MusicFolder(context: Context) {
     }
 
     companion object {
-        /** A chooser that shares [uri] (audio) with the app the user picks, which may read it and nothing else. */
-        fun shareIntent(uri: Uri): Intent = Intent.createChooser(
-            Intent(Intent.ACTION_SEND).setType(Storage.WAV_MIME).putExtra(Intent.EXTRA_STREAM, uri)
+        /**
+         * A chooser that shares [uri] (audio of [mime], a content URI, never a path) with the app the user picks, which
+         * is granted read access to that one item and nothing else.
+         */
+        fun shareIntent(uri: Uri, mime: String = Storage.WAV_MIME): Intent = Intent.createChooser(
+            Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_STREAM, uri)
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
             "Share the read",
         )

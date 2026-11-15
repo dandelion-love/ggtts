@@ -33,6 +33,17 @@ that a merge places under a released heading is caught.
   None (not given), which loads exactly what their old defaults did, and a setting refused by its key (a speaker on
   an engine that has none) is now an `OptionError`, still a `GgttsError` with the same code and message. A call
   without `options` renders the same samples as before.
+- **`--kitten-full-head` (`load.kitten_full_head`) is an option of the table**, with `GGTTS_KITTEN_FULL_HEAD` as its
+  environment spelling, for `ggtts-render` and `ggtts-book render`. It makes Kitten-TTS 2 compute its whole output
+  head, as `GGTTS_KITTEN_FULL_HEAD=1` did, and the audio is unchanged by the move. When it is on, the trace header and
+  the timing and duration reports carry `"kitten_full_head": true` (added within ggtts-trace/2, ggtts-timing/1 and
+  ggtts-duration/1), and a book's chapter manifests record it, so a resume with the other head is refused. On qwen3-tts
+  and fake, the variable exported in the environment is ignored with one warning and listed as ignored in the record;
+  the flag, or the key in an options document, is refused. Through `ggtts-render` and `ggtts-book` the variable takes
+  the table's boolean spellings (`1`, `true`, `0`, `false`) and refuses any other value; the bindings take no option
+  for it, and their engine still reads exactly `1` from the environment. A C ABI load document that gives
+  `load.kitten_full_head` is refused. The C ABI capability statement (`ggtts_capabilities`) gains `full_head`.
+
 - **The C ABI states its options and an engine's capabilities, and names a refused option (version 5).**
   `ggtts_options_schema()` returns the options schema built into the library (`schemas/ggtts-options-1.schema.json`
   byte for byte). `ggtts_capabilities(handle, &json)` returns a loaded engine's capability statement as JSON
@@ -47,7 +58,8 @@ that a merge places under a released heading is caught.
   `--redraw`. CJK characters (folded to simplified) and numbers (by value) are compared. An ASR that dies or misses its deadline
   (`timeout=S`, 120 s per draw; `start_timeout=S`, 600 s to load) stops the render, which a rerun resumes. The trace records each reading in a new
   `read` event, and a book's chapter manifest in each chunk's `reads`. Off by default. It needs `--redraw N`, and is
-  refused before anything is drawn when its ASR cannot start; `--text` and the bindings refuse it. A trace with
+  refused before anything is drawn when its ASR cannot start; `--text` and the bindings refuse it. When the ASR's Python lacks a package, the
+  refusal names the missing module (`the model did not load (ModuleNotFoundError: qwen_asr)`). A trace with
   text verdicts replays, taking them as recorded.
 - **A text judge in the `ggtts-core` library: `textjudge::TextJudge`.** It judges a draw for duration as before,
   then reads it back with a recogniser the caller supplies (`textjudge::Recogniser`) and rejects a draw that lost

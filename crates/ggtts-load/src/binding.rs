@@ -327,6 +327,10 @@ pub fn render_stream(
 pub fn document_refusal(key: &str, at_load: bool) -> Option<&'static str> {
     let (section, name) = key.split_once('.').unwrap_or((key, ""));
     let why = match (section, name) {
+        ("load", "kitten_full_head") => {
+            "the kitten-tts-2 engine reads GGTTS_KITTEN_FULL_HEAD=1 from the environment itself: a binding takes no \
+             option for it"
+        }
         ("load", _) if at_load => return None,
         ("load", _) => "a load option: it is fixed when the engine loads, so give it in the load document",
         ("render", "text" | "story") => "the text is the render's own argument",

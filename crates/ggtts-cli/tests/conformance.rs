@@ -80,7 +80,6 @@ const INSTRUMENTS: &[&str] = &[
     "observe.report",
     "observe.run",
 ];
-const FILES_OUT: &[&str] = &["output.out", "output.stream", "output.stream_format"];
 const STREAM_LEVEL: &[&str] = &["output.stream_raw", "output.stream_level_seconds"];
 const STREAM: &[&str] = &[
     "output.stream",
@@ -330,9 +329,13 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.seed"], Refused(BINDING_SEED)),
             (&["render.judge"], Refused(NO_JUDGE)),
             (&["render.steer", "render.edge_s"], Carried),
-            // Handed to the binding in the document like the rest; read only by an engine that steers, and a redraw
-            // needs a draw the judge rejects, so neither is probed on the fake engine (as for kotlin).
-            (&["render.steer_scale", "render.steer_layers", "render.redraw"], Carried),
+            // Handed to the binding in the document like the rest, so the app carries them exactly when the Kotlin
+            // binding does, and the binding has them as gaps (#292: no probe on the fake engine). The app cannot carry
+            // more than the binding: `the_app_carries_no_more_than_its_binding` holds the two rows together.
+            (
+                &["render.steer_scale", "render.steer_layers", "render.redraw"],
+                Gap(282),
+            ),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Refused(ANDROID_TRACE)),
             (REPORTS, Refused(NO_TIMINGS)),
@@ -1519,6 +1522,36 @@ fn android_probes(seam: &str, kotlin: &[Probe]) -> Vec<Probe> {
         .iter()
         .map(|(_, key, seen)| ("android", key.clone(), if handed { *seen } else { Seen::Dropped }))
         .collect()
+}
+
+/// The options the app claims to carry that its binding does not: the app hands its document to the Kotlin binding,
+/// so where the binding's cell is a gap or a refusal, the app's cannot be Carried.
+fn wider_than_its_binding(cells: &BTreeMap<(String, String), Cell>) -> Vec<String> {
+    let mut wrong = Vec::new();
+    for d in TABLE {
+        let key = d.key();
+        let kotlin = cells[&("kotlin".to_string(), key.clone())];
+        let android = cells[&("android".to_string(), key.clone())];
+        if android == Carried && kotlin != Carried {
+            wrong.push(format!("{key}: android is Carried, kotlin is {kotlin:?}"));
+        }
+    }
+    wrong
+}
+
+/// The app carries no more than its binding, and a planted android cell wider than Kotlin's fails, naming it.
+#[test]
+fn the_app_carries_no_more_than_its_binding() {
+    let mut cells = cells(TABLE, FRONT_ENDS).unwrap();
+    let wrong = wider_than_its_binding(&cells);
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    cells.insert(("android".to_string(), "render.steer_scale".to_string()), Carried);
+    let planted = wider_than_its_binding(&cells);
+    assert_eq!(planted.len(), 1, "{planted:?}");
+    assert!(
+        planted[0].starts_with("render.steer_scale: android is Carried, kotlin is Gap(292)"),
+        "{planted:?}"
+    );
 }
 
 /// #282 AC6: the app's carried options are exercised through its seam, and an app whose binding call drops the

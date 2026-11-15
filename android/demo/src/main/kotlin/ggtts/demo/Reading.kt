@@ -1,7 +1,8 @@
 // A read outlives the screen. One controller per process (Reader), whose view is relayed to whichever screen is
-// open, and a foreground service (ReadingService) that keeps the process alive while a read runs, with a notification
-// that shows progress and has a Stop action. The loaded engine is the app's shared one (SharedEngines), kept between
-// reads and released when Android asks for memory back while nothing is being read.
+// open, and a foreground service (ReadingService) that keeps the process alive while a read runs, with a media session
+// and a media notification: Pause or Play, and Stop, from the notification, the lock screen and a headset button
+// (MediaControls). The loaded engine is the app's shared one (SharedEngines), kept between reads and released when
+// Android asks for memory back while nothing is being read.
 package ggtts.demo
 
 import android.app.ActivityManager
@@ -13,6 +14,9 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.MediaMetadata
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -71,9 +75,9 @@ class ForegroundGate(private val startService: () -> Unit, private val stopServi
      * The service's onStartCommand. The notification's Stop arrives as [ACTION_STOP] and ends the read through
      * [stopRead], the same call as the screen's Stop; any other command is the start, which always goes foreground.
      */
-    fun onCommand(action: String?, stopRead: () -> Unit, goForeground: () -> Unit) {
-        if (action == ACTION_STOP) {
-            stopRead()
+    fun onCommand(action: String?, stopRead: () -> Unit, goForeground: () -> Unit, control: (String) -> Unit = {}) {
+        if (action in CONTROLS) {
+            if (action == ACTION_STOP) stopRead() else control(action!!)
             // A Stop that reached a service with no read behind it (a stale notification) started it just for this:
             // stop it again, or it would stay.
             if (!foreground && !pending) stopService()
@@ -94,6 +98,11 @@ class ForegroundGate(private val startService: () -> Unit, private val stopServi
 
     companion object {
         const val ACTION_STOP = "ggtts.demo.STOP"
+        const val ACTION_PAUSE = "ggtts.demo.PAUSE"
+        const val ACTION_PLAY = "ggtts.demo.PLAY"
+
+        /** The commands that act on the read rather than start the service: Stop, Pause and Play. */
+        val CONTROLS = setOf(ACTION_STOP, ACTION_PAUSE, ACTION_PLAY)
     }
 }
 
@@ -207,8 +216,30 @@ class ReadingService : Service() {
                 }
                 Log.i(MainActivity.TAG, "reading service: foreground")
             },
+            control = { action ->
+                Log.i(MainActivity.TAG, "notification: ${MediaControls.apply(action, Reader.controller(this))}")
+            },
         )
         return START_NOT_STICKY
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        // The read's media session: the lock screen and the notification show its state, and a headset or Bluetooth
+        // play/pause key (or `adb shell cmd media_session dispatch pause`) reaches it while the read is the active one.
+        session = MediaSession(this, "ggtts-reading").apply {
+            setCallback(object : MediaSession.Callback() {
+                override fun onPause() = act(ForegroundGate.ACTION_PAUSE)
+                override fun onPlay() = act(ForegroundGate.ACTION_PLAY)
+                override fun onStop() = act(ForegroundGate.ACTION_STOP)
+                private fun act(action: String) {
+                    Log.i(MainActivity.TAG, "media session: ${MediaControls.apply(action, Reader.controller(this@ReadingService))}")
+                }
+            })
+            setMetadata(MediaMetadata.Builder().putString(MediaMetadata.METADATA_KEY_TITLE, "ggtts is reading").build())
+            isActive = true
+        }
+        publish(this)
     }
 
     override fun onTrimMemory(level: Int) {
@@ -219,6 +250,8 @@ class ReadingService : Service() {
     override fun onDestroy() {
         Log.i(MainActivity.TAG, "reading service: stopped")
         gate(this).onDestroy()
+        session?.let { it.isActive = false; it.release() }
+        session = null
         super.onDestroy()
     }
 
@@ -227,6 +260,30 @@ class ReadingService : Service() {
         private const val CHANNEL = "reading"
         private var gate: ForegroundGate? = null
         private var running = false
+        /** The running service's media session, if it runs. Main thread only. */
+        private var session: MediaSession? = null
+
+        /** The read's state on the media session, from the controller (MediaControls.state). */
+        private fun state(context: Context): MediaControls.State {
+            val c = Reader.controller(context)
+            return MediaControls.state(c.busy, c.paused)
+        }
+
+        /** Publishes the read's state to the media session, so the lock screen and a headset button see it. */
+        private fun publish(context: Context) {
+            val s = session ?: return
+            val code = when (state(context)) {
+                MediaControls.State.PLAYING -> PlaybackState.STATE_PLAYING
+                MediaControls.State.PAUSED -> PlaybackState.STATE_PAUSED
+                MediaControls.State.NONE -> PlaybackState.STATE_STOPPED
+            }
+            s.setPlaybackState(
+                PlaybackState.Builder()
+                    .setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE or PlaybackState.ACTION_STOP)
+                    .setState(code, PlaybackState.PLAYBACK_POSITION_UNKNOWN, if (code == PlaybackState.STATE_PLAYING) 1f else 0f)
+                    .build(),
+            )
+        }
 
         /** The process's one gate, with the application context. Main thread only. */
         fun gate(context: Context): ForegroundGate {
@@ -247,34 +304,53 @@ class ReadingService : Service() {
 
         fun update(context: Context, text: String) {
             if (!running) return
+            publish(context)
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             runCatching { nm.notify(ID, notification(context, text)) }
         }
+
+        private fun command(context: Context, action: String, code: Int) = PendingIntent.getService(
+            context, code, Intent(context, ReadingService::class.java).setAction(action),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
 
         private fun notification(context: Context, text: String): Notification {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CHANNEL) == null) {
                 nm.createNotificationChannel(NotificationChannel(CHANNEL, context.getString(R.string.notification_channel), NotificationManager.IMPORTANCE_LOW))
             }
-            val stop = PendingIntent.getService(
-                context, 0, Intent(context, ReadingService::class.java).setAction(ForegroundGate.ACTION_STOP),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-            )
+            val stop = command(context, ForegroundGate.ACTION_STOP, 0)
             val open = PendingIntent.getActivity(
                 context, 0, Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
             val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(context, CHANNEL) else
                 @Suppress("DEPRECATION") Notification.Builder(context)
-            val full = context.getString(R.string.notification_off_screen, text)
-            return b.setSmallIcon(android.R.drawable.ic_media_play)
+            // A media notification: Pause or Play, then Stop, on the shade and the lock screen. The slow-cores note is
+            // in the text, since a media style shows no expanded text.
+            val state = state(context)
+            val toggle = MediaControls.toggleAction(state)
+            b.setSmallIcon(android.R.drawable.ic_media_play)
                 .setContentTitle(context.getString(R.string.notification_title))
-                .setContentText(text)
-                .setStyle(Notification.BigTextStyle().bigText(full))
+                .setContentText(context.getString(R.string.notification_off_screen, text))
                 .setOngoing(true)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setContentIntent(open)
-                .addAction(Notification.Action.Builder(null, context.getString(R.string.notification_stop), stop).build())
-                .build()
+            val compact = mutableListOf<Int>()
+            if (toggle != null) {
+                val icon = if (state == MediaControls.State.PLAYING) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
+                b.addAction(Notification.Action.Builder(
+                    android.graphics.drawable.Icon.createWithResource(context, icon), MediaControls.toggleLabel(state, ResourceWords(context)), command(context, toggle, 1),
+                ).build())
+                compact += 0
+            }
+            b.addAction(Notification.Action.Builder(
+                android.graphics.drawable.Icon.createWithResource(context, android.R.drawable.ic_menu_close_clear_cancel), context.getString(R.string.notification_stop), stop,
+            ).build())
+            compact += compact.size
+            val style = Notification.MediaStyle().setShowActionsInCompactView(*compact.toIntArray())
+            session?.let { style.setMediaSession(it.sessionToken) }
+            return b.setStyle(style).build()
         }
     }
 }

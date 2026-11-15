@@ -83,6 +83,9 @@
     <string name="stopping">讀完而家呢段就停…</string>
     <string name="writing_first">生成緊第一句（要 20 至 60 秒）…</string>
     <string name="speaking_chunk">朗讀緊：第 %1$d 段準備好（%2$.1f 秒後出聲）；繼續準備其餘部分…</string>
+    <string name="paused_chunk">暫停咗：第 %1$d 段準備好（%2$.1f 秒後出聲）；繼續準備其餘部分…</string>
+    <string name="paused_status">暫停咗。其餘部分仲準備緊；撳「播放」繼續聽。</string>
+    <string name="playing_on">繼續播放。</string>
     <string name="stopped_after">讀咗 %1$d 段之後停咗。</string>
     <string name="stopped_during_playback">播放途中停咗。成段朗讀已經生成好，儲存咗喺 %1$s。</string>
     <string name="read_done">%1$s：%2$.2f 秒語音，用咗 %3$.1f 秒（RTF %4$.2f）；%5$.1f 秒後出聲。儲存咗喺 %6$s</string>
@@ -111,5 +114,23 @@
     <string name="notification_starting">開始緊…</string>
     <string name="notification_stop">停止</string>
     <string name="notification_title">ggtts 朗讀緊</string>
-    <string name="notification_off_screen">%1$s\n離開畫面之後，Android 會用手機較慢嘅核心繼續朗讀，會慢幾倍。打開應用程式就會快返。</string>
+    <string name="notification_pause">暫停</string>
+    <string name="notification_play">播放</string>
+    <string name="notification_off_screen">%1$s 離開畫面之後會慢幾倍繼續朗讀；打開應用程式就會快返。</string>
+    <!-- Text from other apps (Incoming.kt). -->
+    <string name="incoming_not_plain_shared">呢個應用程式只接受分享純文字，唔接受 %1$s。</string>
+    <string name="incoming_no_text_shared">分享過嚟嘅內容入面冇文字。</string>
+    <string name="incoming_not_plain_file">呢個應用程式只開得純文字（.txt）檔案，開唔到 %1$s。</string>
+    <string name="incoming_file_too_big">個檔案超過 %1$d KB。呢個應用程式開得最多 %1$d KB、%2$d 個字嘅文字檔。</string>
+    <string name="incoming_not_utf8">個檔案唔係 UTF-8 文字，所以冇打開。</string>
+    <string name="incoming_empty">%1$s嘅內容入面冇文字可以讀。</string>
+    <string name="incoming_too_long">段文字有 %1$d 個字。呢個應用程式每次最多讀 %2$d 個字；請分享短啲嘅部分。</string>
+    <string name="incoming_path">呢個應用程式只開經 Android 分享嘅文字檔，唔開路徑（%1$s）。</string>
+    <string name="incoming_status">收到其他應用程式%1$s嘅文字：%2$d 個字。撳「朗讀」就會讀出嚟。</string>
+    <string name="incoming_status_replaced">收到其他應用程式%1$s嘅文字：%2$d 個字，取代咗原本嘅文字。撳「朗讀」就會讀出嚟。</string>
+    <string name="incoming_source_selected">揀選</string>
+    <string name="incoming_source_shared">分享</string>
+    <string name="incoming_source_opened">打開</string>
+    <string name="file_unopened">打開唔到個檔案。</string>
+    <string name="file_unopened_why">打開唔到個檔案：%1$s</string>
 </resources>

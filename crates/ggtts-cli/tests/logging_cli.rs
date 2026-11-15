@@ -150,7 +150,8 @@ fn json_logs_are_consistent_and_do_not_contaminate_audio_stdout() {
     assert!(text.status.success(), "{}", String::from_utf8_lossy(&text.stderr));
     let text_report: serde_json::Value = serde_json::from_slice(&std::fs::read(text_timing).unwrap()).unwrap();
     assert!(text_report["stream"]["first_audio_ms"].is_number());
-    assert!(text_report["stream"]["preparation_ns"].is_null());
+    // A --text stream is levelled, as a story's is (#294), so it spends time preparing.
+    assert!(text_report["stream"]["preparation_ns"].is_number());
     assert!(text_report["stages"]["judge_ns"].is_null());
     let _ = std::fs::remove_dir_all(root);
 }

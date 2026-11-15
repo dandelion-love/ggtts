@@ -153,23 +153,35 @@ fn a_raw_stream_to_a_file_without_a_flac() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+/// `--text --stream-raw` is the decoded draw, which is the FLAC (`--text` has no level step on its FLAC); the
+/// default `--text` stream is levelled, as a story's is (#294), so it differs.
 #[test]
-fn a_text_stream_holds_the_flac_samples() {
+fn a_raw_text_stream_holds_the_flac_samples_and_the_default_is_levelled() {
     let dir = scratch("text");
     let flac = dir.join("one.flac");
-    let (out, _) = run(&[
-        "--engine",
-        "fake",
-        "--text",
-        "一二三四五六",
-        "--out",
-        flac.to_str().unwrap(),
-        "--stream",
-        "-",
-    ]);
+    let text_run = |extra: &[&str]| {
+        let mut args = vec![
+            "--engine",
+            "fake",
+            "--text",
+            "一二三四五六",
+            "--out",
+            flac.to_str().unwrap(),
+            "--stream",
+            "-",
+        ];
+        args.extend(extra);
+        run(&args).0
+    };
+    let raw = text_run(&["--stream-raw"]);
     assert!(
-        pcm(&out[44..]) == flac_samples(&flac),
-        "no level step on --text, so stream and FLAC match"
+        pcm(&raw[44..]) == flac_samples(&flac),
+        "--stream-raw is before the level step, and the --text FLAC has none, so they match"
+    );
+    let levelled = text_run(&[]);
+    assert!(
+        pcm(&levelled[44..]) != flac_samples(&flac),
+        "the default --text stream is levelled"
     );
     std::fs::remove_dir_all(dir).ok();
 }

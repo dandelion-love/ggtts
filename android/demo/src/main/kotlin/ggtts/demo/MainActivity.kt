@@ -108,6 +108,7 @@ class MainActivity : AppCompatActivity(), DemoView {
     private lateinit var threads: Spinner
     private lateinit var speak: MaterialButton
     private lateinit var stop: MaterialButton
+    private lateinit var laterButton: MaterialButton
     private lateinit var systemSpeak: MaterialButton
     private var platformTts: TextToSpeech? = null
     private var askedForNotifications = false
@@ -157,6 +158,8 @@ class MainActivity : AppCompatActivity(), DemoView {
         refreshFiles()
         Reader.screen = this
         applyIntent(intent)
+        // A queue left by a process that died, or by the service's daily time running out, resumes now.
+        RenderService.start(this)
     }
 
     override fun onTrimMemory(level: Int) {
@@ -231,6 +234,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         // The docked player: Read aloud while idle; while a read runs, its stage, a progress bar, the seconds since
         // the press, and Stop in Read aloud's place.
         speak.visibility = if (busy) View.GONE else View.VISIBLE
+        if (::laterButton.isInitialized) laterButton.visibility = if (busy) View.GONE else View.VISIBLE
         stop.visibility = if (busy) View.VISIBLE else View.GONE
         speak.isEnabled = !busy
         stop.isEnabled = busy
@@ -486,6 +490,12 @@ class MainActivity : AppCompatActivity(), DemoView {
         }
         stop.setOnClickListener { controller.stop() }
         footer.addView(speak, lp(h = dp(56), top = dp(10)))
+        // Render for later: the passage goes to a background queue and to Music/ggtts/, without playing (#416).
+        laterButton = MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
+            text = "Render for later"
+            setOnClickListener { renderLater() }
+        }
+        footer.addView(laterButton, lp(top = dp(4)))
         footer.addView(stop, lp(h = dp(56), top = dp(10)))
         footer.addView(readActionsRow(), lp(top = dp(8)))
 
@@ -722,16 +732,33 @@ class MainActivity : AppCompatActivity(), DemoView {
     }
 
     private fun speakNow() {
+        val request = currentRequest()
+        Log.i(TAG, "speak: $request")
+        controller.speak(request, text.text.toString(), Ggtts.DEFAULT_SEED)
+    }
+
+    /** What Read aloud would load: the chosen voice's files, speaker and threads. */
+    private fun currentRequest(): LoadRequest {
         val engine = ENGINES[engines.checkedRadioButtonId - 100]
-        val request = LoadRequest(
+        return LoadRequest(
             engine = engine,
             model = path(model),
             codec = path(codec),
             voice = if (engine == "kitten-tts-2") path(voice) else null,
             speaker = if (engine == "qwen3-tts") speaker.text.toString().trim().ifEmpty { null } else null,
         ).withThreads(THREADS[threads.selectedItemPosition])
-        Log.i(TAG, "speak: $request")
-        controller.speak(request, text.text.toString(), Ggtts.DEFAULT_SEED)
+    }
+
+    /** Queue the text to render in the background, saved to Music/ggtts/ as FLAC, without playing (RenderService). */
+    private fun renderLater() {
+        val line = text.text.toString()
+        if (line.isBlank()) { showError("Nothing to render: type or paste a passage first."); return }
+        if (!music.available) { showError("Rendering for later saves to Music, which needs Android 10 or later."); return }
+        askForNotifications()
+        val e = Queue.get(this).add(currentRequest(), line)
+        Log.i(TAG, "queue: added entry ${e.id} \"${e.title}\"")
+        RenderService.start(this)
+        showStatus("Queued \"${e.title}\" to render for later (${Queue.get(this).pending} waiting). It goes to ${Storage.MUSIC_PATH}.")
     }
 
     // ---- importing a file through the system picker (copied into the models directory)

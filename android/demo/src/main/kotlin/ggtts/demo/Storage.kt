@@ -53,6 +53,9 @@ object Storage {
         return "ggtts-$engine-${f.format(Date(timeMillis))}.wav"
     }
 
+    /** A read rendered for later: as [readName], FLAC. */
+    fun queuedName(engine: String, timeMillis: Long): String = readName(engine, timeMillis).removeSuffix(".wav") + ".flac"
+
     /** The voice samples among [samples] not yet in Music/ggtts/ ([saved]: the names already there), in order. */
     fun samplesToExport(samples: Collection<String>, saved: Set<String>): List<String> =
         samples.filter { it.endsWith(Voices.SAMPLE_SUFFIX) && it !in saved }.sorted()
@@ -226,14 +229,19 @@ class MusicFolder(context: Context) {
 
     val available: Boolean get() = Build.VERSION.SDK_INT >= 29
 
-    /** Adds [name] to Music/ggtts/ with the bytes [write] gives; returns its content URI (shareable as it is). */
-    fun save(name: String, write: (OutputStream) -> Unit): Uri {
+    /**
+     * Adds [name] to Music/ggtts/ with the bytes [write] gives, as [mime], with [title] as its MediaStore title when
+     * given; returns its content URI (shareable as it is). It is pending (hidden) until written, and removed if the
+     * write fails, so nothing half-written is ever listed.
+     */
+    fun save(name: String, mime: String = Storage.WAV_MIME, title: String? = null, write: (OutputStream) -> Unit): Uri {
         check(available) { "saving to Music needs Android 10 or later" }
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-            put(MediaStore.MediaColumns.MIME_TYPE, Storage.WAV_MIME)
+            put(MediaStore.MediaColumns.MIME_TYPE, mime)
             put(MediaStore.MediaColumns.RELATIVE_PATH, Storage.MUSIC_PATH)
             put(MediaStore.MediaColumns.IS_PENDING, 1)
+            title?.let { put(MediaStore.MediaColumns.TITLE, it) }
         }
         val uri = resolver.insert(collection, values) ?: throw FileNotFoundException("MediaStore refused $name")
         try {

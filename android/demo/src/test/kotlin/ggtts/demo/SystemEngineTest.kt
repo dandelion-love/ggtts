@@ -175,6 +175,119 @@ class SystemEngineTest {
         assertFalse("a failed read is not remembered", saved.size > 1)
     }
 
+    /** #282 AC2: a voice saved before the document, as the positional list, loads as the same request. */
+    @Test
+    fun aVoiceSavedBeforeTheDocumentLoadsAsTheSameRequest() {
+        kv.m["voice.qwen3-tts"] = "/m/talker.gguf\n/m/codec.gguf\n\nhk_voice_343\n4"
+        assertEquals(qwen, voices.load("qwen3-tts"))
+        kv.m["voice.kitten-tts-2"] = "/m/lm.gguf\n/m/s3gen.gguf\n/m/voice.json\n\n8"
+        assertEquals(
+            LoadRequest("kitten-tts-2", "/m/lm.gguf", "/m/s3gen.gguf", "/m/voice.json", null, 8),
+            voices.load("kitten-tts-2"),
+        )
+        // Saved again, it is stored as its document and is still the same request.
+        voices.save(qwen)
+        assertTrue(kv.m["voice.qwen3-tts"]!!.startsWith("{"))
+        assertEquals(qwen, voices.load("qwen3-tts"))
+    }
+
+    /** The document carries what the screen never set: an instruction saved with a voice is loaded with it. */
+    @Test
+    fun aSavedVoiceKeepsEveryKeyOfItsDocument() {
+        val styled = qwen.with(LoadRequest.RENDER, "instruction", "Speak slowly.")
+            .with(LoadRequest.OUTPUT, "stream", "levelled")
+        voices.save(styled)
+        val loaded = voices.load("qwen3-tts")!!
+        assertEquals(styled, loaded)
+        assertEquals("Speak slowly.", loaded.options[LoadRequest.RENDER, "instruction"])
+        val loads = mutableListOf<LoadRequest>()
+        SynthesisSession({ loads += it; Engine() }, voices).synthesize("yue", "HKG", "x", Ggtts.DEFAULT_SEED, Out())
+        assertEquals("the system engine loads the saved document as it is", listOf(styled), loads)
+    }
+
+    /**
+     * #282 AC4: a saved document with a key the binding does not take is refused with the binding's error, and the
+     * voice is reported unusable (not listed, not available, and the read says why), not silently dropped.
+     */
+    @Test
+    fun aSavedDocumentTheBindingRefusesMakesTheVoiceUnusable() {
+        kv.m["voice.qwen3-tts"] = """{"load": {"engine": "qwen3-tts", "model": "/m/talker.gguf", "nonesuch": 1}}"""
+        val refusal = GgttsException(Ggtts.ERR_ARG, "load.nonesuch: unknown option", "load.nonesuch")
+        val logs = mutableListOf<String>()
+        val s = SynthesisSession({ throw refusal }, voices, log = { logs += it })
+        assertEquals("usable until the binding has seen it", TtsCodes.LANG_COUNTRY_AVAILABLE, s.availability("yue", "HKG"))
+        val out = Out()
+        s.synthesize("yue", "HKG", "x", Ggtts.DEFAULT_SEED, out)
+        assertEquals(listOf("error ${TtsCodes.ERROR_INVALID_REQUEST}"), out.events)
+        assertTrue(logs.toString(), logs.any { "unusable" in it && "load.nonesuch" in it })
+        assertEquals("load.nonesuch: unknown option", voices.unusable("qwen3-tts"))
+        assertFalse(SystemVoices.usable("yue-hk-ggtts-qwen3", voices))
+        assertEquals(TtsCodes.LANG_MISSING_DATA, s.availability("yue", "HKG"))
+        val again = Out()
+        s.synthesize("yue", "HKG", "x", Ggtts.DEFAULT_SEED, again)
+        assertEquals(listOf("error ${TtsCodes.ERROR_INVALID_REQUEST}"), again.events)
+        assertTrue(logs.last(), "unusable" in logs.last() && "load.nonesuch" in logs.last())
+        // A new Speak in the demo saves the voice again and clears the mark.
+        voices.save(qwen)
+        assertNull(voices.unusable("qwen3-tts"))
+        assertTrue(SystemVoices.usable("yue-hk-ggtts-qwen3", voices))
+    }
+
+    /** A refusal at render (a render-phase key) marks the voice unusable the same way. */
+    @Test
+    fun aRenderRefusalByKeyMakesTheVoiceUnusable() {
+        voices.save(qwen.with("observe", "log_level", "info"))
+        val out = Out()
+        val refusal = GgttsException(Ggtts.ERR_ARG, "observe.log_level: refused", "observe.log_level")
+        SynthesisSession({ Engine { throw refusal } }, voices).synthesize("yue", "HKG", "x", Ggtts.DEFAULT_SEED, out)
+        assertEquals(listOf("error ${TtsCodes.ERROR_INVALID_REQUEST}"), out.events)
+        assertEquals("observe.log_level: refused", voices.unusable("qwen3-tts"))
+    }
+
+    /** A stored voice that is not a document at all is unusable with the reason, not a crash. */
+    @Test
+    fun aMalformedSavedDocumentIsUnusable() {
+        kv.m["voice.qwen3-tts"] = """{"load": {"engine": """
+        assertNull(voices.load("qwen3-tts"))
+        assertTrue(voices.unusable("qwen3-tts")!!.startsWith("the saved voice is not an options document"))
+        kv.m["voice.kitten-tts-2"] = """{"load": {"engine": "qwen3-tts"}}"""
+        assertNull("a document for another engine", voices.load("kitten-tts-2"))
+        assertTrue(voices.unusable("kitten-tts-2")!!.contains("names qwen3-tts"))
+    }
+
+    /** #282 AC5: a non-normal speech rate or pitch logs one line per read naming it, and the audio is the same. */
+    @Test
+    fun aSpeechRateOrPitchIsIgnoredOutLoudWithTheSameAudio() {
+        voices.save(qwen)
+        class Keep : TtsEngine {
+            val pcm = mutableListOf<Float>()
+            override fun render(text: String, seed: Long): Pcm = error("streams")
+            override fun renderStream(text: String, seed: Long, onPiece: (FloatArray, Int) -> Boolean): Boolean {
+                val s = FloatArray(240) { ((it * 7 + seed) % 100).toFloat() / 100f }
+                pcm += s.toList()
+                return onPiece(s, 24000)
+            }
+            override fun close() {}
+        }
+        fun read(rate: Int, pitch: Int): Pair<List<Float>, List<String>> {
+            val logs = mutableListOf<String>()
+            val e = Keep()
+            SynthesisSession({ e }, voices, log = { logs += it })
+                .synthesize("yue", "HKG", "x", Ggtts.DEFAULT_SEED, Out(), rate = rate, pitch = pitch)
+            return e.pcm to logs.filter { "ignored" in it }
+        }
+        val (normal, normalLogs) = read(100, 100)
+        assertEquals("normal rate and pitch log nothing", emptyList<String>(), normalLogs)
+        val (fast, fastLogs) = read(150, 100)
+        assertEquals("the same audio", normal, fast)
+        assertEquals(1, fastLogs.size)
+        assertTrue(fastLogs[0], "ignored speech rate 150 (" in fastLogs[0])
+        val (low, bothLogs) = read(80, 120)
+        assertEquals("the same audio", normal, low)
+        assertEquals(1, bothLogs.size)
+        assertTrue(bothLogs[0], "ignored speech rate 80 and pitch 120" in bothLogs[0])
+    }
+
     @Test
     fun pcm16IsLittleEndianAndClamped() {
         val b = SynthesisSession.pcm16(floatArrayOf(1f, -1f, 2f, 0f))

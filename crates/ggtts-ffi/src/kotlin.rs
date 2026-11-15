@@ -143,8 +143,9 @@ pub fn render_opts(handle: u64, text: &str, json: Option<&str>, seed: Option<u64
     render(handle, text, &doc, None)
 }
 
-/// `Native.renderStreamOpts`: each kept chunk's piece to `on_piece` before the level step, with a render document.
-/// `Ok(false)` when `on_piece` stopped it.
+/// `Native.renderStreamOpts`: each kept chunk's piece to `on_piece` with a render document, levelled unless the
+/// document asks for the pieces before the level step ([`binding::stream_mode`]). `Ok(false)` when `on_piece` stopped
+/// it.
 pub fn render_stream_opts(
     handle: u64,
     text: &str,

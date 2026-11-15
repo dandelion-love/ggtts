@@ -249,7 +249,9 @@ are not in it. Chunk numbers in it restart at each chapter, and it replays with 
 
 **Instruments** are `ggtts-render`'s, run by the same library call (`ggtts_instruments::options`) on each chapter
 FLAC, after every chapter is rendered and the engine is released. A chapter is measured unless its report directory
-holds a `measured.json` from an earlier run with the same chapter FLAC (by SHA-256) and the same instrument settings:
+holds a `measured.json` from an earlier run with the same chapter FLAC (by SHA-256), the same instrument settings,
+and the same instruments: each one's version and program, and the bytes of a script or `command=` program, so an
+instrument edited in place measures again (a shipped binary changes only with ggtts, and is named by its path). So
 a resumed book measures the chapters an earlier, interrupted run never measured, and a re-run with other instruments
 measures every chapter again. Each chapter is one render of the run, named by its directory (`NNN-<chapter id>`), with
 its report beside its FLAC
@@ -266,7 +268,11 @@ chapter FLAC written, as for `ggtts-render`. An unknown instrument is refused be
   `arg.reference_file`. A `reference_file` given on the command line or in the instruments file is refused in a book,
   before anything is rendered: one file cannot be every chapter's text.
 * **`--on-instrument-error abort`** skips the rest of the instruments on the chapter where one failed, and every
-  chapter after it: they are reported `measured: no`, and are measured by the next run.
+  chapter after it that holds no matching `measured.json`: they are reported `measured: no`, and are measured by the
+  next run. A later chapter that does hold one is still taken from it (`earlier run`).
+* **Completeness under abort.** As in `ggtts-render`, only `--require` decides completeness. With `abort` and no
+  `--require`, the book reports `measurement: complete` even when chapters say `measured: no`: nothing it depends on
+  is missing. Name the instruments that must have run with `--require` to make an unmeasured chapter incomplete.
 * **Timeouts are per instrument, per chapter.** `--instrument-timeout` (or an entry's `timeout_s`; 60 s when
   unset) bounds one instrument on one chapter FLAC. An ASR instrument on a long chapter needs more: set it.
 * **No event stream.** The book's trace covers every chapter, so no chapter is handed one: an instrument that needs

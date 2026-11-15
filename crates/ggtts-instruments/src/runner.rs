@@ -277,11 +277,7 @@ pub fn run_with_logging(config: &Config, inputs: &Inputs, log: LogSettings) -> R
     let mut instruments_ms = 0u128;
     let mut aborted = false;
     for entry in &config.instruments {
-        let version = entry
-            .version
-            .clone()
-            .or_else(|| catalogue::find(&entry.name).map(|k| k.version.to_string()))
-            .unwrap_or_else(|| "unknown".into());
+        let version = version_of(entry);
         let needs_events = entry
             .needs_events
             .or_else(|| catalogue::find(&entry.name).map(|k| k.needs_events))
@@ -470,6 +466,76 @@ pub fn run_with_logging(config: &Config, inputs: &Inputs, log: LogSettings) -> R
     Ok(summary)
 }
 
+/// The program `entry` runs and the interpreter that runs it: its `command`, else the catalogue's script under
+/// `instruments_dir`, else the catalogue's binary in `bin_dir`.
+fn program_of(
+    entry: &Entry,
+    instruments_dir: Option<PathBuf>,
+    bin_dir: &Path,
+) -> Result<(PathBuf, Option<String>), String> {
+    match (&entry.command, catalogue::find(&entry.name)) {
+        (Some(c), _) => Ok((PathBuf::from(c), entry.interpreter.clone())),
+        (None, Some(k)) if k.interpreter.is_some() => match instruments_dir {
+            Some(d) => Ok((
+                d.join(k.program),
+                Some(entry.interpreter.clone().unwrap_or_else(default_python)),
+            )),
+            None => Err("the shipped instruments/ directory was not found; set GGTTS_INSTRUMENTS_DIR".to_string()),
+        },
+        (None, Some(k)) => Ok((
+            bin_dir.join(format!("{}{}", k.program, std::env::consts::EXE_SUFFIX)),
+            entry.interpreter.clone(),
+        )),
+        (None, None) => Err("not shipped and no command given".into()),
+    }
+}
+
+/// The version an instrument's envelope records: the entry's own, else the catalogue's.
+fn version_of(entry: &Entry) -> String {
+    entry
+        .version
+        .clone()
+        .or_else(|| catalogue::find(&entry.name).map(|k| k.version.to_string()))
+        .unwrap_or_else(|| "unknown".into())
+}
+
+/// What a kept measurement by `entry` depends on, beyond its config: its version, the program it runs (resolved as a
+/// run with the default directories resolves it), and the sha256 of that program's bytes. A shipped binary is named
+/// by its path and version alone, since it changes only with ggtts; a script, or a program given as `command`, is
+/// hashed, so one edited in place is a different instrument. A program that cannot be read hashes as `unread`.
+pub fn identity(entry: &Entry) -> String {
+    let bin_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+        .unwrap_or_default();
+    let version = version_of(entry);
+    match program_of(entry, shipped_dir(), &bin_dir) {
+        Err(why) => format!("{} {version} ({why})", entry.name),
+        Ok((program, interpreter)) => {
+            let shipped_binary = entry.command.is_none() && interpreter.is_none();
+            let bytes = if shipped_binary {
+                "shipped".to_string()
+            } else {
+                fs::read(&program).map_or_else(
+                    |_| "unread".to_string(),
+                    |b| {
+                        ggtts_core::seed::sha256(&b)
+                            .iter()
+                            .map(|x| format!("{x:02x}"))
+                            .collect()
+                    },
+                )
+            };
+            format!(
+                "{} {version} {} {} {bytes}",
+                entry.name,
+                interpreter.unwrap_or_default(),
+                program.display()
+            )
+        }
+    }
+}
+
 /// Run one instrument. The envelope to keep, how its process ended, and its time from spawn to exit.
 fn one(
     config: &Config,
@@ -481,30 +547,9 @@ fn one(
     made: &dyn Fn(Status, String) -> Envelope,
 ) -> (Envelope, String, u128) {
     let fail = |status: Status, why: String, exit: &str, ms: u128| (made(status, why), exit.to_string(), ms);
-    let (program, interpreter) = match (&entry.command, catalogue::find(&entry.name)) {
-        (Some(c), _) => (PathBuf::from(c), entry.interpreter.clone()),
-        (None, Some(k)) if k.interpreter.is_some() => match instruments_dir(inputs) {
-            Some(d) => (
-                d.join(k.program),
-                Some(entry.interpreter.clone().unwrap_or_else(default_python)),
-            ),
-            None => {
-                let why = "the shipped instruments/ directory was not found; set GGTTS_INSTRUMENTS_DIR".to_string();
-                return fail(Status::Failed, why, "not started", 0);
-            }
-        },
-        (None, Some(k)) => (
-            bin_dir.join(format!("{}{}", k.program, std::env::consts::EXE_SUFFIX)),
-            entry.interpreter.clone(),
-        ),
-        (None, None) => {
-            return fail(
-                Status::Failed,
-                "not shipped and no command given".into(),
-                "not started",
-                0,
-            )
-        }
+    let (program, interpreter) = match program_of(entry, instruments_dir(inputs), bin_dir) {
+        Ok(p) => p,
+        Err(why) => return fail(Status::Failed, why, "not started", 0),
     };
     if let Err(e) = fs::create_dir_all(dir) {
         return fail(Status::Failed, format!("{}: {e}", dir.display()), "not started", 0);

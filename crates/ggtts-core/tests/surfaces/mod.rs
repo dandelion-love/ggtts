@@ -53,6 +53,8 @@ pub const NOT_OPTIONS: &[(Surface, &str, &str)] = &[
     (Surface::C, "user", "the callback's own pointer, passed through"),
     (Surface::C, "len", "an out-parameter"),
     (Surface::C, "rate", "an out-parameter"),
+    (Surface::C, "json", "an out-parameter: the capability statement"),
+    (Surface::C, "s", "the string to free"),
 ];
 
 pub fn spellings(d: &Descriptor, s: Surface) -> &'static [&'static str] {
@@ -208,6 +210,8 @@ pub fn c_names() -> Vec<String> {
     out.extend(names(between(&h, "int32_t ggtts_render(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_load_opts(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_render_opts(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_capabilities(", ");")));
+    out.extend(names(between(&h, "void ggtts_string_free(", ");")));
     out.sort();
     out.dedup();
     out

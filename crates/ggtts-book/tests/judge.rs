@@ -145,6 +145,62 @@ fn a_judge_that_cannot_work_is_refused_before_rendering() {
     std::fs::remove_dir_all(root).ok();
 }
 
+/// AC (#368): the shipped worker, refused because its Python lacks a package, names the missing module, so the
+/// user knows what to install; any other load error keeps the error's class only, whose message could name a path.
+/// The worker runs for real, over stand-in `torch` and `qwen_asr` packages put first on its `PYTHONPATH`.
+#[test]
+fn the_shipped_worker_names_a_missing_module_and_only_that() {
+    let book = nested().write_temp("judge-missing-module");
+    let root = book.parent().unwrap().to_path_buf();
+    let model = root.join("asr-model");
+    std::fs::create_dir_all(&model).unwrap();
+    std::fs::write(model.join("config.json"), "{}").unwrap();
+    let shipped =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments/examples/python/asr-qwen/judge_worker.py");
+    let spec = format!(
+        "asr-qwen,model={},command={},interpreter=python",
+        model.display(),
+        shipped.display()
+    );
+    for (qwen_asr, says, never) in [
+        (
+            "import a_package_this_python_lacks\n",
+            "(ModuleNotFoundError: a_package_this_python_lacks)",
+            "",
+        ),
+        (
+            "raise ValueError('/private/place/model')\n",
+            "(ValueError)",
+            "/private/place",
+        ),
+    ] {
+        let stubs = root.join("stubs");
+        std::fs::create_dir_all(stubs.join("qwen_asr")).unwrap();
+        std::fs::write(stubs.join("torch.py"), "float32 = None\n").unwrap();
+        std::fs::write(stubs.join("qwen_asr").join("__init__.py"), qwen_asr).unwrap();
+        let out = root.join("out");
+        let o = Command::new(env!("CARGO_BIN_EXE_ggtts-book"))
+            .arg("render")
+            .arg(&book)
+            .arg("--out")
+            .arg(&out)
+            .args(["--engine", "fake", "--redraw", "1", "--judge", spec.as_str()])
+            .env("PYTHONPATH", &stubs)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(2), "{stderr}");
+        assert!(
+            stderr.contains(&format!("asr-qwen did not start: the model did not load {says}")),
+            "{stderr}"
+        );
+        assert!(never.is_empty() || !stderr.contains(never), "{stderr}");
+        assert!(!out.exists(), "rendered before refusing");
+        std::fs::remove_dir_all(&stubs).unwrap();
+    }
+    std::fs::remove_dir_all(&root).ok();
+}
+
 /// The judge decides which draw is kept, so a resume under another judge (or none) starts the chapter again, naming
 /// the difference; the ASR's model path is where it runs, not what it decides, and does not.
 #[test]

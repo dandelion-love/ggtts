@@ -21,6 +21,13 @@ object MediaControls {
         State.NONE -> null
     }
 
+    /** The app screen's Pause or Play beside Stop: the same toggle, with its symbol; none without a read. */
+    fun screenLabel(state: State): String? = when (state) {
+        State.PLAYING -> "❚❚  Pause"
+        State.PAUSED -> "▶  Play"
+        State.NONE -> null
+    }
+
     /** The button's label, for [toggleAction]. */
     fun toggleLabel(state: State): String? = when (state) {
         State.PLAYING -> "Pause"

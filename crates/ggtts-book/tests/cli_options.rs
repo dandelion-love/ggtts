@@ -148,3 +148,30 @@ fn a_steering_file_that_does_not_read_is_refused_before_anything_is_written() {
     assert!(!out.exists());
     std::fs::remove_dir_all(book.parent().unwrap()).ok();
 }
+
+/// #380: a steering file named by URL goes through the shared resolver: offline, a URL not in the cache is refused,
+/// naming it, before anything is written.
+#[test]
+fn an_uncached_steering_url_offline_is_refused_naming_it() {
+    let book = nested().write_temp("steer-url");
+    let d = book.parent().unwrap();
+    let out = d.join("out");
+    let url = "https://huggingface.co/someone/presets/resolve/main/presets/angry.safetensors";
+    let o = ggtts_book()
+        .arg("render")
+        .arg(&book)
+        .arg("--out")
+        .arg(&out)
+        .args(["--engine", "fake", "--offline", "--steer", url])
+        .env("GGTTS_CACHE_DIR", d.join("cache"))
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        stderr.contains(url) && stderr.contains("offline mode does not download it"),
+        "{stderr}"
+    );
+    assert!(!out.exists());
+    std::fs::remove_dir_all(d).ok();
+}

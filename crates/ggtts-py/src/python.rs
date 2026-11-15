@@ -249,7 +249,7 @@ fn built_engines() -> Vec<&'static str> {
         v.extend_from_slice(core::ENGINES);
     }
     if cfg!(feature = "plant") {
-        v.extend_from_slice(&["panic", "slow", "panic-load"]);
+        v.extend_from_slice(&["panic", "slow", "panic-load", "steerable"]);
     }
     v
 }

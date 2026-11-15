@@ -146,6 +146,32 @@ impl Capabilities {
     }
 }
 
+/// The format of [`statement`]: its `format` field.
+pub const STATEMENT_FORMAT: &str = "ggtts-capabilities/1";
+
+/// A loaded engine's capability statement, the JSON a binding reads ([`Engine::capabilities`] and
+/// [`Engine::speakers`]): every field of [`Capabilities`] by its own name, with `hooks` as `{"p_stop", "logits"}`, and
+/// `speaker_names`, the speakers the loaded model has (empty for an engine with none). One function, so every front
+/// end that states an engine's capabilities says the same.
+///
+/// [`Engine::capabilities`]: crate::engine::Engine::capabilities
+/// [`Engine::speakers`]: crate::engine::Engine::speakers
+pub fn statement(engine: &dyn crate::engine::Engine) -> serde_json::Value {
+    let c = engine.capabilities();
+    serde_json::json!({
+        "format": STATEMENT_FORMAT,
+        "family": c.family,
+        "instruction": c.instruction,
+        "no_instruction_why": c.no_instruction_why,
+        "steering": c.steering,
+        "speakers": c.speakers,
+        "speaker_names": engine.speakers(),
+        "devices": c.devices,
+        "hooks": {"p_stop": c.hooks.p_stop, "logits": c.hooks.logits},
+        "step_events": c.step_events,
+    })
+}
+
 fn exported(w: Wants) -> &'static str {
     match (w.p_stop, w.logits) {
         (true, true) => "p_stop and logits",

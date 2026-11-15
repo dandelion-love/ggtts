@@ -12,7 +12,8 @@
  *   1  ggtts_load, ggtts_render, ggtts_render_stream, ggtts_pcm_free, ggtts_free, ggtts_last_error
  *   2  ggtts_load_with and ggtts_settings (a Qwen3-TTS speaker and style instruction), ggtts_abi_version
  *   3  ggtts_settings.device, .cache_dir and .allow_download (the device; the default model files)
- *   4  ggtts_load_opts and ggtts_render_opts (options documents); ggtts_settings is frozen at version 3 */
+ *   4  ggtts_load_opts and ggtts_render_opts (options documents); ggtts_settings is frozen at version 3
+ *   5  ggtts_options_schema, ggtts_capabilities and ggtts_string_free, ggtts_last_error_key */
 #ifndef GGTTS_H
 #define GGTTS_H
 
@@ -23,7 +24,7 @@
 extern "C" {
 #endif
 
-#define GGTTS_ABI_VERSION 4
+#define GGTTS_ABI_VERSION 5
 
 #define GGTTS_OK 0
 #define GGTTS_ERR_ARG (-1)
@@ -116,6 +117,28 @@ int32_t ggtts_load_opts(const char *options_json, uint64_t *handle);
  * GGTTS_ERR_ARG. The seed of ggtts_render is "seed_salt" (a string) here. */
 int32_t ggtts_render_opts(uint64_t handle, const char *text, const char *options_json, ggtts_piece_fn on_piece,
                           void *user, float **pcm, size_t *len, uint32_t *rate);
+
+/* Version 5: what the library and a loaded engine take, read from the library itself.
+ *
+ * ggtts_options_schema: the JSON schema of the options documents, as built into this library (the text of
+ * schemas/ggtts-options-1.schema.json). Static: never freed, valid for the life of the process. */
+const char *ggtts_options_schema(void);
+
+/* ggtts_capabilities: the capability statement of a loaded engine, as JSON in *json (free it with ggtts_string_free):
+ *   {"format": "ggtts-capabilities/1", "family": "qwen3-tts", "instruction": true, "no_instruction_why": null,
+ *    "steering": true, "speakers": true, "speaker_names": ["...", ...], "devices": ["cpu", "cuda"],
+ *    "hooks": {"p_stop": true, "logits": true}, "step_events": true}
+ * speaker_names are the loaded model's (empty for an engine without speakers); no_instruction_why says why a
+ * checkpoint takes no instruction, when instruction is false. A freed or unknown handle is GGTTS_ERR_HANDLE, an
+ * engine that is rendering GGTTS_ERR_BUSY; *json is NULL on any error. */
+int32_t ggtts_capabilities(uint64_t handle, char **json);
+void ggtts_string_free(char *s);
+
+/* ggtts_last_error_key: the schema key of the option the calling thread's last call refused, when it returned
+ * GGTTS_ERR_ARG for one option ("render.steer" for steering an engine that cannot steer; an unknown key, itself);
+ * NULL after a success or any other error (a missing file, a NULL argument, a document that is not JSON). It is the
+ * key ggtts_last_error()'s message starts with. Valid until the thread's next call. */
+const char *ggtts_last_error_key(void);
 
 #ifdef __cplusplus
 }

@@ -320,9 +320,10 @@ A render with an instruction or steering records them in every chapter manifest 
 and the steering as the trace header writes it, the file's SHA-256, the layers and the scale). A render with neither
 writes no `render` field, so its manifests are the bytes they were before the field existed. A resume under a
 different instruction or steering is refused the same way, naming the difference (`for instruction "calm", not
-"brisk"`, `for steering ...`), and the chapter is rendered again. A manifest without the field, including one written
-before it existed, is a render with no instruction and no steering: it resumes a run with neither, and is refused
-for a run with either.
+"brisk"`, `for steering ...`), and the chapter is rendered again. A manifest without the field is read as a render
+with no instruction and no steering: it matches a run with neither, and is refused for a run with either. That does
+not make an older book resumable by a newer ggtts: the engine record names the build (`ggtts_commit`), so any change
+of build refuses the manifest on `engine`, and the chapter is rendered again.
 
 **Redraws.** `--redraw N` (the shared table's `render.redraw`; unset is the engine profile's, which is 0 for
 `qwen3-tts`, so a book redraws only when asked, as a story does; `ggtts-render --text` refuses it, since a text

@@ -385,6 +385,10 @@ pub fn render_command_options(
         plan.engine = engine_record.clone();
         plan.render = identity.clone();
     }
+    // The output is claimed before the trace file is created, so a render refused for another book's --out leaves an
+    // existing trace file as it was.
+    std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+    claim_output(out, &book.book_id())?;
     let trace_level = options.observe.trace_level.unwrap_or(1);
     let mut trace = match &options.observe.trace {
         Some(path) => Some(

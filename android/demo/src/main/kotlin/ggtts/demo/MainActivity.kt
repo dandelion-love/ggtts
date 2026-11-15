@@ -792,7 +792,7 @@ class MainActivity : AppCompatActivity(), DemoView {
                 size = if (it.isNull(1)) null else it.getLong(1)
             }
         }
-        val input = contentResolver.openInputStream(uri) ?: throw ImportException("the picked file cannot be read")
+        val input = contentResolver.openInputStream(uri) ?: throw ImportException(getString(R.string.import_unreadable))
         val out = input.use { ModelImport(modelsDir).importFile(name ?: "unnamed", size, it) }
         Log.i(TAG, "imported $out (${out.length()} bytes)")
         return out

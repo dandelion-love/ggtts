@@ -76,19 +76,49 @@ class WordsTest {
         assertTrue(mismatched.single(), mismatched.single().startsWith("characters takes"))
     }
 
-    /** #411 AC1: the screen passes no quoted English literal to a label, a title, a hint or a status line. */
+    /**
+     * The quoted literals of [src] that hold a letter once their `$name` / `${...}` templates are taken out, on lines
+     * that are not comments, logs or annotations, and that are not in [ALLOWED]: each would be words on the screen in
+     * one language. Every such literal is reported, whatever it is passed to (a label, a conditional, a dialog).
+     */
+    private fun screenLiterals(src: String): List<String> {
+        val literal = Regex(""""((?:[^"\\\n]|\\.)*)"""")
+        val template = Regex("""\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*""")
+        return src.lines().withIndex().flatMap { (i, line) ->
+            val t = line.trimStart()
+            if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*") || "Log." in line || t.startsWith("@")) {
+                emptyList()
+            } else {
+                literal.findAll(line).map { it.groupValues[1] }
+                    .filter { it !in ALLOWED }
+                    .filter { Regex("[A-Za-z]").containsMatchIn(unescape(template.replace(it, ""))) }
+                    .map { "line ${i + 1}: \"$it\" in ${t.take(100)}" }.toList()
+            }
+        }
+    }
+
+    /** #411 AC1: MainActivity holds no words of its own: every literal with a letter is a key, a name or an id. */
     @Test
-    fun theScreenPassesNoEnglishLiteralToALabel() {
-        val src = File("src/main/kotlin/ggtts/demo/MainActivity.kt").readText()
-        val code = src.lines().filterNot { it.trimStart().startsWith("//") || it.trimStart().startsWith("*") }
-        val literal = Regex(
-            """((text|title|hint|placeholderText|contentDescription|subtitle)\s*=\s*"[A-Za-z(■▶+])|""" +
-                """((setText|setTitle|showStatus|showError|label|heading|words|secondary)\("[A-Za-z(■▶+])|""" +
-                """(menu\.add\([^"]*"[A-Za-z])""",
-        )
-        val found = code.withIndex().filter { (_, line) -> literal.containsMatchIn(line) }
-            .map { (i, line) -> "line ${i + 1}: ${line.trim()}" }
+    fun theScreenHoldsNoWordsOfItsOwn() {
+        val found = screenLiterals(File("src/main/kotlin/ggtts/demo/MainActivity.kt").readText())
         assertTrue(found.joinToString("\n"), found.isEmpty())
+    }
+
+    /** The check reports words in a conditional, a template and a dialog (planted), and not an allowed key. */
+    @Test
+    fun wordsInAnyFormAreCaught() {
+        val planted = """
+            t.text = if (x) "Stop now" else "Go on"
+            v.showStatus("${'$'}n chunks done")
+            AlertDialog.Builder(this).setPositiveButton("OK", null).setMessage("Delete this voice?")
+            val n = "${'$'}{count}"
+            extras.getString("model")
+        """.trimIndent()
+        val found = screenLiterals(planted)
+        for (w in listOf("Stop now", "Go on", "\$n chunks done", "OK", "Delete this voice?")) {
+            assertTrue("$w was not reported: $found", found.any { "\"$w\"" in it })
+        }
+        assertTrue("an allowed key or a bare template was reported: $found", found.size == 5)
     }
 
     /**
@@ -121,6 +151,22 @@ class WordsTest {
         assertTrue("the manifest names no localeConfig", "android:localeConfig=\"@xml/locales_config\"" in manifest)
         val config = File("src/main/res/xml/locales_config.xml").readText()
         for (tag in listOf("en", "zh-HK")) assertTrue("$tag is not in locales_config.xml", "android:name=\"$tag\"" in config)
+    }
+
+    companion object {
+        /**
+         * Literals in MainActivity that are not words on the screen: intent-extra keys (the debug build's adb extras),
+         * engine ids, directory and file names, WAV chunk tags, the language identifiers Voices uses, the language
+         * badge, a TextToSpeech utterance id, and the English sample voice's spoken line (content to read, like the
+         * Cantonese one). A new literal is either added here, with the reason being one of these, or moved into the
+         * string resources.
+         */
+        val ALLOWED = setOf(
+            "ggtts-demo", "qwen3-tts", "kitten-tts-2", "Hello from ggtts, running on this phone.",
+            "Cantonese", "English", "EN", "models", "ggtts-check", "\\n", "unnamed", "read", "\$engine.wav",
+            "RIFF", "WAVEfmt ", "data",
+            "model", "codec", "voice", "engine", "speaker", "threads", "stop", "speak_system", "text", "speak",
+        )
     }
 
     /** About's English constants, which its own tests check, are the English resources. */

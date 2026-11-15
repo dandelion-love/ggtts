@@ -10,19 +10,10 @@
 // Model, codec and voice extras are file names in the models directory; a path is refused (ModelImport.isPlainName).
 package ggtts.demo
 
-import android.app.Activity
-import android.app.Dialog
 import android.content.ClipboardManager
-import android.app.ActivityManager
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
-import android.content.res.ColorStateList
-import android.content.res.Configuration
-import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.ColorDrawable
-import android.graphics.drawable.GradientDrawable
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
@@ -37,32 +28,53 @@ import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
 import android.view.Gravity
-import android.widget.ProgressBar
 import android.provider.OpenableColumns
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
+import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
-import android.widget.PopupMenu
-import android.view.Window
 import android.view.WindowManager
 import android.widget.ArrayAdapter
-import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.RadioButton
 import android.widget.RadioGroup
-import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
+import androidx.activity.enableEdgeToEdge
+import androidx.annotation.AttrRes
+import androidx.annotation.StyleRes
+import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.AppCompatSpinner
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.widget.NestedScrollView
+import com.google.android.material.bottomsheet.BottomSheetDialog
+import com.google.android.material.bottomsheet.BottomSheetDragHandleView
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.card.MaterialCardView
+import com.google.android.material.chip.Chip
+import com.google.android.material.color.DynamicColors
+import com.google.android.material.color.MaterialColors
+import com.google.android.material.divider.MaterialDivider
+import com.google.android.material.appbar.MaterialToolbar
+import com.google.android.material.progressindicator.LinearProgressIndicator
+import com.google.android.material.radiobutton.MaterialRadioButton
+import com.google.android.material.shape.MaterialShapeDrawable
+import com.google.android.material.shape.RelativeCornerSize
+import com.google.android.material.shape.ShapeAppearanceModel
+import android.content.res.ColorStateList
+import com.google.android.material.textfield.TextInputEditText
+import com.google.android.material.textfield.TextInputLayout
 import ggtts.Ggtts
+import com.google.android.material.R as M
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.Executors
 
-class MainActivity : Activity(), DemoView {
+class MainActivity : AppCompatActivity(), DemoView {
     companion object {
         const val TAG = "ggtts-demo"
         private const val PICK = 1
@@ -87,15 +99,15 @@ class MainActivity : Activity(), DemoView {
     private lateinit var speaker: EditText
     private lateinit var text: EditText
     private lateinit var threads: Spinner
-    private lateinit var speak: Button
-    private lateinit var stop: Button
-    private lateinit var systemSpeak: Button
+    private lateinit var speak: MaterialButton
+    private lateinit var stop: MaterialButton
+    private lateinit var systemSpeak: MaterialButton
     private var platformTts: TextToSpeech? = null
     private var askedForNotifications = false
-    private lateinit var importButton: Button
+    private lateinit var importButton: MaterialButton
     private lateinit var status: TextView
     private lateinit var gettingStarted: TextView
-    private lateinit var voiceCard: LinearLayout
+    private lateinit var voiceCard: MaterialCardView
     private lateinit var voiceBadge: TextView
     private lateinit var voiceName: TextView
     private lateinit var voiceDetail: TextView
@@ -104,7 +116,7 @@ class MainActivity : Activity(), DemoView {
     private lateinit var count: TextView
     private lateinit var about: LinearLayout
     private lateinit var adv: LinearLayout
-    private lateinit var progress: ProgressBar
+    private lateinit var progress: LinearProgressIndicator
     /** The status the controller last gave, shown with the seconds since Speak while a read runs. */
     private var lastStatus = ""
     private var statusIsError = false
@@ -123,9 +135,11 @@ class MainActivity : Activity(), DemoView {
     private var sample: MediaPlayer? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Material You: the wallpaper's colours on Android 12 and later, the theme's own before. Edge to edge on every
+        // version (Android 15 and later do it anyway); the screen keeps its content clear of the bars (layout()).
+        DynamicColors.applyToActivityIfAvailable(this)
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        // The screen draws its own title; Android 15 and later lay the window out edge to edge, under the bars.
-        requestWindowFeature(Window.FEATURE_NO_TITLE)
         modelsDir = File(getExternalFilesDir(null) ?: filesDir, "models").apply { mkdirs() }
         // The read belongs to the process (Reader), not to this screen: it goes on when the screen is left, and a
         // screen opened later shows its progress.
@@ -228,7 +242,7 @@ class MainActivity : Activity(), DemoView {
         lastStatus = text
         statusIsError = false
         status.visibility = View.VISIBLE
-        status.setTextColor(themeColor(android.R.attr.textColorSecondary))
+        status.setTextColor(color(M.attr.colorOnSurfaceVariant))
         renderStatus()
     }
 
@@ -238,35 +252,19 @@ class MainActivity : Activity(), DemoView {
         status.text = if (secs < 0) lastStatus else "$lastStatus  ·  $secs s"
     }
 
-    /**
-     * A list for a Spinner whose text takes the theme's colour: the platform's item layout keeps a light theme's dark
-     * text, which disappears on a dark background.
-     */
-    private fun themed(items: List<String>): ArrayAdapter<String> {
-        val colour = themeColor(android.R.attr.textColorPrimary)
-        // The closed Spinner shows simple_spinner_item: the dropdown row layout measured 0 px high there under the
-        // DayNight theme.
-        return object : ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, items.toMutableList()) {
-            override fun getView(position: Int, convertView: View?, parent: ViewGroup) =
-                super.getView(position, convertView, parent).also { (it as? TextView)?.setTextColor(colour) }
-            override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup) =
-                super.getDropDownView(position, convertView, parent).also { (it as? TextView)?.setTextColor(colour) }
-        }.apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
-    }
+    /** A Spinner's list: under the Material theme the platform's item layouts take the theme's text colours. */
+    private fun choices(items: List<String>) =
+        ArrayAdapter(this, android.R.layout.simple_spinner_item, items.toMutableList())
+            .apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
 
-    private fun themeColor(attr: Int): Int {
-        val a = obtainStyledAttributes(intArrayOf(attr))
-        try { return a.getColor(0, Color.GRAY) } finally { a.recycle() }
-    }
-
-    private val night get() =
-        resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+    /** A colour role of the current (dynamic) theme, such as colorPrimary or colorOnSurfaceVariant. */
+    private fun color(@AttrRes role: Int) = MaterialColors.getColor(this, role, javaClass.simpleName)
 
     override fun showError(text: String) {
         Log.w(TAG, "shown: $text")
         statusIsError = true
         status.visibility = View.VISIBLE
-        status.setTextColor(if (night) Color.rgb(0xF2, 0xB8, 0xB5) else Color.rgb(0xB0, 0x00, 0x20))
+        status.setTextColor(color(androidx.appcompat.R.attr.colorError))
         status.text = text
     }
 
@@ -274,109 +272,100 @@ class MainActivity : Activity(), DemoView {
     // (docs/android/knowledge/research/tts-app-screens.md). The engine's parts stay under Advanced, in the ⋮ menu.
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-    /** Card surfaces and outlines, by theme. */
-    private val surface get() = if (night) Color.rgb(0x1B, 0x1E, 0x22) else Color.rgb(0xF1, 0xF3, 0xF4)
-    private val outline get() = if (night) Color.rgb(0x2C, 0x30, 0x36) else Color.rgb(0xDA, 0xDC, 0xE0)
-    private val accent get() = themeColor(android.R.attr.colorAccent)
-    /** Primary text: on this theme a plain TextView otherwise takes the secondary grey. */
-    private val fg get() = themeColor(android.R.attr.textColorPrimary)
-    private val onAccent get() = if (Color.luminance(accent) > 0.5f) Color.BLACK else Color.WHITE
 
-    private fun rounded(fill: Int, radiusDp: Int, stroke: Int? = null, strokeDp: Int = 1) = GradientDrawable().apply {
-        setColor(fill)
-        cornerRadius = dp(radiusDp).toFloat()
-        stroke?.let { setStroke(dp(strokeDp), it) }
+    /** Text in one of the theme's type styles (Material 3's type scale), in its colour role. */
+    private fun words(s: String, @StyleRes style: Int, @AttrRes role: Int = M.attr.colorOnSurface) = TextView(this).apply {
+        text = s
+        setTextAppearance(style)
+        setTextColor(color(role))
     }
 
-    /** A small outlined pill button: Paste, Clear, a voice's sample. */
-    private fun chip(label: String, onClick: () -> Unit) = Button(this, null, android.R.attr.borderlessButtonStyle).apply {
-        text = label
-        isAllCaps = false
-        textSize = 14f
-        minHeight = dp(40); minimumHeight = dp(40); minWidth = 0; minimumWidth = 0
-        setPadding(dp(16), 0, dp(16), 0)
-        background = rounded(Color.TRANSPARENT, 20, outline)
-        setOnClickListener { onClick() }
-    }
+    private fun secondary(s: String, @StyleRes style: Int = M.style.TextAppearance_Material3_BodyMedium) =
+        words(s, style, M.attr.colorOnSurfaceVariant)
 
-    private fun secondary(s: String, size: Float = 13f) = TextView(this).apply {
-        text = s; textSize = size; setTextColor(themeColor(android.R.attr.textColorSecondary))
+    /** The voice's language as a round badge: 粵, EN. */
+    private fun badgeView(filled: Boolean) = TextView(this).apply {
+        gravity = Gravity.CENTER
+        setTextAppearance(M.style.TextAppearance_Material3_TitleMedium)
+        setTextColor(color(if (filled) M.attr.colorOnPrimary else M.attr.colorOnSecondaryContainer))
+        background = MaterialShapeDrawable(ShapeAppearanceModel.builder().setAllCornerSizes(RelativeCornerSize(0.5f)).build())
+            .apply {
+                fillColor = ColorStateList.valueOf(
+                    color(if (filled) androidx.appcompat.R.attr.colorPrimary else M.attr.colorSecondaryContainer))
+            }
     }
 
     private fun layout(): View {
         val pad = dp(16)
-        fun label(s: String) = TextView(this).apply { text = s; setPadding(0, pad / 2, 0, 0) }
+        fun label(s: String) = words(s, M.style.TextAppearance_Material3_BodyLarge).apply { setPadding(0, pad / 2, 0, 0) }
         fun lp(w: Int = ViewGroup.LayoutParams.MATCH_PARENT, h: Int = ViewGroup.LayoutParams.WRAP_CONTENT, top: Int = 0) =
             LinearLayout.LayoutParams(w, h).apply { topMargin = top }
 
         // The header: what this is, and a ⋮ menu for everything that is not reading.
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(20), dp(12), dp(4), dp(4))
+        val header = MaterialToolbar(this).apply {
+            title = "Read aloud"
+            subtitle = "On this phone · no internet"
+            setTitleTextAppearance(context, M.style.TextAppearance_Material3_TitleLarge)
+            setSubtitleTextAppearance(context, M.style.TextAppearance_Material3_BodyMedium)
+            setSubtitleTextColor(color(M.attr.colorOnSurfaceVariant))
         }
-        val titles = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        titles.addView(TextView(this).apply { text = "Read aloud"; textSize = 22f; setTextColor(fg); setTypeface(typeface, Typeface.BOLD) })
-        titles.addView(secondary("On this phone · no internet"))
-        header.addView(titles, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        val more = Button(this, null, android.R.attr.borderlessButtonStyle).apply {
-            text = "⋮"; textSize = 22f; contentDescription = "More: import a voice, about, advanced"
-            minWidth = dp(48); minimumWidth = dp(48)
-        }
-        header.addView(more, LinearLayout.LayoutParams(dp(56), dp(56)))
 
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, 0, pad, pad) }
-        gettingStarted = TextView(this).apply { textSize = 16f; setPadding(0, pad, 0, 0) }
+        gettingStarted = words("", M.style.TextAppearance_Material3_BodyLarge).apply { setPadding(0, pad, 0, 0) }
         col.addView(gettingStarted)
 
         // The voice, as a card: tap it for the sheet of voices.
-        voiceCard = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = rounded(surface, 16, outline)
+        voiceCard = MaterialCardView(this, null, M.attr.materialCardViewFilledStyle).apply {
+            radius = dp(16).toFloat()
             isClickable = true; isFocusable = true
             contentDescription = "Change the voice"
             setOnClickListener { showVoiceSheet() }
         }
-        voiceBadge = TextView(this).apply {
-            gravity = Gravity.CENTER; textSize = 15f; setTextColor(onAccent); background = rounded(accent, 20)
+        val voiceRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(12), dp(14), dp(12))
         }
-        voiceCard.addView(voiceBadge, LinearLayout.LayoutParams(dp(40), dp(40)))
+        voiceBadge = badgeView(filled = true)
+        voiceRow.addView(voiceBadge, LinearLayout.LayoutParams(dp(40), dp(40)))
         val names = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(8), 0) }
-        voiceName = TextView(this).apply { textSize = 16f; setTextColor(fg) }
+        voiceName = words("", M.style.TextAppearance_Material3_TitleMedium)
         voiceDetail = secondary("")
         names.addView(voiceName); names.addView(voiceDetail)
-        voiceCard.addView(names, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        voiceCard.addView(TextView(this).apply { text = "Change"; textSize = 14f; setTextColor(accent) })
+        voiceRow.addView(names, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        voiceRow.addView(words("Change", M.style.TextAppearance_Material3_LabelLarge, androidx.appcompat.R.attr.colorPrimary))
+        voiceCard.addView(voiceRow)
         col.addView(voiceCard, lp(top = dp(8)))
         voiceNote = secondary("")
         col.addView(voiceNote)
 
-        // The text: the main surface, in a card with Paste, Clear and a count.
-        col.addView(secondary("What to read").apply { setPadding(dp(4), dp(20), 0, dp(8)) })
-        val textCard = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; background = rounded(surface, 16, outline)
+        // The text: the main surface, an outlined field with Paste, Clear and a count under it.
+        val field = TextInputLayout(this, null, M.attr.textInputOutlinedStyle).apply {
+            hint = "What to read"
+            placeholderText = "Type or paste what to read aloud"
+            val r = dp(16).toFloat()
+            setBoxCornerRadii(r, r, r, r)
         }
-        text = EditText(this).apply {
+        text = TextInputEditText(field.context).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             minLines = 6
             gravity = Gravity.TOP or Gravity.START
-            hint = "Type or paste what to read aloud"
+            setTextAppearance(M.style.TextAppearance_Material3_BodyLarge)
             textSize = 20f
             setLineSpacing(0f, 1.3f)
-            background = null
-            setPadding(pad, pad, pad, dp(8))
         }
-        textCard.addView(text)
+        field.addView(text)
+        col.addView(field, lp(top = dp(16)))
         val tools = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), 0, pad, dp(12))
+            setPadding(dp(4), dp(4), dp(4), 0)
         }
-        tools.addView(chip("Paste") { pasteText() })
-        tools.addView(chip("Clear") { text.setText("") }, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
-        count = secondary("", 12f).apply { gravity = Gravity.END }
+        tools.addView(Chip(this).apply { text = "Paste"; setOnClickListener { pasteText() } })
+        tools.addView(Chip(this).apply { text = "Clear"; setOnClickListener { this@MainActivity.text.setText("") } },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { leftMargin = dp(8) })
+        count = secondary("", M.style.TextAppearance_Material3_BodySmall).apply { gravity = Gravity.END }
         tools.addView(count, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        textCard.addView(tools)
+        col.addView(tools)
         text.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
@@ -385,23 +374,23 @@ class MainActivity : Activity(), DemoView {
                 count.text = if (n == 0) "" else "$n characters"
             }
         })
-        col.addView(textCard)
 
         // About and Advanced: closed, opened from the ⋮ menu.
+        fun heading(s: String) = words(s, M.style.TextAppearance_Material3_TitleLarge).apply { setPadding(0, dp(24), 0, 0) }
         about = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
-        about.addView(TextView(this).apply { text = "About this app"; textSize = 18f; setPadding(0, dp(24), 0, 0) })
+        about.addView(heading("About this app"))
         about.addView(label(About.TAGLINE))
         About.PURPOSE.forEach { about.addView(label(it)) }
         about.addView(label("No model ships with this app. Model files are read from:\n${modelsDir.path}"))
         adv = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
-        adv.addView(TextView(this).apply { text = "Advanced"; textSize = 18f; setPadding(0, dp(24), 0, 0) })
+        adv.addView(heading("Advanced"))
 
         engines = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
         ENGINES.forEachIndexed { i, name ->
-            engines.addView(RadioButton(this).apply { id = 100 + i; text = name })
+            engines.addView(MaterialRadioButton(this).apply { id = 100 + i; text = name })
         }
         // What the chosen engine costs, said before anyone waits for it.
-        val cost = TextView(this).apply { setPadding(0, 0, 0, pad / 2) }
+        val cost = secondary("").apply { setPadding(0, 0, 0, pad / 2) }
         engines.setOnCheckedChangeListener { _, id ->
             val engine = ENGINES[id - 100]
             text.setText(LINES[engine])
@@ -410,68 +399,75 @@ class MainActivity : Activity(), DemoView {
         adv.addView(label("Engine"))
         adv.addView(engines)
         adv.addView(cost)
-        model = Spinner(this); codec = Spinner(this); voice = Spinner(this)
+        model = AppCompatSpinner(this); codec = AppCompatSpinner(this); voice = AppCompatSpinner(this)
         adv.addView(label("Model (Qwen3-TTS talker, or Kitten-TTS 2 LM)")); adv.addView(model)
         adv.addView(label("Codec (Qwen3-TTS 12 Hz codec, or Kitten-TTS 2 S3Gen)")); adv.addView(codec)
         adv.addView(label("Voice file (Kitten-TTS 2 only: the prepared voice JSON)")); adv.addView(voice)
-        speaker = EditText(this).apply { hint = "the model's default"; setSingleLine() }
-        adv.addView(label("Speaker (Qwen3-TTS only, for example hk_voice_343)")); adv.addView(speaker)
-        threads = Spinner(this).apply {
-            adapter = themed(THREADS.map { "$it threads" })
+        val speakerField = TextInputLayout(this, null, M.attr.textInputOutlinedStyle).apply {
+            hint = "Speaker (Qwen3-TTS only, for example hk_voice_343)"
+            placeholderText = "the model's default"
+        }
+        speaker = TextInputEditText(speakerField.context).apply { setSingleLine() }
+        speakerField.addView(speaker)
+        adv.addView(speakerField, lp(top = pad))
+        threads = AppCompatSpinner(this).apply {
+            adapter = choices(THREADS.map { "$it threads" })
             setSelection(THREADS.indexOf(DEFAULT_THREADS))
         }
         adv.addView(label("CPU threads")); adv.addView(threads)
-        importButton = Button(this).apply { text = "Import a model file..."; setOnClickListener { pickFile() } }
-        adv.addView(importButton)
-        systemSpeak = Button(this).apply { text = "Speak through Android's TTS (ggtts as the engine)" }
+        importButton = MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
+            text = "Import a model file..."; setOnClickListener { pickFile() }
+        }
+        adv.addView(importButton, lp(top = pad / 2))
+        systemSpeak = MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
+            text = "Speak through Android's TTS (ggtts as the engine)"
+        }
         systemSpeak.setOnClickListener { speakThroughAndroid() }
         adv.addView(systemSpeak)
         col.addView(about)
         col.addView(adv)
 
-        val scroll = ScrollView(this).apply { addView(col) }
-        more.setOnClickListener {
-            PopupMenu(this, more).apply {
-                menu.add(0, 1, 0, "Import a voice file…")
-                menu.add(0, 2, 1, if (about.visibility == View.VISIBLE) "Hide About" else "About this app")
-                menu.add(0, 3, 2, if (adv.visibility == View.VISIBLE) "Hide Advanced" else "Advanced")
-                setOnMenuItemClickListener { item ->
-                    when (item.itemId) {
-                        1 -> pickFile()
-                        2 -> toggleSection(scroll, about)
-                        3 -> toggleSection(scroll, adv)
-                    }
-                    true
-                }
-                show()
+        val scroll = NestedScrollView(this).apply { addView(col) }
+        // The ⋮ menu: everything that is not reading. The two section items say whether they open or close.
+        header.menu.add(0, 1, 0, "Import a voice file…")
+        val aboutItem = header.menu.add(0, 2, 1, "About this app")
+        val advItem = header.menu.add(0, 3, 2, "Advanced")
+        header.setOnMenuItemClickListener { item: MenuItem ->
+            when (item.itemId) {
+                1 -> pickFile()
+                2 -> aboutItem.title = if (toggleSection(scroll, about)) "Hide About" else "About this app"
+                3 -> advItem.title = if (toggleSection(scroll, adv)) "Hide Advanced" else "Advanced"
             }
+            true
         }
 
         // The player, docked: it stays in view while the text scrolls.
         val footer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(pad, dp(12), pad, dp(16))
-            background = GradientDrawable().apply { setColor(surface) }
+            setBackgroundColor(color(M.attr.colorSurfaceContainer))
         }
-        estimate = secondary("", 12f)
+        estimate = secondary("", M.style.TextAppearance_Material3_BodySmall)
         footer.addView(estimate)
-        status = TextView(this).apply { textSize = 14f; visibility = View.GONE; setPadding(0, dp(4), 0, 0) }
+        status = words("", M.style.TextAppearance_Material3_BodyMedium).apply {
+            visibility = View.GONE; setPadding(0, dp(4), 0, dp(4))
+        }
         footer.addView(status)
-        progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+        progress = LinearProgressIndicator(this).apply {
             isIndeterminate = true; visibility = View.GONE
         }
         footer.addView(progress)
-        speak = Button(this).apply {
-            text = "▶  Read aloud"; isAllCaps = false; textSize = 18f
-            setTextColor(onAccent); background = rounded(accent, 28)
+        speak = MaterialButton(this).apply {
+            text = "▶  Read aloud"
+            textSize = 18f
         }
         speak.setOnClickListener {
             askForNotifications()
             speakNow()
         }
-        stop = Button(this).apply {
-            text = "■  Stop"; isAllCaps = false; textSize = 18f; visibility = View.GONE; isEnabled = false
-            background = rounded(Color.TRANSPARENT, 28, outline, 2)
+        stop = MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
+            text = "■  Stop"; visibility = View.GONE; isEnabled = false
+            textSize = 18f
         }
         stop.setOnClickListener { controller.stop() }
         footer.addView(speak, lp(h = dp(56), top = dp(10)))
@@ -480,24 +476,26 @@ class MainActivity : Activity(), DemoView {
         engines.check(100)
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(themeColor(android.R.attr.colorBackground))
+            setBackgroundColor(color(M.attr.colorSurface))
             addView(header)
             addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-            addView(View(this@MainActivity).apply { setBackgroundColor(outline) }, lp(h = 1))
+            addView(MaterialDivider(this@MainActivity))
             addView(footer)
-            // Keep the content clear of the status and navigation bars.
-            @Suppress("DEPRECATION")
-            setOnApplyWindowInsetsListener { v, insets ->
-                v.setPadding(0, insets.systemWindowInsetTop, 0, insets.systemWindowInsetBottom)
+            // Edge to edge: keep the content clear of the status and navigation bars, and of a cutout to the side.
+            ViewCompat.setOnApplyWindowInsetsListener(this) { v, insets ->
+                val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+                v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
                 insets
             }
         }
     }
 
-    private fun toggleSection(scroll: ScrollView, section: View) {
+    /** Opens or closes [section]; true when it is now open. */
+    private fun toggleSection(scroll: NestedScrollView, section: View): Boolean {
         val open = section.visibility != View.VISIBLE
         section.visibility = if (open) View.VISIBLE else View.GONE
         if (open) scroll.post { scroll.smoothScrollTo(0, section.top) }
+        return open
     }
 
     private fun pickFile() {
@@ -522,7 +520,7 @@ class MainActivity : Activity(), DemoView {
         val files = listOf(NONE) + listed
         for (s in listOf(model, codec, voice)) {
             val keep = s.selectedItem as String?
-            s.adapter = themed(files)
+            s.adapter = choices(files)
             keep?.let { files.indexOf(it).takeIf { i -> i >= 0 }?.let(s::setSelection) }
         }
         refreshVoices(listed)
@@ -576,57 +574,58 @@ class MainActivity : Activity(), DemoView {
     /** The voices as a sheet of cards from the bottom: tap one to choose it; a sample plays without a render. */
     private fun showVoiceSheet() {
         if (found.voices.isEmpty()) return
-        val dialog = Dialog(this)
+        val dialog = BottomSheetDialog(this)
         val sheet = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(12), dp(16), dp(24))
-            background = GradientDrawable().apply {
-                setColor(surface)
-                cornerRadii = floatArrayOf(dp(24).toFloat(), dp(24).toFloat(), dp(24).toFloat(), dp(24).toFloat(), 0f, 0f, 0f, 0f)
-            }
+            setPadding(dp(16), 0, dp(16), dp(24))
         }
-        sheet.addView(View(this).apply { background = rounded(outline, 2) },
-            LinearLayout.LayoutParams(dp(36), dp(4)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(12) })
+        sheet.addView(BottomSheetDragHandleView(this))
         val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.BOTTOM }
-        head.addView(TextView(this).apply { text = "Choose a voice"; textSize = 20f; setTextColor(fg); setTypeface(typeface, Typeface.BOLD) },
+        head.addView(words("Choose a voice", M.style.TextAppearance_Material3_TitleLarge),
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        head.addView(secondary("All run offline", 12f))
+        head.addView(secondary("All run offline", M.style.TextAppearance_Material3_BodySmall))
         sheet.addView(head)
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         for (v in found.voices) {
-            val card = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(14), dp(12), dp(10), dp(12))
-                val chosen = v.label == applied?.label
-                background = rounded(themeColor(android.R.attr.colorBackground), 16, if (chosen) accent else outline, if (chosen) 2 else 1)
+            val chosen = v.label == applied?.label
+            val card = MaterialCardView(this, null, M.attr.materialCardViewOutlinedStyle).apply {
+                radius = dp(16).toFloat()
+                if (chosen) { strokeColor = color(androidx.appcompat.R.attr.colorPrimary); strokeWidth = dp(2) }
                 isClickable = true; isFocusable = true
                 setOnClickListener { applyVoice(v); dialog.dismiss() }
             }
-            card.addView(TextView(this).apply {
-                text = badge(v); gravity = Gravity.CENTER; textSize = 15f; setTextColor(accent); background = rounded(outline, 20)
-            }, LinearLayout.LayoutParams(dp(40), dp(40)))
-            val words = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(8), 0) }
-            words.addView(TextView(this).apply { text = v.name; textSize = 16f; setTextColor(fg) })
-            words.addView(secondary("${v.language} · ${Voices.ENGINE_NAMES[v.engine] ?: v.engine}"))
-            EngineCosts.BY_ENGINE[v.engine]?.let {
-                words.addView(secondary("%.1f GB · first sound %s s".format(it.downloadGb, it.firstAudioS), 12f))
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(14), dp(12), dp(10), dp(12))
             }
-            card.addView(words, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            card.addView(chip(if (v.sample != null) "▶ Sample" else "No sample") { playSample(v) }.apply { isEnabled = v.sample != null })
+            row.addView(badgeView(filled = false).apply { text = badge(v) }, LinearLayout.LayoutParams(dp(40), dp(40)))
+            val lines = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(8), 0) }
+            lines.addView(words(v.name, M.style.TextAppearance_Material3_TitleMedium))
+            lines.addView(secondary("${v.language} · ${Voices.ENGINE_NAMES[v.engine] ?: v.engine}"))
+            EngineCosts.BY_ENGINE[v.engine]?.let {
+                lines.addView(secondary("%.1f GB · first sound %s s".format(it.downloadGb, it.firstAudioS),
+                    M.style.TextAppearance_Material3_BodySmall))
+            }
+            row.addView(lines, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(Chip(this).apply {
+                text = if (v.sample != null) "▶ Sample" else "No sample"
+                isEnabled = v.sample != null
+                setOnClickListener { playSample(v) }
+            })
+            card.addView(row)
             list.addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 .apply { topMargin = dp(10) })
         }
-        sheet.addView(ScrollView(this).apply { addView(list) }, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        sheet.addView(chip("+  Add a voice from a file") { dialog.dismiss(); pickFile() }, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply { topMargin = dp(12) })
-        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
-        dialog.setContentView(sheet)
-        dialog.window?.apply {
-            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            setGravity(Gravity.BOTTOM)
-            setLayout(ViewGroup.LayoutParams.MATCH_PARENT, (resources.displayMetrics.heightPixels * 0.7).toInt())
-        }
+        sheet.addView(list)
+        sheet.addView(MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
+            text = "+  Add a voice from a file"
+            setOnClickListener { dialog.dismiss(); pickFile() }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            .apply { topMargin = dp(12) })
+        // The sheet scrolls itself (it is a NestedScrollView's child), and opens fully: it is short.
+        dialog.setContentView(NestedScrollView(this).apply { addView(sheet) })
+        dialog.behavior.state = com.google.android.material.bottomsheet.BottomSheetBehavior.STATE_EXPANDED
+        dialog.behavior.skipCollapsed = true
         dialog.show()
     }
 
@@ -717,7 +716,7 @@ class MainActivity : Activity(), DemoView {
 
     // ---- importing a file through the system picker (copied into the models directory)
 
-    @Deprecated("The platform Activity API; this app has no AndroidX")
+    @Deprecated("The platform Activity API; the result API would be the AndroidX one")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         val uri = data?.data

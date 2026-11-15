@@ -567,7 +567,9 @@ impl Cache {
 pub const URL_FILE_MAX: u64 = 256 << 20;
 
 /// A file named by an `https://` URL, or by the Hugging Face Hub shorthand `hf://<owner>/<repo>[@<revision>]/<path>`
-/// (the Hub's `resolve` URL, at `main` unless a revision is given), with an optional pin: `...#sha256=<64 hex>`.
+/// (the Hub's `resolve` URL, at `main` unless a revision is given), with an optional pin: `...#sha256=<64 hex>`. A
+/// revision is one path segment (a commit, a tag, or a branch with no `/`): the shorthand is split at the first two
+/// slashes, so a revision such as `refs/pr/3` needs the full `https://` URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UrlSpec {
     /// The URL without the pin.
@@ -665,31 +667,42 @@ impl Cache {
         self.root.join("urls").join(key).join(spec.file_name())
     }
 
-    /// The sha256 recorded for a cached URL file, when its sidecar names this URL and the file's size and
-    /// modification time are the ones recorded. Otherwise the file is hashed again.
+    /// The sha256 of a cached URL file. With a sidecar that names this URL: its recorded sha256 when the size and
+    /// modification time are the ones recorded, and otherwise the file is hashed again and must still be that
+    /// sha256 (a cached copy that changed since it was downloaded is refused, never served as the URL's). With no
+    /// sidecar for this URL, the file is hashed and the result recorded.
     fn url_entry(&self, spec: &UrlSpec, path: &Path) -> Result<Option<String>, String> {
         let meta = match fs::metadata(path) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
-        let recorded = fs::read_to_string(Self::sidecar(path))
+        let record = fs::read_to_string(Self::sidecar(path))
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .filter(|r| {
-                r["url"] == spec.url.as_str()
-                    && r["size"] == meta.len()
-                    && mtime_ns(&meta).is_some_and(|m| r["mtime_ns"].as_str() == Some(m.to_string().as_str()))
-            })
-            .and_then(|r| r["sha256"].as_str().map(str::to_string));
-        match recorded {
-            Some(sha) => Ok(Some(sha)),
-            None => {
-                let (_, sha) = hash_file(path)?;
-                Self::write_url_sidecar(path, spec, &sha)?;
-                Ok(Some(sha))
-            }
+            .filter(|r| r["url"] == spec.url.as_str());
+        let Some(record) = record else {
+            let (_, sha) = hash_file(path)?;
+            Self::write_url_sidecar(path, spec, &sha)?;
+            return Ok(Some(sha));
+        };
+        let recorded = record["sha256"].as_str().unwrap_or("").to_string();
+        let unchanged = record["size"] == meta.len()
+            && mtime_ns(&meta).is_some_and(|m| record["mtime_ns"].as_str() == Some(m.to_string().as_str()));
+        if unchanged {
+            return Ok(Some(recorded));
         }
+        let (_, sha) = hash_file(path)?;
+        if sha != recorded {
+            return Err(format!(
+                "{}: the cached copy at {} changed since it was downloaded (sha256 {sha}, recorded {recorded}); \
+                 delete it to download again",
+                spec.url,
+                path.display()
+            ));
+        }
+        Self::write_url_sidecar(path, spec, &sha)?;
+        Ok(Some(sha))
     }
 
     fn write_url_sidecar(path: &Path, spec: &UrlSpec, sha256: &str) -> Result<(), String> {

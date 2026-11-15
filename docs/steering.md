@@ -53,11 +53,19 @@ ggtts-render --steer https://huggingface.co/jmtl/hk-cantonese-cc0-qwen3-tts-emot
 * **The shorthand.** The same preset is
   `--steer hf://jmtl/hk-cantonese-cc0-qwen3-tts-emotion-steering/presets/angry.safetensors`; `...-steering@<commit>/...`
   pins a revision.
-* **One URL, one entry.** A URL whose content later changes upstream (a `resolve/main` link) keeps the copy first
-  downloaded. Delete that cache entry to fetch the new one, or pin a revision in the URL.
+* **One URL, one entry, never re-checked.** Once a URL is cached it is reused without asking the network, so a
+  URL at a moving revision (a `resolve/main` link, or `hf://...` with no `@revision`) keeps the copy first
+  downloaded even after `main` moves. Pin a revision (`@<commit>`) or a `#sha256=` to know which file you render
+  with; delete the cache entry to fetch a newer one. A cached copy that changed on disk since its download is
+  refused.
+* **A revision is one segment**: a commit, a tag, or a branch with no `/`. The shorthand is split at its first two
+  slashes, so a revision such as `refs/pr/3` needs the full `https://huggingface.co/.../resolve/refs%2Fpr%2F3/...`
+  URL.
 * **A pin.** `URL#sha256=<64 hex>` refuses a file whose sha256 differs. A download that differs is removed; a cached
   copy that differs is refused, naming where it is.
 * **Offline.** `--offline` (`load.offline`) refuses a URL that is not cached yet, naming it and its cache path.
+  A binding resolves with the settings its engine was loaded with (`offline`, `cache_dir`, or the Kotlin
+  `allowDownload = false`), so an engine loaded offline never downloads one.
 * **Limits.** HTTPS only, every redirect too; at most 256 MB. A local path behaves exactly as before.
 
 ## Where it is applied

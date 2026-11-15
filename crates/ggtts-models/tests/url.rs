@@ -173,3 +173,30 @@ fn a_url_serving_too_much_is_refused() {
     assert!(left.is_empty(), "left behind: {left:?}");
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// A cached copy that changed since it was downloaded (overwritten, or truncated) is refused, not served under the
+/// URL; one that only had its time touched is still served.
+#[test]
+fn a_cached_copy_that_changed_since_its_download_is_refused() {
+    let (cache, root) = cache("changed");
+    let served = Served::new(b"the preset as published");
+    let got = cache.fetch_url(&spec(URL), false, &served, &mut |_| {}).unwrap();
+    // Touched, same bytes: served.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&got.path, b"the preset as published").unwrap();
+    assert_eq!(
+        cache
+            .fetch_url(&spec(URL), true, &NoNetwork, &mut |_| {})
+            .unwrap()
+            .sha256,
+        got.sha256
+    );
+    // Overwritten: refused, naming the cached copy.
+    std::fs::write(&got.path, b"something else").unwrap();
+    let e = cache.fetch_url(&spec(URL), true, &NoNetwork, &mut |_| {}).unwrap_err();
+    assert!(
+        e.contains("changed since it was downloaded") && e.contains("delete it"),
+        "{e}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}

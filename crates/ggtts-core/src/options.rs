@@ -1167,8 +1167,8 @@ pub fn check(options: &Options, caps: &Capabilities) -> Result<Checked, Refusal>
 
 /// The provenance record of a render with `options` on the engine `info` describes: the engine, backend and parity;
 /// the instruction (when not empty) and the steering record, as the trace header and every report write them; the
-/// seed keys given; the speaker given; `kitten_full_head` when it is on; the device; the trace level (0 untraced); and the environment values the
-/// engine ignored. A steering file not yet read is recorded by its path.
+/// seed keys given; the speaker given; `kitten_full_head` when it is on; the device; the trace level (0 untraced);
+/// and the environment values the engine ignored. A steering file not yet read is recorded by its path.
 pub fn record(options: &Options, info: &EngineInfo) -> Value {
     let mut m = Map::new();
     m.insert("engine".into(), info.family.clone().into());

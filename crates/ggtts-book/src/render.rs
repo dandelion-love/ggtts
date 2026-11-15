@@ -300,8 +300,9 @@ pub fn render_command_with(
 }
 
 /// The render options that change the audio, from the provenance record ([`ggtts_core::options::record`]): the
-/// style instruction (when not empty), the steering, and Kitten-TTS 2's whole output head when it is on. `Null` when there are neither. Every chapter manifest records
-/// it, and a resume under other render options is refused ([`crate::manifest::ManifestError::Mismatch`]).
+/// style instruction (when not empty), the steering, and Kitten-TTS 2's whole output head when it is on. `Null` when
+/// there are none. Every chapter manifest records it, and a resume under other render options is refused
+/// ([`crate::manifest::ManifestError::Mismatch`]).
 pub fn render_identity(options: &Options, info: &EngineInfo) -> serde_json::Value {
     let record = ggtts_core::options::record(options, info);
     let mut kept: serde_json::Map<String, serde_json::Value> = ["instruction", "steer", "kitten_full_head"]

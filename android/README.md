@@ -198,6 +198,19 @@ nothing is being read.
   a time. While one reads, the other is refused with a message (the screen) or `ERROR_SERVICE` (the system engine)
   rather than load a second model beside it. Android's memory trims never release the engine during either read.
 
+## Text from other apps
+
+Text can reach the app three ways, and none of them needs a permission:
+
+- **Share:** share plain text to "ggtts Text-to-Speech" from another app's share sheet (`ACTION_SEND`, `text/plain`).
+- **Selection menu:** select text in another app and pick **Read aloud** from the menu (`ACTION_PROCESS_TEXT`).
+- **Open a file:** open a `.txt` file with the app, or share one to it. It must be UTF-8 and at most 256 KB.
+
+Each fills the text card, keeps the voice as it is, and says where the text came from. **Nothing starts a read by
+itself**: you press Read aloud. Another app chooses what it sends, so a read it could start would be that app speaking
+through this one. Text over 20,000 characters is refused with that limit named, not cut short. A file that is not
+UTF-8 is refused too, and so is anything that is not plain text.
+
 ## ggtts as Android's text-to-speech engine
 
 The demo app also provides a system TTS engine, a `TextToSpeechService` listed in the phone's settings as "ggtts Text-to-Speech",

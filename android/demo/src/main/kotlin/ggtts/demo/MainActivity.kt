@@ -669,7 +669,68 @@ class MainActivity : AppCompatActivity(), DemoView {
         s.setSelection(i)
     }
 
+    /**
+     * Text another app handed over (Incoming.kt): shared, picked from the selection menu, or a .txt opened with the
+     * app. It fills the text card and nothing else: no read starts until the user presses Read aloud. Returns whether
+     * the intent was such a hand-over, so the debug build's adb extras (which can press Speak) are not read from it.
+     */
+    private fun takeIncoming(intent: Intent): Boolean {
+        val stream = if (Build.VERSION.SDK_INT >= 33) {
+            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION") intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+        }
+        val incoming = IncomingText.parse(
+            intent.action,
+            intent.type ?: intent.data?.let { contentResolver.getType(it) },
+            sendText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT),
+            processText = intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT),
+            stream = stream?.toString(),
+            data = intent.data?.toString(),
+        )
+        when (incoming) {
+            is Incoming.None -> return false
+            is Incoming.Refused -> {
+                Log.i(TAG, "incoming refused: ${incoming.why}")
+                showError(incoming.why)
+            }
+            is Incoming.Text -> showIncoming(incoming)
+            is Incoming.File -> {
+                // Off the main thread: a provider may be slow. The file is capped at IncomingText.MAX_FILE_BYTES.
+                val uri = Uri.parse(incoming.uri)
+                Thread {
+                    val read = try {
+                        contentResolver.openInputStream(uri)?.let { IncomingText.readFile(it) }
+                            ?: Incoming.Refused("That file could not be opened.")
+                    } catch (e: Exception) {
+                        Incoming.Refused("That file could not be opened: ${e.message}")
+                    }
+                    runOnUiThread {
+                        when (read) {
+                            is Incoming.Text -> showIncoming(read)
+                            is Incoming.Refused -> {
+                                Log.i(TAG, "incoming file refused: ${read.why}")
+                                showError(read.why)
+                            }
+                            else -> {}
+                        }
+                    }
+                }.start()
+            }
+        }
+        return true
+    }
+
+    /** Put [incoming]'s text in the card, and say where it came from and that Read aloud starts it. */
+    private fun showIncoming(incoming: Incoming.Text) {
+        text.setText(incoming.text)
+        text.setSelection(0)
+        Log.i(TAG, "incoming ${incoming.source}: ${incoming.text.length} characters")
+        showStatus("Text ${incoming.source} from another app: ${incoming.text.length} characters. Press Read aloud to hear it.")
+    }
+
     private fun applyIntent(intent: Intent?) {
+        if (intent != null && takeIncoming(intent)) return
         // The scripted extras (file names in the models directory, and Speak pressed for you) are for testing a debug
         // build from adb. Another app can send this exported activity an intent too, so a release build ignores them,
         // and a debug build takes only names of files already in the models directory (pick).

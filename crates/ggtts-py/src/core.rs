@@ -990,9 +990,10 @@ mod tests {
     #[test]
     fn the_cache_dir_is_where_a_default_model_is_looked_up() {
         let root = std::env::temp_dir().join(format!("ggtts-py-docache-{}", std::process::id()));
+        // A JSON string: `{:?}` escapes a Windows path's backslashes as JSON does.
         let doc = format!(
-            r#"{{"load": {{"engine": "qwen3-tts", "offline": true, "cache_dir": "{}"}}}}"#,
-            root.display()
+            r#"{{"load": {{"engine": "qwen3-tts", "offline": true, "cache_dir": {:?}}}}}"#,
+            root.display().to_string()
         );
         let r = LoadRequest {
             options: Some(doc),

@@ -13,6 +13,12 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **`ggtts-render --codes FILE` (`observe.codes`) writes every kept chunk's codec tokens**, all codebooks (16 on
+  Qwen3-TTS), one `ggtts-codes/1` JSON line per chunk, on `--text` and `--story` alike and on every device. Writing
+  them changes no sample. A line holds the `frames`, `codebooks` and `codes` keys the Qwen3-TTS decode example reads,
+  so a chunk can be decoded again on its own (`docs/codes.md`). `ggtts-book` and the bindings refuse it: they write
+  no codes file.
+
 - **A stream through an options document is levelled by default, as `ggtts-render --stream` is.** The C ABI's
   `ggtts_render_opts` with a callback, Python's `render_stream` and `stream` with `options=`, and Kotlin's
   `renderStream` with `options` now hand each piece levelled by one gain from the first 5 s of audio

@@ -375,6 +375,12 @@ pub const TABLE: &[Descriptor] = &[
         ..row("trace_level", SO, R, Kind::Int { min: 1, max: 2 }, "null")
     },
     Descriptor {
+        flags: &["--codes"],
+        help: "Where every chunk's kept codec tokens go (ggtts-codes/1 JSON lines: frames x codebooks, as the \
+               decoder reads them). Writing them changes no sample.",
+        ..row("codes", SO, R, path(), "null")
+    },
+    Descriptor {
         flags: &["--timing-report"],
         help: "A new file for the stage timing report.",
         ..row("timing_report", SO, R, path(), "null")
@@ -637,6 +643,9 @@ pub struct Observe {
     pub trace: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_level: Option<u8>,
+    /// Where each chunk's kept codec tokens go (`ggtts-codes/1`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codes: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timing_report: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]

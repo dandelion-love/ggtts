@@ -134,7 +134,7 @@ In an app, `load` and `render` block: call them off the main thread. To play a `
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `engine` | `"qwen3-tts"` | `"qwen3-tts"`, `"kitten-tts-2"`, or `"fake"` (a test engine that needs no files). With `options`, null is the document's engine. |
+| `engine` | `"qwen3-tts"` | `"qwen3-tts"`, `"kitten-tts-2"`, or `"fake"` (a test engine that needs no files). With `options`, null is the document's `load.engine`, whose default is `"auto"`: the model file's GGUF architecture, or `"qwen3-tts"` with no model. |
 | `model` | null | The model GGUF path: Qwen3-TTS's talker, or Kitten-TTS 2's LM. Null for Qwen3-TTS means the default model (below). |
 | `codec` | null | The audio decoder GGUF: Qwen3-TTS's 12 Hz codec, or Kitten-TTS 2's S3Gen GGUF. Null for Qwen3-TTS means the default codec. |
 | `voice` | null | Kitten-TTS 2's prepared reference voice (a JSON file). |
@@ -174,8 +174,8 @@ Read the model's card before you use its voice; its licence is the model's, not 
   [default model files](../../README.md#default-model-files-what-ggtts-downloads-and-when) section lists the files and
   their hashes.
 * **The speaker.** The default model's speakers are `hk_voice_343` (used when you give none) and `hk_voice_777`. A
-  model you give by path uses `hk_cantonese_speaker` when you give none, so a talker without that speaker needs
-  `speaker`. An unknown speaker throws `ERR_ENGINE`, and the message lists the model's speakers.
+  model you give by path uses its own default when you give none: `hk_cantonese_speaker` if it has one, otherwise
+  the first of its speakers in alphabetical order (`hk_voice_343` for the v0.0.5 talker). An unknown speaker throws `ERR_ENGINE`, and the message lists the model's speakers.
 
 ### Kitten-TTS 2
 

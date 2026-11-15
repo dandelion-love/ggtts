@@ -69,8 +69,8 @@ object Voices {
         val codec = of(Kind.QWEN_CODEC).firstOrNull()
         for (t in of(Kind.QWEN_TALKER)) {
             when {
-                codec == null -> incomplete += Incomplete(t.name, "a Qwen3-TTS 12 Hz codec")
-                t.speakers.isEmpty() -> incomplete += Incomplete(t.name, "a named speaker (it has none)")
+                codec == null -> incomplete += Incomplete(t.name, EnglishWords.get("need_codec"))
+                t.speakers.isEmpty() -> incomplete += Incomplete(t.name, EnglishWords.get("need_speaker"))
                 else -> t.speakers.sorted().forEach { s ->
                     voices += Voice(s, "qwen3-tts", LANGUAGES.getValue("qwen3-tts"), t.name, codec.name,
                         speaker = s, sample = sample(s))
@@ -83,8 +83,8 @@ object Voices {
         val jsons = of(Kind.KITTEN_VOICE)
         for (lm in lms) {
             when {
-                decoder == null -> incomplete += Incomplete(lm.name, "a Kitten-TTS 2 S3Gen decoder")
-                jsons.isEmpty() -> incomplete += Incomplete(lm.name, "a prepared voice JSON")
+                decoder == null -> incomplete += Incomplete(lm.name, EnglishWords.get("need_decoder"))
+                jsons.isEmpty() -> incomplete += Incomplete(lm.name, EnglishWords.get("need_voice_json"))
                 else -> jsons.forEach { j ->
                     val stem = j.name.removeSuffix(".json")
                     // With one language model the voice's name is enough; with several, say which model it uses.
@@ -94,7 +94,7 @@ object Voices {
                 }
             }
         }
-        if (lms.isEmpty()) jsons.forEach { incomplete += Incomplete(it.name, "a Kitten-TTS 2 language model") }
+        if (lms.isEmpty()) jsons.forEach { incomplete += Incomplete(it.name, EnglishWords.get("need_language_model")) }
         return Found(voices, incomplete)
     }
 

@@ -75,12 +75,11 @@ use ggtts_core::hooks::Hooks;
 use ggtts_core::logging::{Format as LogFormat, Level as LogLevel, Settings as LogSettings};
 use ggtts_core::options::{self, Descriptor, Options, Refusal, Section};
 use ggtts_core::pipeline::{
-    plan_story, render_plan, DurationJudge, Given, Judge, Observers, Output, RenderError, SeedSource, StorySeeds,
-    StreamMode, StreamPiece,
+    plan_story, render_plan, DurationJudge, Judge, Observers, Output, RenderError, SeedSource, StorySeeds, StreamMode,
+    StreamPiece,
 };
 use ggtts_core::stream::{Container, StreamWriter};
 use ggtts_core::text::read_text;
-use ggtts_core::text::PlannedChunk;
 use ggtts_core::trace::{emit_header, Event, Events, Header, JsonlEvents, NullEvents};
 
 // The pipeline ends before a held stream is flushed. Delay the trace end marker until the CLI has recorded
@@ -772,12 +771,7 @@ fn render_with_models(
     let (title, chunks) = match &a.render.text {
         Some(text) => (
             String::new(),
-            vec![PlannedChunk {
-                para: 0,
-                text: text.clone(),
-                punct: String::new(),
-                last_in_para: true,
-            }],
+            ggtts_core::pipeline::exact::chunks(text).map_err(|r| r.to_string())?,
         ),
         None => preplanned.expect("a story was planned before loading"),
     };
@@ -823,12 +817,10 @@ fn render_with_models(
         let mut options = a.render_options(&profile).map_err(|r| r.to_string())?;
         if text_mode {
             // One draw, kept: no redraw, no trim, no level. The timings feed the draw's log line.
-            options.redraw = 0;
-            options.trim = false;
-            options.level = false;
+            ggtts_core::pipeline::exact::options(&mut options);
             options.measure_timings = true;
         }
-        let given = Given(a.render.seed.unwrap_or(options::DEFAULT_SEED));
+        let given = ggtts_core::pipeline::exact::seeds(a.render.seed.unwrap_or(options::DEFAULT_SEED));
         let story_seeds = StorySeeds {
             story_id: &title,
             salt: &options.seed_salt,

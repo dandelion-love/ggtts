@@ -13,6 +13,11 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **`ggtts-render --codes FILE` (`observe.codes`) writes every kept chunk's codec tokens**, all codebooks (16 on
+  Qwen3-TTS), one `ggtts-codes/1` JSON line per chunk, on `--text` and `--story` alike and on every device. Writing
+  them changes no sample. A line holds the `frames`, `codebooks` and `codes` keys the Qwen3-TTS decode example reads,
+  so a chunk can be decoded again on its own (`docs/codes.md`). `ggtts-book` and the bindings refuse it: they write
+  no codes file.
 - **`ggtts-render --story` and `ggtts-book render` take `--edge-s X`** (`render.edge_s`): the seconds of silence kept
   at each edge of a chunk, which the bindings already took in an options document. **`ggtts-render --story` takes
   `--seed-salt S`** (`render.seed_salt`), the salt each binding's seed already was, so a story's seeds can be moved

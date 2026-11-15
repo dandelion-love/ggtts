@@ -70,6 +70,7 @@ const KITTEN_HEAD: &[&str] = &["load.kitten_full_head"];
 const SAMPLER: &[&str] = &ggtts_core::options::SAMPLER;
 const STEER: &[&str] = &["render.steer", "render.steer_scale", "render.steer_layers"];
 const TRACE: &[&str] = &["observe.trace", "observe.trace_level"];
+const CODES: &[&str] = &["observe.codes"];
 const REPORTS: &[&str] = &["observe.timing_report", "observe.duration_report"];
 const LOG: &[&str] = &["observe.log_level", "observe.log_format"];
 const INSTRUMENTS: &[&str] = &[
@@ -119,6 +120,7 @@ const BOOK_SEED: &str = "a book's seeds come from --seed-root and each chunk's p
 const BOOK_STREAM: &str = "a book is written as one FLAC per chapter, not streamed";
 const BOOK_REPORTS: &str = "a book writes no timing or duration report";
 const BOOK_LOG: &str = "a book writes no log";
+const BOOK_CODES: &str = "a book writes no codes file: render a chapter's text with ggtts-render --codes";
 const BOOK_TIMINGS: &str = "a book does not take it";
 
 /// Every front end of the direction document (`docs/architecture-direction.md`), with `ggtts-render`'s two modes
@@ -145,6 +147,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.seed"], Gap(215)),
             (&["render.seed_salt", "render.edge_s"], Carried),
             (TRACE, Carried),
+            (CODES, Carried),
             (REPORTS, Carried),
             (LOG, Carried),
             (INSTRUMENTS, Carried),
@@ -175,6 +178,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.redraw"], Refused(TEXT_REDRAW)),
             (&["render.edge_s"], Gap(180)),
             (TRACE, Carried),
+            (CODES, Carried),
             (REPORTS, Carried),
             (LOG, Carried),
             (INSTRUMENTS, Carried),
@@ -199,6 +203,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.edge_s"], Carried),
             (&["render.measure_timings"], Refused(BOOK_TIMINGS)),
             (TRACE, Carried),
+            (CODES, Refused(BOOK_CODES)),
             (REPORTS, Refused(BOOK_REPORTS)),
             (LOG, Refused(BOOK_LOG)),
             (INSTRUMENTS, Carried),
@@ -221,6 +226,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.redraw", "render.edge_s"], Carried),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Carried),
+            (CODES, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
@@ -257,6 +263,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.edge_s", "render.redraw"], Carried),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Carried),
+            (CODES, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
@@ -296,6 +303,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.redraw"], Carried),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Refused(ANDROID_TRACE)),
+            (CODES, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
@@ -340,6 +348,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.steer_scale", "render.steer_layers", "render.redraw"], Carried),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Refused(ANDROID_TRACE)),
+            (CODES, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
@@ -371,6 +380,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             ),
             (STEER, Refused(PARITY_TOOL)),
             (TRACE, Refused(PARITY_TOOL)),
+            (CODES, Refused(PARITY_TOOL)),
             (REPORTS, Refused(PARITY_TOOL)),
             (LOG, Refused(PARITY_TOOL)),
             (INSTRUMENTS, Refused(PARITY_TOOL)),
@@ -840,6 +850,8 @@ fn render_probes() -> Vec<Probe> {
         );
         let r = render(&p("trace"), mode, &["--trace", "t.jsonl"]);
         push("observe.trace", by_file(&r, "t.jsonl", "--trace"));
+        let r = render(&p("codes"), mode, &["--codes", "c.jsonl"]);
+        push("observe.codes", by_file(&r, "c.jsonl", "--codes"));
         let r = render(&p("level"), mode, &["--trace", "t.jsonl", "--trace-level", "2"]);
         let header = std::fs::read_to_string(r.dir.join("t.jsonl")).unwrap_or_default();
         push(
@@ -1212,6 +1224,7 @@ fn c_abi_document_probes(plain: usize) -> Vec<Probe> {
         ),
         ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
         ("observe.log_format", r#"{"observe": {"log_format": "json"}}"#),
+        ("observe.codes", r#"{"observe": {"codes": "c.jsonl"}}"#),
         ("output.out", r#"{"output": {"out": "o.flac"}}"#),
         ("render.judge", r#"{"render": {"judge": "asr-qwen,model=m"}}"#),
     ] {
@@ -1376,6 +1389,7 @@ fn python_probes() -> Vec<Probe> {
         ),
         ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
         ("observe.log_format", r#"{"observe": {"log_format": "json"}}"#),
+        ("observe.codes", r#"{"observe": {"codes": "c.jsonl"}}"#),
         ("output.out", r#"{"output": {"out": "o.flac"}}"#),
         ("render.judge", r#"{"render": {"judge": "asr-qwen,model=m"}}"#),
     ] {

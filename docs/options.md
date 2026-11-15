@@ -47,6 +47,30 @@ example `load.device`, by name.
 The style instruction is a render option. The bindings take it at load today, as the default for every render, and
 the engine checks it there; moving it is a later step, and this table only records its phase.
 
+## Sampler settings, frame cap and language
+
+Qwen3-TTS samples with the reference CLI's settings unless a load option changes one. Each is unset by default, and
+unset is the value every render had before these options existed, so a render that gives none is unchanged.
+
+| Key | Flag | Unset is | Notes |
+|---|---|---|---|
+| `load.temperature` | `--temperature` | 0.9 | above 0: greedy decoding does not terminate on this model, and 0 or less is refused with that reason |
+| `load.top_k` | `--top-k` | 50 | 0 is off; 1 keeps only the most likely token, which is greedy decoding, and is refused |
+| `load.top_p` | `--top-p` | 1.0 | 0 and 1.0 are off |
+| `load.repetition_penalty` | `--repetition-penalty` | 1.05 | codebook 0 only; above 0 |
+| `load.subtalker_temperature` | `--subtalker-temperature` | the talker's | the code predictor (codebooks 1 to 15); above 0, for the same reason |
+| `load.subtalker_top_k` | `--subtalker-top-k` | the talker's | 1 is greedy decoding, and is refused |
+| `load.subtalker_top_p` | `--subtalker-top-p` | the talker's | 0 and 1.0 are off |
+| `load.max_frames` | `--max-frames` | 1200 | the frame cap of one chunk, at 12.5 frames a second |
+| `load.language` | `--language` | `zh` | the reference CLI's `-l` names: `auto`, `en`, `ru`, `zh`, `ja`, `ko`, `de`, `fr`, `es`, `it`, `pt` |
+
+They are load options because the engine reads them when it opens: to compare settings, load once per setting. The
+reference CLI has no sub-talker settings (its code predictor samples with the talker's temperature, top-k and top-p,
+and no repetition penalty), so the `subtalker_*` keys are ggtts's own. An engine without them (`Capabilities::sampler`
+false: Kitten-TTS 2, the fake engine) refuses each one given, by its key. The C ABI, Python (`options=`) and Kotlin
+(`options`) take them in a load document, and the Android app through the Kotlin binding.
+`crates/ggtts-qwen3-tts/scripts/sampler_parity.sh` checks each against the reference CLI on CPU.
+
 ## Seed keys
 
 Three keys, three meanings; no key means two things.
@@ -103,7 +127,10 @@ steering file is read first, with `Options::read_steering`.
 
 `options::record(&options, &engine_info)` is the provenance record: the engine, backend and parity; the instruction
 (when not empty) and the steering record (`sha256`, `layers`, `scale`), as `ggtts-render`'s trace header and reports
-write them; the seed keys given; the speaker given; `kitten_full_head` when it is on; the device; the trace level (0 when untraced); and the
+write them; the seed keys given; the speaker given; `kitten_full_head` when it is on; `sampling`, the sampler settings,
+frame cap and language given (an object of the keys given, by their name in the load section); the device; the trace
+level (0 when untraced); and the
 environment values the engine ignored. `options::reported(&record)` is the part every `ggtts-render` report (timing,
-duration, each instrument's inputs) and its trace header carry (`options::REPORTED`: the instruction, the steering and `kitten_full_head`),
+duration, each instrument's inputs) and its trace header carry (`options::REPORTED`: the instruction, the steering,
+`kitten_full_head` and `sampling`),
 so they are written from the record and cannot disagree with it.

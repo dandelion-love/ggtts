@@ -302,6 +302,8 @@ fn load_inner(
                     offline: o.load.offline,
                     fetch,
                 }),
+                // The sampler settings, frame cap and language, from the load document.
+                tuning: ggtts_load::Tuning::of(&o.load),
             },
             &WORDING,
             notice,

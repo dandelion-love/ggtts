@@ -75,6 +75,7 @@ const STEER: &[&str] = &[
     "render.steer_scales",
 ];
 const TRACE: &[&str] = &["observe.trace", "observe.trace_level"];
+const CODES: &[&str] = &["observe.codes"];
 const REPORTS: &[&str] = &["observe.timing_report", "observe.duration_report"];
 const LOG: &[&str] = &["observe.log_level", "observe.log_format"];
 const INSTRUMENTS: &[&str] = &[
@@ -124,6 +125,7 @@ const BOOK_SEED: &str = "a book's seeds come from --seed-root and each chunk's p
 const BOOK_STREAM: &str = "a book is written as one FLAC per chapter, not streamed";
 const BOOK_REPORTS: &str = "a book writes no timing or duration report";
 const BOOK_LOG: &str = "a book writes no log";
+const BOOK_CODES: &str = "a book writes no codes file: render a chapter's text with ggtts-render --codes";
 const BOOK_TIMINGS: &str = "a book does not take it";
 
 /// Every front end of the direction document (`docs/architecture-direction.md`), with `ggtts-render`'s two modes
@@ -148,8 +150,9 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (STEER, Carried),
             (&["render.text"], Refused(ONE_OF)),
             (&["render.seed"], Gap(215)),
-            (&["render.seed_salt", "render.edge_s"], Gap(283)),
+            (&["render.seed_salt", "render.edge_s"], Carried),
             (TRACE, Carried),
+            (CODES, Carried),
             (REPORTS, Carried),
             (LOG, Carried),
             (INSTRUMENTS, Carried),
@@ -180,6 +183,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.redraw"], Refused(TEXT_REDRAW)),
             (&["render.edge_s"], Gap(180)),
             (TRACE, Carried),
+            (CODES, Carried),
             (REPORTS, Carried),
             (LOG, Carried),
             (INSTRUMENTS, Carried),
@@ -199,9 +203,12 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (STEER, Carried),
             (&["render.text", "render.story"], Refused(BOOK_TEXT)),
             (&["render.seed", "render.seed_salt"], Refused(BOOK_SEED)),
-            (&["render.edge_s"], Gap(283)),
+            // Declared here, not probed: a book render needs an EPUB, which this test does not build. The book's own
+            // test shows it carried and recorded: the_edge_reaches_every_chapter_and_a_resume_under_another_starts_again.
+            (&["render.edge_s"], Carried),
             (&["render.measure_timings"], Refused(BOOK_TIMINGS)),
             (TRACE, Carried),
+            (CODES, Refused(BOOK_CODES)),
             (REPORTS, Refused(BOOK_REPORTS)),
             (LOG, Refused(BOOK_LOG)),
             (INSTRUMENTS, Carried),
@@ -224,6 +231,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.redraw", "render.edge_s"], Carried),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Carried),
+            (CODES, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
@@ -260,6 +268,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.edge_s", "render.redraw"], Carried),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Carried),
+            (CODES, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
@@ -302,6 +311,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.redraw"], Carried),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Refused(ANDROID_TRACE)),
+            (CODES, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
@@ -346,6 +356,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.steer_scale", "render.steer_layers", "render.redraw"], Carried),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Refused(ANDROID_TRACE)),
+            (CODES, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
@@ -377,6 +388,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             ),
             (STEER, Refused(PARITY_TOOL)),
             (TRACE, Refused(PARITY_TOOL)),
+            (CODES, Refused(PARITY_TOOL)),
             (REPORTS, Refused(PARITY_TOOL)),
             (LOG, Refused(PARITY_TOOL)),
             (INSTRUMENTS, Refused(PARITY_TOOL)),
@@ -847,6 +859,8 @@ fn render_probes() -> Vec<Probe> {
         );
         let r = render(&p("trace"), mode, &["--trace", "t.jsonl"]);
         push("observe.trace", by_file(&r, "t.jsonl", "--trace"));
+        let r = render(&p("codes"), mode, &["--codes", "c.jsonl"]);
+        push("observe.codes", by_file(&r, "c.jsonl", "--codes"));
         let r = render(&p("level"), mode, &["--trace", "t.jsonl", "--trace-level", "2"]);
         let header = std::fs::read_to_string(r.dir.join("t.jsonl")).unwrap_or_default();
         push(
@@ -924,6 +938,37 @@ fn render_probes() -> Vec<Probe> {
             let (a, b) = (seeds("1"), seeds("2"));
             assert!(!a.is_empty(), "the story trace records chunk seeds");
             push("render.seed", if a != b { Seen::Carried } else { Seen::Dropped });
+            // The salt: two salts give the chunks different recorded seeds.
+            let salted = |salt: &str| {
+                let r = render(
+                    &p(&format!("salt{salt}")),
+                    mode,
+                    &["--seed-salt", salt, "--trace", "t.jsonl"],
+                );
+                assert!(r.ok, "{}", r.stderr);
+                trace_seeds(&r.dir.join("t.jsonl"))
+            };
+            let (a, b) = (salted("a"), salted("b"));
+            push("render.seed_salt", if a != b { Seen::Carried } else { Seen::Dropped });
+            // The edge: a longer edge kept at each chunk makes a longer read.
+            let flac_len = |edge: &str| {
+                let r = render(&p(&format!("edge{edge}")), mode, &["--edge-s", edge]);
+                assert!(r.ok, "{}", r.stderr);
+                std::fs::metadata(r.dir.join("o.flac")).map(|m| m.len()).unwrap_or(0)
+            };
+            push(
+                "render.edge_s",
+                if flac_len("0") != flac_len("1.5") {
+                    Seen::Carried
+                } else {
+                    Seen::Dropped
+                },
+            );
+        } else {
+            let r = render(&p("salt"), mode, &["--seed-salt", "a"]);
+            push("render.seed_salt", by_front_end_refusal(&r, "--seed-salt"));
+            let r = render(&p("edge"), mode, &["--edge-s", "1"]);
+            push("render.edge_s", by_front_end_refusal(&r, "--edge-s"));
         }
 
         // The options ggtts-render does not take: refused by name.
@@ -1188,6 +1233,7 @@ fn c_abi_document_probes(plain: usize) -> Vec<Probe> {
         ),
         ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
         ("observe.log_format", r#"{"observe": {"log_format": "json"}}"#),
+        ("observe.codes", r#"{"observe": {"codes": "c.jsonl"}}"#),
         ("output.out", r#"{"output": {"out": "o.flac"}}"#),
         ("render.judge", r#"{"render": {"judge": "asr-qwen,model=m"}}"#),
     ] {
@@ -1352,6 +1398,7 @@ fn python_probes() -> Vec<Probe> {
         ),
         ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
         ("observe.log_format", r#"{"observe": {"log_format": "json"}}"#),
+        ("observe.codes", r#"{"observe": {"codes": "c.jsonl"}}"#),
         ("output.out", r#"{"output": {"out": "o.flac"}}"#),
         ("render.judge", r#"{"render": {"judge": "asr-qwen,model=m"}}"#),
     ] {
@@ -2214,12 +2261,12 @@ fn a_new_option_entered_as_a_gap_fails_naming_it() {
 #[test]
 fn a_closed_gap_still_listed_fails() {
     let mut cells = cells(TABLE, FRONT_ENDS).unwrap();
-    let key = ("book".to_string(), "render.edge_s".to_string());
-    assert_eq!(cells[&key], Gap(283));
+    let key = ("render-story".to_string(), "render.seed".to_string());
+    assert_eq!(cells[&key], Gap(215));
     cells.insert(key, Carried);
     let errors = check_gaps(&cells, &read(GAPS));
     assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(errors[0].contains("book\\trender.edge_s\\t#283"), "{errors:?}");
+    assert!(errors[0].contains("render-story\\trender.seed\\t#215"), "{errors:?}");
 }
 
 /// #284 AC3: a document path that ignores `raw` (it levels anyway) fails: the probe sees `output.stream_raw` dropped,

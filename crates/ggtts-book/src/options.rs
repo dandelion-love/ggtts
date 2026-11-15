@@ -41,6 +41,7 @@ pub const RENDER_TAKES: &[&str] = &[
     "render.steer_layers",
     "render.steer_scales",
     "render.redraw",
+    "render.edge_s",
     "render.judge",
     "observe.trace",
     "observe.trace_level",
@@ -73,6 +74,7 @@ pub fn refusal(key: &str) -> &'static str {
         }
         "observe.timing_report" | "observe.duration_report" => "a book writes no timing or duration report",
         "observe.log_level" | "observe.log_format" => "a book writes no log",
+        "observe.codes" => "a book writes no codes file: render a chapter's text with ggtts-render --codes",
         _ => "a book does not take it",
     }
 }

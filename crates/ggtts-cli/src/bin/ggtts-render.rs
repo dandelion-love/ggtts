@@ -69,11 +69,13 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use ggtts_core::capabilities::Capabilities;
+use ggtts_core::engine::Codes;
 use ggtts_core::engine::Engine;
 use ggtts_core::flac::write_flac;
 use ggtts_core::hooks::Hooks;
 use ggtts_core::logging::{Format as LogFormat, Level as LogLevel, Settings as LogSettings};
 use ggtts_core::options::{self, Descriptor, Options, Refusal, Section};
+use ggtts_core::pipeline::DrawRecord;
 use ggtts_core::pipeline::{
     plan_story, render_plan, DurationJudge, Judge, Observers, Output, RenderError, SeedSource, StorySeeds, StreamMode,
     StreamPiece,
@@ -81,6 +83,28 @@ use ggtts_core::pipeline::{
 use ggtts_core::stream::{Container, StreamWriter};
 use ggtts_core::text::read_text;
 use ggtts_core::trace::{emit_header, Event, Events, Header, JsonlEvents, NullEvents};
+
+/// One `ggtts-codes/1` line: a chunk's kept draw and its codec tokens, frame-major (`codes[f * codebooks + c]`), with
+/// the `frames`, `codebooks` and `codes` keys the decode example reads (`examples/decode.rs`). `docs/codes.md`.
+fn write_codes_line(
+    w: &mut dyn std::io::Write,
+    engine: &str,
+    chunk: usize,
+    draw: &DrawRecord,
+    codes: &Codes,
+) -> std::io::Result<()> {
+    let line = serde_json::json!({
+        "format": "ggtts-codes/1",
+        "engine": engine,
+        "chunk": chunk,
+        "draw": draw.draw,
+        "seed": draw.seed,
+        "frames": codes.n_frames(),
+        "codebooks": codes.codebooks,
+        "codes": codes.frames,
+    });
+    writeln!(w, "{line}")
+}
 
 // The pipeline ends before a held stream is flushed. Delay the trace end marker until the CLI has recorded
 // the actual first write; readers stop at that marker.
@@ -135,11 +159,11 @@ impl StreamTiming {
     }
 }
 const USAGE: &str = "usage: ggtts-render [--model M.gguf] [--codec C.gguf] [--offline] --out x.flac \
-[--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N (capped at the CPUs allowed)] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--kitten-full-head] [--speaker NAME] [--instruction TEXT] \
+[--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N (capped at the CPUs allowed)] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--codes FILE] [--voice REF] [--kitten-full-head] [--speaker NAME] [--instruction TEXT] \
 [--temperature X] [--top-k N] [--top-p X] [--repetition-penalty X] [--subtalker-temperature X] [--subtalker-top-k N] \
 [--subtalker-top-p X] [--max-frames N] [--language auto|en|ru|zh|ja|ko|de|fr|es|it|pt] \
 [--steer FILE [--steer-scale X] [--steer-layers LIST [--steer-scales LIST]]] \
-[--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE [--redraw N [--judge asr-qwen,model=DIR]]) \
+[--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE [--seed-salt S] [--edge-s X] [--redraw N [--judge asr-qwen,model=DIR]]) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
 [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID] \
 [--log-level error|warn|info|debug|trace] [--log-format text|json] [--timing-report FILE] [--duration-report FILE]\n       ggtts-render --version";
@@ -643,6 +667,14 @@ fn render_with_models(
                 .into(),
         );
     }
+    // A story's seeds are salted and its chunks trimmed; the one-chunk --text plan renders at --seed and keeps its
+    // draw whole (#180), so either option there would do nothing.
+    if a.render.seed_salt.is_some() && a.render.text.is_some() {
+        return Err("--seed-salt (render.seed_salt): --text renders at --seed; there is no story seed to salt".into());
+    }
+    if a.render.edge_s.is_some() && a.render.text.is_some() {
+        return Err("--edge-s (render.edge_s): --text keeps its draw whole, with no edge trimmed".into());
+    }
     // Redraws are a story's: the one-chunk --text plan keeps its one draw, so a --redraw there would do nothing.
     if a.render.redraw.is_some() && a.render.text.is_some() {
         return Err(
@@ -821,7 +853,28 @@ fn render_with_models(
         let mut kept = DurationJudge;
         let judge: &mut dyn Judge = if text_mode { &mut kept } else { judge.as_mut() };
         let mut hooks = Hooks::new();
-        let obs = &mut Observers::new(&mut events, &mut hooks);
+        let mut codes_out = a
+            .observe
+            .codes
+            .as_ref()
+            .map(|path| {
+                std::fs::File::create(path)
+                    .map(std::io::BufWriter::new)
+                    .map_err(|e| format!("--codes {}: {e}", path.display()))
+            })
+            .transpose()?;
+        let mut codes_error: Option<String> = None;
+        let family = engine.info().family.clone();
+        let mut write_codes = |chunk: usize, draw: &DrawRecord, codes: &Codes| {
+            let Some(w) = codes_out.as_mut() else { return };
+            if codes_error.is_some() {
+                return;
+            }
+            if let Err(e) = write_codes_line(w, &family, chunk, draw, codes) {
+                codes_error = Some(e.to_string());
+            }
+        };
+        let obs = &mut Observers::new(&mut events, &mut hooks).with_codes(&mut write_codes);
         let streaming = stream.is_some();
         // The pipeline levels the stream (`StreamMode::Levelled`); this sink only writes what it is handed.
         let mut sink = |p: StreamPiece<'_>| match stream.as_mut() {
@@ -840,6 +893,13 @@ fn render_with_models(
             RenderError::Sink(m) if text_mode => format!("--stream: {m}"),
             other => other.to_string(),
         })?;
+        if let Some(e) = codes_error {
+            return Err(format!("--codes: {e}"));
+        }
+        if let Some(mut w) = codes_out {
+            use std::io::Write as _;
+            w.flush().map_err(|e| format!("--codes: {e}"))?;
+        }
         let level_ns = read.stream.map_or(0, |s| s.level_ns);
         let render_ms = t1.elapsed().as_millis();
         measured_render_ms = render_ms;
@@ -2932,5 +2992,71 @@ mod text_path {
         })
         .unwrap_err();
         assert_eq!(e, TEXT_HOLD);
+    }
+
+    /// #352 AC1 and AC2: `--codes` writes one `ggtts-codes/1` line per kept chunk, frames x codebooks tokens, on
+    /// `--text` and `--story` alike, and the FLAC is the same with or without it.
+    #[test]
+    fn codes_are_written_per_chunk_and_change_no_sample() {
+        let dir = std::env::temp_dir().join(format!("ggtts-render-codes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let story = dir.join("story.txt");
+        std::fs::write(
+            &story,
+            "Title\n今日天氣好好，我哋去公園行下。佢話聽日會早啲返嚟食飯。\n",
+        )
+        .unwrap();
+        for mode in ["text", "story"] {
+            let run = |tag: &str, codes: bool| {
+                let out = dir.join(format!("{mode}-{tag}.flac"));
+                let mut line = vec!["--engine".to_string(), "fake".into()];
+                if mode == "text" {
+                    line.extend(["--text".into(), "今日天氣好好，我哋去公園行下。".into()]);
+                } else {
+                    line.extend(["--story".into(), story.to_string_lossy().into_owned()]);
+                }
+                line.extend(["--out".into(), out.to_string_lossy().into_owned()]);
+                let path = dir.join(format!("{mode}-{tag}.codes.jsonl"));
+                if codes {
+                    line.extend(["--codes".into(), path.to_string_lossy().into_owned()]);
+                }
+                let args = options_from(&line, &|_| None).unwrap();
+                let code = render_with_loader(args, quiet(), |_, _, _| {
+                    Ok(Box::new(ggtts_fake::FakeEngine::default()) as Box<dyn Engine>)
+                })
+                .unwrap();
+                assert_eq!(code, 0, "{mode} {tag}");
+                (std::fs::read(out).unwrap(), path)
+            };
+            let (plain, _) = run("plain", false);
+            let (with_codes, path) = run("codes", true);
+            assert_eq!(
+                plain, with_codes,
+                "{mode}: the FLAC is the same with or without --codes"
+            );
+            let lines: Vec<serde_json::Value> = std::fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+            assert!(!lines.is_empty(), "{mode}");
+            if mode == "text" {
+                assert_eq!(lines.len(), 1, "--text is one chunk");
+            }
+            for (i, l) in lines.iter().enumerate() {
+                assert_eq!(l["format"], "ggtts-codes/1");
+                assert_eq!(l["engine"], "fake");
+                assert_eq!(l["chunk"], i, "{mode}: in chunk order");
+                let (frames, codebooks) = (l["frames"].as_u64().unwrap(), l["codebooks"].as_u64().unwrap());
+                assert!(frames > 0 && codebooks > 0, "{mode}: {l}");
+                assert_eq!(
+                    l["codes"].as_array().unwrap().len() as u64,
+                    frames * codebooks,
+                    "{mode}: frames x codebooks"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

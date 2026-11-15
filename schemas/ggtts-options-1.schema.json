@@ -306,6 +306,15 @@
         ]
       },
       "properties": {
+        "codes": {
+          "description": "Where every chunk's kept codec tokens go (ggtts-codes/1 JSON lines: frames x codebooks, as the decoder reads them). Writing them changes no sample.",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-flags": [
+            "--codes"
+          ],
+          "x-ggtts-phase": "render"
+        },
         "duration_report": {
           "description": "A new file for the per-chunk duration report.",
           "minLength": 1,
@@ -540,6 +549,9 @@
           "description": "Seconds of silence kept at each edge of a chunk; unset is the engine profile's.",
           "minimum": 0.0,
           "type": "number",
+          "x-ggtts-flags": [
+            "--edge-s"
+          ],
           "x-ggtts-phase": "render"
         },
         "instruction": {
@@ -599,6 +611,9 @@
           "type": "string",
           "x-ggtts-c": [
             "seed"
+          ],
+          "x-ggtts-flags": [
+            "--seed-salt"
           ],
           "x-ggtts-kotlin": [
             "seed"

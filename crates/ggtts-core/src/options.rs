@@ -401,6 +401,7 @@ pub const TABLE: &[Descriptor] = &[
         ..row("seed", SR, R, Kind::Seed, "null")
     },
     Descriptor {
+        flags: &["--seed-salt"],
         python: &["seed"],
         c: &["seed"],
         kotlin: &["seed"],
@@ -460,6 +461,7 @@ pub const TABLE: &[Descriptor] = &[
         ..row("judge", SR, R, named(), "null")
     },
     Descriptor {
+        flags: &["--edge-s"],
         help: "Seconds of silence kept at each edge of a chunk; unset is the engine profile's.",
         ..row("edge_s", SR, R, seconds(), "null")
     },
@@ -478,6 +480,12 @@ pub const TABLE: &[Descriptor] = &[
         requires: Some("trace"),
         help: "1 or 2 (2 adds every codebook); unset is 1.",
         ..row("trace_level", SO, R, Kind::Int { min: 1, max: 2 }, "null")
+    },
+    Descriptor {
+        flags: &["--codes"],
+        help: "Where every chunk's kept codec tokens go (ggtts-codes/1 JSON lines: frames x codebooks, as the \
+               decoder reads them). Writing them changes no sample.",
+        ..row("codes", SO, R, path(), "null")
     },
     Descriptor {
         flags: &["--timing-report"],
@@ -804,6 +812,9 @@ pub struct Observe {
     pub trace: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_level: Option<u8>,
+    /// Where each chunk's kept codec tokens go (`ggtts-codes/1`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codes: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timing_report: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]

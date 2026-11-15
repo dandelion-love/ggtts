@@ -25,6 +25,12 @@ that a merge places under a released heading is caught.
   come right under the title; the purpose paragraphs move under "About this app" and the Android-TTS check under
   "Advanced". While a read runs, a progress bar and a seconds count show until the first sound, with plain wording
   ("Preparing the voice", "Writing the first sentence"). The app follows the phone's dark mode on Android 10 and later.
+- **The Android app is laid out as a reading screen.** A voice card opens a sheet of voices, each with its language,
+  engine, size, time to first sound and a Sample button. The text sits in a card with Paste, Clear and a character
+  count, and a player is docked at the bottom: Read aloud, then the stage, a progress bar, the seconds and Stop. Import,
+  About and Advanced are in a ⋮ menu. `scripts/android_voice_samples.sh` makes each voice's sample with the app itself.
+- **The Android app has an icon:** 粵 in Noto Sans HK (SIL Open Font License) on the app's light blue, as an adaptive
+  icon with a monochrome layer, rendered by `scripts/android_icon.py`.
 - **The Android app and its text-to-speech engine are named "ggtts Text-to-Speech"** in the launcher and in the phone's
   text-to-speech settings, where they were "ggtts demo" and "ggtts (on-device, slow)". The speed warning is unchanged
   on the app's screen before a load.

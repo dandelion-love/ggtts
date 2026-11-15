@@ -2,6 +2,9 @@
 
 ## 2026-11-14
 
+- The screen became a reading screen (a voice card and sheet, the text in a card, a docked player), following the
+  survey of read-aloud apps. Voice samples are made on the phone by the app itself, so each is the voice as these
+  files produce it.
 - Surveyed how ten read-aloud apps and engines lay out their screens. They are built around a player, not a form,
   so the next screen is a reading view with a docked player and a voice sheet.
 - The screen was reordered for a first-time user: voice, text, Speak and progress first; About and Advanced closed

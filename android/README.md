@@ -77,7 +77,8 @@ The demo reads model files from its own directory on the device:
 
 Put them there in either of two ways:
 
-* **In the app:** "Import a model file..." opens the system file picker, and copies the file you choose into that
+* **In the app:** "Import a voice file…" in the ⋮ menu (or "Add a voice from a file" in the voice sheet) opens the
+  system file picker, and copies the file you choose into that
   directory. Copy each file once; a 2 GB file takes a while. The import takes only a `.gguf` that starts with GGUF's
   magic bytes or a `.json` voice; it refuses an empty file, and it never replaces a file of the same name. It copies
   to `NAME.part` and renames the file when the copy is complete, so a cancelled or failed copy never shows in the lists.
@@ -89,17 +90,19 @@ Put them there in either of two ways:
   adb push qwen-talker-hk-cantonese-cc0-v0.0.5-q8_0.gguf /sdcard/Android/data/ggtts.demo/files/models/
   ```
 
-Then choose a voice and press Speak. The app reads what each file is from the file itself, not from its name: a
+Then tap the voice card to choose a voice, and press Read aloud. The app reads what each file is from the file itself, not from its name: a
 GGUF's `general.architecture`, a Qwen3-TTS talker's speaker names, and a voice JSON's fields. It lists one voice for
 each speaker a talker names (with a codec), and one for each prepared voice JSON (with a Kitten-TTS 2 language model
 and decoder), and selects the first. Files that make no voice yet are named on the screen with what they lack. A
-voice's sample is `<voice name>.sample.wav` beside the files, pushed with adb, and "Play a sample" plays it.
+voice's sample is `<voice name>.sample.wav` beside the files, and the Sample button on its card in the voice sheet
+plays it. `scripts/android_voice_samples.sh` makes one for each voice with the app itself, over adb, so a sample is
+what that voice sounds like from those files on that phone.
 
 A voice's language is the one its engine reads as Android's text-to-speech engine (Cantonese for Qwen3-TTS, English
 for Kitten-TTS 2): no model file here declares a language, so a Kitten-TTS 2 voice made for Cantonese is still listed
 as English.
 
-"Advanced" (closed by default) holds what a voice sets: the engine, the three file lists, the speaker and the CPU
+"Advanced" (in the ⋮ menu, closed by default) holds what a voice sets: the engine, the three file lists, the speaker and the CPU
 threads. A choice there is what Speak uses until another voice is chosen.
 
 | Engine | Model | Codec | Voice | Speaker |

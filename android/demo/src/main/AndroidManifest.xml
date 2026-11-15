@@ -9,6 +9,8 @@
     <application
         android:allowBackup="false"
         android:label="ggtts Text-to-Speech"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:theme="@style/AppTheme">
         <!-- configChanges: a fold, unfold or rotation keeps the activity, so a render in progress reports to it. -->
         <activity

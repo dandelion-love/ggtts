@@ -29,11 +29,28 @@ class AboutTest {
 
     @Test
     fun theStatedWaitMatchesTheMeasuredCosts() {
-        // "30 to 60 seconds" spans the measured first-audio ranges of every engine (EngineCosts).
-        val bounds = EngineCosts.BY_ENGINE.values.flatMap { c -> c.firstAudioS.split(" to ").map { it.trim().toInt() } }
-        assertEquals(30, bounds.min())
-        assertEquals(60, bounds.max())
-        assertTrue(About.PURPOSE.any { "30 to 60 seconds" in it })
+        // About states each engine's measured first-audio range (EngineCosts), the range the player shows for a voice
+        // of that engine ("First sound in about 30 to 50 s"), never a span across engines that the player does not.
+        val wait = About.PURPOSE.single { "first sound takes" in it }
+        for ((engine, cost) in EngineCosts.BY_ENGINE) {
+            assertTrue("$engine's ${cost.firstAudioS} s is not in: $wait", "${cost.firstAudioS} " in wait)
+        }
+        assertEquals("30 to 50", EngineCosts.BY_ENGINE.getValue("qwen3-tts").firstAudioS)
+        assertTrue("the wait says 30 to 60, which no voice shows: $wait", "30 to 60" !in wait)
+    }
+
+    /**
+     * The screen opens saying what the app is for: the header's subtitle is the tagline, and an empty text box names
+     * the use by other apps that About states. The layout is not built on the JVM, so its source is held to the names.
+     */
+    @Test
+    fun theReadingScreenOpensWithTheTaglineAndTheOtherAppsHint() {
+        assertEquals(About.TAGLINE, About.HEADER_SUBTITLE)
+        val screen = File("src/main/kotlin/ggtts/demo/MainActivity.kt").readText()
+        assertTrue("the header's subtitle is not About.HEADER_SUBTITLE", "subtitle = About.HEADER_SUBTITLE" in screen)
+        assertTrue("the empty text box does not show About.EMPTY_TEXT_HINT", "About.EMPTY_TEXT_HINT" in screen)
+        assertTrue("text-to-speech engine" in About.EMPTY_TEXT_HINT)
+        assertTrue(About.PURPOSE.any { "text-to-speech engine" in it })
     }
 
     @Test

@@ -37,6 +37,8 @@ pub struct Capabilities {
     pub step_events: bool,
     /// Can compute its whole output head instead of a measured subset of it (`load.kitten_full_head`).
     pub full_head: bool,
+    /// Takes the Qwen3-TTS sampler settings, frame cap and language ([`crate::options::SAMPLER`]).
+    pub sampler: bool,
 }
 
 impl Capabilities {
@@ -53,6 +55,7 @@ impl Capabilities {
             hooks: Wants::NONE,
             step_events: false,
             full_head: false,
+            sampler: false,
         }
     }
 
@@ -71,6 +74,7 @@ impl Capabilities {
                 devices: vec!["cpu", "cuda"],
                 hooks: both,
                 step_events: true,
+                sampler: true,
                 ..Self::none(name)
             }),
             "kitten-tts-2" => Some(Self {
@@ -106,6 +110,10 @@ impl Capabilities {
             "load.kitten_full_head" => {
                 format!("the whole output head is a kitten-tts-2 engine option; the {family} engine has no such head")
             }
+            k if crate::options::SAMPLER.contains(&k) => format!(
+                "the sampler settings, the frame cap and the language are qwen3-tts engine settings; the {family} \
+                 engine takes none"
+            ),
             "load.device" => format!(
                 "the {family} engine runs on {}, not {}",
                 self.devices.join(" or "),
@@ -175,6 +183,7 @@ pub fn statement(engine: &dyn crate::engine::Engine) -> serde_json::Value {
         hooks,
         step_events,
         full_head,
+        sampler,
     } = engine.capabilities();
     serde_json::json!({
         "format": STATEMENT_FORMAT,
@@ -188,6 +197,7 @@ pub fn statement(engine: &dyn crate::engine::Engine) -> serde_json::Value {
         "hooks": {"p_stop": hooks.p_stop, "logits": hooks.logits},
         "step_events": step_events,
         "full_head": full_head,
+        "sampler": sampler,
     })
 }
 

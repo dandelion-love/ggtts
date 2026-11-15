@@ -67,6 +67,7 @@ const LOAD: &[&str] = &[
     "load.cache_dir",
 ];
 const KITTEN_HEAD: &[&str] = &["load.kitten_full_head"];
+const SAMPLER: &[&str] = &ggtts_core::options::SAMPLER;
 const STEER: &[&str] = &["render.steer", "render.steer_scale", "render.steer_layers"];
 const TRACE: &[&str] = &["observe.trace", "observe.trace_level"];
 const REPORTS: &[&str] = &["observe.timing_report", "observe.duration_report"];
@@ -129,6 +130,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
         cells: &[
             (LOAD, Carried),
             (KITTEN_HEAD, Carried),
+            (SAMPLER, Carried),
             (
                 &[
                     "render.story",
@@ -157,6 +159,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
         cells: &[
             (LOAD, Carried),
             (KITTEN_HEAD, Carried),
+            (SAMPLER, Carried),
             (
                 &[
                     "render.text",
@@ -187,6 +190,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
         cells: &[
             (LOAD, Carried),
             (KITTEN_HEAD, Carried),
+            (SAMPLER, Carried),
             (&["render.instruction", "render.redraw", "render.judge"], Carried),
             (STEER, Carried),
             (&["render.text", "render.story"], Refused(BOOK_TEXT)),
@@ -207,6 +211,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
         cells: &[
             (LOAD, Carried),
             (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
+            (SAMPLER, Carried),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
@@ -242,6 +247,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             ),
             (&["load.cache_dir"], Carried),
             (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
+            (SAMPLER, Carried),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
@@ -277,6 +283,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             ),
             (&["load.device"], Refused(CPU_ONLY)),
             (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
+            (SAMPLER, Carried),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
@@ -320,6 +327,8 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["load.device"], Refused(CPU_ONLY)),
             (&["load.offline"], Refused(NEVER_DOWNLOADS)),
             (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
+            // The app hands its options document to the Kotlin binding, which carries them.
+            (SAMPLER, Carried),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
@@ -348,6 +357,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
         cells: &[
             (LOAD, Refused(PARITY_TOOL)),
             (KITTEN_HEAD, Refused(PARITY_TOOL)),
+            (SAMPLER, Refused(PARITY_TOOL)),
             (
                 &[
                     "render.text",
@@ -784,6 +794,24 @@ fn sample_value(d: &Descriptor) -> Option<&'static str> {
     }
 }
 
+/// Each sampler setting's key, with a load document on the fake engine that gives it.
+fn sampler_documents() -> Vec<(String, String)> {
+    TABLE
+        .iter()
+        .filter(|d| SAMPLER.contains(&d.key().as_str()))
+        .map(|d| {
+            let value = match d.kind {
+                Kind::Choice(c) => format!("{:?}", c[0]),
+                _ => "1".to_string(),
+            };
+            (
+                d.key(),
+                format!(r#"{{"load": {{"engine": "fake", "{}": {value}}}}}"#, d.name),
+            )
+        })
+        .collect()
+}
+
 /// A probe: the front end, the option key, and what it saw.
 type Probe = (&'static str, String, Seen);
 
@@ -800,6 +828,13 @@ fn render_probes() -> Vec<Probe> {
         push("render.steer", by_engine_refusal(&r, "steer"));
         let r = render(&p("kitten-head"), mode, &["--kitten-full-head"]);
         push("load.kitten_full_head", by_engine_refusal(&r, "load.kitten_full_head"));
+        // The sampler settings, frame cap and language reach the fake engine's capabilities, which refuse each by name.
+        for d in TABLE.iter().filter(|d| SAMPLER.contains(&d.key().as_str())) {
+            let mut extra = vec![d.flags[0]];
+            extra.extend(sample_value(d));
+            let r = render(&p(d.name), mode, &extra);
+            push(&d.key(), by_engine_refusal(&r, &d.key()));
+        }
         let r = render(&p("out"), mode, &[]);
         push("output.out", by_file(&r, "o.flac", "--out"));
         push(
@@ -1059,6 +1094,22 @@ fn c_abi_document_probes(plain: usize) -> Vec<Probe> {
             ),
         },
     );
+    // The sampler settings, frame cap and language in a load document reach the fake engine's capabilities: carried
+    // only when the refusal is exactly theirs, not a binding's own refusal of the key.
+    let fake = ggtts_core::capabilities::Capabilities::of("fake").unwrap();
+    for (key, doc) in sampler_documents() {
+        let doc = CString::new(doc).unwrap();
+        let want = fake.refusal(&key, None).to_string();
+        let mut h = 0u64;
+        push(
+            &key,
+            match unsafe { ggtts_load_opts(doc.as_ptr(), &mut h) } {
+                GGTTS_ERR_ARG if last_error() == want => Seen::Carried,
+                GGTTS_ERR_ARG if last_error().starts_with(&format!("{key}: ")) => Seen::Refused,
+                code => panic!("c-abi: a load document with {key} gave {code}: {}", last_error()),
+            },
+        );
+    }
     // Steering reaches the engine's capabilities, which refuse it on the fake engine: carried only when the refusal
     // is exactly that one, not a binding's own refusal of the key.
     let capability = ggtts_core::capabilities::Capabilities::of("fake")
@@ -1169,6 +1220,23 @@ fn python_probes() -> Vec<Probe> {
     let mut out = Vec::new();
     let mut push = |key: &str, seen| out.push(("python", key.to_string(), seen));
     let plain = render("{}").unwrap().0;
+    // The sampler settings, frame cap and language in a load document reach the fake engine's capabilities, which
+    // refuse each by its key: carried only when the refusal is exactly theirs.
+    for (key, doc) in sampler_documents() {
+        let capability = ggtts_core::capabilities::Capabilities::of("fake")
+            .unwrap()
+            .refusal(&key, None)
+            .to_string();
+        push(
+            &key,
+            match fresh(Some(&doc)) {
+                Err(((ERR_ARG, msg), Some(k))) if k == key && msg == capability => Seen::Carried,
+                Err(((ERR_ARG, _), Some(k))) if k == key => Seen::Refused,
+                Err(e) => panic!("python: {key} gave {e:?}"),
+                Ok(_) => Seen::Dropped,
+            },
+        );
+    }
     // Steering and a style instruction reach the engine's capabilities, which refuse them on the fake engine: carried
     // only when the refusal is exactly that one, not a binding's own refusal of the key.
     let caps = ggtts_core::capabilities::Capabilities::of("fake").unwrap();
@@ -1459,6 +1527,22 @@ fn kotlin_probes() -> Vec<Probe> {
     let mut push = |key: &str, seen| out.push(("kotlin", key.to_string(), seen));
     let plain = render("{}").unwrap().0;
     let caps = ggtts_core::capabilities::Capabilities::of("fake").unwrap();
+    // The sampler settings, frame cap and language in a load document reach the fake engine's capabilities.
+    for (key, doc) in sampler_documents() {
+        let capability = caps.refusal(&key, None).to_string();
+        push(
+            &key,
+            match guard_keyed(|| load(&doc, &LoadArgs::default())) {
+                Err(((ERR_ARG, msg), Some(k))) if k == key && msg == capability => Seen::Carried,
+                Err(((ERR_ARG, _), Some(k))) if k == key => Seen::Refused,
+                Err(e) => panic!("kotlin: {key} gave {e:?}"),
+                Ok(h) => {
+                    ggtts_ffi::ggtts_free(h);
+                    Seen::Dropped
+                }
+            },
+        );
+    }
     for (key, doc) in [
         ("render.steer", r#"{"render": {"steer": "s.safetensors"}}"#),
         ("render.instruction", r#"{"render": {"instruction": "Speak slowly."}}"#),

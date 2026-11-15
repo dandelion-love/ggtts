@@ -139,6 +139,14 @@ fn defaults() -> MutexGuard<'static, Option<HashMap<u64, Options>>> {
     DEFAULTS.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// Every handle's load cache settings ([`binding::LoadCache`]), from whatever load made it: a render resolves a
+/// steering URL with them.
+static LOAD_CACHE: Mutex<Option<HashMap<u64, binding::LoadCache>>> = Mutex::new(None);
+
+fn load_cache() -> MutexGuard<'static, Option<HashMap<u64, binding::LoadCache>>> {
+    LOAD_CACHE.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// A refused option, as [`GGTTS_ERR_ARG`] with its schema key ([`ggtts_last_error_key`]).
 fn refused(r: Refusal) -> Fail {
     binding::refusal_err(r)
@@ -521,6 +529,9 @@ fn load_options(o: &Options, default_files: bool, document: bool) -> Result<u64,
     )?;
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     registry().get_or_insert_with(HashMap::new).insert(id, binding::slot(e));
+    load_cache()
+        .get_or_insert_with(HashMap::new)
+        .insert(id, binding::LoadCache::of(o));
     Ok(id)
 }
 
@@ -636,6 +647,10 @@ fn render(
         Some(b) => binding::layer_render(&b, doc.clone())?,
         None => doc.clone(),
     };
+    // A steering URL is resolved with the load's offline and cache settings, which no render document carries.
+    if let Some(cache) = load_cache().get_or_insert_with(HashMap::new).get(&handle) {
+        cache.apply(&mut o);
+    }
     with_engine(handle, |e, instruction| {
         if o.render.instruction.is_none() {
             o.render.instruction = instruction.map(String::from);
@@ -735,6 +750,7 @@ pub extern "C" fn ggtts_free(handle: u64) -> i32 {
         // The registry guard is a temporary, so it is released before `slot`, and the engine with it, drops.
         let slot = registry().get_or_insert_with(HashMap::new).remove(&handle);
         defaults().get_or_insert_with(HashMap::new).remove(&handle);
+        load_cache().get_or_insert_with(HashMap::new).remove(&handle);
         slot.map(drop).ok_or_else(|| no_engine(handle))
     })
 }

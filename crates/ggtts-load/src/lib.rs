@@ -170,6 +170,48 @@ pub fn cache_root(cache_dir: Option<&std::path::Path>) -> Result<PathBuf, String
     }
 }
 
+/// A steering file named by URL (`render.steer` `https://...`, optionally `#sha256=<hex>`), swapped for its copy in
+/// the cache: downloaded once into the options' cache (`load.cache_dir`, else the per-user cache), never when
+/// `load.offline`, and checked against the pin when there is one ([`ggtts_models::Cache::fetch_url`]). A path is left
+/// as it is. Every front end calls this before it reads the steering file, so the URL form is one option everywhere.
+/// `say` gets the download and the file's sha256.
+pub fn resolve_steer(
+    o: &mut ggtts_core::options::Options,
+    say: &mut dyn FnMut(&str),
+) -> Result<(), ggtts_core::options::Refusal> {
+    let cache_dir = o.load.cache_dir.clone();
+    resolve_steer_with(
+        o,
+        &|| cache_root(cache_dir.as_deref()).map(Cache::new),
+        &ggtts_models::Http::default(),
+        say,
+    )
+}
+
+/// [`resolve_steer`] with the cache and the fetcher passed in, for tests.
+pub fn resolve_steer_with(
+    o: &mut ggtts_core::options::Options,
+    cache: &dyn Fn() -> Result<Cache, String>,
+    fetch: &dyn Fetch,
+    say: &mut dyn FnMut(&str),
+) -> Result<(), ggtts_core::options::Refusal> {
+    let refusal = |message: String| ggtts_core::options::Refusal {
+        key: "render.steer".into(),
+        message,
+    };
+    let Some(text) = o.render.steer.as_ref().map(|p| p.to_string_lossy().into_owned()) else {
+        return Ok(());
+    };
+    let spec = match ggtts_models::UrlSpec::parse(&text) {
+        None => return Ok(()),
+        Some(parsed) => parsed.map_err(refusal)?,
+    };
+    let cache = cache().map_err(refusal)?;
+    let file = cache.fetch_url(&spec, o.load.offline, fetch, say).map_err(refusal)?;
+    o.render.steer = Some(file.path);
+    Ok(())
+}
+
 /// [`resolve`] with the request's cache (`cache_dir`, else the per-user cache) and HTTPS (notices to stderr), then [`load`].
 pub fn load_default(mut req: Request) -> Result<Loaded, String> {
     let cache_dir = req.cache_dir.clone();

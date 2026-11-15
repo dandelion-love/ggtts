@@ -244,20 +244,15 @@ const FRONT_ENDS: &[FrontEnd] = &[
                 ],
                 Carried,
             ),
-            // The cache is read only by a build with engines: probed with the ggml feature.
-            (&["load.cache_dir"], Gap(291)),
+            (&["load.cache_dir"], Carried),
             (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
             (SAMPLER, Carried),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
             (&["render.judge"], Refused(NO_JUDGE)),
-            (&["render.steer"], Carried),
-            // Read only by an engine that steers, which the fake engine is not: probed on a real model only.
-            (&["render.steer_scale", "render.steer_layers"], Gap(291)),
-            (&["render.edge_s"], Carried),
-            // A redraw needs a draw the judge rejects, which the fake engine never gives.
-            (&["render.redraw"], Gap(291)),
+            (STEER, Carried),
+            (&["render.edge_s", "render.redraw"], Carried),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Carried),
             (REPORTS, Refused(NO_TIMINGS)),
@@ -1322,7 +1317,158 @@ fn python_probes() -> Vec<Probe> {
     ] {
         push(key, by_key(render(doc), key));
     }
+    out.extend(python_engine_probes(&dir));
     let _ = std::fs::remove_dir_all(dir);
+    out
+}
+
+/// What [`Recorder`] saw: each request's draw, and the steering it carried (its scale and layers).
+#[derive(Default)]
+struct Recorded {
+    draws: Vec<u32>,
+    steer: Vec<(f64, Vec<u32>)>,
+}
+
+/// An engine that steers, for the probes the fake engine cannot answer: the fake engine stating Qwen3-TTS's
+/// capabilities, recording each request's draw and steering, and handing the fake engine the request without the
+/// steering (which it would refuse). Its first draw of a chunk is the fake engine's speech for a text twenty times
+/// as long, which the duration judge rejects as a runaway, so a redraw is asked for when one is allowed.
+struct Recorder {
+    fake: ggtts_fake::FakeEngine,
+    seen: std::sync::Arc<std::sync::Mutex<Recorded>>,
+}
+
+impl ggtts_core::engine::Engine for Recorder {
+    fn capabilities(&self) -> ggtts_core::capabilities::Capabilities {
+        ggtts_core::capabilities::Capabilities::of("qwen3-tts").unwrap()
+    }
+    fn info(&self) -> &ggtts_core::engine::EngineInfo {
+        self.fake.info()
+    }
+    fn profile(&self) -> &ggtts_core::profile::Profile {
+        self.fake.profile()
+    }
+    fn generate(
+        &mut self,
+        req: &ggtts_core::engine::ChunkRequest<'_>,
+    ) -> Result<ggtts_core::engine::Generated, ggtts_core::engine::EngineError> {
+        let mut seen = self.seen.lock().unwrap();
+        seen.draws.push(req.draw);
+        if let Some(s) = req.steer {
+            seen.steer.push((s.scale, s.layer_indices()));
+        }
+        drop(seen);
+        let long = req.text.repeat(20);
+        let text = if req.draw == 0 { long.as_str() } else { req.text };
+        self.fake.generate(&ggtts_core::engine::ChunkRequest {
+            text,
+            steer: None,
+            ..*req
+        })
+    }
+    fn decode(
+        &mut self,
+        codes: &ggtts_core::engine::Codes,
+    ) -> Result<ggtts_core::engine::Pcm, ggtts_core::engine::EngineError> {
+        self.fake.decode(codes)
+    }
+}
+
+/// Python's `options=` through its load path (`ggtts_py::core::load_over`) over [`Recorder`], loaded as qwen3-tts
+/// so the document is checked against an engine that steers: `render.steer_scale` and `render.steer_layers` are
+/// seen in the steering the engine is handed, `render.redraw` in the draws it is asked for, and `load.cache_dir` in
+/// the offline refusal of an uncached steering URL, which names the cache the load gave.
+fn python_engine_probes(dir: &Path) -> Vec<Probe> {
+    use ggtts_py::core::{guard_keyed, load_over, LoadRequest};
+    let text = "你好。";
+    let steer = dir.join("steer.safetensors");
+    let v = [0.5f32; 8];
+    std::fs::write(
+        &steer,
+        ggtts_core::steer::write_safetensors(&[("talker.layer.0", &v), ("talker.layer.1", &v)]),
+    )
+    .unwrap();
+    let steer = serde_json::to_string(&steer.to_string_lossy()).unwrap();
+    // Render `text` with the render document `doc` on a fresh recorder loaded with `load_doc`: what it saw, and the
+    // render's result.
+    let run = |load_doc: &str, doc: &str| {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Recorded::default()));
+        let engine = Recorder {
+            fake: ggtts_fake::FakeEngine::default(),
+            seen: seen.clone(),
+        };
+        let req = LoadRequest {
+            options: Some(load_doc.to_string()),
+            ..Default::default()
+        };
+        let result = guard_keyed(|| {
+            load_over(&req, Box::new(engine))?
+                .0
+                .render_with(text, Some(7), Some(doc))
+        });
+        let seen = std::sync::Arc::try_unwrap(seen).ok().unwrap().into_inner().unwrap();
+        (seen, result)
+    };
+    let qwen = r#"{"load": {"engine": "qwen3-tts"}}"#;
+    let mut out = Vec::new();
+    let mut push = |key: &str, seen| out.push(("python", key.to_string(), seen));
+    // Steering: the scale and the layers the engine is handed are the document's (the file has layers 0 and 1).
+    let (plain, r) = run(qwen, &format!(r#"{{"render": {{"steer": {steer}, "redraw": 0}}}}"#));
+    assert!(r.is_ok(), "python: a steered render failed: {r:?}");
+    let (scaled, _) = run(
+        qwen,
+        &format!(r#"{{"render": {{"steer": {steer}, "steer_scale": 0.25, "redraw": 0}}}}"#),
+    );
+    let (layered, _) = run(
+        qwen,
+        &format!(r#"{{"render": {{"steer": {steer}, "steer_layers": [1], "redraw": 0}}}}"#),
+    );
+    let first = |s: &Recorded| s.steer.first().cloned();
+    push(
+        "render.steer_scale",
+        match (first(&plain), first(&scaled)) {
+            (Some((1.0, _)), Some((0.25, _))) => Seen::Carried,
+            _ => Seen::Dropped,
+        },
+    );
+    push(
+        "render.steer_layers",
+        match (first(&plain), first(&layered)) {
+            (Some((_, all)), Some((_, one))) if all == vec![0, 1] && one == vec![1] => Seen::Carried,
+            _ => Seen::Dropped,
+        },
+    );
+    // Redraws: with none allowed the runaway first draw is the only one; with one allowed, a second draw is asked for.
+    let (none, _) = run(qwen, r#"{"render": {"redraw": 0}}"#);
+    let (one, _) = run(qwen, r#"{"render": {"redraw": 1}}"#);
+    push(
+        "render.redraw",
+        if none.draws == vec![0] && one.draws == vec![0, 1] {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        },
+    );
+    // The load's cache directory: an offline engine refuses an uncached steering URL, naming that cache. The host is
+    // `.invalid`, so a resolution that ignored the load would fail on the network instead.
+    let cache = dir.join("python-cache");
+    let load_doc =
+        serde_json::json!({"load": {"engine": "qwen3-tts", "offline": true, "cache_dir": cache}}).to_string();
+    let (_, r) = run(
+        &load_doc,
+        r#"{"render": {"steer": "https://example.invalid/presets/x.safetensors"}}"#,
+    );
+    push(
+        "load.cache_dir",
+        match r {
+            Err(((_, msg), _))
+                if msg.contains("offline mode does not download it") && msg.contains(&cache.display().to_string()) =>
+            {
+                Seen::Carried
+            }
+            _ => Seen::Dropped,
+        },
+    );
     out
 }
 

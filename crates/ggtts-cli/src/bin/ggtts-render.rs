@@ -489,7 +489,10 @@ fn resolve_models_with(
 /// ([`Options::read_steering`]); nothing without `--steer` (the table refuses the other two without it). Refuses
 /// every defect of the file or the selection ([`ggtts_core::steer`]); an engine that cannot steer has already refused
 /// it ([`options::check`]). Needs no model: the talker's own check follows when it is loaded.
-fn load_steering(a: &mut Options) -> Result<(), String> {
+fn load_steering(a: &mut Options, log: LogSettings) -> Result<(), String> {
+    // A URL is downloaded into the cache first, its notice on stderr at every log level, as a model download's is.
+    ggtts_load::resolve_steer(a, &mut |m| model_notice(log, &mut std::io::stderr(), m))
+        .map_err(|r| format!("--steer: {}", r.message))?;
     a.read_steering().map_err(|r| format!("--steer: {}", r.message))
 }
 
@@ -682,7 +685,7 @@ fn render_with_models(
         }
         a = checked.options;
     }
-    load_steering(&mut a)?;
+    load_steering(&mut a, log)?;
     // Validate and plan before opening output files or loading model weights.
     let preplanned = if let Some((title, paragraphs)) = story_input {
         let profile = match name.as_str() {

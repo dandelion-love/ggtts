@@ -223,18 +223,31 @@ mod planted {
         /// passed (a traced or hooked render): it exists to show that the trace-identity check sees an instrument that
         /// is not read-only.
         StepHookDraw,
+        /// The talker's named speakers dropped, as a model with none would load. It exists to show the engine's
+        /// refusal when no speaker is named and the model has none to default to.
+        NoSpeakers,
+        /// The talker's speakers renamed to `hk_voice_343` and `hk_voice_777` (both the legacy speaker's id), as the
+        /// released models name theirs, so an unset speaker takes the alphabetical branch of the default.
+        VoiceSpeakersOnly,
+        /// The engine's default-speaker resolution skipped: an unset speaker stays empty and is looked up as it is.
+        /// It exists to show that the default-speaker check sees the resolution removed.
+        NoDefaultSpeaker,
     }
 
     #[cfg(feature = "plant")]
     impl Plant {
         /// `none`, `rope-normal`, `sampler-off-by-one`, `frame-hook-draw`, `instruction-after-role`,
-        /// `steer-add-missing`, `steer-layer-shift`, `steer-next-layer-too` or `step-hook-draw`.
+        /// `steer-add-missing`, `steer-layer-shift`, `steer-next-layer-too`, `step-hook-draw`, `no-speakers`,
+        /// `voice-speakers-only` or `no-default-speaker`.
         pub fn parse(s: &str) -> Option<Self> {
             Some(match s {
                 "" | "none" => Self::None,
                 "rope-normal" => Self::RopeNormal,
                 "sampler-off-by-one" => Self::SamplerOffByOne,
                 "frame-hook-draw" => Self::FrameHookDraw,
+                "no-speakers" => Self::NoSpeakers,
+                "voice-speakers-only" => Self::VoiceSpeakersOnly,
+                "no-default-speaker" => Self::NoDefaultSpeaker,
                 "instruction-after-role" => Self::InstructionAfterRole,
                 "steer-add-missing" => Self::SteerAddMissing,
                 "steer-layer-shift" => Self::SteerLayerShift,
@@ -632,6 +645,15 @@ impl Talker {
                 }
             }
         }
+        match plant {
+            Plant::NoSpeakers => speakers.clear(),
+            Plant::VoiceSpeakersOnly => {
+                if let Some(id) = speakers.get(LEGACY_SPEAKER).copied() {
+                    speakers = HashMap::from([("hk_voice_343".to_string(), id), ("hk_voice_777".to_string(), id)]);
+                }
+            }
+            _ => {}
+        }
         // The checkpoint type and whether it takes a style instruction ([`crate::instruct`]).
         let mut config = config;
         let declared = instruct::MODEL_TYPE_KEYS
@@ -804,6 +826,11 @@ impl Talker {
     /// The speaker used when none is named ([`default_speaker`]); `None` for a model with no named speakers.
     pub fn default_speaker(&self) -> Option<String> {
         default_speaker(&self.speakers)
+    }
+
+    /// Whether the engine skips its default-speaker resolution: only under the planted `NoDefaultSpeaker`.
+    pub(crate) fn skips_default_speaker(&self) -> bool {
+        self.plant == Plant::NoDefaultSpeaker
     }
 
     /// The model's speaker names, lower-cased as they are matched, in alphabetical order.

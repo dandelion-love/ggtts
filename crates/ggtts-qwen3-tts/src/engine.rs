@@ -112,7 +112,7 @@ impl Qwen3Tts {
             .map_err(|r| EngineError(r.to_string()))?;
         // No speaker named: the model's default. Before 2026-11-13 this was always hk_cantonese_speaker, which the
         // released models do not have, so every model given by path failed without --speaker.
-        if voice.speaker.is_empty() {
+        if voice.speaker.is_empty() && !talker.skips_default_speaker() {
             voice.speaker = talker.default_speaker().ok_or_else(|| {
                 EngineError("the talker has no named speakers, so there is no default speaker to use".into())
             })?;
@@ -305,6 +305,13 @@ impl Qwen3Tts {
             codes: Codes { codebooks: 16, frames },
             stop: g.stop,
         })
+    }
+}
+
+impl Qwen3Tts {
+    /// The speaker every request renders with: the one the voice named, or the model's default resolved at load.
+    pub fn speaker(&self) -> &str {
+        &self.voice.speaker
     }
 }
 

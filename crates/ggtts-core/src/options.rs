@@ -415,7 +415,7 @@ pub const TABLE: &[Descriptor] = &[
     },
     Descriptor {
         flags: &["--steer"],
-        help: "A steering file (safetensors, one F32 vector per talker layer).",
+        help: "A steering file (safetensors, one F32 vector per talker layer): a path, or an https:// URL or hf://owner/repo[@rev]/path downloaded once into the cache (#sha256=<hex> pins it).",
         ..row("steer", SR, R, path(), "null")
     },
     Descriptor {

@@ -243,9 +243,12 @@ class Ggtts private constructor(private var handle: Long) : AutoCloseable {
     fun render(text: String, seed: Long = DEFAULT_SEED): Pcm = render(text, seed, null)
 
     /**
-     * Render [text], handing each kept chunk's piece to [listener] as it is produced (before the level step).
-     * Returns false if the listener stopped it. [seed] and [options] are as [render]'s; a stream's document may say
-     * `"output": {"stream": "raw"}`, which is what it streams anyway.
+     * Render [text], handing each kept chunk's piece to [listener] as it is produced. Returns false if the listener
+     * stopped it. [seed] and [options] are as [render]'s. Without [options], the pieces are the render's samples before
+     * its level step, as this call has always handed them. With [options], they are levelled by default as
+     * `ggtts-render --stream` levels them (one gain from the first `output.stream_level_seconds`, 5 s unless given),
+     * which is the stream to play; `"output": {"stream": "raw"}` (or `"stream_raw": true`) asks for the pieces before
+     * the level step instead.
      */
     fun renderStream(text: String, seed: Long? = null, options: String? = null, listener: PieceListener): Boolean =
         if (options == null) {

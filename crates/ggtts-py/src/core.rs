@@ -209,6 +209,8 @@ fn load_inner(
                 offline: req.offline,
                 fetch,
             }),
+            // The sampler settings, frame cap and language reach Python through an options document (#291).
+            tuning: Default::default(),
         },
         &WORDING,
         notice,

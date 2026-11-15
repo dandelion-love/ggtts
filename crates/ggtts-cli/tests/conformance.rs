@@ -66,6 +66,7 @@ const LOAD: &[&str] = &[
     "load.cache_dir",
 ];
 const KITTEN_HEAD: &[&str] = &["load.kitten_full_head"];
+const SAMPLER: &[&str] = &ggtts_core::options::SAMPLER;
 const STEER: &[&str] = &["render.steer", "render.steer_scale", "render.steer_layers"];
 const TRACE: &[&str] = &["observe.trace", "observe.trace_level"];
 const REPORTS: &[&str] = &["observe.timing_report", "observe.duration_report"];
@@ -106,6 +107,11 @@ const CPU_ONLY: &str = "the Android build is CPU only";
 const ENGINE_READS_ENV: &str =
     "the kitten-tts-2 engine reads GGTTS_KITTEN_FULL_HEAD=1 from the environment itself: a binding takes no option for it";
 const NEVER_DOWNLOADS: &str = "the app never downloads: its models are installed with it";
+const PY_SAMPLER: &str = "the sampler settings, the frame cap and the language reach Python only through an options \
+document (load options=), which this binding does not take yet";
+const KT_SAMPLER: &str = "the sampler settings, the frame cap and the language reach Kotlin only through an options \
+document, which this binding does not take yet";
+const APP_SAMPLER: &str = "the app renders with the engine's default sampler settings, frame cap and language";
 const PARITY_TOOL: &str = "an engine parity tool; render with ggtts-render --engine kitten-tts-2";
 const TEXT_HOLD: &str =
     "--text renders one chunk, and the stream levels it by its own gain whatever the hold; give it with --story";
@@ -129,6 +135,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
         cells: &[
             (LOAD, Carried),
             (KITTEN_HEAD, Carried),
+            (SAMPLER, Carried),
             (
                 &[
                     "render.story",
@@ -157,6 +164,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
         cells: &[
             (LOAD, Carried),
             (KITTEN_HEAD, Carried),
+            (SAMPLER, Carried),
             (
                 &[
                     "render.text",
@@ -187,6 +195,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
         cells: &[
             (LOAD, Carried),
             (KITTEN_HEAD, Carried),
+            (SAMPLER, Carried),
             (&["render.instruction", "render.redraw", "render.judge"], Carried),
             (STEER, Carried),
             (&["render.text", "render.story"], Refused(BOOK_TEXT)),
@@ -207,6 +216,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
         cells: &[
             (LOAD, Carried),
             (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
+            (SAMPLER, Carried),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
@@ -242,6 +252,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             ),
             (&["load.cache_dir"], Gap(291)),
             (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
+            (SAMPLER, Refused(PY_SAMPLER)),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
@@ -275,6 +286,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             ),
             (&["load.device"], Refused(CPU_ONLY)),
             (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
+            (SAMPLER, Refused(KT_SAMPLER)),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
@@ -308,6 +320,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["load.offline"], Refused(NEVER_DOWNLOADS)),
             (&["load.cache_dir"], Gap(282)),
             (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
+            (SAMPLER, Refused(APP_SAMPLER)),
             (&["render.text", "render.seed_salt"], Carried),
             (&["render.instruction"], Gap(282)),
             (&["render.story"], Refused(NO_STORY_FILE)),
@@ -329,6 +342,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
         cells: &[
             (LOAD, Refused(PARITY_TOOL)),
             (KITTEN_HEAD, Refused(PARITY_TOOL)),
+            (SAMPLER, Refused(PARITY_TOOL)),
             (
                 &[
                     "render.text",
@@ -581,6 +595,13 @@ fn render_probes() -> Vec<Probe> {
         push("render.steer", by_engine_refusal(&r, "steer"));
         let r = render(&p("kitten-head"), mode, &["--kitten-full-head"]);
         push("load.kitten_full_head", by_engine_refusal(&r, "load.kitten_full_head"));
+        // The sampler settings, frame cap and language reach the fake engine's capabilities, which refuse each by name.
+        for d in TABLE.iter().filter(|d| SAMPLER.contains(&d.key().as_str())) {
+            let mut extra = vec![d.flags[0]];
+            extra.extend(sample_value(d));
+            let r = render(&p(d.name), mode, &extra);
+            push(&d.key(), by_engine_refusal(&r, &d.key()));
+        }
         let r = render(&p("out"), mode, &[]);
         push("output.out", by_file(&r, "o.flac", "--out"));
         push(
@@ -838,6 +859,26 @@ fn c_abi_document_probes(plain: usize) -> Vec<Probe> {
             ),
         },
     );
+    // The sampler settings, frame cap and language in a load document reach the fake engine's capabilities: carried
+    // only when the refusal is exactly theirs, not a binding's own refusal of the key.
+    let fake = ggtts_core::capabilities::Capabilities::of("fake").unwrap();
+    for d in TABLE.iter().filter(|d| SAMPLER.contains(&d.key().as_str())) {
+        let value = match d.kind {
+            Kind::Choice(c) => format!("{:?}", c[0]),
+            _ => "1".to_string(),
+        };
+        let doc = CString::new(format!(r#"{{"load": {{"engine": "fake", "{}": {value}}}}}"#, d.name)).unwrap();
+        let want = fake.refusal(&d.key(), None).to_string();
+        let mut h = 0u64;
+        push(
+            &d.key(),
+            match unsafe { ggtts_load_opts(doc.as_ptr(), &mut h) } {
+                GGTTS_ERR_ARG if last_error() == want => Seen::Carried,
+                GGTTS_ERR_ARG if last_error().starts_with(&format!("{}: ", d.key())) => Seen::Refused,
+                code => panic!("c-abi: a load document with {} gave {code}: {}", d.key(), last_error()),
+            },
+        );
+    }
     // Steering reaches the engine's capabilities, which refuse it on the fake engine: carried only when the refusal
     // is exactly that one, not a binding's own refusal of the key.
     let capability = ggtts_core::capabilities::Capabilities::of("fake")

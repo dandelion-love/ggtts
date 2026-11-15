@@ -13,6 +13,15 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **Qwen3-TTS's sampler settings, frame cap and language are options**: `--temperature`, `--top-k`, `--top-p`,
+  `--repetition-penalty`, `--max-frames` and `--language` (`load.temperature` and the rest), with the reference CLI's
+  meanings, and `--subtalker-temperature`, `--subtalker-top-k` and `--subtalker-top-p` for the code predictor, which
+  otherwise samples with the talker's settings. Unset, each is the value every render had before (0.9, 50, 1.0, 1.05,
+  1200 frames, `zh`), so a render without them is unchanged. A temperature at or below 0 (talker or sub-talker) is
+  refused, since greedy decoding does not terminate on this model. `ggtts-render`, `ggtts-book` and the C ABI's load
+  document take them; Kitten-TTS 2 refuses each by its key. A render given any records them as `sampling` in its
+  record, trace header, timing and duration reports, and a book's manifests, so a resume under other settings
+  renders the chapter again. The capability statement (`ggtts_capabilities`) gains `sampler`.
 - **`--kitten-full-head` (`load.kitten_full_head`) is an option of the table**, with `GGTTS_KITTEN_FULL_HEAD` as its
   environment spelling, for `ggtts-render` and `ggtts-book render`. It makes Kitten-TTS 2 compute its whole output
   head, as `GGTTS_KITTEN_FULL_HEAD=1` did, and the audio is unchanged by the move. When it is on, the trace header and

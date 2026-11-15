@@ -399,6 +399,24 @@ impl Engine for Qwen3Tts {
 mod tests {
     use super::*;
 
+    /// #351 AC4: a greedy sub-talker is refused at load too, with the reason.
+    #[test]
+    fn greedy_subtalker_sampling_is_refused_at_load() {
+        for t in [0.0, -1.0, f32::NAN] {
+            let voice = Voice {
+                sampling: Sampling {
+                    subtalker_temperature: Some(t),
+                    ..Sampling::default()
+                },
+                ..Voice::default()
+            };
+            let e = Qwen3Tts::load(Path::new("no-talker.gguf"), Path::new("no-codec.gguf"), 1, voice)
+                .err()
+                .expect("a greedy sub-talker must be refused");
+            assert!(e.0.contains("greedy decoding of the sub-talker"), "{t}: {}", e.0);
+        }
+    }
+
     #[test]
     fn greedy_sampling_is_refused_at_load() {
         for temperature in [0.0, -1.0, f32::NAN] {

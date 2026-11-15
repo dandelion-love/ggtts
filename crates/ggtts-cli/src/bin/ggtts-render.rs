@@ -137,6 +137,8 @@ impl StreamTiming {
 }
 const USAGE: &str = "usage: ggtts-render [--model M.gguf] [--codec C.gguf] [--offline] --out x.flac \
 [--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N (capped at the CPUs allowed)] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--voice REF] [--kitten-full-head] [--speaker NAME] [--instruction TEXT] \
+[--temperature X] [--top-k N] [--top-p X] [--repetition-penalty X] [--subtalker-temperature X] [--subtalker-top-k N] \
+[--subtalker-top-p X] [--max-frames N] [--language auto|en|ru|zh|ja|ko|de|fr|es|it|pt] \
 [--steer FILE [--steer-scale X] [--steer-layers LIST]] \
 [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE [--redraw N [--judge asr-qwen,model=DIR]]) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
@@ -335,6 +337,7 @@ fn qwen_voice(a: &Options) -> Result<ggtts_qwen3_tts::engine::Voice, String> {
     if let Some(speaker) = &a.load.speaker {
         voice.speaker.clone_from(speaker);
     }
+    ggtts_load::Tuning::of(&a.load).apply(&mut voice);
     Ok(voice)
 }
 

@@ -259,6 +259,8 @@ struct Settings<'a> {
     instruction: Option<&'a str>,
     device: Option<&'a str>,
     models: Option<Models<'a>>,
+    /// The Qwen3-TTS sampler settings, frame cap and language: an options document's only.
+    tuning: ggtts_load::Tuning,
 }
 
 impl<'a> Settings<'a> {
@@ -391,6 +393,7 @@ fn open_engine(
             device,
             threads,
             models,
+            tuning: settings.tuning,
         },
         wording,
         &mut |_| {},
@@ -518,6 +521,7 @@ fn load_options(o: &Options, default_files: bool, document: bool) -> Result<u64,
             cache_dir: cache_dir.as_deref(),
             allow_download: !o.load.offline,
         }),
+        tuning: ggtts_load::Tuning::of(&o.load),
     };
     let e = open_engine(
         &engine,

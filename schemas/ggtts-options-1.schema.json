@@ -111,6 +111,36 @@
           ],
           "x-ggtts-phase": "load"
         },
+        "language": {
+          "description": "Qwen3-TTS only: the language token the talker is prompted with, as the reference CLI's -l takes it (auto prompts with none); unset is zh.",
+          "enum": [
+            "auto",
+            "en",
+            "ru",
+            "zh",
+            "ja",
+            "ko",
+            "de",
+            "fr",
+            "es",
+            "it",
+            "pt"
+          ],
+          "x-ggtts-flags": [
+            "--language"
+          ],
+          "x-ggtts-phase": "load"
+        },
+        "max_frames": {
+          "description": "Qwen3-TTS only: the frame cap of one chunk (12.5 frames a second); unset is 1200, as ggtts has always rendered.",
+          "maximum": 2147483647,
+          "minimum": 1,
+          "type": "integer",
+          "x-ggtts-flags": [
+            "--max-frames"
+          ],
+          "x-ggtts-phase": "load"
+        },
         "model": {
           "description": "The model GGUF (Qwen3-TTS: the talker; Kitten-TTS 2: the LM); unset is the engine's pinned default.",
           "minLength": 1,
@@ -147,6 +177,14 @@
             "offline"
           ]
         },
+        "repetition_penalty": {
+          "description": "Qwen3-TTS only: the talker's repetition penalty on codebook 0, above 0; unset is 1.05, the reference CLI's.",
+          "type": "number",
+          "x-ggtts-flags": [
+            "--repetition-penalty"
+          ],
+          "x-ggtts-phase": "load"
+        },
         "speaker": {
           "description": "A named Qwen3-TTS speaker; unset is the model's default speaker.",
           "pattern": "\\S",
@@ -164,6 +202,41 @@
           "x-ggtts-python": [
             "speaker"
           ]
+        },
+        "subtalker_temperature": {
+          "description": "Qwen3-TTS only: the sub-talker's (code predictor's) temperature, above 0 (greedy decoding of the sub-talker does not terminate on this model); unset is the talker's, as in the reference CLI.",
+          "type": "number",
+          "x-ggtts-flags": [
+            "--subtalker-temperature"
+          ],
+          "x-ggtts-phase": "load"
+        },
+        "subtalker_top_k": {
+          "description": "Qwen3-TTS only: the sub-talker's top-k, 0 for off; unset is the talker's.",
+          "maximum": 2147483647,
+          "minimum": 0,
+          "type": "integer",
+          "x-ggtts-flags": [
+            "--subtalker-top-k"
+          ],
+          "x-ggtts-phase": "load"
+        },
+        "subtalker_top_p": {
+          "description": "Qwen3-TTS only: the sub-talker's top-p; unset is the talker's.",
+          "minimum": 0.0,
+          "type": "number",
+          "x-ggtts-flags": [
+            "--subtalker-top-p"
+          ],
+          "x-ggtts-phase": "load"
+        },
+        "temperature": {
+          "description": "Qwen3-TTS only: the talker's sampling temperature, above 0 (greedy decoding does not terminate on this model); unset is 0.9, the reference CLI's.",
+          "type": "number",
+          "x-ggtts-flags": [
+            "--temperature"
+          ],
+          "x-ggtts-phase": "load"
         },
         "threads": {
           "description": "CPU threads asked for, capped at the CPUs this process may use; unset is 4.",
@@ -184,6 +257,25 @@
           "x-ggtts-python": [
             "threads"
           ]
+        },
+        "top_k": {
+          "description": "Qwen3-TTS only: the talker's top-k, 0 for off; unset is 50, the reference CLI's.",
+          "maximum": 2147483647,
+          "minimum": 0,
+          "type": "integer",
+          "x-ggtts-flags": [
+            "--top-k"
+          ],
+          "x-ggtts-phase": "load"
+        },
+        "top_p": {
+          "description": "Qwen3-TTS only: the talker's top-p; unset is 1.0 (off), the reference CLI's.",
+          "minimum": 0.0,
+          "type": "number",
+          "x-ggtts-flags": [
+            "--top-p"
+          ],
+          "x-ggtts-phase": "load"
         },
         "voice": {
           "description": "A reference voice, for an engine that clones one (Kitten-TTS 2).",

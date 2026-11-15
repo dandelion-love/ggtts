@@ -370,6 +370,26 @@ and it only acts with redraws, which are off by default for `qwen3-tts` (#317). 
 line costs the most, so a Cantonese book is best rendered with it on:
 `ggtts-book render BOOK.epub --out DIR --redraw 2 --judge asr-qwen,model=DIR`.
 
+**Measured on a real model (#347).** A two-chapter Cantonese EPUB of 14 chunks (395 characters), rendered with the
+`qwen3-tts` q8_0 talker and a Cantonese voice baked into it, `--redraw 2`, the judge on Qwen3-ASR-1.7B, everything on
+CPU (`--device cpu --threads 4`, the worker at its 4 torch threads; a 12th-gen Intel desktop under `nice`):
+
+* The ASR read of a kept draw took 8.7 s on average (2.2 to 14.8 s; the trace's `judge` timing), about 30% of the
+  render: 121 s of the 441 s run, beside 139 s generating and 133 s decoding.
+* The worker loads its model in float32: it peaked at 12.6 GiB resident while loading and held about 8.7 GiB through
+  the render, beside the engine's 3.4 GiB peak. It loads first, and the engine loads after it says it is ready, so
+  the two loads never overlap.
+* One worker served the whole run. Every chunk had a read with a non-empty transcript; none was rejected. The longest
+  run lost was 3 tokens, below `min_run` 4: a misread is counted, never a rejection.
+* A draw with the middle 40% of its audio cut out (a skipped clause, planted in front of the real ASR) was rejected as
+  `lost-text` on all three draws (13 to 16 of 36 tokens lost, the longest run 13 or 14), and kept as the last draw
+  with that verdict. The other 13 chunks, rendered at the same seeds, read exactly as in the unplanted run.
+* A missing model directory and a Python without `qwen-asr` were each refused before the engine loaded, with the
+  ASR's reason.
+
+So the default stays off: on a CPU the judge costs about 9 s a kept draw and 13 GiB free while its model loads,
+and the setup (a model and a Python with `qwen-asr`) is the user's. CUDA was not measured.
+
 **What a resume can match, and what has been observed.** Chapters are always joined from the stored chunk files, so
 a resumed chapter can match an uninterrupted one byte for byte only when both of these hold:
 

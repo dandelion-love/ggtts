@@ -2,6 +2,9 @@
 
 ## 2026-11-14
 
+- The screen was reordered for a first-time user: voice, text, Speak and progress first; About and Advanced closed
+  below. Dark mode is followed. On the phone, a closed Spinner using the dropdown row layout measured 0 px high under
+  the DayNight theme, so the closed view now uses `simple_spinner_item`.
 - Gap 3 closed: the app lists voices made from what its files say they are, selects the first, and keeps the
   engine's parts under "Advanced". On the phone, Speak with no files named read through hk_voice_343 (first audio at
   18 s). The files declare no language, so a Kitten-TTS 2 Cantonese voice shows as English.

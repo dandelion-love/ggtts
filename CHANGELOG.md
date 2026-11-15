@@ -21,6 +21,10 @@ that a merge places under a released heading is caught.
   files make, and selects the first complete one, so Speak works on opening. Files that make no voice yet are named
   with what they lack. The engine, file pickers, speaker and threads are under "Advanced", closed by default, and the
   adb extras still set them.
+- **The Android app's screen puts typing and Speak first.** The voice, a multi-line text box and a filled Speak button
+  come right under the title; the purpose paragraphs move under "About this app" and the Android-TTS check under
+  "Advanced". While a read runs, a progress bar and a seconds count show until the first sound, with plain wording
+  ("Preparing the voice", "Writing the first sentence"). The app follows the phone's dark mode on Android 10 and later.
 - **The Android app and its text-to-speech engine are named "ggtts Text-to-Speech"** in the launcher and in the phone's
   text-to-speech settings, where they were "ggtts demo" and "ggtts (on-device, slow)". The speed warning is unchanged
   on the app's screen before a load.

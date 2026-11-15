@@ -32,6 +32,12 @@ data class Voice(
     val label: String get() = "$name · $language · ${Voices.ENGINE_NAMES[engine] ?: engine}"
 }
 
+/** A line to try a voice with, by the language it reads; put in the text box until the user types their own. */
+val EXAMPLES = mapOf(
+    "Cantonese" to "你好！今日天氣幾好，不如一齊出去行吓街，食個下午茶。",
+    "English" to "Hello! This voice runs entirely on your phone, with no internet connection.",
+)
+
 /** Files that cannot speak yet, and what they lack. */
 data class Incomplete(val name: String, val missing: String)
 

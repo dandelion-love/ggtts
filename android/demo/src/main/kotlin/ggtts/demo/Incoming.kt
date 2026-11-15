@@ -102,7 +102,7 @@ object IncomingText {
         val s = clean(raw?.toString() ?: "")
         return when {
             s.isEmpty() -> Incoming.Refused("There was no text to read in what was ${source}.")
-            s.length > MAX_CHARS * 2 -> Incoming.Refused(
+            s.length > MAX_CHARS -> Incoming.Refused(
                 "That text is ${s.length} characters. This app takes up to $MAX_CHARS at a time; " +
                     "share a shorter part.",
             )

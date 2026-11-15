@@ -37,8 +37,10 @@ sed -n 1p out.codes.jsonl > chunk0.json
 cargo run --release -p ggtts-qwen3-tts --features ggml --example decode -- codec.gguf chunk0.json chunk0.f32 4
 ```
 
-`chunk0.f32` is the decoded samples as little-endian f32. For a `--text` render, which has no trim and no level
-step, they are the FLAC's samples before 16-bit quantisation.
+`chunk0.f32` is the decoded samples as little-endian f32: the kept draw as the decoder gave it. For a `--text`
+render, which has no trim and no level step, they are the FLAC's samples before 16-bit quantisation. A story's line
+decodes to its chunk's draw before the edge trim, the pause after it and the read's level step, so it matches the
+chunk's span of the FLAC only after those are applied (the trace's `trim` event gives the span kept).
 
 `scripts/codes_decode_check.sh [cpu|cuda]` runs that check end to end on the default model from the cache: it
 renders one `--text` line with and without `--codes` (the FLACs must match), decodes the written codes on the same

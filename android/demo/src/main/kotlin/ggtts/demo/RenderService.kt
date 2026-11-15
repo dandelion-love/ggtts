@@ -164,10 +164,16 @@ class RenderService : Service() {
         return START_NOT_STICKY
     }
 
-    /** Android 15 and later: the service type's daily time ran out. Stop cleanly; the entry waits again. */
+    /**
+     * Android 15 and later: the service type's daily time ran out. Android allows only a few seconds to stop, and a
+     * chunk can take far longer, so the service stops now: the worker is told to stop, and the entry it was rendering
+     * is requeued when its chunk ends (or by recover() if the process goes first). A cut-off render saves nothing.
+     */
     override fun onTimeout(startId: Int, fgsType: Int) {
-        Log.i(MainActivity.TAG, "queue: the service's daily time ran out; stopping, and the entry waits")
+        Log.i(MainActivity.TAG, "queue: the service's daily time ran out; stopping now, and the entry waits")
         worker?.stop()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     override fun onDestroy() {

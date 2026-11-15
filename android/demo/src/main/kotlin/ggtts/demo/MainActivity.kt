@@ -83,7 +83,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         val LINES = mapOf("qwen3-tts" to "今日天氣好好。", "kitten-tts-2" to "Hello from ggtts, running on this phone.")
         val THREADS = listOf(2, 4, 6, 8)
         /** The binding's default. See android/README.md for what more threads buy on a phone. */
-        const val DEFAULT_THREADS = 4
+        const val DEFAULT_THREADS = LoadRequest.DEFAULT_THREADS
         private const val REQUEST_NOTIFICATIONS = 2
         private const val PICK_FOLDER = 3
     }
@@ -315,7 +315,8 @@ class MainActivity : AppCompatActivity(), DemoView {
         // The header: what this is, and a ⋮ menu for everything that is not reading.
         val header = MaterialToolbar(this).apply {
             title = "Read aloud"
-            subtitle = "On this phone · no internet"
+            // What the app is for, before anything technical (About.kt; the full sentences are under About).
+            subtitle = About.HEADER_SUBTITLE
             setTitleTextAppearance(context, M.style.TextAppearance_Material3_TitleLarge)
             setSubtitleTextAppearance(context, M.style.TextAppearance_Material3_BodyMedium)
             setSubtitleTextColor(color(M.attr.colorOnSurfaceVariant))
@@ -383,8 +384,10 @@ class MainActivity : AppCompatActivity(), DemoView {
             override fun afterTextChanged(s: Editable?) {
                 val n = s?.length ?: 0
                 count.text = if (n == 0) "" else "$n characters"
+                field.helperText = if (n == 0) About.EMPTY_TEXT_HINT else null
             }
         })
+        field.helperText = if (text.text.isNullOrEmpty()) About.EMPTY_TEXT_HINT else null
 
         // About and Advanced: closed, opened from the ⋮ menu.
         fun heading(s: String) = words(s, M.style.TextAppearance_Material3_TitleLarge).apply { setPadding(0, dp(24), 0, 0) }
@@ -727,8 +730,7 @@ class MainActivity : AppCompatActivity(), DemoView {
             codec = path(codec),
             voice = if (engine == "kitten-tts-2") path(voice) else null,
             speaker = if (engine == "qwen3-tts") speaker.text.toString().trim().ifEmpty { null } else null,
-            threads = THREADS[threads.selectedItemPosition],
-        )
+        ).withThreads(THREADS[threads.selectedItemPosition])
         Log.i(TAG, "speak: $request")
         controller.speak(request, text.text.toString(), Ggtts.DEFAULT_SEED)
     }

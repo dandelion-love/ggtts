@@ -3,6 +3,7 @@
 // callback chunk by chunk. GgttsTtsService adapts this to TextToSpeechService; the tests drive it directly.
 package ggtts.demo
 
+import ggtts.Ggtts
 import ggtts.GgttsException
 import java.util.Locale
 
@@ -12,21 +13,54 @@ interface KeyValue {
     fun put(key: String, value: String)
 }
 
-/** The model files each engine last spoke with in the demo; the system engine uses the same. */
+/**
+ * The request each engine last spoke with in the demo; the system engine uses the same. Stored as its options
+ * document, so whatever the request carries (an instruction, steering, a stream mode) is saved with it. A voice saved
+ * before the document, as the old positional list (model, codec, voice, speaker, threads on five lines), still loads as
+ * the same request.
+ *
+ * A saved voice the binding refuses (an unknown key, say) is marked unusable with the binding's message, not dropped:
+ * [load] then gives null, [unusable] says why, and the next [save] for that engine clears it.
+ */
 class VoiceStore(private val kv: KeyValue) {
     fun save(request: LoadRequest) {
-        kv.put(
-            "voice." + request.engine,
-            listOf(request.model, request.codec, request.voice, request.speaker, request.threads.toString())
-                .joinToString("\n") { it ?: "" },
-        )
+        kv.put("voice." + request.engine, request.options.toJson())
+        kv.put("voice.${request.engine}.unusable", "")
     }
 
     fun load(engine: String): LoadRequest? {
-        val parts = kv.get("voice.$engine")?.split("\n") ?: return null
-        if (parts.size != 5) return null
-        fun s(i: Int) = parts[i].ifEmpty { null }
-        return LoadRequest(engine, s(0), s(1), s(2), s(3), parts[4].toIntOrNull() ?: MainActivity.DEFAULT_THREADS)
+        if (unusable(engine) != null) return null
+        val stored = kv.get("voice.$engine") ?: return null
+        return try {
+            read(engine, stored)
+        } catch (e: IllegalArgumentException) {
+            refuse(engine, "the saved voice is not an options document: ${e.message}")
+            null
+        }
+    }
+
+    /** Why [engine]'s saved voice is unusable, or null when it is not marked. */
+    fun unusable(engine: String): String? = kv.get("voice.$engine.unusable")?.ifEmpty { null }
+
+    /** Mark [engine]'s saved voice unusable, for [why] (the binding's message). */
+    fun refuse(engine: String, why: String) = kv.put("voice.$engine.unusable", why)
+
+    companion object {
+        /** A stored voice of [engine]: an options document, or the positional list from before it. */
+        fun read(engine: String, stored: String): LoadRequest? {
+            if (stored.trimStart().startsWith("{")) {
+                val r = LoadRequest(Options.parse(stored))
+                return when (r.options[LoadRequest.LOAD, "engine"]) {
+                    null -> r.with(LoadRequest.LOAD, "engine", engine)
+                    engine -> r
+                    else -> throw IllegalArgumentException("it is saved for $engine and names ${r.engine}")
+                }
+            }
+            val parts = stored.split("\n")
+            if (parts.size != 5) return null
+            fun s(i: Int) = parts[i].ifEmpty { null }
+            return LoadRequest(engine, s(0), s(1), s(2), s(3), parts[4].toIntOrNull() ?: LoadRequest.DEFAULT_THREADS)
+        }
     }
 }
 
@@ -110,11 +144,30 @@ class SynthesisSession(
         stopped = true
     }
 
-    /** Synthesize [text] in [iso3]/[country] into [out], streaming each chunk as it is ready. Blocks. */
-    fun synthesize(iso3: String, country: String, text: String, seed: Long, out: SynthesisOut) {
+    /**
+     * Synthesize [text] in [iso3]/[country] into [out], streaming each chunk as it is ready. Blocks.
+     *
+     * [rate] and [pitch] are the platform's speech rate and pitch, 100 being normal. ggtts has no rate or pitch
+     * option, so both are refused: a read asked at another value is rendered as at 100, and says so in one log line.
+     */
+    fun synthesize(
+        iso3: String,
+        country: String,
+        text: String,
+        seed: Long,
+        out: SynthesisOut,
+        rate: Int = NORMAL,
+        pitch: Int = NORMAL,
+    ) {
         stopped = false
+        ignored(rate, pitch)?.let(log)
         val name = Languages.engineFor(iso3, country) ?: return out.error(TtsCodes.ERROR_INVALID_REQUEST)
         val request = voices.load(name) ?: run {
+            val why = voices.unusable(name)
+            if (why != null) {
+                log("system engine: the saved $name voice is unusable: $why; speak once with it in the demo")
+                return out.error(TtsCodes.ERROR_INVALID_REQUEST)
+            }
             log("system engine: no model files known for $name; speak once with it in the demo")
             return out.error(TtsCodes.ERROR_NOT_INSTALLED_YET)
         }
@@ -124,6 +177,7 @@ class SynthesisSession(
             log("system engine: ${e.message}")
             return out.error(TtsCodes.ERROR_SERVICE)
         } catch (e: GgttsException) {
+            if (refused(name, e)) return out.error(TtsCodes.ERROR_INVALID_REQUEST)
             log("system engine: load failed ${e.code}: ${e.message}")
             return out.error(TtsCodes.ERROR_NOT_INSTALLED_YET)
         } catch (e: RuntimeException) {
@@ -132,14 +186,26 @@ class SynthesisSession(
         }
         var ok = false
         try {
-            ok = stream(tts, text, seed, out)
+            ok = stream(name, tts, text, seed, out)
         } finally {
             cache.done(failed = !ok)
         }
     }
 
+    /**
+     * A refusal of the saved voice's document: the binding's argument error naming a key. The voice is marked
+     * unusable with the binding's message and the read reports it, rather than the key being dropped.
+     */
+    private fun refused(engine: String, e: GgttsException): Boolean {
+        val key = e.key
+        if (e.code != Ggtts.ERR_ARG || key == null) return false
+        voices.refuse(engine, e.message ?: key)
+        log("system engine: the saved $engine voice is unusable: the binding refused $key: ${e.message}")
+        return true
+    }
+
     /** Stream one render into [out]. Returns false when the render failed (the engine is then closed). */
-    private fun stream(tts: TtsEngine, text: String, seed: Long, out: SynthesisOut): Boolean {
+    private fun stream(engine: String, tts: TtsEngine, text: String, seed: Long, out: SynthesisOut): Boolean {
         var started = false
         val finished = try {
             tts.renderStream(text, seed) { samples, rate ->
@@ -158,6 +224,10 @@ class SynthesisSession(
                 true
             }
         } catch (e: GgttsException) {
+            if (refused(engine, e)) {
+                out.error(TtsCodes.ERROR_INVALID_REQUEST)
+                return false
+            }
             log("system engine: render failed ${e.code}: ${e.message}")
             out.error(TtsCodes.ERROR_SYNTHESIS)
             return false
@@ -175,6 +245,20 @@ class SynthesisSession(
     }
 
     companion object {
+        /** The platform's normal speech rate and pitch (SynthesisRequest.getSpeechRate and getPitch). */
+        const val NORMAL = 100
+
+        /** The log line for a read asked at a rate or pitch ggtts cannot give, or null when both are normal. */
+        fun ignored(rate: Int, pitch: Int): String? {
+            val asked = listOfNotNull(
+                if (rate != NORMAL) "speech rate $rate" else null,
+                if (pitch != NORMAL) "pitch $pitch" else null,
+            )
+            if (asked.isEmpty()) return null
+            return "system engine: ignored ${asked.joinToString(" and ")} ($NORMAL is normal): " +
+                "ggtts has no rate or pitch option, so this read is rendered at $NORMAL"
+        }
+
         /** Float samples as 16-bit little-endian PCM, the format the session starts its stream in. */
         fun pcm16(samples: FloatArray): ByteArray {
             val b = ByteArray(samples.size * 2)

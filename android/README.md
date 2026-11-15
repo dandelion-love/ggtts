@@ -16,13 +16,15 @@ with GGUF's magic bytes), and checks both refusals on planted APKs every time it
 
 **Reads text aloud in Cantonese or English, entirely on this phone.** You type or paste a passage and listen to it
 in a neural voice; nothing you type leaves the phone, because the app has no permission to use the internet. It is
-slow: a sentence takes 30 to 60 seconds before it starts on a recent phone, so it suits listening to a passage you
-have chosen, not reading the screen as you go, and it is not for screen readers. Other apps can use it as a
-text-to-speech engine in Android's settings.
+slow: on a Galaxy Z Fold5 the first sound takes 30 to 50 seconds with a Cantonese voice and 45 to 60 with an English
+one, so it suits listening to a passage you have chosen, not reading the screen as you go, and it is not for screen
+readers. Other apps can use it as a text-to-speech engine in Android's settings.
 
-The app's screen opens with these words, and with the steps still ahead when no model files are present yet. They
-live in `About.kt`, and `AboutTest` holds them to the app: adding the `INTERNET` permission, or measuring a wait
-outside 30 to 60 seconds, fails the test until the words change too.
+The reading screen opens with the first line as its subtitle, the wait on the player ("First sound in about…"), and,
+while the text box is empty, a hint that other apps can use it; the rest is under ⋮ › About this app, with the steps
+still ahead when no model files are present yet. They live in `About.kt`, and `AboutTest` holds them to the app:
+adding the `INTERNET` permission, or a measured wait in `EngineCosts` that About does not state, fails the test until
+the words change too.
 
 ## Build
 
@@ -207,7 +209,12 @@ user picks it in the phone's text-to-speech settings. The app does not change th
 
 - **Voices:** Cantonese (Hong Kong), `yue-HK`, from Qwen3-TTS, and English (US) from Kitten-TTS 2. Each voice uses
   the model files of that engine's last finished Speak in the demo. Until there has been one, the engine reports the
-  language as missing data, and a request gets `ERROR_NOT_INSTALLED_YET`.
+  language as missing data, and a request gets `ERROR_NOT_INSTALLED_YET`. A voice is saved as its whole options
+  document (the files, the speaker, the threads, and any other option the request carries). A saved voice the
+  binding refuses (a key it does not take, say) is reported unusable with the binding's message. It is not listed,
+  and a request gets `ERROR_INVALID_REQUEST` until the next finished Speak saves the voice again.
+- **Speech rate and pitch** are not available: ggtts has no option for either. A request at a rate or pitch other than
+  normal is spoken at normal, and the app logs one line naming what it ignored.
 - **Latency:** every voice is declared `LATENCY_VERY_HIGH`, so a client that reads voice latency can see it before
   choosing it. It streams like the demo: the platform gets each chunk as it is rendered.
 - **Not for screen readers.** The first audio takes tens of seconds.

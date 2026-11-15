@@ -103,20 +103,23 @@ pub struct Handle {
     slot: Mutex<Option<Slot>>,
     /// The render defaults a load document gave ([`binding::render_defaults`]); `None` for a load without one.
     defaults: Option<Options>,
+    /// The load's offline and cache settings, which a render resolves a steering URL with.
+    load_cache: binding::LoadCache,
 }
 
 impl Handle {
-    fn new(held: Held, defaults: Option<Options>) -> Self {
+    fn new(held: Held, defaults: Option<Options>, load_cache: binding::LoadCache) -> Self {
         Handle {
             slot: Mutex::new(Some(binding::slot(held))),
             defaults,
+            load_cache,
         }
     }
 
     /// A handle over any engine, for tests of the boundary.
     #[cfg(test)]
     fn from_engine(e: Box<dyn Engine + Send>, instruction: Option<&str>) -> Self {
-        Handle::new(Held::checked(e, instruction), None)
+        Handle::new(Held::checked(e, instruction), None, binding::LoadCache::default())
     }
 
     fn slot(&self) -> std::sync::MutexGuard<'_, Option<Slot>> {
@@ -184,10 +187,12 @@ impl Handle {
         let doc = binding::render_request(options, seed, stream)?;
         // No salt given anywhere is the C-ABI's `ggtts_render_opts` default (an empty salt), so the same document
         // renders the same samples in both.
-        let o = match &self.defaults {
+        let mut o = match &self.defaults {
             Some(d) => binding::layer_render(d, doc)?,
             None => doc,
         };
+        // A steering URL is resolved with the load's offline and cache settings, which no render document carries.
+        self.load_cache.apply(&mut o);
         Ok(Some(o))
     }
 
@@ -392,8 +397,9 @@ fn load_inner(
             })
             .collect(),
     };
+    let load_cache = binding::LoadCache::of(&o);
     Ok((
-        Handle::new(opened.held, doc.as_ref().map(binding::render_defaults)),
+        Handle::new(opened.held, doc.as_ref().map(binding::render_defaults), load_cache),
         loaded,
     ))
 }
@@ -978,7 +984,7 @@ mod tests {
         assert_eq!((code, key), (ERR_ARG, None));
     }
 
-    /// A stream through a document hands its pieces before the level step, as the plain stream does.
+    /// A stream through a raw document hands its pieces before the level step, as the plain stream does.
     #[test]
     fn a_document_stream_is_the_plain_stream() {
         let (mut a, mut b) = (Vec::new(), Vec::new());

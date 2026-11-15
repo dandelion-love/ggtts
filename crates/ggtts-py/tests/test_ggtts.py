@@ -333,6 +333,18 @@ def test_a_document_stream_is_levelled_unless_it_asks_for_raw():
     assert e.value.key == "output.stream_level_seconds"
 
 
+@pytest.mark.parametrize("output, key", [
+    ({"stream_raw": True}, "output.stream_raw"),
+    ({"stream_level_seconds": 2}, "output.stream_level_seconds"),
+    ({"stream": "levelled", "stream_raw": True}, "output.stream"),
+])
+def test_a_whole_read_refuses_the_stream_options(output, key):
+    with fake() as tts:
+        with pytest.raises(ValueError) as e:
+            tts.render(LINE, options={"output": output})
+    assert e.value.key == key, e.value.message
+
+
 def test_steering_reaches_the_engine_and_is_a_value_error_naming_its_key():
     with fake() as tts:
         with pytest.raises(ValueError) as e:
@@ -458,6 +470,39 @@ def test_an_engine_states_its_capabilities():
     with pytest.raises(ggtts.GgttsError) as e:
         tts.capabilities()
     assert code_of(e) == ggtts.ERR_HANDLE
+
+
+# -- a steering URL resolves with the load's settings -------------------------------------------------------------
+
+STEER_URL = "https://example.invalid/presets/angry.safetensors"
+
+
+def _refused_offline(e, cache):
+    assert e.value.key == "render.steer", e.value.message
+    assert STEER_URL in e.value.message and "offline mode does not download it" in e.value.message, e.value.message
+    assert str(cache) in e.value.message, e.value.message
+
+
+@planted
+def test_an_engine_loaded_offline_resolves_a_steering_url_offline_in_its_own_cache(tmp_path):
+    """The planted ``steerable`` engine states Qwen3-TTS's capabilities, so steering reaches the URL's resolution. Its
+    host is ``.invalid``: a resolution that ignored the load's offline setting would fail on the network instead."""
+    cache = tmp_path / "doc-cache"
+    with ggtts.load("steerable", options={"load": {"offline": True, "cache_dir": str(cache)}}) as tts:
+        with pytest.raises(ValueError) as e:
+            tts.render(LINE, options={"render": {"steer": STEER_URL}})
+    _refused_offline(e, cache)
+    assert not (cache / "urls").exists()
+
+
+@planted
+def test_keyword_offline_reaches_a_steering_url_too(tmp_path, monkeypatch):
+    cache = tmp_path / "env-cache"
+    monkeypatch.setenv("GGTTS_CACHE_DIR", str(cache))
+    with ggtts.load("steerable", offline=True) as tts:
+        with pytest.raises(ValueError) as e:
+            list(tts.stream(LINE, options={"render": {"steer": STEER_URL}}))
+    _refused_offline(e, cache)
 
 
 # -- real models, opt-in -----------------------------------------------------------------------------------------

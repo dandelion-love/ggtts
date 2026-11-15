@@ -390,7 +390,10 @@ laid over the load's defaults. NULL is the empty document.
   `ggtts_render` gives them.
 * **A stream** has `on_piece` set. Each kept chunk goes to it, levelled as `ggtts-render --stream` levels it: held until the first `output.stream_level_seconds` of audio (5 s unless given) set one gain, then each piece at that gain. Use it for listening.
   `{"output": {"stream": "raw"}}` (or `"stream_raw": true`) hands each piece over before the level step instead, as
-  `ggtts_render_stream` does; `"levelled"` names the default. `pcm`, `len` and `rate` are all NULL or all set (then
+  `ggtts_render_stream` does; `"levelled"` names the default. `stream_raw: true` makes any stream raw,
+  `"levelled"` included, as `ggtts-render --stream FILE --stream-raw` does: `output.stream` says that the call
+  streams, `stream_raw` how. `stream_raw` and `stream_level_seconds` need `output.stream`, so a whole read refuses
+  them. `pcm`, `len` and `rate` are all NULL or all set (then
   they also get the whole read). **`ggtts_render_stream` itself is unchanged**: it streams the pieces before the
   level step, as it always has, because an exported function never changes its behaviour.
 * **What a render document takes:**

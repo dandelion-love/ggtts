@@ -80,7 +80,6 @@ const INSTRUMENTS: &[&str] = &[
     "observe.report",
     "observe.run",
 ];
-const FILES_OUT: &[&str] = &["output.out", "output.stream", "output.stream_format"];
 const STREAM_LEVEL: &[&str] = &["output.stream_raw", "output.stream_level_seconds"];
 const STREAM: &[&str] = &[
     "output.stream",
@@ -96,7 +95,6 @@ const TEXT_SALT: &str = "a one-chunk plan renders at --seed: there is no story s
 const NO_INSTRUMENTS: &str =
     "instruments are programs run on a finished file; run them with `ggtts-render` or on the file";
 const NO_FILE: &str = "a binding hands the PCM to its caller and writes no file";
-const BINDING_SEED: &str = "the app renders stories: its seed is the story seed's salt (render.seed_salt)";
 const NO_STORY_FILE: &str = "a binding renders the text it is given; a story file is ggtts-render --story's";
 const NOT_BOOK_FRONT: &str = "ggtts-book's own options";
 const NO_TIMINGS: &str = "a binding returns the samples, not timings or reports";
@@ -240,19 +238,14 @@ const FRONT_ENDS: &[FrontEnd] = &[
                 ],
                 Carried,
             ),
-            // The cache is read only by a build with engines: probed with the ggml feature.
-            (&["load.cache_dir"], Gap(291)),
+            (&["load.cache_dir"], Carried),
             (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Carried),
             (&["render.judge"], Refused(NO_JUDGE)),
-            (&["render.steer"], Carried),
-            // Read only by an engine that steers, which the fake engine is not: probed on a real model only.
-            (&["render.steer_scale", "render.steer_layers"], Gap(291)),
-            (&["render.edge_s"], Carried),
-            // A redraw needs a draw the judge rejects, which the fake engine never gives.
-            (&["render.redraw"], Gap(291)),
+            (STEER, Carried),
+            (&["render.edge_s", "render.redraw"], Carried),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Carried),
             (REPORTS, Refused(NO_TIMINGS)),
@@ -305,6 +298,10 @@ const FRONT_ENDS: &[FrontEnd] = &[
     },
     FrontEnd {
         id: "android",
+        // The app's request, its saved voices and its render calls hold the options document and hand it to the
+        // Kotlin binding unread (android/demo/.../TtsBinding.kt, GgttsBinding), so it carries and refuses what the
+        // binding does, by the binding's own refusal; `android_probes` checks the hand-over and takes the Kotlin
+        // probes' verdicts. The app's own choices: it never downloads, and it streams raw unless the document says.
         cells: &[
             (
                 &[
@@ -314,26 +311,33 @@ const FRONT_ENDS: &[FrontEnd] = &[
                     "load.voice",
                     "load.speaker",
                     "load.threads",
+                    "load.cache_dir",
                 ],
                 Carried,
             ),
             (&["load.device"], Refused(CPU_ONLY)),
             (&["load.offline"], Refused(NEVER_DOWNLOADS)),
-            (&["load.cache_dir"], Gap(282)),
             (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
-            (&["render.text", "render.seed_salt"], Carried),
-            (&["render.instruction"], Gap(282)),
+            (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
-            (&["render.seed"], Refused(BINDING_SEED)),
+            (&["render.seed"], Carried),
             (&["render.judge"], Refused(NO_JUDGE)),
-            (STEER, Gap(282)),
-            (&["render.redraw", "render.edge_s", "render.measure_timings"], Gap(282)),
+            (&["render.steer", "render.edge_s"], Carried),
+            // Handed to the binding in the document like the rest, so the app carries them exactly when the Kotlin
+            // binding does, and the binding has them as gaps (#292: no probe on the fake engine). The app cannot carry
+            // more than the binding: `the_app_carries_no_more_than_its_binding` holds the two rows together.
+            (
+                &["render.steer_scale", "render.steer_layers", "render.redraw"],
+                Gap(282),
+            ),
+            (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Refused(ANDROID_TRACE)),
-            (REPORTS, Gap(282)),
-            (LOG, Gap(282)),
+            (REPORTS, Refused(NO_TIMINGS)),
+            (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
-            (FILES_OUT, Refused(NO_FILE)),
-            (STREAM_LEVEL, Gap(284)),
+            (&["output.out", "output.stream_format"], Refused(NO_FILE)),
+            (&["output.stream"], Carried),
+            (STREAM_LEVEL, Carried),
             (BOOK, Refused(NOT_BOOK_FRONT)),
         ],
     },
@@ -1243,7 +1247,158 @@ fn python_probes() -> Vec<Probe> {
     ] {
         push(key, by_key(render(doc), key));
     }
+    out.extend(python_engine_probes(&dir));
     let _ = std::fs::remove_dir_all(dir);
+    out
+}
+
+/// What [`Recorder`] saw: each request's draw, and the steering it carried (its scale and layers).
+#[derive(Default)]
+struct Recorded {
+    draws: Vec<u32>,
+    steer: Vec<(f64, Vec<u32>)>,
+}
+
+/// An engine that steers, for the probes the fake engine cannot answer: the fake engine stating Qwen3-TTS's
+/// capabilities, recording each request's draw and steering, and handing the fake engine the request without the
+/// steering (which it would refuse). Its first draw of a chunk is the fake engine's speech for a text twenty times
+/// as long, which the duration judge rejects as a runaway, so a redraw is asked for when one is allowed.
+struct Recorder {
+    fake: ggtts_fake::FakeEngine,
+    seen: std::sync::Arc<std::sync::Mutex<Recorded>>,
+}
+
+impl ggtts_core::engine::Engine for Recorder {
+    fn capabilities(&self) -> ggtts_core::capabilities::Capabilities {
+        ggtts_core::capabilities::Capabilities::of("qwen3-tts").unwrap()
+    }
+    fn info(&self) -> &ggtts_core::engine::EngineInfo {
+        self.fake.info()
+    }
+    fn profile(&self) -> &ggtts_core::profile::Profile {
+        self.fake.profile()
+    }
+    fn generate(
+        &mut self,
+        req: &ggtts_core::engine::ChunkRequest<'_>,
+    ) -> Result<ggtts_core::engine::Generated, ggtts_core::engine::EngineError> {
+        let mut seen = self.seen.lock().unwrap();
+        seen.draws.push(req.draw);
+        if let Some(s) = req.steer {
+            seen.steer.push((s.scale, s.layer_indices()));
+        }
+        drop(seen);
+        let long = req.text.repeat(20);
+        let text = if req.draw == 0 { long.as_str() } else { req.text };
+        self.fake.generate(&ggtts_core::engine::ChunkRequest {
+            text,
+            steer: None,
+            ..*req
+        })
+    }
+    fn decode(
+        &mut self,
+        codes: &ggtts_core::engine::Codes,
+    ) -> Result<ggtts_core::engine::Pcm, ggtts_core::engine::EngineError> {
+        self.fake.decode(codes)
+    }
+}
+
+/// Python's `options=` through its load path (`ggtts_py::core::load_over`) over [`Recorder`], loaded as qwen3-tts
+/// so the document is checked against an engine that steers: `render.steer_scale` and `render.steer_layers` are
+/// seen in the steering the engine is handed, `render.redraw` in the draws it is asked for, and `load.cache_dir` in
+/// the offline refusal of an uncached steering URL, which names the cache the load gave.
+fn python_engine_probes(dir: &Path) -> Vec<Probe> {
+    use ggtts_py::core::{guard_keyed, load_over, LoadRequest};
+    let text = "你好。";
+    let steer = dir.join("steer.safetensors");
+    let v = [0.5f32; 8];
+    std::fs::write(
+        &steer,
+        ggtts_core::steer::write_safetensors(&[("talker.layer.0", &v), ("talker.layer.1", &v)]),
+    )
+    .unwrap();
+    let steer = serde_json::to_string(&steer.to_string_lossy()).unwrap();
+    // Render `text` with the render document `doc` on a fresh recorder loaded with `load_doc`: what it saw, and the
+    // render's result.
+    let run = |load_doc: &str, doc: &str| {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Recorded::default()));
+        let engine = Recorder {
+            fake: ggtts_fake::FakeEngine::default(),
+            seen: seen.clone(),
+        };
+        let req = LoadRequest {
+            options: Some(load_doc.to_string()),
+            ..Default::default()
+        };
+        let result = guard_keyed(|| {
+            load_over(&req, Box::new(engine))?
+                .0
+                .render_with(text, Some(7), Some(doc))
+        });
+        let seen = std::sync::Arc::try_unwrap(seen).ok().unwrap().into_inner().unwrap();
+        (seen, result)
+    };
+    let qwen = r#"{"load": {"engine": "qwen3-tts"}}"#;
+    let mut out = Vec::new();
+    let mut push = |key: &str, seen| out.push(("python", key.to_string(), seen));
+    // Steering: the scale and the layers the engine is handed are the document's (the file has layers 0 and 1).
+    let (plain, r) = run(qwen, &format!(r#"{{"render": {{"steer": {steer}, "redraw": 0}}}}"#));
+    assert!(r.is_ok(), "python: a steered render failed: {r:?}");
+    let (scaled, _) = run(
+        qwen,
+        &format!(r#"{{"render": {{"steer": {steer}, "steer_scale": 0.25, "redraw": 0}}}}"#),
+    );
+    let (layered, _) = run(
+        qwen,
+        &format!(r#"{{"render": {{"steer": {steer}, "steer_layers": [1], "redraw": 0}}}}"#),
+    );
+    let first = |s: &Recorded| s.steer.first().cloned();
+    push(
+        "render.steer_scale",
+        match (first(&plain), first(&scaled)) {
+            (Some((1.0, _)), Some((0.25, _))) => Seen::Carried,
+            _ => Seen::Dropped,
+        },
+    );
+    push(
+        "render.steer_layers",
+        match (first(&plain), first(&layered)) {
+            (Some((_, all)), Some((_, one))) if all == vec![0, 1] && one == vec![1] => Seen::Carried,
+            _ => Seen::Dropped,
+        },
+    );
+    // Redraws: with none allowed the runaway first draw is the only one; with one allowed, a second draw is asked for.
+    let (none, _) = run(qwen, r#"{"render": {"redraw": 0}}"#);
+    let (one, _) = run(qwen, r#"{"render": {"redraw": 1}}"#);
+    push(
+        "render.redraw",
+        if none.draws == vec![0] && one.draws == vec![0, 1] {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        },
+    );
+    // The load's cache directory: an offline engine refuses an uncached steering URL, naming that cache. The host is
+    // `.invalid`, so a resolution that ignored the load would fail on the network instead.
+    let cache = dir.join("python-cache");
+    let load_doc =
+        serde_json::json!({"load": {"engine": "qwen3-tts", "offline": true, "cache_dir": cache}}).to_string();
+    let (_, r) = run(
+        &load_doc,
+        r#"{"render": {"steer": "https://example.invalid/presets/x.safetensors"}}"#,
+    );
+    push(
+        "load.cache_dir",
+        match r {
+            Err(((_, msg), _))
+                if msg.contains("offline mode does not download it") && msg.contains(&cache.display().to_string()) =>
+            {
+                Seen::Carried
+            }
+            _ => Seen::Dropped,
+        },
+    );
     out
 }
 
@@ -1290,12 +1445,43 @@ fn kotlin_probes() -> Vec<Probe> {
             Seen::Dropped
         },
     );
-    // The load document's engine is the engine loaded.
+    // The load document's engine is the engine loaded: "fake" loads, where the document's default ("auto", with no
+    // model) would be qwen3-tts, which this build cannot load from no files.
     push(
         "load.engine",
-        match guard_keyed(|| load(r#"{"load": {"engine": "nonesuch"}}"#, &LoadArgs::default())) {
-            Err(((_, msg), _)) if msg.contains("nonesuch") => Seen::Carried,
+        match guard_keyed(|| load(fake, &LoadArgs::default())) {
+            Ok(h) => {
+                ggtts_ffi::ggtts_free(h);
+                Seen::Carried
+            }
+            Err(_) => Seen::Dropped,
+        },
+    );
+    // The model path reaches the engine's file check, which names it.
+    let dir = std::env::temp_dir().join(format!("ggtts-conformance-kotlin-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let not_gguf = dir.join("not-a-model.gguf");
+    std::fs::write(&not_gguf, b"not a model").unwrap();
+    let doc = format!(
+        r#"{{"load": {{"engine": "qwen3-tts", "model": {0}, "codec": {0}, "offline": true}}}}"#,
+        serde_json::to_string(&not_gguf.to_string_lossy()).unwrap()
+    );
+    push(
+        "load.model",
+        match guard_keyed(|| load(&doc, &LoadArgs::default())) {
+            Err(((_, msg), _)) if msg.contains("not-a-model.gguf") => Seen::Carried,
             _ => Seen::Dropped,
+        },
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    // A speaker reaches the engine's capabilities, which refuse it on the fake engine in their own words.
+    let speaker = caps.refusal("load.speaker", None).to_string();
+    push(
+        "load.speaker",
+        match guard_keyed(|| load(r#"{"load": {"engine": "fake", "speaker": "a"}}"#, &LoadArgs::default())) {
+            Err(((ERR_ARG, msg), Some(k))) if k == "load.speaker" && msg == speaker => Seen::Carried,
+            Err(((ERR_ARG, _), Some(k))) if k == "load.speaker" => Seen::Refused,
+            other => panic!("kotlin: load.speaker gave {:?}", other.is_ok()),
         },
     );
     // The stream: pieces reach the callback.
@@ -1482,6 +1668,8 @@ fn probes() -> Vec<Probe> {
     out.extend(kotlin_probes());
     out.extend(exact_seed_probes());
     out.extend(stream_probes());
+    let kotlin: Vec<Probe> = out.iter().filter(|(fe, _, _)| *fe == "kotlin").cloned().collect();
+    out.extend(android_probes(&read(ANDROID_SEAM), &kotlin));
     out
 }
 
@@ -1572,6 +1760,88 @@ fn exact_seed_probes() -> Vec<Probe> {
     ));
     let _ = std::fs::remove_dir_all(dir);
     out
+}
+
+// ── the Android app: its document handed to the Kotlin binding ──
+
+/// The demo app's binding seam, where its request becomes the binding's call.
+const ANDROID_SEAM: &str = "android/demo/src/main/kotlin/ggtts/demo/TtsBinding.kt";
+
+/// What `GgttsBinding` must hand the Kotlin binding for the app to carry its document: the load document at load, and
+/// the request's render and stream documents on every render.
+const ANDROID_HANDOVER: [&str; 3] = [
+    "Ggtts.load(allowDownload = false, options = request.loadDocument(cacheDir))",
+    "tts.render(text, seed, options = whole)",
+    "tts.renderStream(text, seed, options = stream)",
+];
+
+/// The Android app's probes. The app runs on a phone, not in this test, so it is probed at its seam: when `seam` (the
+/// source of `GgttsBinding`) hands every call its document ([`ANDROID_HANDOVER`]), the app sees each option as the
+/// Kotlin binding does (`kotlin`, that binding's probes); when any call is made without it, every option is dropped.
+/// The app's own JVM tests and `scripts/kotlin_binding_test.sh` (android/demo/src/hostTest) run the seam itself.
+fn android_probes(seam: &str, kotlin: &[Probe]) -> Vec<Probe> {
+    let code = code_only(seam);
+    let handed = ANDROID_HANDOVER.iter().all(|h| code.contains(h));
+    kotlin
+        .iter()
+        .map(|(_, key, seen)| ("android", key.clone(), if handed { *seen } else { Seen::Dropped }))
+        .collect()
+}
+
+/// The options the app claims to carry that its binding does not: the app hands its document to the Kotlin binding,
+/// so where the binding's cell is a gap or a refusal, the app's cannot be Carried.
+fn wider_than_its_binding(cells: &BTreeMap<(String, String), Cell>) -> Vec<String> {
+    let mut wrong = Vec::new();
+    for d in TABLE {
+        let key = d.key();
+        let kotlin = cells[&("kotlin".to_string(), key.clone())];
+        let android = cells[&("android".to_string(), key.clone())];
+        if android == Carried && kotlin != Carried {
+            wrong.push(format!("{key}: android is Carried, kotlin is {kotlin:?}"));
+        }
+    }
+    wrong
+}
+
+/// The app carries no more than its binding, and a planted android cell wider than Kotlin's fails, naming it.
+#[test]
+fn the_app_carries_no_more_than_its_binding() {
+    let mut cells = cells(TABLE, FRONT_ENDS).unwrap();
+    let wrong = wider_than_its_binding(&cells);
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    cells.insert(("android".to_string(), "render.steer_scale".to_string()), Carried);
+    let planted = wider_than_its_binding(&cells);
+    assert_eq!(planted.len(), 1, "{planted:?}");
+    assert!(
+        planted[0].starts_with("render.steer_scale: android is Carried, kotlin is Gap(292)"),
+        "{planted:?}"
+    );
+}
+
+/// #282 AC6: the app's carried options are exercised through its seam, and an app whose binding call drops the
+/// document fails: a planted seam that renders without it sees the instruction dropped.
+#[test]
+fn an_app_that_renders_without_its_document_fails() {
+    let seam = read(ANDROID_SEAM);
+    let kotlin = kotlin_probes();
+    let seen = android_probes(&seam, &kotlin);
+    assert!(!seen.is_empty());
+    let cells = cells(TABLE, FRONT_ENDS).unwrap();
+    for (fe, key, s) in &seen {
+        verdict(fe, key, cells[&(fe.to_string(), key.clone())], *s).unwrap();
+    }
+    let planted = seam.replace("tts.render(text, seed, options = whole)", "tts.render(text, seed)");
+    assert_ne!(
+        planted, seam,
+        "the seam no longer has the render hand-over this test plants out"
+    );
+    let dropped = android_probes(&planted, &kotlin);
+    let instruction = dropped.iter().find(|(_, k, _)| k == "render.instruction").unwrap();
+    let e = verdict("android", "render.instruction", Carried, instruction.2).unwrap_err();
+    assert!(
+        e.contains("render.instruction is Carried in the table, and the probe saw it Dropped"),
+        "{e}"
+    );
 }
 
 fn report(line: &str) {
@@ -1677,12 +1947,12 @@ fn a_new_option_entered_as_a_gap_fails_naming_it() {
 #[test]
 fn a_closed_gap_still_listed_fails() {
     let mut cells = cells(TABLE, FRONT_ENDS).unwrap();
-    let key = ("android".to_string(), "output.stream_raw".to_string());
-    assert_eq!(cells[&key], Gap(284));
+    let key = ("book".to_string(), "render.edge_s".to_string());
+    assert_eq!(cells[&key], Gap(283));
     cells.insert(key, Carried);
     let errors = check_gaps(&cells, &read(GAPS));
     assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(errors[0].contains("android\\toutput.stream_raw\\t#284"), "{errors:?}");
+    assert!(errors[0].contains("book\\trender.edge_s\\t#283"), "{errors:?}");
 }
 
 /// #284 AC3: a document path that ignores `raw` (it levels anyway) fails: the probe sees `output.stream_raw` dropped,

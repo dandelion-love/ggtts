@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- Android 10 and later: follows the phone's dark mode. The screen draws its own title, so no action bar. -->
-<resources>
-    <style name="AppTheme" parent="android:Theme.DeviceDefault.DayNight">
-        <item name="android:windowActionBar">false</item>
-        <item name="android:windowNoTitle">true</item>
-    </style>
-</resources>

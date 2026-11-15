@@ -61,32 +61,15 @@ conformance table gives it a row with every capability `Refused` ("an engine par
 
 ## The state today
 
-Read from the code on `rc` at 554f89e, `track/epub` at 7dd4837 and `track/android` at 1b7acba. Y carries it, N does not,
-fixed means the front end hard-codes one value, and `?` is not confirmed from the code.
+The live record is the conformance test, `crates/ggtts-cli/tests/conformance.rs`: one cell per option for every
+front end (carried, refused with its reason, or a known gap with the issue that closes it), probes that exercise what
+they can, and `conformance/gaps.txt`, the gaps that remain. `cargo test -p ggtts-cli --test conformance -- --nocapture`
+prints the counts per front end. The hand-written table that stood here until
+[#283](https://github.com/dandelion-love/ggtts/issues/283) was a survey of the code on 2026-11-13; it went stale with
+every story that closed a gap, and the test does not. [adding-a-capability.md](adding-a-capability.md) walks one option
+from the table to the test.
 
-| Capability | render `--story` | render `--text` | book | C ABI | Kotlin | Python | Android app |
-|---|---|---|---|---|---|---|---|
-| engine, model and codec paths | Y | Y | Y | Y | Y | Y | Y |
-| default model download, offline | Y | Y | Y | Y (settings v3) | Y | Y | fixed: never downloads |
-| reference voice (Kitten) | Y | Y | Y | Y | Y | Y | Y |
-| speaker | Y | Y | Y | Y (settings v2) | Y | Y | Y |
-| device | Y | Y | Y | Y (settings v3) | N (documented: CPU only) | Y | N |
-| threads | Y | Y | Y | Y | Y | Y | Y |
-| seed | N: ignored ([#215](https://github.com/dandelion-love/ggtts/issues/215)) | Y: the sampler seed | own: `--seed-root` | Y: as the story's seed salt | as C | as C | as C |
-| style instruction | Y | Y | Y (since [#279](https://github.com/dandelion-love/ggtts/issues/279)) | Y, fixed at load (v2) | Y, at load | Y, at load | N |
-| steering | Y | Y | Y (since #279) | N | N | N | N |
-| ASR judge (redraw a chunk that lost or repeated text, `--judge`) | Y ([#306](https://github.com/dandelion-love/ggtts/issues/306)) | refused: one draw | Y (#306) | refused: no redraws yet | refused | refused | refused |
-| redraws, chunk ceiling, sampler | N (profile only) | N | redraws: Y, `--redraw` ([#305](https://github.com/dandelion-love/ggtts/issues/305)); ceiling and sampler N | N | N | N | N |
-| edge trim | Y | N ([#180](https://github.com/dandelion-love/ggtts/issues/180)) | Y | Y | Y | Y | Y |
-| trace and level | Y | Y (since [#294](https://github.com/dandelion-love/ggtts/issues/294)) | Y (since #279) | N | N | N | N |
-| tensor hooks | N | N | N | N | N | N | N |
-| instruments, report | Y | Y | Y, per chapter written ([#295](https://github.com/dandelion-love/ggtts/issues/295)) | N | N | N | N |
-| timing and duration reports, log settings | Y | Y | N | N | N | N | ? |
-| stream | Y: levelled by default, `--stream-raw` | Y: levelled by default, `--stream-raw` (since #294) | N | Y: unlevelled pieces only | as C | as C | as C |
-| output | FLAC, WAV or s16le stream | same | FLAC per chapter, export | PCM | PCM | PCM, FLAC | played, saved |
-| speech rate and pitch (Android `SynthesisRequest`) | n/a | n/a | n/a | n/a | n/a | n/a | refused: one log line per read (since [#282](https://github.com/dandelion-love/ggtts/issues/282)) |
-
-What the table shows beyond missing cells:
+What the 2026-11-13 survey showed beyond missing cells:
 
 * **The same word means different things.** `seed` is a sampler seed on `--text`, ignored on `--story`, a seed salt
   in the bindings, a root in the book, and a base that each line adds its index to in `ggtts-kitten render`.

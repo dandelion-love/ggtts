@@ -7,9 +7,10 @@ object MenuIds {
     const val ABOUT = 2
     const val ADVANCED = 3
     const val MODELS_FOLDER = 4
+    const val LICENCES = 5
     // 5 is the Licences sheet's in its own pending change; a later merge adds it here, and the test then checks it.
     const val SAVED_READS = 6
 
     /** Every id the menu uses. */
-    val ALL = listOf(IMPORT, ABOUT, ADVANCED, MODELS_FOLDER, SAVED_READS)
+    val ALL = listOf(IMPORT, ABOUT, ADVANCED, MODELS_FOLDER, LICENCES, SAVED_READS)
 }

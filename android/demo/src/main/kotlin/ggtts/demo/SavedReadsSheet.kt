@@ -73,7 +73,7 @@ class SavedReadsSheet(
             text = label; setOnClickListener { onClick() }
         }
         buttons.addView(button("▶ Play") { play(r) })
-        buttons.addView(button("Share") { activity.startActivity(MusicFolder.shareIntent(Uri.parse(r.uri), r.mime)) },
+        buttons.addView(button("Share") { activity.startActivity(MusicFolder.shareIntent(Uri.parse(r.uri), activity.getString(R.string.share_title), r.mime)) },
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
         buttons.addView(button("Delete") {
             library.delete(r).fold(

@@ -327,3 +327,42 @@ fn level_zero_observers_record_nothing() {
     render_plan(&mut e, &chunks, &seeds, &mut DurationJudge, &opts, obs, Output::Whole).unwrap();
     assert!(rec.lines.is_empty());
 }
+
+/// #352 AC2: handing each kept draw's codes to an observer changes nothing in the read. The observer is handed one
+/// chunk at a time, in order, with the kept draw's number and seed and its codes.
+#[test]
+fn the_codes_observer_sees_each_kept_draw_and_changes_nothing() {
+    for case in common::cases() {
+        let mut e = case.engine();
+        let (chunks, opts) = (case.chunks(&e), case.opts(&e));
+        let plain = render_story(&mut e, &case.story_id, &chunks, &opts).unwrap();
+        let mut seen = Vec::new();
+        let mut observe = |chunk: usize, draw: &ggtts_core::pipeline::DrawRecord, codes: &ggtts_core::engine::Codes| {
+            seen.push((chunk, draw.draw, draw.seed, codes.clone()));
+        };
+        let mut e = case.engine();
+        let mut hooks = Hooks::new();
+        let seeds = StorySeeds {
+            story_id: &case.story_id,
+            salt: &opts.seed_salt,
+        };
+        let read = render_plan(
+            &mut e,
+            &chunks,
+            &seeds,
+            &mut DurationJudge,
+            &opts,
+            &mut Observers::new(&mut NullEvents, &mut hooks).with_codes(&mut observe),
+            Output::Whole,
+        )
+        .unwrap();
+        same_read(&plain, &read, &case.id);
+        assert_eq!(seen.len(), read.chunks.len(), "{}: one per chunk", case.id);
+        for ((chunk, draw, seed, codes), record) in seen.iter().zip(&read.chunks) {
+            assert_eq!(*chunk, record.i, "{}", case.id);
+            assert_eq!(*draw, record.redraws, "{}: the kept draw", case.id);
+            assert_eq!(*seed, record.seed, "{}: the kept draw's seed", case.id);
+            assert!(codes.codebooks > 0 && codes.n_frames() > 0, "{} chunk {chunk}", case.id);
+        }
+    }
+}

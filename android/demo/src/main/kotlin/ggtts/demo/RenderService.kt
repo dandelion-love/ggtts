@@ -198,7 +198,7 @@ class RenderService : Service() {
     private fun notification(text: String): Notification {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CHANNEL) == null) {
-            nm.createNotificationChannel(NotificationChannel(CHANNEL, "Rendering for later", NotificationManager.IMPORTANCE_LOW))
+            nm.createNotificationChannel(NotificationChannel(CHANNEL, getString(R.string.render_channel), NotificationManager.IMPORTANCE_LOW))
         }
         val open = PendingIntent.getActivity(
             this, 2, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
@@ -207,7 +207,7 @@ class RenderService : Service() {
         val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL) else
             @Suppress("DEPRECATION") Notification.Builder(this)
         return b.setSmallIcon(android.R.drawable.ic_menu_save)
-            .setContentTitle("ggtts is rendering for later")
+            .setContentTitle(getString(R.string.render_notification_title))
             .setContentText(text)
             .setOngoing(true)
             .setContentIntent(open)

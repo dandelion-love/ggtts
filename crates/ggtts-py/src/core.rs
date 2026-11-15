@@ -997,7 +997,7 @@ mod tests {
         let (h, _) = doc_load(r#"{"load": {"engine": "fake"}}"#).unwrap();
         for (doc, want) in [
             (r#"{"load": {"device": "cpu"}}"#, "load.device"),
-            (r#"{"render": {"seed": 3}}"#, "render.seed"),
+            (r#"{"render": {"seed": 3, "redraw": 1}}"#, "render.seed"),
             (r#"{"output": {"stream": "raw"}}"#, "output.stream"),
             (r#"{"render": {"nonesuch": 1}}"#, "render.nonesuch"),
         ] {

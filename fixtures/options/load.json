@@ -8,6 +8,7 @@
     "device": "cuda",
     "threads": 8,
     "offline": true,
-    "cache_dir": "cache"
+    "cache_dir": "cache",
+    "kitten_full_head": true
   }
 }

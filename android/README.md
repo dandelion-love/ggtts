@@ -69,13 +69,31 @@ The Android library is arm64-v8a only, API level 24 or later, and runs on the CP
 
 ## Bring your own model
 
-The demo reads model files from its own directory on the device:
+The app asks for no storage permission. It reads model files from two places, and lists the voices both make:
 
-```
-/sdcard/Android/data/ggtts.demo/files/models/
-```
+* **A folder you choose once** (the easiest to fill): "Choose a models folder…" in the ⋮ menu opens the system's
+  folder picker; pick or create one such as `Download/ggtts`, and copy model files into it with a file manager or
+  over USB from a computer. The app keeps read access to that folder across restarts. When the folder is chosen,
+  and each time the app opens, it copies the folder's model files that it does not have yet into its own directory,
+  with the same checks as an import (below); a voice's sample in the folder plays from there. Choosing another
+  folder replaces the first. The copy doubles the space a model takes, so delete the folder's copy once the app has
+  it if space is short; the voice stays.
 
-Put them there in either of two ways:
+  Why a copy: the engine opens a model by path, and a picked file reaches it only as `/proc/self/fd/<n>`. Opening
+  that path checks access to the file underneath, which is on shared storage the app may not read without a storage
+  permission. On a Galaxy Z Fold5 (Android 17) all three loads that way failed with "Permission denied (os error
+  13)". The copy itself is quick there: 0.55 s for the 291 MB codec and 3.5 s for the 2.04 GB talker. A load from the
+  app's directory took 2.3 to 2.8 s, the same as before.
+* **Its own directory**, which Android 11 and later hide from file managers and USB, so it is filled from the app or
+  with adb:
+
+  ```
+  /sdcard/Android/data/ggtts.demo/files/models/
+  ```
+
+A file of the same name in both places is the app directory's.
+
+Put files in the app's own directory in either of two ways:
 
 * **In the app:** "Import a voice file…" in the ⋮ menu (or "Add a voice from a file" in the voice sheet) opens the
   system file picker, and copies the file you choose into that
@@ -154,7 +172,11 @@ about the same speed within thermal drift, 2 was slower, and the audio was bit-i
 
 When the line is done, the whole read is saved to `/sdcard/Android/data/ggtts.demo/files/out/<engine>.wav`
 (16-bit). The streamed pieces are the render's samples before its final level step, so the saved file and what was
-heard can differ slightly in loudness. The app logs to logcat under the tag `ggtts-demo`: what it loaded, the time
+heard can differ slightly in loudness. That folder is hidden from file managers and USB on Android 11 and later, so a
+finished read has **Save to Music** and **Share** under the player: Save adds it to `Music/ggtts/` as
+`ggtts-<engine>-<date>-<time>.wav`, and Share sends that copy to the app you choose. Each voice's sample is copied to
+`Music/ggtts/` too, once. Both go through Android's media store, which needs no permission on Android 10 and later;
+on Android 7 to 9 the two buttons are hidden. The app logs to logcat under the tag `ggtts-demo`: what it loaded, the time
 to first audio, how long the render took, and its real-time factor.
 
 ## Leaving the screen during a read

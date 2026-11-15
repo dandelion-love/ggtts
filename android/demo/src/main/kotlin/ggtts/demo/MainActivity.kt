@@ -85,7 +85,14 @@ class MainActivity : AppCompatActivity(), DemoView {
         /** The binding's default. See android/README.md for what more threads buy on a phone. */
         const val DEFAULT_THREADS = 4
         private const val REQUEST_NOTIFICATIONS = 2
+        private const val PICK_FOLDER = 3
     }
+
+    // Storage (Storage.kt): the picked models folder, Music/ggtts/, and every model file listed from both.
+    private lateinit var folder: ModelsFolder
+    private lateinit var music: MusicFolder
+    private var catalog = Catalog.EMPTY
+    private lateinit var readActions: LinearLayout
 
     private val worker = Executors.newSingleThreadExecutor()
     private val handler = Handler(Looper.getMainLooper())
@@ -141,6 +148,8 @@ class MainActivity : AppCompatActivity(), DemoView {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         modelsDir = File(getExternalFilesDir(null) ?: filesDir, "models").apply { mkdirs() }
+        folder = ModelsFolder(this)
+        music = MusicFolder(this)
         // The read belongs to the process (Reader), not to this screen: it goes on when the screen is left, and a
         // screen opened later shows its progress.
         controller = Reader.controller(this)
@@ -148,6 +157,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         refreshFiles()
         Reader.screen = this
         applyIntent(intent)
+        syncFolder()
     }
 
     override fun onTrimMemory(level: Int) {
@@ -236,6 +246,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         if (busy) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         importButton.isEnabled = !busy
+        showReadActions(busy)
     }
 
     override fun showStatus(text: String) {
@@ -430,13 +441,15 @@ class MainActivity : AppCompatActivity(), DemoView {
         val scroll = NestedScrollView(this).apply { addView(col) }
         // The ⋮ menu: everything that is not reading. The two section items say whether they open or close.
         header.menu.add(0, 1, 0, "Import a voice file…")
-        val aboutItem = header.menu.add(0, 2, 1, "About this app")
-        val advItem = header.menu.add(0, 3, 2, "Advanced")
+        header.menu.add(0, 4, 1, "Choose a models folder…")
+        val aboutItem = header.menu.add(0, 2, 2, "About this app")
+        val advItem = header.menu.add(0, 3, 3, "Advanced")
         header.setOnMenuItemClickListener { item: MenuItem ->
             when (item.itemId) {
                 1 -> pickFile()
                 2 -> aboutItem.title = if (toggleSection(scroll, about)) "Hide About" else "About this app"
                 3 -> advItem.title = if (toggleSection(scroll, adv)) "Hide Advanced" else "Advanced"
+                4 -> chooseFolder()
             }
             true
         }
@@ -472,6 +485,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         stop.setOnClickListener { controller.stop() }
         footer.addView(speak, lp(h = dp(56), top = dp(10)))
         footer.addView(stop, lp(h = dp(56), top = dp(10)))
+        footer.addView(readActionsRow(), lp(top = dp(8)))
 
         engines.check(100)
         return LinearLayout(this).apply {
@@ -513,7 +527,10 @@ class MainActivity : AppCompatActivity(), DemoView {
     }
 
     private fun refreshFiles() {
-        val listed = ModelImport.listed(modelsDir)
+        // The app's own directory, and the picked folder's samples (its model files are copied in: syncFolder).
+        catalog = Catalog.merge(Catalog.appEntries(modelsDir), folder.entries().filter { it.name.endsWith(Voices.SAMPLE_SUFFIX) })
+        exportSamples()
+        val listed = catalog.names
         val steps = About.gettingStarted(listed.size)
         gettingStarted.text = if (steps.isEmpty()) "" else "To start:\n" + steps.joinToString("\n")
         gettingStarted.visibility = if (steps.isEmpty()) View.GONE else View.VISIBLE
@@ -528,8 +545,8 @@ class MainActivity : AppCompatActivity(), DemoView {
 
     /** Lists the voices the files make; keeps the voice chosen, else selects the first complete one. */
     private fun refreshVoices(listed: List<String>) {
-        val samples = modelsDir.list()?.filter { it.endsWith(Voices.SAMPLE_SUFFIX) }?.toSet() ?: emptySet()
-        found = Voices.group(Voices.scan(modelsDir, listed.filter { !it.endsWith(Voices.SAMPLE_SUFFIX) }), samples)
+        val samples = listed.filter { it.endsWith(Voices.SAMPLE_SUFFIX) }.toSet()
+        found = Voices.group(Voices.scan(listed.filter { !it.endsWith(Voices.SAMPLE_SUFFIX) }) { catalog.open(it, ::openLocation) }, samples)
         val keep = applied?.let { a -> found.voices.firstOrNull { it.label == a.label } }
         // Applied here, so adb extras applied after this still win.
         (keep ?: found.first)?.let { if (keep == null) applyVoice(it) else showVoice(it) } ?: showVoice(null)
@@ -630,10 +647,10 @@ class MainActivity : AppCompatActivity(), DemoView {
     }
 
     private fun playSample(v: Voice) {
-        val name = v.sample ?: return
+        val location = v.sample?.let { catalog.location(it) } ?: return
         sample?.release()
         sample = MediaPlayer().apply {
-            setDataSource(File(modelsDir, name).path)
+            if (Storage.isContent(location)) setDataSource(this@MainActivity, Uri.parse(location)) else setDataSource(location)
             setOnCompletionListener { it.release(); if (sample === it) sample = null }
             prepare()
             start()
@@ -684,7 +701,9 @@ class MainActivity : AppCompatActivity(), DemoView {
     private fun path(s: Spinner): String? {
         val name = s.selectedItem as String? ?: return null
         if (name == NONE) return null
-        return File(modelsDir, name).path
+        // A listed name is wherever it is (the app directory, or the picked folder as a content URI); a name that is
+        // not listed (an adb extra for a file not there) stays a path in the app directory, for the binding's error.
+        return catalog.location(name) ?: File(modelsDir, name).path
     }
 
     /**
@@ -719,6 +738,10 @@ class MainActivity : AppCompatActivity(), DemoView {
     @Deprecated("The platform Activity API; the result API would be the AndroidX one")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == PICK_FOLDER) {
+            data?.data?.takeIf { resultCode == RESULT_OK }?.let { onFolderPicked(it) }
+            return
+        }
         val uri = data?.data
         if (requestCode != PICK || resultCode != RESULT_OK || uri == null) return
         setBusy(true)
@@ -748,6 +771,115 @@ class MainActivity : AppCompatActivity(), DemoView {
         Log.i(TAG, "imported $out (${out.length()} bytes)")
         return out
     }
+
+    // ---- storage a person can reach (Storage.kt): a models folder picked once, and Music/ggtts/ for audio out.
+    // No storage permission: the folder comes through the system picker, and MediaStore takes the app's own audio.
+
+    private fun chooseFolder() {
+        startActivityForResult(ModelsFolder.pickIntent(), PICK_FOLDER)
+    }
+
+    private fun onFolderPicked(uri: Uri) {
+        runCatching { folder.choose(uri) }.onFailure {
+            showError("Could not keep access to that folder: ${it.message}")
+            return
+        }
+        Log.i(TAG, "models folder: $uri (${folder.entries().size} files)")
+        refreshFiles()
+        syncFolder()
+    }
+
+    private var syncing = false
+
+    /**
+     * Copy the picked folder's model files that the app directory lacks into it, checked as an import is, one at a
+     * time on the worker; the voices refresh after each. The engine cannot open a picked file in place (Storage.kt).
+     */
+    private fun syncFolder() {
+        if (syncing) return
+        val todo = Storage.toCopy(folder.entries(), ModelImport.listed(modelsDir).toSet())
+        if (todo.isEmpty()) return
+        syncing = true
+        val where = folder.describe() ?: "the models folder"
+        worker.execute {
+            var failed = 0
+            todo.forEachIndexed { i, e ->
+                handler.post { showStatus("Copying ${e.name} from $where (${i + 1} of ${todo.size})...") }
+                val t0 = SystemClock.elapsedRealtime()
+                val r = runCatching {
+                    (contentResolver.openInputStream(Uri.parse(e.location)) ?: throw ImportException("cannot read ${e.name}"))
+                        .use { ModelImport(modelsDir).importFile(e.name, e.size, it) }
+                }
+                val ms = SystemClock.elapsedRealtime() - t0
+                if (r.isFailure) failed++
+                r.fold({ Log.i(TAG, "folder copy: ${e.name} (${it.length()} bytes) in $ms ms") },
+                    { Log.w(TAG, "folder copy: ${e.name} refused after $ms ms: ${it.message}") })
+                handler.post {
+                    refreshFiles()
+                    r.exceptionOrNull()?.let { showError("Not copied from $where: ${it.message}") }
+                }
+            }
+            val copied = todo.size - failed
+            handler.post {
+                syncing = false
+                // A refusal stays on screen; a clean run says so.
+                if (failed == 0) showStatus("Copied $copied model file(s) from $where; their voices are listed.")
+            }
+        }
+    }
+
+    /** Save and Share for the last finished read, under the player. */
+    private fun readActionsRow(): View {
+        readActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; visibility = View.GONE }
+        readActions.addView(MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
+            text = "Save to Music"; setOnClickListener { saveRead(share = false) }
+        })
+        readActions.addView(MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
+            text = "Share"; setOnClickListener { saveRead(share = true) }
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
+        return readActions
+    }
+
+    private fun showReadActions(busy: Boolean) {
+        if (!::readActions.isInitialized) return
+        readActions.visibility = if (!busy && music.available && LastRead.file?.exists() == true) View.VISIBLE else View.GONE
+    }
+
+    /** Copy the last read into Music/ggtts/ (once), then share it if [share]. */
+    private fun saveRead(share: Boolean) {
+        val file = LastRead.file ?: return
+        val engine = LastRead.engine ?: "read"
+        worker.execute {
+            val result = runCatching {
+                LastRead.savedAs ?: music.save(Storage.readName(engine, System.currentTimeMillis())) { out ->
+                    file.inputStream().use { it.copyTo(out) }
+                }.also { LastRead.savedAs = it }
+            }
+            handler.post {
+                result.fold({ uri ->
+                    Log.i(TAG, "saved read: $uri in ${Storage.MUSIC_PATH}")
+                    if (share) startActivity(MusicFolder.shareIntent(uri))
+                    else showStatus("Saved to ${Storage.MUSIC_PATH} (the Files app, and over USB).")
+                }, { showError("Could not save the read: ${it.message}") })
+            }
+        }
+    }
+
+    /** Each voice's sample goes to Music/ggtts/ too, once, so a person can play or send it from there. */
+    private fun exportSamples() {
+        if (!music.available) return
+        val samples = catalog.names.filter { it.endsWith(Voices.SAMPLE_SUFFIX) }
+        if (samples.isEmpty()) return
+        val snapshot = catalog
+        worker.execute {
+            for (name in Storage.samplesToExport(samples, music.saved())) {
+                runCatching {
+                    music.save(name) { out -> snapshot.open(name, ::openLocation).use { it.copyTo(out) } }
+                }.fold({ Log.i(TAG, "sample saved: $name to ${Storage.MUSIC_PATH}") }, { Log.w(TAG, "sample $name not saved: $it") })
+            }
+        }
+    }
 }
 
 /**
@@ -772,6 +904,7 @@ class DeviceAudio(private val dir: File) : AudioOut {
         b.put("data".toByteArray()).putInt(data)
         for (x in samples) b.putShort((x.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
         file.writeBytes(b.array())
+        LastRead.wrote(file, engine)
         return file.path
     }
 }

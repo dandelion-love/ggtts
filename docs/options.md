@@ -72,8 +72,8 @@ schema name (`section.name`; an unknown flag by its spelling; `$` for a document
 ## The environment rule
 
 An environment variable is a spelling of an option, like a flag: `GGTTS_LOG_LEVEL` (`observe.log_level`),
-`GGTTS_LOG_FORMAT` (`observe.log_format`) and `GGTTS_CACHE_DIR` (`load.cache_dir`) are columns of the table, read by
-`Options::from_env`.
+`GGTTS_LOG_FORMAT` (`observe.log_format`), `GGTTS_CACHE_DIR` (`load.cache_dir`) and `GGTTS_KITTEN_FULL_HEAD`
+(`load.kitten_full_head`) are columns of the table, read by `Options::from_env`.
 
 Every value the parsers set is marked with where it came from: a flag, a document or the environment.
 `Options::layer` lays one value on another, so `from_env(..)?.layer(from_args(..)?)` is the environment with every
@@ -85,7 +85,11 @@ For an option the engine does not have (`Options::apply_engine_rule`):
 * a value that comes **only from the environment** is ambient (exported in a shell, or set for another engine), so it
   is ignored, one warning line names the variable, and the record lists it under `ignored`.
 
-Which options an engine has is its capability statement, a later step; until then the caller says.
+Which options an engine has is its capability statement (`Capabilities`), which `options::check` reads. For
+example `load.kitten_full_head` (`--kitten-full-head`, `GGTTS_KITTEN_FULL_HEAD`) is a Kitten-TTS 2 switch: with
+`GGTTS_KITTEN_FULL_HEAD=1` exported, a qwen3-tts or fake render goes ahead with one warning and lists it as ignored,
+while `--kitten-full-head` on those engines is refused. The bindings take no option for it; their Kitten-TTS 2 engine
+reads `GGTTS_KITTEN_FULL_HEAD=1` from the environment itself.
 
 ## RenderOptions and the record
 
@@ -96,7 +100,7 @@ steering file is read first, with `Options::read_steering`.
 
 `options::record(&options, &engine_info)` is the provenance record: the engine, backend and parity; the instruction
 (when not empty) and the steering record (`sha256`, `layers`, `scale`), as `ggtts-render`'s trace header and reports
-write them; the seed keys given; the speaker given; the device; the trace level (0 when untraced); and the
+write them; the seed keys given; the speaker given; `kitten_full_head` when it is on; the device; the trace level (0 when untraced); and the
 environment values the engine ignored. `options::reported(&record)` is the part every `ggtts-render` report (timing,
-duration, each instrument's inputs) and its trace header carry (`options::REPORTED`: the instruction and the steering),
+duration, each instrument's inputs) and its trace header carry (`options::REPORTED`: the instruction, the steering and `kitten_full_head`),
 so they are written from the record and cannot disagree with it.

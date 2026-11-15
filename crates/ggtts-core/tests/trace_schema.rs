@@ -149,6 +149,7 @@ fn every_variant() -> Vec<Map<String, Value>> {
         ],
         instruction: Some("Speak slowly and softly.".into()),
         steer: Some(json!({"sha256": "2".repeat(64), "layers": [12, 13], "scale": 0.5})),
+        kitten_full_head: true,
     };
     let bare = Header {
         model_sha256: None,
@@ -158,6 +159,7 @@ fn every_variant() -> Vec<Map<String, Value>> {
         models: Vec::new(),
         instruction: None,
         steer: None,
+        kitten_full_head: false,
         ..full.clone()
     };
     let (cb, cb_p) = ([3u16, 4, 5], [0.5, 0.25, 1.0]);

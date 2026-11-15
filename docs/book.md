@@ -249,7 +249,9 @@ are not in it. Chunk numbers in it restart at each chapter, and it replays with 
 
 **Instruments** are `ggtts-render`'s, run by the same library call (`ggtts_instruments::options`) on each chapter
 FLAC, after every chapter is rendered and the engine is released. A chapter is measured unless its report directory
-holds a `measured.json` from an earlier run with the same chapter FLAC (by SHA-256) and the same instrument settings:
+holds a `measured.json` from an earlier run with the same chapter FLAC (by SHA-256), the same instrument settings,
+and the same instruments: each one's version and program, and the bytes of a script or `command=` program, so an
+instrument edited in place measures again (a shipped binary changes only with ggtts, and is named by its path). So
 a resumed book measures the chapters an earlier, interrupted run never measured, and a re-run with other instruments
 measures every chapter again. Each chapter is one render of the run, named by its directory (`NNN-<chapter id>`), with
 its report beside its FLAC
@@ -266,7 +268,11 @@ chapter FLAC written, as for `ggtts-render`. An unknown instrument is refused be
   `arg.reference_file`. A `reference_file` given on the command line or in the instruments file is refused in a book,
   before anything is rendered: one file cannot be every chapter's text.
 * **`--on-instrument-error abort`** skips the rest of the instruments on the chapter where one failed, and every
-  chapter after it: they are reported `measured: no`, and are measured by the next run.
+  chapter after it that holds no matching `measured.json`: they are reported `measured: no`, and are measured by the
+  next run. A later chapter that does hold one is still taken from it (`earlier run`).
+* **Completeness under abort.** As in `ggtts-render`, only `--require` decides completeness. With `abort` and no
+  `--require`, the book reports `measurement: complete` even when chapters say `measured: no`: nothing it depends on
+  is missing. Name the instruments that must have run with `--require` to make an unmeasured chapter incomplete.
 * **Timeouts are per instrument, per chapter.** `--instrument-timeout` (or an entry's `timeout_s`; 60 s when
   unset) bounds one instrument on one chapter FLAC. An ASR instrument on a long chapter needs more: set it.
 * **No event stream.** The book's trace covers every chapter, so no chapter is handed one: an instrument that needs
@@ -314,12 +320,14 @@ A render with an instruction or steering records them in every chapter manifest 
 and the steering as the trace header writes it, the file's SHA-256, the layers and the scale). A render with neither
 writes no `render` field, so its manifests are the bytes they were before the field existed. A resume under a
 different instruction or steering is refused the same way, naming the difference (`for instruction "calm", not
-"brisk"`, `for steering ...`), and the chapter is rendered again. A manifest without the field, including one written
-before it existed, is a render with no instruction and no steering: it resumes a run with neither, and is refused
-for a run with either.
+"brisk"`, `for steering ...`), and the chapter is rendered again. A manifest without the field is read as a render
+with no instruction and no steering: it matches a run with neither, and is refused for a run with either. That does
+not make an older book resumable by a newer ggtts: the engine record names the build (`ggtts_commit`), so any change
+of build refuses the manifest on `engine`, and the chapter is rendered again.
 
 **Redraws.** `--redraw N` (the shared table's `render.redraw`; unset is the engine profile's, which is 0 for
-`qwen3-tts`, so a book redraws only when asked, as a story does) is how many times a chunk the judge rejects is drawn
+`qwen3-tts`, so a book redraws only when asked, as a story does; `ggtts-render --text` refuses it, since a text
+renders one draw) is how many times a chunk the judge rejects is drawn
 again. A render with redraws records `redraw` in each chapter manifest and, per done chunk, `kept_draw`, `draws` (the
 number made) and `verdict` (the judge's verdict on the kept draw, `null` when it passed). A render at redraw 0 writes
 none of them, so its manifests are the bytes they were before redraws existed. A changed `--redraw` does not refuse a
@@ -328,6 +336,9 @@ judge and is within the new setting, or it is the new setting's last draw. Any o
 the new setting and rendered again, counted as `rejudged` in the report. So raising `--redraw` gives the chunks the
 judge rejected their further draws, a chunk recorded without draws (rendered at redraw 0) is judged again once
 redraws are on, and lowering it renders again the chunks kept at a draw the new setting does not reach.
+The same holds for the engine profile's default: when a profile's `redraw` goes up, a book resumed without
+`--redraw` judges its done chunks again under the new default, and those the judge rejects are rendered again. Pass
+`--redraw 0` to resume such a book as it was rendered.
 
 **The ASR judge.** The duration judge cannot hear a skipped clause: a chunk that drops one gets shorter, not longer.
 `--judge asr-qwen,model=DIR[,device=cpu|cuda][,min_run=N][,timeout=S][,start_timeout=S]` (the shared table's

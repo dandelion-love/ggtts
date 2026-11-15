@@ -35,6 +35,8 @@ pub struct Capabilities {
     pub hooks: Wants,
     /// Emits a `step` event per frame into a trace.
     pub step_events: bool,
+    /// Can compute its whole output head instead of a measured subset of it (`load.kitten_full_head`).
+    pub full_head: bool,
 }
 
 impl Capabilities {
@@ -50,6 +52,7 @@ impl Capabilities {
             devices: vec!["cpu"],
             hooks: Wants::NONE,
             step_events: false,
+            full_head: false,
         }
     }
 
@@ -72,6 +75,7 @@ impl Capabilities {
             }),
             "kitten-tts-2" => Some(Self {
                 devices: vec!["cpu", "cuda"],
+                full_head: true,
                 ..Self::none(name)
             }),
             "fake" => Some(Self {
@@ -99,6 +103,9 @@ impl Capabilities {
                 format!("the {family} engine cannot apply steering, which is only supported by the qwen3-tts engine")
             }
             "load.speaker" => format!("a speaker is only supported by the qwen3-tts engine, not {family}"),
+            "load.kitten_full_head" => {
+                format!("the whole output head is a kitten-tts-2 engine option; the {family} engine has no such head")
+            }
             "load.device" => format!(
                 "the {family} engine runs on {}, not {}",
                 self.devices.join(" or "),
@@ -144,6 +151,44 @@ impl Capabilities {
         }
         Ok(())
     }
+}
+
+/// The format of [`statement`]: its `format` field.
+pub const STATEMENT_FORMAT: &str = "ggtts-capabilities/1";
+
+/// A loaded engine's capability statement, the JSON a binding reads ([`Engine::capabilities`] and
+/// [`Engine::speakers`]): every field of [`Capabilities`] by its own name, with `hooks` as `{"p_stop", "logits"}`, and
+/// `speaker_names`, the speakers the loaded model has (empty for an engine with none). One function, so every front
+/// end that states an engine's capabilities says the same.
+///
+/// [`Engine::capabilities`]: crate::engine::Engine::capabilities
+/// [`Engine::speakers`]: crate::engine::Engine::speakers
+pub fn statement(engine: &dyn crate::engine::Engine) -> serde_json::Value {
+    // Destructured whole, so a field added to `Capabilities` fails to compile here until the statement carries it.
+    let Capabilities {
+        family,
+        instruction,
+        no_instruction_why,
+        steering,
+        speakers,
+        devices,
+        hooks,
+        step_events,
+        full_head,
+    } = engine.capabilities();
+    serde_json::json!({
+        "format": STATEMENT_FORMAT,
+        "family": family,
+        "instruction": instruction,
+        "no_instruction_why": no_instruction_why,
+        "steering": steering,
+        "speakers": speakers,
+        "speaker_names": engine.speakers(),
+        "devices": devices,
+        "hooks": {"p_stop": hooks.p_stop, "logits": hooks.logits},
+        "step_events": step_events,
+        "full_head": full_head,
+    })
 }
 
 fn exported(w: Wants) -> &'static str {

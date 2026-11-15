@@ -65,6 +65,7 @@ const LOAD: &[&str] = &[
     "load.offline",
     "load.cache_dir",
 ];
+const KITTEN_HEAD: &[&str] = &["load.kitten_full_head"];
 const STEER: &[&str] = &["render.steer", "render.steer_scale", "render.steer_layers"];
 const TRACE: &[&str] = &["observe.trace", "observe.trace_level"];
 const REPORTS: &[&str] = &["observe.timing_report", "observe.duration_report"];
@@ -102,9 +103,12 @@ const NO_TIMINGS: &str = "a binding returns the samples, not timings or reports"
 const NO_LOG: &str = "a binding writes no log: its errors are its codes and messages";
 const ANDROID_TRACE: &str = "the trace is a desktop observer: refused on Android";
 const CPU_ONLY: &str = "the Android build is CPU only";
+const ENGINE_READS_ENV: &str =
+    "the kitten-tts-2 engine reads GGTTS_KITTEN_FULL_HEAD=1 from the environment itself: a binding takes no option for it";
 const NEVER_DOWNLOADS: &str = "the app never downloads: its models are installed with it";
 const PARITY_TOOL: &str = "an engine parity tool; render with ggtts-render --engine kitten-tts-2";
 const TEXT_JUDGE: &str = "--text renders one draw and keeps it; the judge redraws a story's chunks (--story)";
+const TEXT_REDRAW: &str = "--text renders one draw and keeps it; redraws are a story's (--story)";
 const NO_JUDGE: &str =
     "the ASR judge starts a Python process beside the render: judge with ggtts-render --story or ggtts-book";
 // `ggtts_book::options::refusal`'s reasons, word for word (checked by `book_refusals_are_the_books_own`).
@@ -122,6 +126,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
         id: "render-story",
         cells: &[
             (LOAD, Carried),
+            (KITTEN_HEAD, Carried),
             (
                 &[
                     "render.story",
@@ -149,6 +154,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
         id: "render-text",
         cells: &[
             (LOAD, Carried),
+            (KITTEN_HEAD, Carried),
             (
                 &[
                     "render.text",
@@ -162,7 +168,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.story"], Refused(ONE_OF)),
             (&["render.seed_salt"], Refused(TEXT_SALT)),
             (&["render.judge"], Refused(TEXT_JUDGE)),
-            (&["render.redraw"], Gap(294)),
+            (&["render.redraw"], Refused(TEXT_REDRAW)),
             (&["render.edge_s"], Gap(180)),
             (TRACE, Gap(294)),
             (REPORTS, Carried),
@@ -177,6 +183,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
         id: "book",
         cells: &[
             (LOAD, Carried),
+            (KITTEN_HEAD, Carried),
             (&["render.instruction", "render.redraw", "render.judge"], Carried),
             (STEER, Carried),
             (&["render.text", "render.story"], Refused(BOOK_TEXT)),
@@ -196,6 +203,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
         id: "c-abi",
         cells: &[
             (LOAD, Carried),
+            (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
@@ -230,6 +238,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
                 Carried,
             ),
             (&["load.cache_dir"], Gap(291)),
+            (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
@@ -262,6 +271,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
                 Carried,
             ),
             (&["load.device"], Refused(CPU_ONLY)),
+            (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
@@ -294,6 +304,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["load.device"], Refused(CPU_ONLY)),
             (&["load.offline"], Refused(NEVER_DOWNLOADS)),
             (&["load.cache_dir"], Gap(282)),
+            (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
             (&["render.text", "render.seed_salt"], Carried),
             (&["render.instruction"], Gap(282)),
             (&["render.story"], Refused(NO_STORY_FILE)),
@@ -314,6 +325,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
         id: "kitten",
         cells: &[
             (LOAD, Refused(PARITY_TOOL)),
+            (KITTEN_HEAD, Refused(PARITY_TOOL)),
             (
                 &[
                     "render.text",
@@ -564,6 +576,8 @@ fn render_probes() -> Vec<Probe> {
         push("render.instruction", by_engine_refusal(&r, "instruction"));
         let r = render(&p("steer"), mode, &["--steer", "none.safetensors"]);
         push("render.steer", by_engine_refusal(&r, "steer"));
+        let r = render(&p("kitten-head"), mode, &["--kitten-full-head"]);
+        push("load.kitten_full_head", by_engine_refusal(&r, "load.kitten_full_head"));
         let r = render(&p("out"), mode, &[]);
         push("output.out", by_file(&r, "o.flac", "--out"));
         push(
@@ -612,6 +626,12 @@ fn render_probes() -> Vec<Probe> {
                 Seen::Dropped
             },
         );
+
+        // Redraws on --text: refused by name (a story's redraws are probed by the judge above).
+        if mode == "text" {
+            let r = render(&p("redraw"), mode, &["--redraw", "1"]);
+            push("render.redraw", by_front_end_refusal(&r, "--redraw"));
+        }
 
         // The seed: two renders with the trace, at two seeds. Carried when the chunks' recorded seeds differ.
         let seeds = |n: &str| {
@@ -783,6 +803,18 @@ fn c_abi_document_probes(plain: usize) -> Vec<Probe> {
     };
     let mut out = Vec::new();
     let mut push = |key: &str, seen| out.push(("c-abi", key.to_string(), seen));
+    let head = CString::new(r#"{"load": {"engine": "fake", "kitten_full_head": true}}"#).unwrap();
+    let mut refused_handle = 0u64;
+    push(
+        "load.kitten_full_head",
+        match unsafe { ggtts_load_opts(head.as_ptr(), &mut refused_handle) } {
+            GGTTS_ERR_ARG if last_error().starts_with("load.kitten_full_head: ") => Seen::Refused,
+            code => panic!(
+                "c-abi: a load document with load.kitten_full_head gave {code}: {}",
+                last_error()
+            ),
+        },
+    );
     // Steering reaches the engine's capabilities, which refuse it on the fake engine: carried only when the refusal
     // is exactly that one, not a binding's own refusal of the key.
     let capability = ggtts_core::capabilities::Capabilities::of("fake")

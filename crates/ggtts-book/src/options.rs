@@ -25,6 +25,7 @@ pub const RENDER_TAKES: &[&str] = &[
     "load.threads",
     "load.offline",
     "load.cache_dir",
+    "load.kitten_full_head",
     "render.instruction",
     "render.steer",
     "render.steer_scale",

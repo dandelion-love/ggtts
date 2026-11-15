@@ -13,6 +13,24 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **`--kitten-full-head` (`load.kitten_full_head`) is an option of the table**, with `GGTTS_KITTEN_FULL_HEAD` as its
+  environment spelling, for `ggtts-render` and `ggtts-book render`. It makes Kitten-TTS 2 compute its whole output
+  head, as `GGTTS_KITTEN_FULL_HEAD=1` did, and the audio is unchanged by the move. When it is on, the trace header and
+  the timing and duration reports carry `"kitten_full_head": true` (added within ggtts-trace/2, ggtts-timing/1 and
+  ggtts-duration/1), and a book's chapter manifests record it, so a resume with the other head is refused. On qwen3-tts
+  and fake, the variable exported in the environment is ignored with one warning and listed as ignored in the record;
+  the flag, or the key in an options document, is refused. Through `ggtts-render` and `ggtts-book` the variable takes
+  the table's boolean spellings (`1`, `true`, `0`, `false`) and refuses any other value; the bindings take no option
+  for it, and their engine still reads exactly `1` from the environment. A C ABI load document that gives
+  `load.kitten_full_head` is refused. The C ABI capability statement (`ggtts_capabilities`) gains `full_head`.
+
+- **The C ABI states its options and an engine's capabilities, and names a refused option (version 5).**
+  `ggtts_options_schema()` returns the options schema built into the library (`schemas/ggtts-options-1.schema.json`
+  byte for byte). `ggtts_capabilities(handle, &json)` returns a loaded engine's capability statement as JSON
+  (`ggtts-capabilities/1`: instruction, steering, devices, hooks, step events, and the model's `speaker_names`),
+  freed with `ggtts_string_free`. `ggtts_last_error_key()` is the schema key of the option a `GGTTS_ERR_ARG`
+  refused (`render.steer`, or an unknown key itself), and NULL for any other error. Nothing existing changes.
+  `Engine::speakers()` and `ggtts_core::capabilities::statement` are the shared pieces behind it.
 - **`--judge asr-qwen,model=DIR` redraws a chunk whose read-back lost or repeated text**, for `ggtts-render
   --story` and `ggtts-book render`, from one shared option (`render.judge`). An ASR (a local Qwen3-ASR, run as
   one Python process per render) reads every draw the duration judge keeps back; a draw that lost a run of 4
@@ -20,7 +38,8 @@ that a merge places under a released heading is caught.
   `--redraw`. CJK characters (folded to simplified) and numbers (by value) are compared. An ASR that dies or misses its deadline
   (`timeout=S`, 120 s per draw; `start_timeout=S`, 600 s to load) stops the render, which a rerun resumes. The trace records each reading in a new
   `read` event, and a book's chapter manifest in each chunk's `reads`. Off by default. It needs `--redraw N`, and is
-  refused before anything is drawn when its ASR cannot start; `--text` and the bindings refuse it. A trace with
+  refused before anything is drawn when its ASR cannot start; `--text` and the bindings refuse it. When the ASR's Python lacks a package, the
+  refusal names the missing module (`the model did not load (ModuleNotFoundError: qwen_asr)`). A trace with
   text verdicts replays, taking them as recorded.
 - **A text judge in the `ggtts-core` library: `textjudge::TextJudge`.** It judges a draw for duration as before,
   then reads it back with a recogniser the caller supplies (`textjudge::Recogniser`) and rejects a draw that lost
@@ -31,8 +50,9 @@ that a merge places under a released heading is caught.
   read back as 356 is not lost text and a misheard number is one slip. A single misread or missing
   character is counted, not rejected. Known limits: the fold is many-to-one, so a swap between two traditional
   characters with one simplified form reads as correct; a chunk of fewer than 4 compared characters is never
-  rejected; text with no CJK characters or numbers has nothing to compare. No front
-  end uses it yet, and every render is unchanged; `ggtts-trace/2` allows the two new verdicts.
+  rejected; text with no CJK characters or numbers has nothing to compare; a number of any length weighs one token,
+  so a dropped number, however long (a phone number), is one lost token and the draw is kept, and a number said
+  twice reads as one misread number. No front end uses it yet, and every render is unchanged; `ggtts-trace/2` allows the two new verdicts.
 - **The C ABI takes options documents (ABI version 4): `ggtts_load_opts(json, &handle)` and
   `ggtts_render_opts(handle, text, json, on_piece, user, &pcm, &len, &rate)`.** Every option of the shared options
   table reaches C as JSON, so a new option needs no new struct field, function or ABI version. A render document
@@ -53,7 +73,8 @@ that a merge places under a released heading is caught.
   (with `--trace-level`)**, meaning what they mean in `ggtts-render`: its flags are read by the shared options table,
   and every chunk is rendered by the core chunk step. A book rendered without them is byte-identical to before. Each
   chapter manifest records the instruction and steering, and a resume under different ones renders the chapter again,
-  naming the difference; a manifest written before this resumes as "no instruction, no steering".
+  naming the difference. A manifest without the field reads as "no instruction, no steering"; a manifest written by
+  another ggtts build is refused on its engine record, as before, so the chapter is rendered again.
 - **`ggtts-book render --redraw N` redraws a chunk the judge rejects**, up to N times at the chunk's seeds for draws
   1, 2, ..., through the same judge as a story. Unset is the engine profile's (0 for `qwen3-tts`), so a book renders
   as before unless asked; at 0 the output and manifests are byte-identical. With redraws, each chunk's manifest entry
@@ -67,7 +88,9 @@ that a merge places under a released heading is caught.
   `measurement`. An ASR instrument is given each chapter's own text as its reference. A `--require`d instrument
   that is not ok, or a chapter left unmeasured under `--require`, exits 3 with every chapter written. An unknown
   instrument, or a `reference_file` given for a book, is refused before anything is rendered. The instrument
-  timeout is per chapter. Without the flags a book renders exactly as before. The instrument run is one library call,
+  timeout is per chapter. A chapter's kept measurement is reused only while its FLAC, the settings and each
+  instrument's version and program (a script's bytes) are unchanged, and a chapter after an aborted one keeps it.
+  Without the flags a book renders exactly as before. The instrument run is one library call,
   `ggtts_instruments::options`, which `ggtts-render` now makes too; its reports and exit codes are unchanged.
 
 ### Changed
@@ -95,6 +118,14 @@ that a merge places under a released heading is caught.
   `--story`, `--seed`, `--stream` and its settings, the timing and duration reports, the log settings and the
   instruments. An engine name the table does not list is refused as `load.engine` rather than "unknown engine", and
   `--threads` also takes the table's spelling `-j`.
+- **`ggtts-render --text --redraw N` is refused** (`--redraw (render.redraw): --text renders one draw and keeps it;
+  redraws are a story's (--story)`). It was accepted and did nothing: `--text` renders one draw.
+- **`ggtts-book`'s public Rust API** (for a caller of the library, not the command):
+  - `book_render_options` is removed; a book's options are read with the shared table (`ggtts_book::options::parse`);
+  - `render::render_chunk` returns a `manifest::ChunkOutput` (the chunk file's bytes and the draws it made, with
+    the kept draw's verdict) instead of the bytes alone;
+  - `ChapterPlan` has a public `redraw` field, so a struct literal must set it;
+  - `ChapterOutcome::Written` has a `rejudged` field, so an exhaustive pattern must name it or use `..`.
 
 ### Changed
 

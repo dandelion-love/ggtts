@@ -256,6 +256,35 @@ fn at_redraw_0_the_first_draw_is_kept_and_no_draw_is_recorded() {
     std::fs::remove_dir_all(book.parent().unwrap()).ok();
 }
 
+/// #336: with no `--redraw`, a book takes the engine profile's `redraw`. Every draw is planted to be rejected, so the
+/// number drawn per chunk is that setting plus one, and the manifests record it (absent at 0).
+/// When a profile's default rises, every book resumed without `--redraw` judges its done chunks again under it
+/// (`docs/book.md`).
+#[test]
+fn unset_redraw_is_the_engine_profiles() {
+    let (book, out) = temp("unset");
+    let run = render(&book, &out, Plant::Always, &[]);
+    let chapters = written(&out);
+    let n: usize = chapters.iter().map(|(p, _)| p.chunks.len()).sum();
+    let per_chunk = PROFILE.redraw as usize + 1;
+    assert_eq!(run.seen.len(), per_chunk * n, "{:?}", run.seen);
+    assert_eq!(
+        run.seen.iter().map(|&(_, d, _)| d).max(),
+        Some(PROFILE.redraw),
+        "the last draw made is the profile's redraw"
+    );
+    for (_, dir) in &chapters {
+        let m: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
+        // A manifest records `redraw` only above 0, so an absent one reads as 0.
+        assert_eq!(
+            m["manifest"]["redraw"].as_u64().unwrap_or(0),
+            u64::from(PROFILE.redraw),
+            "{m}"
+        );
+    }
+    std::fs::remove_dir_all(book.parent().unwrap()).ok();
+}
+
 /// AC2: a resume keeps a done chunk's kept draw; a chunk recorded at a lower redraw setting is judged again under the
 /// new one, not silently kept; a setting at which the recorded draws still hold renders nothing.
 #[test]

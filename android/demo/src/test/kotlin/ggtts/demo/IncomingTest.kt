@@ -22,11 +22,34 @@ class IncomingTest {
         return src.substring(start, src.indexOf("\n    }\n", start))
     }
 
-    /** A screen takes its intent on a fresh start only, never when it is re-created from saved state. */
+    /**
+     * A screen takes its intent on a fresh start only: not when it is re-created from saved state, and not when its
+     * task is started again from Recents with its old intent (no saved state, but the history flag).
+     */
     @Test
     fun onlyAFreshStartTakesItsIntent() {
-        assertTrue(Launch.takesIntent(null))
-        assertFalse("a re-created screen would put the old share back over the user's edits", Launch.takesIntent(Any()))
+        assertTrue(Launch.takesIntent(null, 0))
+        assertTrue("other flags do not matter", Launch.takesIntent(null, 0x10000000))
+        assertFalse("a re-created screen would put the old share back over the user's edits", Launch.takesIntent(Any(), 0))
+        assertFalse(
+            "a task started again from Recents carries its old share",
+            Launch.takesIntent(null, Launch.FLAG_LAUNCHED_FROM_HISTORY or 0x10000000),
+        )
+        assertEquals("Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY", 0x00100000, Launch.FLAG_LAUNCHED_FROM_HISTORY)
+    }
+
+    /** The saved state carries the card's text up to its cap, and no further; longer text goes to a file. */
+    @Test
+    fun theSavedStateCarriesTheCardsTextOnlyUpToItsCap() {
+        assertTrue(Launch.fitsSavedState("a".repeat(Launch.MAX_SAVED_CHARS)))
+        assertFalse(Launch.fitsSavedState("a".repeat(Launch.MAX_SAVED_CHARS + 1)))
+        assertTrue("the cap stays well under the binder's 1 MB (2 bytes a unit)", Launch.MAX_SAVED_CHARS * 2 <= 256 * 1024)
+        val src = File("src/main/kotlin/ggtts/demo/MainActivity.kt").readText()
+        val save = src.substring(src.indexOf("override fun onSaveInstanceState"), src.indexOf("override fun onTrimMemory"))
+        val check = save.indexOf("if (Launch.fitsSavedState(s))")
+        val put = save.indexOf("outState.putString(STATE_TEXT, s)")
+        assertTrue("onSaveInstanceState checks the cap before it saves the text:\n$save", check in 0 until put)
+        assertTrue("a longer card goes to a file:\n$save", "File(cacheDir, CARD_FILE).writeText(s)" in save)
     }
 
     /**
@@ -41,11 +64,10 @@ class IncomingTest {
         assertEquals("onCreate calls applyIntent once, under the guard:\n$body", 1, calls)
         assertTrue(
             "onCreate takes its intent only on a fresh start:\n$body",
-            "if (Launch.takesIntent(savedInstanceState)) applyIntent(intent)" in body,
+            "if (Launch.takesIntent(savedInstanceState, intent.flags)) applyIntent(intent)" in body,
         )
-        assertTrue("onCreate restores the card's text:\n$body", "savedInstanceState?.getString(STATE_TEXT)" in body)
-        val src = File("src/main/kotlin/ggtts/demo/MainActivity.kt").readText()
-        assertTrue("onSaveInstanceState saves the card's text", "outState.putString(STATE_TEXT, text.text.toString())" in src)
+        assertTrue("onCreate restores the card's text:\n$body", "saved.getString(STATE_TEXT)" in body)
+        assertTrue("onCreate restores a long card from its file:\n$body", "saved.getString(STATE_TEXT_FILE)" in body)
     }
 
     @Test

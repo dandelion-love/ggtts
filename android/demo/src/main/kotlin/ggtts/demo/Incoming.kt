@@ -140,11 +140,30 @@ object IncomingText {
 }
 
 /**
- * Whether a screen being created takes its intent. Only a fresh start does: a re-created screen (dark mode or the
- * language changed, or the process restored from Recents) still holds the original intent, and taking it again would
- * put an old share back over the user's edits, or press Speak again for the debug build's adb extras. [savedState] is
- * onCreate's savedInstanceState, null on a fresh start.
+ * What a screen being created takes from its intent, and what it keeps across a re-creation.
  */
 object Launch {
-    fun takesIntent(savedState: Any?): Boolean = savedState == null
+    /** `Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY`: the task was started again from Recents, with its old intent. */
+    const val FLAG_LAUNCHED_FROM_HISTORY = 0x00100000
+
+    /**
+     * The most of the card's text the saved state carries itself: 100,000 UTF-16 units, about 200 KB in the Parcel.
+     * The saved state crosses the binder, whose limit is about 1 MB per transaction, and a Bundle over it crashes the
+     * app when the screen stops (TransactionTooLargeException). Pasted or typed text has no other limit, so a longer
+     * card is written to a file in the app's cache instead ([MainActivity]'s onSaveInstanceState).
+     */
+    const val MAX_SAVED_CHARS = 100_000
+
+    /**
+     * Whether a screen being created takes its intent. Only a fresh start does. A re-created screen (dark mode or the
+     * language changed, or the process restored) still holds the original intent; so does a task started again from
+     * Recents, which has no saved state but carries [FLAG_LAUNCHED_FROM_HISTORY]. Taking it again would put an old
+     * share back over the user's edits, or press Speak again for the debug build's adb extras. [savedState] is
+     * onCreate's savedInstanceState (null on a fresh start) and [flags] the intent's flags.
+     */
+    fun takesIntent(savedState: Any?, flags: Int): Boolean =
+        savedState == null && (flags and FLAG_LAUNCHED_FROM_HISTORY) == 0
+
+    /** Whether [text] fits in the saved state itself ([MAX_SAVED_CHARS]); longer text goes to a file. */
+    fun fitsSavedState(text: String): Boolean = text.length <= MAX_SAVED_CHARS
 }

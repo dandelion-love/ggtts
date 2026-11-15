@@ -77,8 +77,11 @@ import java.util.concurrent.Executors
 class MainActivity : AppCompatActivity(), DemoView {
     companion object {
         const val TAG = "ggtts-demo"
-        /** The card's text across a re-creation (onSaveInstanceState). */
+        /** The card's text across a re-creation (onSaveInstanceState), when it fits the saved state. */
         private const val STATE_TEXT = "ggtts.demo.text"
+        /** The cache file holding the card's text when it is too long for the saved state ([Launch.MAX_SAVED_CHARS]). */
+        private const val STATE_TEXT_FILE = "ggtts.demo.text-file"
+        private const val CARD_FILE = "card-text.txt"
         private const val PICK = 1
         private const val NONE = "(none)"
         val ENGINES = listOf("qwen3-tts", "kitten-tts-2")
@@ -161,15 +164,27 @@ class MainActivity : AppCompatActivity(), DemoView {
         // A re-created screen (dark mode or the language changed, or the process restored from Recents) keeps what the
         // user had in the card and does not take its intent again: that intent is still the original share or adb
         // extras, and applying it again would put the shared text back over the user's edits, or press Speak again.
-        savedInstanceState?.getString(STATE_TEXT)?.let { text.setText(it) }
-        if (Launch.takesIntent(savedInstanceState)) applyIntent(intent)
+        savedInstanceState?.let { saved ->
+            saved.getString(STATE_TEXT)
+                ?: saved.getString(STATE_TEXT_FILE)?.let { runCatching { File(cacheDir, it).readText() }.getOrNull() }
+        }?.let { text.setText(it) }
+        if (Launch.takesIntent(savedInstanceState, intent.flags)) applyIntent(intent)
         syncFolder()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        // The text field is built in code with no id, so the platform does not save it: the screen does.
-        outState.putString(STATE_TEXT, text.text.toString())
+        // The text field is built in code with no id, so the platform does not save it: the screen does. The saved
+        // state crosses the binder, so a long card (pasted or typed; nothing else limits it) goes to a cache file and
+        // only its name is saved: a Bundle over the binder limit would crash the app when the screen stops.
+        val s = text.text.toString()
+        if (Launch.fitsSavedState(s)) {
+            outState.putString(STATE_TEXT, s)
+        } else {
+            runCatching { File(cacheDir, CARD_FILE).writeText(s) }
+                .onSuccess { outState.putString(STATE_TEXT_FILE, CARD_FILE) }
+                .onFailure { Log.w(TAG, "the card's text (${s.length} characters) was not saved: $it") }
+        }
     }
 
     override fun onTrimMemory(level: Int) {

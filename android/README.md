@@ -213,7 +213,8 @@ the card held. **Nothing starts a read by itself**: you press Read aloud. Anothe
 it could start would be that app speaking through this one. Text over 20,000 characters (counted as a reader counts
 them: an emoji is one) is refused with that limit named, not cut short. A file that is not UTF-8 is refused too, and so
 is anything that is not plain text. The text is taken once: if the screen is re-created later (dark mode or the
-language changed), it keeps what you have in the card rather than taking the shared text again.
+language changed), or the app is opened again from Recents, it keeps what you have in the card rather than taking the
+shared text again.
 
 ## ggtts as Android's text-to-speech engine
 

@@ -107,10 +107,6 @@ const CPU_ONLY: &str = "the Android build is CPU only";
 const ENGINE_READS_ENV: &str =
     "the kitten-tts-2 engine reads GGTTS_KITTEN_FULL_HEAD=1 from the environment itself: a binding takes no option for it";
 const NEVER_DOWNLOADS: &str = "the app never downloads: its models are installed with it";
-const PY_SAMPLER: &str = "the sampler settings, the frame cap and the language reach Python only through an options \
-document (load options=), which this binding does not take yet";
-const KT_SAMPLER: &str = "the sampler settings, the frame cap and the language reach Kotlin only through an options \
-document, which this binding does not take yet";
 const APP_SAMPLER: &str = "the app renders with the engine's default sampler settings, frame cap and language";
 const PARITY_TOOL: &str = "an engine parity tool; render with ggtts-render --engine kitten-tts-2";
 const TEXT_HOLD: &str =
@@ -230,7 +226,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
             (&["output.out", "output.stream_format"], Refused(NO_FILE)),
             (&["output.stream"], Carried),
-            (STREAM_LEVEL, Gap(284)),
+            (STREAM_LEVEL, Carried),
             (BOOK, Refused(NOT_BOOK_FRONT)),
         ],
     },
@@ -250,21 +246,28 @@ const FRONT_ENDS: &[FrontEnd] = &[
                 ],
                 Carried,
             ),
+            // The cache is read only by a build with engines: probed with the ggml feature.
             (&["load.cache_dir"], Gap(291)),
             (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
-            (SAMPLER, Refused(PY_SAMPLER)),
+            (SAMPLER, Carried),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
             (&["render.judge"], Refused(NO_JUDGE)),
-            (STEER, Gap(291)),
-            (&["render.redraw", "render.edge_s", "render.measure_timings"], Gap(291)),
-            (TRACE, Gap(291)),
-            (REPORTS, Gap(291)),
-            (LOG, Gap(291)),
+            (&["render.steer"], Carried),
+            // Read only by an engine that steers, which the fake engine is not: probed on a real model only.
+            (&["render.steer_scale", "render.steer_layers"], Gap(291)),
+            (&["render.edge_s"], Carried),
+            // A redraw needs a draw the judge rejects, which the fake engine never gives.
+            (&["render.redraw"], Gap(291)),
+            (&["render.measure_timings"], Refused(NO_TIMINGS)),
+            (TRACE, Carried),
+            (REPORTS, Refused(NO_TIMINGS)),
+            (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
-            (FILES_OUT, Refused(NO_FILE)),
-            (STREAM_LEVEL, Gap(284)),
+            (&["output.out", "output.stream_format"], Refused(NO_FILE)),
+            (&["output.stream"], Carried),
+            (STREAM_LEVEL, Carried),
             (BOOK, Refused(NOT_BOOK_FRONT)),
         ],
     },
@@ -286,19 +289,25 @@ const FRONT_ENDS: &[FrontEnd] = &[
             ),
             (&["load.device"], Refused(CPU_ONLY)),
             (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
-            (SAMPLER, Refused(KT_SAMPLER)),
+            (SAMPLER, Carried),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
             (&["render.judge"], Refused(NO_JUDGE)),
-            (STEER, Gap(292)),
-            (&["render.redraw", "render.edge_s", "render.measure_timings"], Gap(292)),
+            (&["render.steer"], Carried),
+            // Read only by an engine that steers, which the fake engine is not: probed on a real model only.
+            (&["render.steer_scale", "render.steer_layers"], Gap(292)),
+            (&["render.edge_s"], Carried),
+            // A redraw needs a draw the judge rejects, which the fake engine never gives.
+            (&["render.redraw"], Gap(292)),
+            (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Refused(ANDROID_TRACE)),
-            (REPORTS, Gap(292)),
-            (LOG, Gap(292)),
+            (REPORTS, Refused(NO_TIMINGS)),
+            (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
-            (FILES_OUT, Refused(NO_FILE)),
-            (STREAM_LEVEL, Gap(284)),
+            (&["output.out", "output.stream_format"], Refused(NO_FILE)),
+            (&["output.stream"], Carried),
+            (STREAM_LEVEL, Carried),
             (BOOK, Refused(NOT_BOOK_FRONT)),
         ],
     },
@@ -368,6 +377,171 @@ const FRONT_ENDS: &[FrontEnd] = &[
         ],
     },
 ];
+
+// ── introspection ──────────────────────────────────────────────────────────────────────────────────────────────
+
+/// What the C ABI states about itself since version 5: the options schema (`ggtts_options_schema`), a loaded engine's
+/// capability statement (`ggtts_capabilities`) and the key of a refused option (`ggtts_last_error_key`).
+const INTROSPECTION: [&str; 3] = ["options_schema", "capabilities", "refused_key"];
+
+const CLI_SCHEMA: &str = "a command-line tool takes flags, which its --help lists; the schema to read is the library's";
+const CLI_CAPABILITIES: &str =
+    "a command-line tool refuses an option its engine lacks before rendering; the statement to read is the library's";
+const CLI_KEY: &str = "a command-line tool prints the refusal and exits; there is no error value to carry a key";
+const APP: &str = "the app is not a programming interface: it sets its options on its own screens";
+
+/// Each front end's cell for the three, in [`INTROSPECTION`]'s order. Carried or refused, never a gap.
+const INTROSPECTION_CELLS: &[(&str, [Cell; 3])] = &[
+    (
+        "render-story",
+        [Refused(CLI_SCHEMA), Refused(CLI_CAPABILITIES), Refused(CLI_KEY)],
+    ),
+    (
+        "render-text",
+        [Refused(CLI_SCHEMA), Refused(CLI_CAPABILITIES), Refused(CLI_KEY)],
+    ),
+    (
+        "book",
+        [Refused(CLI_SCHEMA), Refused(CLI_CAPABILITIES), Refused(CLI_KEY)],
+    ),
+    ("c-abi", [Carried, Carried, Carried]),
+    ("python", [Carried, Carried, Carried]),
+    ("kotlin", [Carried, Carried, Carried]),
+    ("android", [Refused(APP), Refused(APP), Refused(APP)]),
+    (
+        "kitten",
+        [Refused(PARITY_TOOL), Refused(PARITY_TOOL), Refused(PARITY_TOOL)],
+    ),
+];
+
+/// What each binding states, beside the C ABI's own: the schema, the fake engine's statement and the key of a
+/// refused option, through the binding's own core. A binding carries one only when it equals the C ABI's.
+fn introspection_probes() -> Vec<(&'static str, &'static str, bool)> {
+    use ggtts_ffi::{ggtts_capabilities, ggtts_free, ggtts_load, ggtts_options_schema, ggtts_string_free};
+    let value = |t: &str| -> serde_json::Value { serde_json::from_str(t).unwrap() };
+    let c_schema = value(unsafe { CStr::from_ptr(ggtts_options_schema()) }.to_str().unwrap());
+    let c_statement = {
+        let e = CString::new("fake").unwrap();
+        let (mut h, null) = (0u64, std::ptr::null());
+        assert_eq!(unsafe { ggtts_load(e.as_ptr(), null, null, null, 0, &mut h) }, 0);
+        let mut json = std::ptr::null_mut();
+        assert_eq!(unsafe { ggtts_capabilities(h, &mut json) }, 0);
+        let text = unsafe { CStr::from_ptr(json) }.to_str().unwrap().to_string();
+        unsafe { ggtts_string_free(json) };
+        ggtts_free(h);
+        value(&text)
+    };
+    let steer = r#"{"render": {"steer": "s.safetensors"}}"#;
+    let mut out = Vec::new();
+    // The C ABI: its schema is the table's, its statement the shared one's, and a refusal leaves its key.
+    out.push(("c-abi", "options_schema", c_schema == ggtts_core::options::schema()));
+    out.push((
+        "c-abi",
+        "capabilities",
+        c_statement["format"] == ggtts_core::capabilities::STATEMENT_FORMAT,
+    ));
+    let doc = CString::new(r#"{"load": {"engine": "fake"}}"#).unwrap();
+    let mut h = 0u64;
+    assert_eq!(unsafe { ggtts_ffi::ggtts_load_opts(doc.as_ptr(), &mut h) }, 0);
+    let (text, steer_c) = (CString::new("你好。").unwrap(), CString::new(steer).unwrap());
+    let (mut p, mut n, mut r) = (std::ptr::null_mut(), 0usize, 0u32);
+    let code = unsafe {
+        ggtts_ffi::ggtts_render_opts(
+            h,
+            text.as_ptr(),
+            steer_c.as_ptr(),
+            None,
+            std::ptr::null_mut(),
+            &mut p,
+            &mut n,
+            &mut r,
+        )
+    };
+    let key = ggtts_ffi::ggtts_last_error_key();
+    let c_key = (!key.is_null()).then(|| unsafe { CStr::from_ptr(key) }.to_string_lossy().into_owned());
+    out.push((
+        "c-abi",
+        "refused_key",
+        code != 0 && c_key.as_deref() == Some("render.steer"),
+    ));
+    ggtts_free(h);
+    // Python, through its core.
+    {
+        use ggtts_py::core::{guard_keyed, load, LoadRequest};
+        out.push((
+            "python",
+            "options_schema",
+            value(&ggtts_py::core::options_schema()) == c_schema,
+        ));
+        let req = LoadRequest {
+            engine: Some("fake".into()),
+            ..Default::default()
+        };
+        let (handle, _) = load(&req, &mut |_| {}).unwrap();
+        out.push((
+            "python",
+            "capabilities",
+            value(&handle.capabilities().unwrap()) == c_statement,
+        ));
+        let refused = guard_keyed(|| handle.render_with("你好。", None, Some(steer)));
+        out.push((
+            "python",
+            "refused_key",
+            matches!(refused, Err((_, Some(k))) if k == "render.steer"),
+        ));
+    }
+    // Kotlin, through the core under its JNI layer.
+    {
+        use ggtts_ffi::kotlin;
+        out.push(("kotlin", "options_schema", value(&kotlin::options_schema()) == c_schema));
+        let h = kotlin::load(r#"{"load": {"engine": "fake"}}"#, &kotlin::LoadArgs::default()).unwrap();
+        out.push((
+            "kotlin",
+            "capabilities",
+            value(&kotlin::capabilities(h).unwrap()) == c_statement,
+        ));
+        let refused = ggtts_py::core::guard_keyed(|| kotlin::render_opts(h, "你好。", Some(steer), None));
+        out.push((
+            "kotlin",
+            "refused_key",
+            matches!(refused, Err((_, Some(k))) if k == "render.steer"),
+        ));
+        ggtts_free(h);
+    }
+    out
+}
+
+/// #369 AC4: every front end has a cell for each of the three, carried or refused with a reason, and every carried
+/// cell is probed and seen: the binding states what the C ABI states.
+#[test]
+fn every_front_end_carries_or_refuses_the_introspection() {
+    let ids: BTreeSet<&str> = FRONT_ENDS.iter().map(|f| f.id).collect();
+    let rows: BTreeSet<&str> = INTROSPECTION_CELLS.iter().map(|(id, _)| *id).collect();
+    assert_eq!(ids, rows, "every front end has one introspection row, and only they do");
+    let probes = introspection_probes();
+    for (id, cells) in INTROSPECTION_CELLS {
+        for (item, cell) in INTROSPECTION.iter().zip(cells) {
+            match cell {
+                Carried => {
+                    let seen = probes.iter().find(|(f, i, _)| f == id && i == item);
+                    assert!(
+                        matches!(seen, Some((_, _, true))),
+                        "{id}: {item} is Carried and the probe saw {seen:?}"
+                    );
+                }
+                Refused(why) => assert!(!why.is_empty(), "{id}: {item} is refused with no reason"),
+                Gap(i) => panic!("{id}: {item} is a gap (#{i}): the introspection is carried or refused"),
+            }
+        }
+    }
+    report(&format!(
+        "introspection: {} front ends x {} = {} cells, {} probed",
+        INTROSPECTION_CELLS.len(),
+        INTROSPECTION.len(),
+        INTROSPECTION_CELLS.len() * INTROSPECTION.len(),
+        probes.len()
+    ));
+}
 
 /// Each front end's cell per option key, or every defect of the table against `table`: an option with no cell, a key
 /// given twice, a key the options table does not have, a refusal with no reason.
@@ -577,6 +751,24 @@ fn sample_value(d: &Descriptor) -> Option<&'static str> {
         Kind::Layers => Some("0"),
         _ => Some("x"),
     }
+}
+
+/// Each sampler setting's key, with a load document on the fake engine that gives it.
+fn sampler_documents() -> Vec<(String, String)> {
+    TABLE
+        .iter()
+        .filter(|d| SAMPLER.contains(&d.key().as_str()))
+        .map(|d| {
+            let value = match d.kind {
+                Kind::Choice(c) => format!("{:?}", c[0]),
+                _ => "1".to_string(),
+            };
+            (
+                d.key(),
+                format!(r#"{{"load": {{"engine": "fake", "{}": {value}}}}}"#, d.name),
+            )
+        })
+        .collect()
 }
 
 /// A probe: the front end, the option key, and what it saw.
@@ -862,20 +1054,16 @@ fn c_abi_document_probes(plain: usize) -> Vec<Probe> {
     // The sampler settings, frame cap and language in a load document reach the fake engine's capabilities: carried
     // only when the refusal is exactly theirs, not a binding's own refusal of the key.
     let fake = ggtts_core::capabilities::Capabilities::of("fake").unwrap();
-    for d in TABLE.iter().filter(|d| SAMPLER.contains(&d.key().as_str())) {
-        let value = match d.kind {
-            Kind::Choice(c) => format!("{:?}", c[0]),
-            _ => "1".to_string(),
-        };
-        let doc = CString::new(format!(r#"{{"load": {{"engine": "fake", "{}": {value}}}}}"#, d.name)).unwrap();
-        let want = fake.refusal(&d.key(), None).to_string();
+    for (key, doc) in sampler_documents() {
+        let doc = CString::new(doc).unwrap();
+        let want = fake.refusal(&key, None).to_string();
         let mut h = 0u64;
         push(
-            &d.key(),
+            &key,
             match unsafe { ggtts_load_opts(doc.as_ptr(), &mut h) } {
                 GGTTS_ERR_ARG if last_error() == want => Seen::Carried,
-                GGTTS_ERR_ARG if last_error().starts_with(&format!("{}: ", d.key())) => Seen::Refused,
-                code => panic!("c-abi: a load document with {} gave {code}: {}", d.key(), last_error()),
+                GGTTS_ERR_ARG if last_error().starts_with(&format!("{key}: ")) => Seen::Refused,
+                code => panic!("c-abi: a load document with {key} gave {code}: {}", last_error()),
             },
         );
     }
@@ -963,10 +1151,422 @@ fn c_abi_document_probes(plain: usize) -> Vec<Probe> {
     out
 }
 
+/// A binding call's result: the value, or the failure (code and message) and the refused key.
+type Keyed<T> = Result<T, ((i32, String), Option<String>)>;
+
+/// Python's `options=` on the fake engine, through the binding's own core (`ggtts_py::core`, the plain Rust under
+/// the pyo3 module): each option where it is read, or its refusal by its key. Each render is on a fresh engine, since
+/// the fake engine's output depends on what it rendered before.
+fn python_probes() -> Vec<Probe> {
+    use ggtts_py::core::{guard_keyed, load, LoadRequest, ERR_ARG};
+    let dir = std::env::temp_dir().join(format!("ggtts-conformance-python-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let fresh = |options: Option<&str>| {
+        let req = LoadRequest {
+            options: Some(options.unwrap_or(r#"{"load": {"engine": "fake"}}"#).to_string()),
+            ..Default::default()
+        };
+        guard_keyed(|| load(&req, &mut |_| {})).map(|(h, _)| h)
+    };
+    let text = "你好。";
+    // A whole read with the render document `doc`: its samples, or the failure and the refused key.
+    let render = |doc: &str| guard_keyed(|| fresh(None).map_err(|(e, _)| e)?.render_with(text, None, Some(doc)));
+    let by_key = |r: Keyed<(Vec<f32>, u32)>, key: &str| match r {
+        Err(((ERR_ARG, msg), Some(k))) if k == key && msg.starts_with(&format!("{key}: ")) => Seen::Refused,
+        other => panic!("python: {key} gave {:?}", other.map(|(s, _)| s.len())),
+    };
+    let mut out = Vec::new();
+    let mut push = |key: &str, seen| out.push(("python", key.to_string(), seen));
+    let plain = render("{}").unwrap().0;
+    // The sampler settings, frame cap and language in a load document reach the fake engine's capabilities, which
+    // refuse each by its key: carried only when the refusal is exactly theirs.
+    for (key, doc) in sampler_documents() {
+        let capability = ggtts_core::capabilities::Capabilities::of("fake")
+            .unwrap()
+            .refusal(&key, None)
+            .to_string();
+        push(
+            &key,
+            match fresh(Some(&doc)) {
+                Err(((ERR_ARG, msg), Some(k))) if k == key && msg == capability => Seen::Carried,
+                Err(((ERR_ARG, _), Some(k))) if k == key => Seen::Refused,
+                Err(e) => panic!("python: {key} gave {e:?}"),
+                Ok(_) => Seen::Dropped,
+            },
+        );
+    }
+    // Steering and a style instruction reach the engine's capabilities, which refuse them on the fake engine: carried
+    // only when the refusal is exactly that one, not a binding's own refusal of the key.
+    let caps = ggtts_core::capabilities::Capabilities::of("fake").unwrap();
+    for (key, doc) in [
+        ("render.steer", r#"{"render": {"steer": "s.safetensors"}}"#),
+        ("render.instruction", r#"{"render": {"instruction": "Speak slowly."}}"#),
+    ] {
+        let capability = caps.refusal(key, None).to_string();
+        push(
+            key,
+            match render(doc) {
+                Err(((ERR_ARG, msg), Some(k))) if k == key && msg == capability => Seen::Carried,
+                Err(((ERR_ARG, _), Some(k))) if k == key => Seen::Refused,
+                other => panic!("python: {key} gave {:?}", other.map(|(s, _)| s.len())),
+            },
+        );
+    }
+    // The edge kept at each chunk, given in a render document, changes the read's length.
+    let edged = render(r#"{"render": {"edge_s": 1.5}}"#).unwrap().0;
+    push(
+        "render.edge_s",
+        if edged.len() != plain.len() {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        },
+    );
+    // The salt moves every chunk's sampler seed, as the trace records it.
+    let seeds = |salt: &str| {
+        let trace = dir.join(format!("salt-{salt}.jsonl"));
+        let doc = format!(
+            r#"{{"render": {{"seed_salt": "{salt}"}}, "observe": {{"trace": {}}}}}"#,
+            serde_json::to_string(&trace.to_string_lossy()).unwrap()
+        );
+        render(&doc).unwrap();
+        trace_seeds(&trace)
+    };
+    let (seven, eight) = (seeds("7"), seeds("8"));
+    push(
+        "render.seed_salt",
+        if !seven.is_empty() && seven != eight {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        },
+    );
+    // The load document's engine is the engine loaded: "fake", where the document's default ("auto", with no model)
+    // would be qwen3-tts.
+    let named = load(
+        &LoadRequest {
+            options: Some(r#"{"load": {"engine": "fake"}}"#.into()),
+            ..Default::default()
+        },
+        &mut |_| {},
+    );
+    push(
+        "load.engine",
+        match named {
+            Ok((_, loaded)) if loaded.engine == "fake" && loaded.family == "fake" => Seen::Carried,
+            _ => Seen::Dropped,
+        },
+    );
+    // The trace file, and its level in the header.
+    let trace = dir.join("t.jsonl");
+    let doc = format!(
+        r#"{{"observe": {{"trace": {}, "trace_level": 2}}}}"#,
+        serde_json::to_string(&trace.to_string_lossy()).unwrap()
+    );
+    render(&doc).unwrap();
+    let header = std::fs::read_to_string(&trace).unwrap_or_default();
+    push(
+        "observe.trace",
+        if header.lines().count() > 1 {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        },
+    );
+    push(
+        "observe.trace_level",
+        if header.lines().next().is_some_and(|l| l.contains("\"trace_level\":2")) {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        },
+    );
+    // The stream: pieces reach the callback.
+    let mut pieces = 0usize;
+    let streamed = guard_keyed(|| {
+        fresh(None).map_err(|(e, _)| e)?.render_stream_with(
+            text,
+            None,
+            Some(r#"{"output": {"stream": "raw"}}"#),
+            &mut |_, _| {
+                pieces += 1;
+                true
+            },
+        )
+    });
+    assert!(streamed.is_ok(), "python: the stream failed: {streamed:?}");
+    push("output.stream", if pieces > 0 { Seen::Carried } else { Seen::Dropped });
+    // The options a binding does not take, refused by their keys.
+    for (key, doc) in [
+        ("render.measure_timings", r#"{"render": {"measure_timings": true}}"#),
+        ("render.seed", r#"{"render": {"seed": 3}}"#),
+        ("observe.timing_report", r#"{"observe": {"timing_report": "t.json"}}"#),
+        (
+            "observe.duration_report",
+            r#"{"observe": {"duration_report": "d.json"}}"#,
+        ),
+        ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
+        ("observe.log_format", r#"{"observe": {"log_format": "json"}}"#),
+        ("output.out", r#"{"output": {"out": "o.flac"}}"#),
+        ("render.judge", r#"{"render": {"judge": "asr-qwen,model=m"}}"#),
+    ] {
+        push(key, by_key(render(doc), key));
+    }
+    let _ = std::fs::remove_dir_all(dir);
+    out
+}
+
+/// Kotlin's `options` on the fake engine, through the binding's own core under its JNI layer (`ggtts_ffi::kotlin`,
+/// what `Native.loadOpts`, `renderOpts` and `renderStreamOpts` call): each option where it is read, or its refusal by
+/// its key.
+fn kotlin_probes() -> Vec<Probe> {
+    use ggtts_ffi::kotlin::{load, render_opts, render_stream_opts, LoadArgs};
+    use ggtts_py::core::{guard_keyed, ERR_ARG};
+    let text = "你好。";
+    let fresh = |doc: &str| load(doc, &LoadArgs::default()).unwrap();
+    let fake = r#"{"load": {"engine": "fake"}}"#;
+    // A whole read with the render document `doc` on a fresh engine.
+    let render = |doc: &str| {
+        let h = fresh(fake);
+        let r = guard_keyed(|| render_opts(h, text, Some(doc), None));
+        ggtts_ffi::ggtts_free(h);
+        r
+    };
+    let mut out = Vec::new();
+    let mut push = |key: &str, seen| out.push(("kotlin", key.to_string(), seen));
+    let plain = render("{}").unwrap().0;
+    let caps = ggtts_core::capabilities::Capabilities::of("fake").unwrap();
+    // The sampler settings, frame cap and language in a load document reach the fake engine's capabilities.
+    for (key, doc) in sampler_documents() {
+        let capability = caps.refusal(&key, None).to_string();
+        push(
+            &key,
+            match guard_keyed(|| load(&doc, &LoadArgs::default())) {
+                Err(((ERR_ARG, msg), Some(k))) if k == key && msg == capability => Seen::Carried,
+                Err(((ERR_ARG, _), Some(k))) if k == key => Seen::Refused,
+                Err(e) => panic!("kotlin: {key} gave {e:?}"),
+                Ok(h) => {
+                    ggtts_ffi::ggtts_free(h);
+                    Seen::Dropped
+                }
+            },
+        );
+    }
+    for (key, doc) in [
+        ("render.steer", r#"{"render": {"steer": "s.safetensors"}}"#),
+        ("render.instruction", r#"{"render": {"instruction": "Speak slowly."}}"#),
+    ] {
+        let capability = caps.refusal(key, None).to_string();
+        push(
+            key,
+            match render(doc) {
+                Err(((ERR_ARG, msg), Some(k))) if k == key && msg == capability => Seen::Carried,
+                Err(((ERR_ARG, _), Some(k))) if k == key => Seen::Refused,
+                other => panic!("kotlin: {key} gave {:?}", other.map(|(s, _)| s.len())),
+            },
+        );
+    }
+    let edged = render(r#"{"render": {"edge_s": 1.5}}"#).unwrap().0;
+    push(
+        "render.edge_s",
+        if edged.len() != plain.len() {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        },
+    );
+    // The load document's engine is the engine loaded.
+    push(
+        "load.engine",
+        match guard_keyed(|| load(r#"{"load": {"engine": "nonesuch"}}"#, &LoadArgs::default())) {
+            Err(((_, msg), _)) if msg.contains("nonesuch") => Seen::Carried,
+            _ => Seen::Dropped,
+        },
+    );
+    // The stream: pieces reach the callback.
+    let h = fresh(fake);
+    let mut pieces = 0usize;
+    let streamed = guard_keyed(|| {
+        render_stream_opts(h, text, Some(r#"{"output": {"stream": "raw"}}"#), None, &mut |_, _| {
+            pieces += 1;
+            true
+        })
+    });
+    ggtts_ffi::ggtts_free(h);
+    assert!(streamed.is_ok(), "kotlin: the stream failed: {streamed:?}");
+    push("output.stream", if pieces > 0 { Seen::Carried } else { Seen::Dropped });
+    // What the binding refuses, by its key: in a render document, and a device in a load document.
+    let by_key = |r: Keyed<(Vec<f32>, u32)>, key: &str| match r {
+        Err(((ERR_ARG, msg), Some(k))) if k == key && msg.starts_with(&format!("{key}: ")) => Seen::Refused,
+        other => panic!("kotlin: {key} gave {:?}", other.map(|(s, _)| s.len())),
+    };
+    for (key, doc) in [
+        ("observe.trace", r#"{"observe": {"trace": "t.jsonl"}}"#),
+        ("observe.trace_level", r#"{"observe": {"trace_level": 2}}"#),
+        ("observe.instruments", r#"{"observe": {"instruments": "i"}}"#),
+        ("render.measure_timings", r#"{"render": {"measure_timings": true}}"#),
+        ("render.seed", r#"{"render": {"seed": 3}}"#),
+        ("observe.timing_report", r#"{"observe": {"timing_report": "t.json"}}"#),
+        ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
+        ("output.out", r#"{"output": {"out": "o.flac"}}"#),
+    ] {
+        push(key, by_key(render(doc), key));
+    }
+    push(
+        "load.device",
+        match guard_keyed(|| load(r#"{"load": {"engine": "fake", "device": "cpu"}}"#, &LoadArgs::default())) {
+            Err(((ERR_ARG, msg), Some(k))) if k == "load.device" && msg.starts_with("load.device: ") => Seen::Refused,
+            other => panic!("kotlin: load.device gave {:?}", other.is_ok()),
+        },
+    );
+    out
+}
+
+// ── the stream mode through each binding's document ──
+
+/// Two paragraphs, so the fake engine's two chunks come back 6 dB apart and a level step has something to do.
+const STREAM_TEXT: &str = "今日天氣好好，我哋去海邊行下。\n行完之後，去食飯。";
+
+/// A binding's stream on a fresh fake engine, from a document (`None`: the call without one), the pieces joined.
+type StreamFn = fn(Option<&str>) -> Vec<f32>;
+
+/// The C ABI's stream on a fresh fake engine: `ggtts_render_opts` with `doc` and a callback, or, with `doc` `None`,
+/// the old `ggtts_render_stream` at salt 7. The pieces, joined.
+fn c_abi_stream(doc: Option<&str>) -> Vec<f32> {
+    use ggtts_ffi::{ggtts_free, ggtts_load_opts, ggtts_render_opts, ggtts_render_stream, GGTTS_OK};
+    extern "C" fn keep(user: *mut std::ffi::c_void, samples: *const f32, len: usize, _: u32) -> i32 {
+        let out = unsafe { &mut *(user as *mut Vec<f32>) };
+        out.extend_from_slice(unsafe { std::slice::from_raw_parts(samples, len) });
+        0
+    }
+    let load = CString::new(r#"{"load": {"engine": "fake"}}"#).unwrap();
+    let mut h = 0u64;
+    assert_eq!(
+        unsafe { ggtts_load_opts(load.as_ptr(), &mut h) },
+        GGTTS_OK,
+        "{}",
+        last_error()
+    );
+    let text = CString::new(STREAM_TEXT).unwrap();
+    let mut out: Vec<f32> = Vec::new();
+    let user = &mut out as *mut Vec<f32> as *mut std::ffi::c_void;
+    let code = match doc {
+        None => unsafe { ggtts_render_stream(h, text.as_ptr(), 7, Some(keep), user) },
+        Some(doc) => {
+            let doc = CString::new(doc).unwrap();
+            let null = std::ptr::null_mut();
+            unsafe {
+                ggtts_render_opts(
+                    h,
+                    text.as_ptr(),
+                    doc.as_ptr(),
+                    Some(keep),
+                    user,
+                    null,
+                    null as *mut usize,
+                    null as *mut u32,
+                )
+            }
+        }
+    };
+    assert_eq!(code, GGTTS_OK, "c-abi stream {doc:?}: {}", last_error());
+    ggtts_free(h);
+    out
+}
+
+/// Python's stream on a fresh fake engine, through its core: `render_stream_with` with `doc`, or the old
+/// `render_stream` at salt 7 with `doc` `None`.
+fn python_stream(doc: Option<&str>) -> Vec<f32> {
+    use ggtts_py::core::{load, LoadRequest};
+    let req = LoadRequest {
+        engine: Some("fake".into()),
+        ..Default::default()
+    };
+    let (h, _) = load(&req, &mut |_| {}).unwrap();
+    let mut out: Vec<f32> = Vec::new();
+    let mut keep = |s: &[f32], _: u32| {
+        out.extend_from_slice(s);
+        true
+    };
+    match doc {
+        None => h.render_stream(STREAM_TEXT, 7, &mut keep),
+        Some(doc) => h.render_stream_with(STREAM_TEXT, None, Some(doc), &mut keep),
+    }
+    .unwrap_or_else(|e| panic!("python stream {doc:?}: {e:?}"));
+    out
+}
+
+/// Kotlin's stream on a fresh fake engine, through the core under its JNI layer: `render_stream_opts` with `doc`, or,
+/// with `doc` `None`, the call `renderStream` makes without options (the C ABI's `ggtts_render_stream`).
+fn kotlin_stream(doc: Option<&str>) -> Vec<f32> {
+    use ggtts_ffi::kotlin;
+    let Some(doc) = doc else {
+        return c_abi_stream(None);
+    };
+    let h = kotlin::load(r#"{"load": {"engine": "fake"}}"#, &kotlin::LoadArgs::default()).unwrap();
+    let mut out: Vec<f32> = Vec::new();
+    kotlin::render_stream_opts(h, STREAM_TEXT, Some(doc), None, &mut |s, _| {
+        out.extend_from_slice(s);
+        true
+    })
+    .unwrap_or_else(|e| panic!("kotlin stream {doc}: {e:?}"));
+    ggtts_ffi::ggtts_free(h);
+    out
+}
+
+/// What a probe of a binding's stream saw: `old` is the binding's call without a document (the pieces before the
+/// level step), `default` its document stream with no mode given, `raw` with `"stream_raw": true`, and `held` with
+/// `"stream_level_seconds": 0`. `output.stream_raw` is carried when it gives the old pieces and the default does not
+/// (the default is levelled); `output.stream_level_seconds` when the hold changes the levelled stream.
+fn stream_seen(old: &[f32], default: &[f32], raw: &[f32], held: &[f32]) -> [(&'static str, Seen); 2] {
+    let raw_seen = if raw == old && default != old && default.len() == old.len() {
+        Seen::Carried
+    } else {
+        Seen::Dropped
+    };
+    let hold_seen = if held != default && held.len() == default.len() {
+        Seen::Carried
+    } else {
+        Seen::Dropped
+    };
+    [
+        ("output.stream_raw", raw_seen),
+        ("output.stream_level_seconds", hold_seen),
+    ]
+}
+
+/// The documents a stream probe renders: no mode (levelled), `stream_raw`, and a hold of 0 s (the first chunk alone).
+const STREAM_DOCS: [&str; 3] = [
+    r#"{"render": {"seed_salt": "7"}}"#,
+    r#"{"render": {"seed_salt": "7"}, "output": {"stream": "levelled", "stream_raw": true}}"#,
+    r#"{"render": {"seed_salt": "7"}, "output": {"stream": "levelled", "stream_level_seconds": 0}}"#,
+];
+
+fn stream_probes() -> Vec<Probe> {
+    let bindings: [(&'static str, StreamFn); 3] = [
+        ("c-abi", c_abi_stream),
+        ("python", python_stream),
+        ("kotlin", kotlin_stream),
+    ];
+    let mut out = Vec::new();
+    for (id, stream) in bindings {
+        // The C ABI's document default needs a callback and no output.stream; the stream calls of Python and Kotlin
+        // stream whatever document they are given.
+        let [default, raw, held] = STREAM_DOCS.map(|d| stream(Some(d)));
+        for (key, seen) in stream_seen(&stream(None), &default, &raw, &held) {
+            out.push((id, key.to_string(), seen));
+        }
+    }
+    out
+}
+
 fn probes() -> Vec<Probe> {
     let mut out = render_probes();
     out.extend(book_probes());
     out.extend(c_abi_probes());
+    out.extend(python_probes());
+    out.extend(kotlin_probes());
+    out.extend(stream_probes());
     out
 }
 
@@ -1073,12 +1673,82 @@ fn a_new_option_entered_as_a_gap_fails_naming_it() {
 #[test]
 fn a_closed_gap_still_listed_fails() {
     let mut cells = cells(TABLE, FRONT_ENDS).unwrap();
-    let key = ("c-abi".to_string(), "output.stream_raw".to_string());
+    let key = ("android".to_string(), "output.stream_raw".to_string());
     assert_eq!(cells[&key], Gap(284));
     cells.insert(key, Carried);
     let errors = check_gaps(&cells, &read(GAPS));
     assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(errors[0].contains("c-abi\\toutput.stream_raw\\t#284"), "{errors:?}");
+    assert!(errors[0].contains("android\\toutput.stream_raw\\t#284"), "{errors:?}");
+}
+
+/// #284 AC3: a document path that ignores `raw` (it levels anyway) fails: the probe sees `output.stream_raw` dropped,
+/// and the carried cell turns red. So does one that ignores the hold.
+#[test]
+fn a_document_stream_that_ignores_raw_fails() {
+    let old = c_abi_stream(None);
+    let [default, _, held] = STREAM_DOCS.map(|d| c_abi_stream(Some(d)));
+    // Planted: the raw document levelled like the default.
+    let [(key, seen), _] = stream_seen(&old, &default, &default, &held);
+    let e = verdict("c-abi", key, Carried, seen).unwrap_err();
+    assert!(
+        e.contains("output.stream_raw is Carried in the table, and the probe saw it Dropped"),
+        "{e}"
+    );
+    // Planted: the hold ignored, so the held stream is the default one.
+    let [_, (key, seen)] = stream_seen(&old, &default, &old, &default);
+    assert!(verdict("c-abi", key, Carried, seen).is_err());
+    // Unplanted, both are carried.
+    let [raw, hold] = stream_seen(&old, &default, &c_abi_stream(Some(STREAM_DOCS[1])), &held);
+    assert_eq!((raw.1, hold.1), (Seen::Carried, Seen::Carried));
+}
+
+/// #284 AC2: a binding's document stream with no mode given is `ggtts-render --stream`'s levelled stream for the same
+/// story and seed, sample for sample at the stream's 16 bits; `"raw"` is the old call, and so is a stream call with no
+/// document.
+#[test]
+fn a_document_stream_is_ggtts_renders_levelled_stream() {
+    let dir = scratch("stream-levelled");
+    // The story ggtts-render renders is the binding's: its title is the binding's story id, and the salt is the
+    // binding's seed 7 against ggtts-render's (unset) story salt, so both are given as the empty salt.
+    std::fs::write(
+        dir.join("b.txt"),
+        format!("{}\n{STREAM_TEXT}\n", ggtts_load::binding::STORY),
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_ggtts-render"))
+        .args(["--engine", "fake", "--log-level", "error", "--story", "b.txt"])
+        .args(["--stream", "s.pcm", "--stream-format", "s16le"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let bytes = std::fs::read(dir.join("s.pcm")).unwrap();
+    let body = &bytes[bytes.iter().position(|&b| b == b'\n').unwrap() + 1..];
+    let cli: Vec<i16> = body.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+    let doc = r#"{"render": {"seed_salt": ""}}"#;
+    let raw = r#"{"render": {"seed_salt": ""}, "output": {"stream": "raw"}}"#;
+    let bindings: [(&str, StreamFn); 3] = [
+        ("c-abi", c_abi_stream),
+        ("python", python_stream),
+        ("kotlin", kotlin_stream),
+    ];
+    for (id, stream) in bindings {
+        let levelled: Vec<i16> = stream(Some(doc)).iter().map(|&x| ggtts_core::flac::to_i16(x)).collect();
+        assert!(!cli.is_empty(), "ggtts-render streamed nothing");
+        assert_eq!(
+            levelled, cli,
+            "{id}: the document's default stream is not ggtts-render's levelled stream"
+        );
+        assert_eq!(
+            stream(Some(raw)).len(),
+            cli.len(),
+            "{id}: the raw stream has another length"
+        );
+        assert_ne!(stream(Some(raw)), stream(Some(doc)), "{id}: the raw stream is levelled");
+    }
+    // Without a document the stream calls are the old ones: the pieces before the level step.
+    assert_eq!(python_stream(None), c_abi_stream(None));
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// AC3: a front end that drops an option its cell says it carries fails, and a gap a probe sees carried is closed.
@@ -1149,8 +1819,8 @@ fn the_binding_surfaces_match_their_snapshot() {
 fn a_new_python_keyword_fails_the_snapshot() {
     let src = read("crates/ggtts-py/src/python.rs");
     let planted = src.replacen(
-        "#[pyo3(signature = (engine,",
-        "#[pyo3(signature = (engine, foo=None,",
+        "#[pyo3(signature = (engine=None,",
+        "#[pyo3(signature = (engine=None, foo=None,",
         1,
     );
     assert_ne!(planted, src, "the plant applies");

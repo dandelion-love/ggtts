@@ -67,8 +67,8 @@ unset is the value every render had before these options existed, so a render th
 They are load options because the engine reads them when it opens: to compare settings, load once per setting. The
 reference CLI has no sub-talker settings (its code predictor samples with the talker's temperature, top-k and top-p,
 and no repetition penalty), so the `subtalker_*` keys are ggtts's own. An engine without them (`Capabilities::sampler`
-false: Kitten-TTS 2, the fake engine) refuses each one given, by its key. The C ABI takes them in a load document;
-Python and Kotlin will take them through their options documents, and refuse them until then.
+false: Kitten-TTS 2, the fake engine) refuses each one given, by its key. The C ABI, Python (`options=`) and Kotlin
+(`options`) take them in a load document; the Android app renders with the defaults.
 `crates/ggtts-qwen3-tts/scripts/sampler_parity.sh` checks each against the reference CLI on CPU.
 
 ## Seed keys

@@ -230,7 +230,11 @@ fn a_bad_document_is_an_argument_error_before_anything_renders() {
         (r#"{"render": "#, "not JSON"),
         (r#"{"load": {"threads": 2}}"#, "load.threads"),
         (r#"{"render": {"redraw": "two"}}"#, "render.redraw"),
-        (r#"{"output": {"stream": "levelled"}}"#, "output.stream"),
+        (r#"{"output": {"stream": "louder"}}"#, "output.stream"),
+        (
+            r#"{"output": {"stream": "raw", "stream_level_seconds": 2}}"#,
+            "output.stream_level_seconds",
+        ),
         (r#"{"observe": {"timing_report": "t.json"}}"#, "observe.timing_report"),
         (r#"{"render": {"steer": "s.safetensors"}}"#, "render.steer"),
     ] {
@@ -238,7 +242,7 @@ fn a_bad_document_is_an_argument_error_before_anything_renders() {
         assert_eq!(code, GGTTS_ERR_ARG, "{doc}: {}", last_error());
         assert!(last_error().contains(names), "{doc}: {}", last_error());
     }
-    // A stream with no callback, and a whole read with one.
+    // A stream with no callback.
     let text = c(TEXT);
     let stream = c(r#"{"output": {"stream": "raw"}}"#);
     let null = ptr::null_mut();
@@ -252,22 +256,6 @@ fn a_bad_document_is_an_argument_error_before_anything_renders() {
             ptr::null_mut(),
             ptr::null_mut(),
             ptr::null_mut(),
-        )
-    };
-    assert_eq!(code, GGTTS_ERR_ARG, "{}", last_error());
-    assert!(last_error().contains("on_piece"), "{}", last_error());
-    let whole = c("{}");
-    let (mut p, mut n, mut r) = (ptr::null_mut(), 0usize, 0u32);
-    let code = unsafe {
-        ggtts_render_opts(
-            h,
-            text.as_ptr(),
-            whole.as_ptr(),
-            Some(collect),
-            null,
-            &mut p,
-            &mut n,
-            &mut r,
         )
     };
     assert_eq!(code, GGTTS_ERR_ARG, "{}", last_error());
@@ -534,4 +522,70 @@ fn a_load_document_gives_what_its_struct_gives_on_a_real_model() {
     assert_eq!(render_struct(hd, 7), render_struct(hs, 7));
     ggtts_free(hd);
     ggtts_free(hs);
+}
+
+/// #284: a document stream is levelled unless it asks for the pieces before the level step. A callback with no
+/// `output.stream` streams levelled, as does `"levelled"`; `"raw"` and `"stream_raw": true` are the old
+/// `ggtts_render_stream`, bit for bit; a hold changes the levelled pieces; the levelled pieces have the read's
+/// length, and a whole read alongside the stream is the same read.
+#[test]
+fn a_document_stream_is_levelled_unless_it_asks_for_raw() {
+    let text = c(TEXT);
+    // The pieces of one stream on a fresh engine, and the whole read written beside them.
+    let stream = |doc: Option<&str>| {
+        let h = fresh();
+        let mut out: Vec<u32> = Vec::new();
+        let user = &mut out as *mut Vec<u32> as *mut c_void;
+        let (mut p, mut n, mut r) = (ptr::null_mut(), 0usize, 0u32);
+        let code = match doc {
+            None => unsafe { ggtts_render_stream(h, text.as_ptr(), 7, Some(collect), user) },
+            Some(d) => {
+                let d = c(d);
+                unsafe {
+                    ggtts_render_opts(
+                        h,
+                        text.as_ptr(),
+                        d.as_ptr(),
+                        Some(collect),
+                        user,
+                        &mut p,
+                        &mut n,
+                        &mut r,
+                    )
+                }
+            }
+        };
+        assert_eq!(code, GGTTS_OK, "{doc:?}: {}", last_error());
+        let whole: Vec<u32> = if p.is_null() {
+            Vec::new()
+        } else {
+            let v = unsafe { std::slice::from_raw_parts(p, n) }
+                .iter()
+                .map(|x| x.to_bits())
+                .collect();
+            unsafe { ggtts_pcm_free(p, n) };
+            v
+        };
+        ggtts_free(h);
+        (out, whole)
+    };
+    let (old, _) = stream(None);
+    let salt = r#""render": {"seed_salt": "7"}"#;
+    let (default, whole) = stream(Some(&format!("{{{salt}}}")));
+    let (levelled, _) = stream(Some(&format!(r#"{{{salt}, "output": {{"stream": "levelled"}}}}"#)));
+    let (raw, _) = stream(Some(&format!(r#"{{{salt}, "output": {{"stream": "raw"}}}}"#)));
+    let (flag, _) = stream(Some(&format!(
+        r#"{{{salt}, "output": {{"stream": "levelled", "stream_raw": true}}}}"#
+    )));
+    let (held, _) = stream(Some(&format!(
+        r#"{{{salt}, "output": {{"stream": "levelled", "stream_level_seconds": 0}}}}"#
+    )));
+    assert!(!old.is_empty());
+    assert_eq!(raw, old, "\"raw\" is the old stream");
+    assert_eq!(flag, old, "stream_raw is the old stream");
+    assert_eq!(default, levelled, "no mode is \"levelled\"");
+    assert_ne!(default, old, "the default stream is levelled");
+    assert_eq!(default.len(), old.len(), "the level step keeps the length");
+    assert_ne!(held, default, "the hold reaches the level step");
+    assert_eq!(whole.len(), old.len(), "the whole read beside a stream is the read");
 }

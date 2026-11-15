@@ -43,12 +43,11 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use ggtts_core::options::{Options, Refusal, Source};
 use ggtts_load::binding::{self, Held, Slot};
 
-#[path = "../../ggtts-cli/src/gguf_arch.rs"]
-#[allow(dead_code)]
-mod gguf_arch;
-
 #[cfg(feature = "jni")]
 mod jni;
+/// The Kotlin binding's document calls in plain Rust, under the JNI layer: public to Rust hosts and tests (the
+/// conformance test probes Kotlin through it), not part of the C-ABI.
+pub mod kotlin;
 
 pub const GGTTS_OK: i32 = binding::OK;
 /// A NULL, non-UTF-8 or out-of-range argument.
@@ -116,27 +115,16 @@ fn set_error(msg: &str, key: Option<&str>) {
     LAST_ERROR_KEY.with(|e| *e.borrow_mut() = key);
 }
 
-/// The schema key a failed call refused: the key of the refusal of one option ([`binding::refusal_err`]) when the
-/// call failed with [`GGTTS_ERR_ARG`] and its message is that refusal's (`"key: ..."`), else `None`. The message check
-/// keeps a key recorded by a refusal the call recovered from off a later, unrelated argument error. `$` (a document
-/// that is not JSON, or not an object) is the whole document, not one option, so it is `None` too.
-fn refused_key(code: i32, msg: &str, key: Option<String>) -> Option<String> {
-    key.filter(|k| code == GGTTS_ERR_ARG && !k.is_empty() && k != "$" && msg.starts_with(&format!("{k}: ")))
-}
-
-/// Run `f`, turning an error or a panic into a status ([`binding::guard`]), and record the message and the refused
-/// key ([`ggtts_last_error_key`]).
+/// Run `f`, turning an error or a panic into a status ([`binding::guard_keyed`]), and record the message and the
+/// refused key ([`ggtts_last_error_key`], [`binding::refused_key`]).
 fn guard(f: impl FnOnce() -> Result<(), Fail>) -> i32 {
-    binding::take_refused_key();
-    let result = binding::guard(f);
-    let key = binding::take_refused_key();
-    match result {
+    match binding::guard_keyed(f) {
         Ok(()) => {
             set_error("", None);
             GGTTS_OK
         }
-        Err((code, msg)) => {
-            set_error(&msg, refused_key(code, &msg, key).as_deref());
+        Err(((code, msg), key)) => {
+            set_error(&msg, key.as_deref());
             code
         }
     }
@@ -501,11 +489,10 @@ fn load_options(o: &Options, default_files: bool, document: bool) -> Result<u64,
     let path = |p: &Option<PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned());
     let (model, codec, voice) = (path(&o.load.model), path(&o.load.codec), path(&o.load.voice));
     // "auto" is a document's engine only: a struct load names its engine, and "auto" is no engine there.
-    let engine = match (o.load.engine.as_str(), &model) {
-        ("auto", Some(m)) if document => gguf_arch::architecture(std::path::Path::new(m))
-            .map_err(|e| (GGTTS_ERR_ENGINE, format!("load.model {m}: {e}")))?,
-        ("auto", None) if document => "qwen3-tts".to_string(),
-        (e, _) => e.to_string(),
+    let engine = if document {
+        binding::document_engine(o)?
+    } else {
+        o.load.engine.clone()
     };
     if document {
         if let Some(caps) = ggtts_core::capabilities::Capabilities::of(&engine) {
@@ -553,23 +540,21 @@ pub unsafe extern "C" fn ggtts_load_opts(options_json: *const c_char, handle: *m
         let json = unsafe { arg(options_json, "options_json") }?;
         let o = Options::from_json(json).map_err(refused)?;
         binding::check_document(&o, true)?;
-        let id = load_options(&o, true, true)?;
-        // The render defaults, kept with the handle: the render section, marked as given where the document gave it.
-        let mut kept = Options {
-            render: o.render.clone(),
-            ..Options::default()
-        };
-        kept.marks.sources = o
-            .marks
-            .sources
-            .iter()
-            .filter(|(k, _)| k.starts_with("render."))
-            .map(|(k, s)| (k.clone(), *s))
-            .collect();
-        defaults().get_or_insert_with(HashMap::new).insert(id, kept);
+        let id = load_document(&o)?;
         unsafe { *handle = id };
         Ok(())
     })
+}
+
+/// Load the engine a checked load document names and keep its render defaults with the handle: the body of
+/// [`ggtts_load_opts`], which the Kotlin binding's document load calls too.
+fn load_document(o: &Options) -> Result<u64, Fail> {
+    let id = load_options(o, true, true)?;
+    // The render defaults, kept with the handle: the render section, marked as given where the document gave it.
+    defaults()
+        .get_or_insert_with(HashMap::new)
+        .insert(id, binding::render_defaults(o));
+    Ok(id)
 }
 
 /// Render `text` to mono f32 PCM. Free the buffer with [`ggtts_pcm_free`].
@@ -648,7 +633,7 @@ fn render(
 ) -> Result<(Vec<f32>, u32), Fail> {
     let base = defaults().get_or_insert_with(HashMap::new).get(&handle).cloned();
     let mut o = match base {
-        Some(b) => b.layer(doc.clone()).map_err(refused)?,
+        Some(b) => binding::layer_render(&b, doc.clone())?,
         None => doc.clone(),
     };
     with_engine(handle, |e, instruction| {
@@ -660,12 +645,14 @@ fn render(
 }
 
 /// Render `text` with an options document (C-ABI version 4), laid over the load's render defaults; NULL is the empty
-/// document. Without `output.stream` it is a whole read: `on_piece` must be NULL, and `pcm`, `len` and `rate` get the
-/// samples, as [`ggtts_render`] gives them. With `"output": {"stream": "raw"}` each kept chunk goes to `on_piece`
-/// before the level step, as [`ggtts_render_stream`] hands it; `on_piece` is required, and `pcm`, `len` and `rate` are
-/// all NULL or all set (then they also get the whole read). A malformed document, an unknown key, a wrong type, a load option, an
-/// option a binding does not take, and one the engine does not support are [`GGTTS_ERR_ARG`] before anything is
-/// rendered.
+/// document. With `on_piece` NULL and no `output.stream` it is a whole read: `pcm`, `len` and `rate` get the samples,
+/// as [`ggtts_render`] gives them. With `on_piece` set it is a stream: each kept chunk goes to `on_piece`, levelled as
+/// `ggtts-render --stream` levels it (one gain from the first `output.stream_level_seconds`, 5 s unless given) unless
+/// the document says `"output": {"stream": "raw"}` or `"stream_raw": true`, which hand each piece over before the level
+/// step, as [`ggtts_render_stream`] does; `pcm`, `len` and `rate` are all NULL or all set (then they also get the
+/// whole read). `output.stream` with `on_piece` NULL has nowhere to send the pieces. A malformed document, an unknown
+/// key, a wrong type, a load option, an option a binding does not take, and one the engine does not support are
+/// [`GGTTS_ERR_ARG`] before anything is rendered.
 ///
 /// # Safety
 /// `text` is NUL-terminated; `options_json` is NULL or NUL-terminated; `on_piece` is NULL or a valid function; `pcm`,
@@ -691,33 +678,29 @@ pub unsafe extern "C" fn ggtts_render_opts(
         binding::check_document(&doc, false)?;
         let given = [pcm.is_null(), len.is_null(), rate.is_null()];
         let outputs = given.iter().all(|null| !null);
-        if doc.output.stream.is_some() && !outputs && given.iter().any(|null| !null) {
+        let stream = doc.output.stream.is_some() || on_piece.is_some();
+        if stream && !outputs && given.iter().any(|null| !null) {
             return Err((
                 GGTTS_ERR_ARG,
                 "a stream's pcm, len and rate are all set or all NULL: one of them alone has nowhere to write".into(),
             ));
         }
-        let result =
-            match (doc.output.stream.is_some(), on_piece) {
-                (true, None) => {
-                    return Err((
-                        GGTTS_ERR_ARG,
-                        "output.stream needs on_piece: the pieces go to it".into(),
-                    ))
-                }
-                (false, Some(_)) => return Err((
+        let result = match (doc.output.stream.is_some(), on_piece) {
+            (true, None) => {
+                return Err((
                     GGTTS_ERR_ARG,
-                    "on_piece is set, and the document asks for no stream: give \"output\": {\"stream\": \"raw\"}, \
-                     or pass NULL"
-                        .into(),
-                )),
-                (false, None) if !outputs => return Err((GGTTS_ERR_ARG, "pcm, len and rate must not be NULL".into())),
-                (false, None) => render(handle, text, &doc, None)?,
-                (true, Some(f)) => {
-                    let mut piece = |samples: &[f32], r: u32| f(user, samples.as_ptr(), samples.len(), r) == 0;
-                    render(handle, text, &doc, Some(&mut piece))?
-                }
-            };
+                    "output.stream needs on_piece: the pieces go to it".into(),
+                ))
+            }
+            (false, None) if !outputs => return Err((GGTTS_ERR_ARG, "pcm, len and rate must not be NULL".into())),
+            (false, None) => render(handle, text, &doc, None)?,
+            // A stream: levelled unless the document asks for the pieces before the level step
+            // (`binding::stream_mode`).
+            (_, Some(f)) => {
+                let mut piece = |samples: &[f32], r: u32| f(user, samples.as_ptr(), samples.len(), r) == 0;
+                render(handle, text, &doc, Some(&mut piece))?
+            }
+        };
         if outputs {
             let (samples, sample_rate) = result;
             let boxed = samples.into_boxed_slice();

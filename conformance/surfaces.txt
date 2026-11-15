@@ -2,9 +2,9 @@
 # the pyo3 load, render and render_stream parameters (crates/ggtts-py/src/python.rs), ggtts.h's ggtts_settings fields
 # and exported functions, and Ggtts.kt's external funs. A change fails until each new name has a row in the options
 # table, a cell per front end in the conformance table, and this file is updated in the same pull request.
-python load: engine, model, codec, voice, speaker, instruction, device, threads, offline, progress
-python render: text, seed
-python render_stream: text, seed, on_piece
+python load: engine, model, codec, voice, speaker, instruction, device, threads, offline, options, progress
+python render: text, seed, options
+python render_stream: text, on_piece, seed, options
 c ggtts_settings: size, speaker, instruction, device, cache_dir, allow_download
 c ggtts_load: engine, model, codec, voice, threads, handle
 c ggtts_load_with: engine, model, codec, voice, threads, settings, handle
@@ -23,6 +23,11 @@ c ggtts_last_error_key:
 kotlin load: engine, model, codec, voice, threads
 kotlin loadWith: engine, model, codec, voice, threads, speaker, instruction
 kotlin loadWithModels: engine, model, codec, voice, threads, speaker, instruction, cacheDir, allowDownload
+kotlin loadOpts: optionsJson, engine, model, codec, voice, threads, speaker, instruction, cacheDir, allowDownload
 kotlin render: handle, text, seed, rateOut
+kotlin renderOpts: handle, text, optionsJson, seed, seedGiven, rateOut
 kotlin renderStream: handle, text, seed, listener
+kotlin renderStreamOpts: handle, text, optionsJson, seed, seedGiven, listener
+kotlin optionsSchema:
+kotlin capabilities: handle
 kotlin free: handle

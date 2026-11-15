@@ -18,10 +18,43 @@ that a merge places under a released heading is caught.
   meanings, and `--subtalker-temperature`, `--subtalker-top-k` and `--subtalker-top-p` for the code predictor, which
   otherwise samples with the talker's settings. Unset, each is the value every render had before (0.9, 50, 1.0, 1.05,
   1200 frames, `zh`), so a render without them is unchanged. A temperature at or below 0 (talker or sub-talker) is
-  refused, since greedy decoding does not terminate on this model. `ggtts-render`, `ggtts-book` and the C ABI's load
-  document take them; Kitten-TTS 2 refuses each by its key. A render given any records them as `sampling` in its
+  refused, since greedy decoding does not terminate on this model. `ggtts-render`, `ggtts-book` and the load documents
+  of the C ABI, Python (`options=`) and Kotlin (`options`) take them; Kitten-TTS 2 refuses each by its key. A render given any records them as `sampling` in its
   record, trace header, timing and duration reports, and a book's manifests, so a resume under other settings
   renders the chapter again. The capability statement (`ggtts_capabilities`) gains `sampler`.
+- **A stream through an options document is levelled by default, as `ggtts-render --stream` is.** The C ABI's
+  `ggtts_render_opts` with a callback, Python's `render_stream` and `stream` with `options=`, and Kotlin's
+  `renderStream` with `options` now hand each piece levelled by one gain from the first 5 s of audio
+  (`output.stream_level_seconds` changes the hold). That is the stream to play: the same text and seed give
+  `ggtts-render --stream`'s samples. `{"output": {"stream": "raw"}}` or `"stream_raw": true` gives the pieces before
+  the level step, as before. Nothing existing changes: `ggtts_render_stream`, and the Python and Kotlin stream calls
+  without options, still stream the unlevelled pieces, and a raw document gives the same pieces it gave. In C, a
+  callback with no `output.stream`, which was refused, now streams levelled.
+- **Python and Kotlin read the options schema and an engine's capabilities from the library**, as the C ABI does
+  since version 5. Python: `ggtts.options_schema()` and `TTS.capabilities()`, each a dict. Kotlin:
+  `Ggtts.optionsSchema()` and `Ggtts.capabilities()`, each JSON. Both come from the same shared pieces as
+  `ggtts_options_schema` and `ggtts_capabilities`, so every front end states the same thing, and neither binding ships
+  a schema file. A refused option's key was already on Python's `OptionError.key` and Kotlin's `GgttsException.key`.
+- **Kotlin takes every option through one parameter, `options`.** `Ggtts.load(options = ...)` takes a load document,
+  and `render(text, options = ...)` and `renderStream(text, options = ...)` a render document laid over the load's
+  defaults: steering, `edge_s`, `redraw` and a per-render instruction. It is the C ABI's document, as a JSON string
+  over JNI. A refusal throws `GgttsException` with `ERR_ARG`, and the new `GgttsException.key` is the refused
+  option's schema key, read from `ggtts_last_error_key`; the trace (no file sink a phone user can read) and
+  `load.device` (CPU only) are refused by key. The `load` parameters keep working beside a document, and a value
+  given both ways is refused, naming both. `render` and `renderStream` take `seed: Long? = null` (the seed salt,
+  `DEFAULT_SEED` when not given) and `load` takes nullable `engine`, `threads` and `allowDownload` with the same
+  defaults as before; the old signatures stay in the class, hidden from source, so compiled code still links. A call
+  without `options` renders the same samples as before.
+- **Python takes every option through one argument, `options=`.** `ggtts.load(options=...)` takes a load document
+  (the `load` section, `cache_dir` included, and `render` defaults), and `render`, `render_stream` and `stream` take a
+  render document laid over those defaults: steering, `edge_s`, `redraw`, a per-render instruction and a trace. A
+  document is a dict or a JSON string, read and checked by the C ABI's own document code. A refused option is the new
+  `ggtts.OptionError`, a `GgttsError` and a `ValueError`, whose `key` is the option's schema key (`render.steer`); a
+  value given both as an argument and in the document is refused, naming both. `seed` on a render is documented as
+  the seed salt it already was (`render.seed_salt`). The arguments `engine`, `device` and `offline` now default to
+  None (not given), which loads exactly what their old defaults did, and a setting refused by its key (a speaker on
+  an engine that has none) is now an `OptionError`, still a `GgttsError` with the same code and message. A call
+  without `options` renders the same samples as before.
 - **`--kitten-full-head` (`load.kitten_full_head`) is an option of the table**, with `GGTTS_KITTEN_FULL_HEAD` as its
   environment spelling, for `ggtts-render` and `ggtts-book render`. It makes Kitten-TTS 2 compute its whole output
   head, as `GGTTS_KITTEN_FULL_HEAD=1` did, and the audio is unchanged by the move. When it is on, the trace header and

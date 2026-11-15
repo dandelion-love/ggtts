@@ -28,6 +28,11 @@ use ggtts_core::pipeline::{
 use ggtts_core::trace::{emit_header, Events, Header, JsonlEvents, NullEvents};
 use ggtts_models::{Cache, Fetch, ModelFile};
 
+// The GGUF header reader `ggtts-render` and the C-ABI use to pick the engine for `"engine": "auto"`.
+#[path = "../../ggtts-cli/src/gguf_arch.rs"]
+#[allow(dead_code)]
+mod gguf_arch;
+
 /// The codes, the C-ABI's (`ggtts.h`): success.
 pub const OK: i32 = 0;
 /// A NULL, non-UTF-8 or out-of-range argument; a setting the engine does not take; empty or punctuation-only text.
@@ -49,6 +54,9 @@ pub type Fail = (i32, String);
 /// The story id every binding render uses: the seed of each chunk is derived from it, the text and the seed given, so
 /// a render is the same in every binding at the same seed.
 pub const STORY: &str = "ggtts-binding";
+
+/// The story seed's salt a binding render uses when given none (Python's and Kotlin's `DEFAULT_SEED`).
+pub const DEFAULT_SEED: u64 = 20260905;
 
 /// The CPU threads a load uses when given 0 or less.
 pub const DEFAULT_THREADS: i32 = 4;
@@ -80,6 +88,26 @@ pub fn refusal_err(r: options::Refusal) -> Fail {
 /// a call and takes it after one that failed with [`ERR_ARG`], so it never reports a key an earlier call left.
 pub fn take_refused_key() -> Option<String> {
     REFUSED_KEY.with(|k| k.borrow_mut().take())
+}
+
+/// The schema key a failed call refused: the key of the refusal of one option ([`refusal_err`]) when the call failed
+/// with [`ERR_ARG`] and its message is that refusal's (`"key: ..."`), else `None`. The message check keeps a key
+/// recorded by a refusal the call recovered from off a later, unrelated argument error. `$` (a document that is not
+/// JSON, or not an object) is the whole document, not one option, so it is `None` too.
+pub fn refused_key(code: i32, msg: &str, key: Option<String>) -> Option<String> {
+    key.filter(|k| code == ERR_ARG && !k.is_empty() && k != "$" && msg.starts_with(&format!("{k}: ")))
+}
+
+/// [`guard`] that also gives the schema key a failure refused ([`refused_key`]): the key is cleared before `f` runs
+/// and taken after, on this thread, so it is never one an earlier call left.
+pub fn guard_keyed<T>(f: impl FnOnce() -> Result<T, Fail>) -> Result<T, (Fail, Option<String>)> {
+    take_refused_key();
+    let result = guard(f);
+    let key = take_refused_key();
+    result.map_err(|(code, msg)| {
+        let key = refused_key(code, &msg, key);
+        ((code, msg), key)
+    })
 }
 
 fn engine_err(msg: impl Into<String>) -> Fail {
@@ -315,11 +343,10 @@ pub fn document_refusal(key: &str, at_load: bool) -> Option<&'static str> {
         ("observe", "trace" | "trace_level") => return None,
         ("observe", _) => "instruments are out-of-process programs the CLI runs on a finished file",
         ("output", "out" | "stream_format") => "a binding hands the PCM to its caller and writes no file",
-        ("output", "stream_raw" | "stream_level_seconds") => {
-            "a levelled stream is not taken yet: output.stream \"raw\" streams the pieces before the level step"
+        ("output", "stream" | "stream_raw" | "stream_level_seconds") if at_load => {
+            "a stream is per render: give it in the render document"
         }
-        ("output", "stream") if at_load => "a stream is per render: give it in the render document",
-        ("output", "stream") => return None,
+        ("output", "stream" | "stream_raw" | "stream_level_seconds") => return None,
         ("book", _) => "ggtts-book's own options",
         ("render", "judge") => {
             "the ASR judge starts a Python process beside the render: judge with ggtts-render --story or ggtts-book"
@@ -330,8 +357,8 @@ pub fn document_refusal(key: &str, at_load: bool) -> Option<&'static str> {
     Some(why)
 }
 
-/// Refuses an option a binding does not take in this document ([`document_refusal`]), and a stream other than
-/// `"raw"`, as [`ERR_ARG`] naming the option.
+/// Refuses an option a binding does not take in this document ([`document_refusal`]), a stream other than
+/// `"levelled"` or `"raw"`, and a level hold on a raw stream, as [`ERR_ARG`] naming the option.
 pub fn check_document(o: &Options, at_load: bool) -> Result<(), Fail> {
     for key in o.marks.sources.keys() {
         if let Some(why) = document_refusal(key, at_load) {
@@ -339,26 +366,139 @@ pub fn check_document(o: &Options, at_load: bool) -> Result<(), Fail> {
         }
     }
     match o.output.stream.as_deref() {
-        None | Some("raw") => Ok(()),
-        Some(other) => Err(key_err(
-            "output.stream",
-            format!(
-                "output.stream: a binding streams to its callback: \"raw\" hands it the pieces before the level step \
-             (a levelled stream is not taken yet), not {other:?}"
-            ),
-        )),
+        None | Some("raw" | "levelled") => {}
+        Some(other) => {
+            return Err(key_err(
+                "output.stream",
+                format!(
+                    "output.stream: a binding streams to its callback: \"levelled\" (the default) levels the pieces \
+                     as ggtts-render --stream does, \"raw\" hands them over before the level step; not {other:?}"
+                ),
+            ))
+        }
     }
+    if o.output.stream_level_seconds.is_some() && matches!(stream_mode(o), StreamMode::Raw) {
+        return Err(key_err(
+            "output.stream_level_seconds",
+            "output.stream_level_seconds: a raw stream has no level step to hold",
+        ));
+    }
+    Ok(())
+}
+
+/// The stream a binding's document asks for, as `ggtts-render --stream` reads its flags: the pieces before the level
+/// step when `output.stream` is `"raw"` or `output.stream_raw` is set, else levelled with one gain from the first
+/// `output.stream_level_seconds` ([`ggtts_core::stream::DEFAULT_HOLD_S`] when not given). The pipeline applies it
+/// ([`render_plan`]'s [`Output::Stream`]); no front end levels a stream itself.
+pub fn stream_mode(o: &Options) -> StreamMode {
+    if o.output.stream.as_deref() == Some("raw") || o.output.stream_raw {
+        StreamMode::Raw
+    } else {
+        StreamMode::Levelled {
+            hold_s: o
+                .output
+                .stream_level_seconds
+                .unwrap_or(ggtts_core::stream::DEFAULT_HOLD_S),
+        }
+    }
+}
+
+/// Refuses a value a binding was given twice, once as its own argument and once in its options document, naming
+/// both: each `(argument, key)` pair whose argument was given and whose key the document `o` gives. Neither wins
+/// over the other, so the caller says which it meant.
+pub fn refuse_given_twice(o: &Options, given: &[(&str, &str)]) -> Result<(), Fail> {
+    for (argument, key) in given {
+        if o.marks.sources.contains_key(*key) {
+            return Err(refusal_err(options::Refusal {
+                key: (*key).to_string(),
+                message: format!("given twice, as the argument {argument} and in the options document: give it once"),
+            }));
+        }
+    }
+    Ok(())
+}
+
+/// The engine a load document names: `auto` is the model file's GGUF architecture, or `qwen3-tts` when it gives no
+/// model, as `ggtts-render` resolves it.
+pub fn document_engine(o: &Options) -> Result<String, Fail> {
+    match (o.load.engine.as_str(), &o.load.model) {
+        ("auto", Some(m)) => {
+            gguf_arch::architecture(m).map_err(|e| engine_err(format!("load.model {}: {e}", m.display())))
+        }
+        ("auto", None) => Ok("qwen3-tts".to_string()),
+        (e, _) => Ok(e.to_string()),
+    }
+}
+
+/// The render defaults a load document gives: its render section, marked as given where the document gave it, so a
+/// render document laid over them ([`layer_render`]) replaces only what it gives itself.
+pub fn render_defaults(o: &Options) -> Options {
+    let mut kept = Options {
+        render: o.render.clone(),
+        ..Options::default()
+    };
+    kept.marks.sources = o
+        .marks
+        .sources
+        .iter()
+        .filter(|(k, _)| k.starts_with("render."))
+        .map(|(k, s)| (k.clone(), *s))
+        .collect();
+    kept
+}
+
+/// A render document laid over a load's render defaults ([`render_defaults`]): what the document gives wins.
+pub fn layer_render(defaults: &Options, doc: Options) -> Result<Options, Fail> {
+    defaults.clone().layer(doc).map_err(refusal_err)
+}
+
+/// A binding's render call as a render document: `options` (JSON; `None` is the empty document) read and checked
+/// ([`check_document`]), the call's own `seed` as its `render.seed_salt` (refused when the document gives the salt
+/// too, naming both), and `stream` deciding the stream: a stream call with a document streams as the document says,
+/// levelled by default ([`stream_mode`]); a stream call with no document is the old call, the pieces before the
+/// level step; a whole-read call refuses `output.stream`. The load's render defaults are not laid under it here.
+pub fn render_request(options: Option<&str>, seed: Option<u64>, stream: bool) -> Result<Options, Fail> {
+    let mut doc = match options {
+        Some(json) => Options::from_render_json(json).map_err(refusal_err)?,
+        None => Options::default(),
+    };
+    check_document(&doc, false)?;
+    if let Some(seed) = seed {
+        refuse_given_twice(&doc, &[("seed", "render.seed_salt")])?;
+        doc.render.seed_salt = Some(seed.to_string());
+        doc.marks
+            .sources
+            .insert("render.seed_salt".into(), options::Source::Document);
+    }
+    match (stream, doc.output.stream.is_some()) {
+        (false, true) => {
+            return Err(key_err(
+                "output.stream",
+                "output.stream: this call returns the whole read: stream with the binding's stream call",
+            ))
+        }
+        (true, false) => {
+            let mode = if options.is_none() { "raw" } else { "levelled" };
+            doc.output.stream = Some(mode.into());
+            doc.marks
+                .sources
+                .insert("output.stream".into(), options::Source::Document);
+        }
+        _ => {}
+    }
+    Ok(doc)
 }
 
 /// A stream's callback: a piece's samples and its rate; false stops the render.
 pub type PieceSink<'a> = &'a mut dyn FnMut(&[f32], u32) -> bool;
 
-/// Render `text` with an options value: the whole read, or, with `on_piece`, each kept chunk handed to it before the
-/// level step (returning false stops the render with [`ERR_STOPPED`]); the whole read's samples and rate either way.
+/// Render `text` with an options value: the whole read, or, with `on_piece`, each kept chunk handed to it as the
+/// document's stream mode says ([`stream_mode`]: levelled unless it asks for the pieces before the level step;
+/// returning false stops the render with [`ERR_STOPPED`]); the whole read's samples and rate either way.
 /// An option the engine does not support is refused ([`options::check`]) as [`ERR_ARG`] before anything is
 /// rendered, and so is steering it cannot read. `observe.trace` writes the event stream, as `ggtts-render` does.
-/// With only `render.seed_salt` and `render.instruction` set, this is [`render`] (and with `on_piece`,
-/// [`render_stream`]) sample for sample.
+/// With only `render.seed_salt` and `render.instruction` set, this is [`render`] (and with `on_piece` and
+/// `output.stream` `"raw"`, [`render_stream`]) sample for sample.
 pub fn render_document(
     engine: &mut dyn Engine,
     text: &str,
@@ -415,7 +555,7 @@ pub fn render_document(
             };
             let output = Output::Stream {
                 sink: &mut sink,
-                level: StreamMode::Raw,
+                level: stream_mode(&o),
             };
             render_plan(engine, &chunks, &seeds, &mut DurationJudge, &opts, &mut obs, output)
         }

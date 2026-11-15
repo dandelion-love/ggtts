@@ -31,7 +31,7 @@ java -Dggtts.lib="$lib" -cp "$out/classes:$stdlib" ggtts.BindingTestKt
 # empty directory (FirstRender writes its WAV there).
 kotlinc -cp "$out/classes" docs/bindings/examples/kotlin/*.kt -d "$out/examples" 2>&1 \
     | grep -v "^warning: unable to find kotlin-stdlib" || true
-for main in firstrender.FirstRenderKt streaming.StreamKt; do
+for main in firstrender.FirstRenderKt streaming.StreamKt options.OptionsKt; do
     class="$out/examples/$(echo "$main" | tr . /).class"
     [ -f "$class" ] || { echo "kotlin_binding_test: doc example $main did not compile" >&2; exit 1; }
     mkdir -p "$out/run-$main"

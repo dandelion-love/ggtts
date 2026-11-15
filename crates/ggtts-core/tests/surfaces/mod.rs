@@ -40,7 +40,6 @@ pub const NOT_OPTIONS: &[(Surface, &str, &str)] = &[
         "a callback for download messages, not a value",
     ),
     (Surface::Python, "on_chunk", "the stream's callback, not a value"),
-    (Surface::Python, "on_piece", "the stream's callback, not a value"),
     (
         Surface::Python,
         "options",

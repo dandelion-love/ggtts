@@ -484,6 +484,95 @@ int main(int argc, char **argv) {
 }
 ```
 
+## What the library and an engine take
+
+Version 5 lets a binding read these from the library, so it ships no schema file and parses no message.
+
+* **`ggtts_options_schema()`** is the JSON schema of the options documents, as built into the library: the text of
+  [`schemas/ggtts-options-1.schema.json`](../../schemas/ggtts-options-1.schema.json). The string is static: never free it.
+* **`ggtts_capabilities(handle, &json)`** states what a loaded engine supports, as JSON. Free the string with
+  `ggtts_string_free`:
+
+  ```json
+  {"format": "ggtts-capabilities/1", "family": "qwen3-tts", "instruction": true, "no_instruction_why": null,
+   "steering": true, "speakers": true, "speaker_names": ["..."], "devices": ["cpu", "cuda"],
+   "hooks": {"p_stop": true, "logits": true}, "step_events": true, "full_head": false}
+  ```
+
+  `speaker_names` lists the loaded model's speakers, and is empty for an engine without them. A checkpoint that takes
+  no instruction says why in `no_instruction_why`. `full_head` is true for an engine that can compute its whole output
+  head (Kitten-TTS 2, `load.kitten_full_head`). The fields are the engine's own capabilities, the ones an options
+  document is checked against. A freed or unknown handle is `GGTTS_ERR_HANDLE`, and `json` is NULL on any error.
+* **`ggtts_last_error_key()`** is the schema key of the option the thread's last call refused, when that call returned
+  `GGTTS_ERR_ARG` for one option. Steering on an engine that cannot steer gives `"render.steer"`, and an unknown key
+  gives the key itself. It is the key that `ggtts_last_error()`'s message starts with. It is NULL after a success and
+  after any other error: a missing file, a NULL argument, or a document that is not JSON.
+
+<!-- example: examples/c/capabilities.c -->
+```c
+/* capabilities.c: what the library and a loaded engine take, read from the library (C-ABI version 5).
+ *
+ *   ./capabilities           the test engine
+ *   ./capabilities fake      the same
+ */
+#include <stdio.h>
+#include <string.h>
+
+#include "ggtts.h"
+
+int main(int argc, char **argv) {
+    (void)argv;
+    if (argc > 1 && argv[1][0] != 'f') {
+        fprintf(stderr, "this example runs on the fake engine only\n");
+        return 1;
+    }
+    if (ggtts_abi_version() < 5) {
+        fprintf(stderr, "this library is C-ABI version %u: introspection needs 5\n", ggtts_abi_version());
+        return 1;
+    }
+    int ok = 1;
+
+    /* The options schema, as built into the library: static, never freed. */
+    const char *schema = ggtts_options_schema();
+    printf("options schema: %lu bytes\n", (unsigned long)strlen(schema));
+    ok &= strstr(schema, "\"$schema\"") != NULL;
+
+    uint64_t tts = 0;
+    if (ggtts_load_opts("{\"load\": {\"engine\": \"fake\"}}", &tts) != GGTTS_OK) {
+        fprintf(stderr, "load failed: %s\n", ggtts_last_error());
+        return 1;
+    }
+
+    /* The loaded engine's capability statement, as JSON: free it with ggtts_string_free. */
+    char *caps = NULL;
+    int32_t code = ggtts_capabilities(tts, &caps);
+    printf("capabilities: %d: %s\n", (int)code, caps ? caps : "(none)");
+    ok &= code == GGTTS_OK && caps != NULL && strstr(caps, "\"family\":\"fake\"") != NULL;
+    ggtts_string_free(caps);
+
+    /* A refused option names its key, so a binding needs no message parsing; another error leaves it NULL. */
+    float *pcm = NULL;
+    size_t len = 0;
+    uint32_t rate = 0;
+    const char *text = "\xe4\xbb\x8a\xe6\x97\xa5\xe5\xa4\xa9\xe6\xb0\xa3\xe5\xa5\xbd\xe5\xa5\xbd\xe3\x80\x82"; /* 今日天氣好好。 */
+    code = ggtts_render_opts(tts, text, "{\"render\": {\"steer\": \"steer.safetensors\"}}", NULL, NULL, &pcm, &len,
+                             &rate);
+    const char *key = ggtts_last_error_key();
+    printf("refused: %d, key %s\n", (int)code, key ? key : "(none)");
+    ok &= code == GGTTS_ERR_ARG && key != NULL && strcmp(key, "render.steer") == 0;
+    code = ggtts_render_opts(tts, NULL, NULL, NULL, NULL, &pcm, &len, &rate);
+    key = ggtts_last_error_key();
+    printf("no text: %d, key %s\n", (int)code, key ? key : "(none)");
+    ok &= code == GGTTS_ERR_ARG && key == NULL;
+
+    ggtts_free(tts);
+    /* A freed handle has no capabilities. */
+    caps = NULL;
+    ok &= ggtts_capabilities(tts, &caps) == GGTTS_ERR_HANDLE && caps == NULL;
+    return ok ? 0 : 1;
+}
+```
+
 ## Errors
 
 Every status is one of these. `ggtts_last_error()` says which case it is. A refused load writes no handle.
@@ -506,7 +595,8 @@ Only unwinding panics are caught. An abort, a stack overflow or a crash in C cod
   once. It never waits and never deadlocks, including a call from the engine's own stream callback.
 * **Different engines render at the same time**, on different threads. A second handle is a second loaded model, with
   its own memory.
-* **`ggtts_last_error()` is per thread.** Read it on the thread that got the error, before that thread's next call.
+* **`ggtts_last_error()` and `ggtts_last_error_key()` are per thread.** Read them on the thread that got the error,
+  before that thread's next call.
 * **`ggtts_free` never waits.** Called during a render (from another thread, or from the render's own callback), it
   returns at once. The render runs to its end, and the engine is dropped when it returns.
 
@@ -517,7 +607,9 @@ Only unwinding panics are caught. An abort, a stack overflow or a crash in C cod
 | A handle from `ggtts_load_with` | `ggtts_free(handle)`. Ids are never reused. | `ggtts_free` |
 | `pcm` from `ggtts_render` | You free it, even after `ggtts_free(handle)`. | `ggtts_pcm_free(pcm, len)`, once |
 | `samples` in a stream callback | The callback returns. | Nothing: the library frees it. |
-| The string from `ggtts_last_error()` | The calling thread's next ggtts call. | Nothing. |
+| The string from `ggtts_last_error()` or `ggtts_last_error_key()` | The calling thread's next ggtts call. | Nothing. |
+| The string from `ggtts_options_schema()` | The process ends. | Nothing. |
+| `json` from `ggtts_capabilities` | You free it, even after `ggtts_free(handle)`. | `ggtts_string_free(json)`, once |
 
 Strings and the settings struct you pass are read only during the call; you may free them after it returns.
 
@@ -532,6 +624,7 @@ struct, a struct field or a code is added. A function never changes its signatur
 | 2 | `ggtts_load_with`, `ggtts_settings` (speaker, instruction), `ggtts_abi_version` |
 | 3 | `ggtts_settings.device`, `.cache_dir` and `.allow_download`: the device and the default model |
 | 4 | `ggtts_load_opts` and `ggtts_render_opts`: [options documents](#options-documents). `ggtts_settings` is frozen at version 3. |
+| 5 | `ggtts_options_schema`, `ggtts_capabilities` with `ggtts_string_free`, and `ggtts_last_error_key`: [what the library and an engine take](#what-the-library-and-an-engine-take) |
 
 A program built against the version-3 header checks `ggtts_abi_version() >= 3` before passing the longer struct. A
 version-2 library refuses it with `GGTTS_ERR_ARG`, so the check gives a clearer message, not safety. A version-3

@@ -11,10 +11,12 @@
 //!   ([`ggtts_load`], [`ggtts_load_with`], [`ggtts_load_opts`], [`ggtts_render`], [`ggtts_render_stream`],
 //!   [`ggtts_render_opts`], [`ggtts_free`]) run inside
 //!   `catch_unwind`, and a panic comes back as [`GGTTS_ERR_PANIC`] with its message; the engine that panicked is
-//!   dropped from the registry. [`ggtts_pcm_free`], [`ggtts_last_error`] and [`ggtts_abi_version`] are not wrapped:
-//!   one drops a box, one reads a thread-local, one returns a constant. `catch_unwind` catches unwinding panics only: an abort, a stack overflow or a crash in C code
-//!   still ends the process.
-//! * **Errors are a code plus a message:** [`ggtts_last_error`] holds the calling thread's last message.
+//!   dropped from the registry. [`ggtts_capabilities`] is wrapped too. [`ggtts_pcm_free`], [`ggtts_string_free`],
+//!   [`ggtts_last_error`], [`ggtts_last_error_key`], [`ggtts_abi_version`] and [`ggtts_options_schema`] are not: two
+//!   drop a box, two read a thread-local, two return a constant. `catch_unwind` catches unwinding panics only: an
+//!   abort, a stack overflow or a crash in C code still ends the process.
+//! * **Errors are a code plus a message:** [`ggtts_last_error`] holds the calling thread's last message, and
+//!   [`ggtts_last_error_key`] the schema key of the option a [`GGTTS_ERR_ARG`] refused, when it refused one.
 //! * **The surface is versioned and only grows.** [`GGTTS_ABI_VERSION`] (and [`ggtts_abi_version`]) goes up by one
 //!   whenever a function, a struct or a code is added; an exported function never changes its signature or its
 //!   behaviour. Version 2 added [`ggtts_load_with`] and [`GgttsSettings`] (a Qwen3-TTS speaker and style
@@ -22,7 +24,9 @@
 //!   files' cache directory and download permission. A version-2 struct (its `size` is
 //!   [`GGTTS_SETTINGS_V2_SIZE`]) still loads exactly as it did. Version 4 added [`ggtts_load_opts`] and
 //!   [`ggtts_render_opts`], which take options documents (JSON, every option of `ggtts_core::options::TABLE`);
-//!   [`GgttsSettings`] is frozen at version 3, and a new option goes in a document.
+//!   [`GgttsSettings`] is frozen at version 3, and a new option goes in a document. Version 5 added
+//!   [`ggtts_options_schema`], [`ggtts_capabilities`] with [`ggtts_string_free`], and [`ggtts_last_error_key`], so a
+//!   binding learns the options, an engine's capabilities and a refused option's key from the library itself.
 //! * **One render path.** [`ggtts_render`] and [`ggtts_render_stream`] build the document their arguments mean and
 //!   render it as [`ggtts_render_opts`] does ([`binding::render_document`]); the struct loads build the options their
 //!   settings mean and load them as [`ggtts_load_opts`] does, keeping their own refusals' words.
@@ -34,7 +38,7 @@ use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use ggtts_core::options::{Options, Refusal, Source};
 use ggtts_load::binding::{self, Held, Slot};
@@ -61,8 +65,9 @@ pub const GGTTS_ERR_STOPPED: i32 = binding::ERR_STOPPED;
 pub const GGTTS_ERR_BUSY: i32 = binding::ERR_BUSY;
 
 /// The C-ABI's version: 1 was the surface before [`ggtts_load_with`]; 2 added it and [`GgttsSettings`]; 3 added the
-/// struct's `device`, `cache_dir` and `allow_download` fields; 4 added [`ggtts_load_opts`] and [`ggtts_render_opts`].
-pub const GGTTS_ABI_VERSION: u32 = 4;
+/// struct's `device`, `cache_dir` and `allow_download` fields; 4 added [`ggtts_load_opts`] and [`ggtts_render_opts`];
+/// 5 added [`ggtts_options_schema`], [`ggtts_capabilities`], [`ggtts_string_free`] and [`ggtts_last_error_key`].
+pub const GGTTS_ABI_VERSION: u32 = 5;
 
 /// The settings [`ggtts_load_with`] takes, by pointer. **Frozen at version 3**: no field is ever added; a new option
 /// goes in an options document ([`ggtts_load_opts`], [`ggtts_render_opts`]). `size` is `sizeof(ggtts_settings)` as the caller's header
@@ -101,22 +106,37 @@ type Fail = binding::Fail;
 
 thread_local! {
     static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
+    static LAST_ERROR_KEY: RefCell<Option<CString>> = const { RefCell::new(None) };
 }
 
-fn set_error(msg: &str) {
+fn set_error(msg: &str, key: Option<&str>) {
     let c = CString::new(msg.replace('\0', " ")).unwrap_or_default();
     LAST_ERROR.with(|e| *e.borrow_mut() = c);
+    let key = key.and_then(|k| CString::new(k).ok());
+    LAST_ERROR_KEY.with(|e| *e.borrow_mut() = key);
 }
 
-/// Run `f`, turning an error or a panic into a status ([`binding::guard`]), and record the message.
+/// The schema key a failed call refused: the key of the refusal of one option ([`binding::refusal_err`]) when the
+/// call failed with [`GGTTS_ERR_ARG`] and its message is that refusal's (`"key: ..."`), else `None`. The message check
+/// keeps a key recorded by a refusal the call recovered from off a later, unrelated argument error. `$` (a document
+/// that is not JSON, or not an object) is the whole document, not one option, so it is `None` too.
+fn refused_key(code: i32, msg: &str, key: Option<String>) -> Option<String> {
+    key.filter(|k| code == GGTTS_ERR_ARG && !k.is_empty() && k != "$" && msg.starts_with(&format!("{k}: ")))
+}
+
+/// Run `f`, turning an error or a panic into a status ([`binding::guard`]), and record the message and the refused
+/// key ([`ggtts_last_error_key`]).
 fn guard(f: impl FnOnce() -> Result<(), Fail>) -> i32 {
-    match binding::guard(f) {
+    binding::take_refused_key();
+    let result = binding::guard(f);
+    let key = binding::take_refused_key();
+    match result {
         Ok(()) => {
-            set_error("");
+            set_error("", None);
             GGTTS_OK
         }
         Err((code, msg)) => {
-            set_error(&msg);
+            set_error(&msg, refused_key(code, &msg, key).as_deref());
             code
         }
     }
@@ -131,9 +151,9 @@ fn defaults() -> MutexGuard<'static, Option<HashMap<u64, Options>>> {
     DEFAULTS.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// A refused option, as [`GGTTS_ERR_ARG`] with its schema key.
+/// A refused option, as [`GGTTS_ERR_ARG`] with its schema key ([`ggtts_last_error_key`]).
 fn refused(r: Refusal) -> Fail {
-    (GGTTS_ERR_ARG, r.to_string())
+    binding::refusal_err(r)
 }
 
 /// The registry, locked for a lookup, an insert or a remove and never longer. None of those panics, so a poisoned lock
@@ -736,6 +756,71 @@ pub extern "C" fn ggtts_free(handle: u64) -> i32 {
 #[no_mangle]
 pub extern "C" fn ggtts_last_error() -> *const c_char {
     LAST_ERROR.with(|e| e.borrow().as_ptr())
+}
+
+/// The schema key of the option the calling thread's last call refused (C-ABI version 5): set only when that call
+/// returned [`GGTTS_ERR_ARG`] for one option (`"render.steer"` for steering an engine that cannot steer, the key itself
+/// for an unknown one), and NULL after a success or any other error (a missing file, a NULL argument, a bad engine).
+/// It is the key [`ggtts_last_error`]'s message starts with, so a binding needs no message parsing. Valid until the
+/// thread's next call.
+#[no_mangle]
+pub extern "C" fn ggtts_last_error_key() -> *const c_char {
+    LAST_ERROR_KEY.with(|e| e.borrow().as_ref().map_or(std::ptr::null(), |k| k.as_ptr()))
+}
+
+/// The JSON schema of the options documents (C-ABI version 5), as built into this library: the text of
+/// `schemas/ggtts-options-1.schema.json` (`ggtts_core::options::schema`, pretty-printed, with a final newline). A
+/// binding reads the options it can pass from here, so it ships no schema file of its own. Static: never freed, the
+/// same pointer on every call.
+#[no_mangle]
+pub extern "C" fn ggtts_options_schema() -> *const c_char {
+    static SCHEMA: OnceLock<CString> = OnceLock::new();
+    SCHEMA
+        .get_or_init(|| CString::new(options_schema_text()).unwrap_or_default())
+        .as_ptr()
+}
+
+/// The text [`ggtts_options_schema`] returns.
+pub fn options_schema_text() -> String {
+    // A `Value` always serializes, and the schema holds no NUL.
+    serde_json::to_string_pretty(&ggtts_core::options::schema()).unwrap_or_default() + "\n"
+}
+
+/// The capability statement of the engine `handle` names (C-ABI version 5): what it supports, and the speakers its
+/// loaded model has, as JSON (`ggtts_core::capabilities::statement`, format `ggtts-capabilities/1`). `*json` gets a
+/// NUL-terminated string to free with [`ggtts_string_free`], and NULL on any error. A freed or unknown handle is
+/// [`GGTTS_ERR_HANDLE`]; an engine that is rendering is [`GGTTS_ERR_BUSY`].
+///
+/// # Safety
+/// `json` is NULL or writable.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_capabilities(handle: u64, json: *mut *mut c_char) -> i32 {
+    guard(|| {
+        if json.is_null() {
+            return Err((GGTTS_ERR_ARG, "json is NULL".into()));
+        }
+        unsafe { *json = std::ptr::null_mut() };
+        let text = with_engine(handle, |e, _| Ok(ggtts_core::capabilities::statement(e).to_string()))?;
+        let text = CString::new(text).map_err(|_| (GGTTS_ERR_ENGINE, "the statement holds a NUL".to_string()))?;
+        unsafe { *json = text.into_raw() };
+        Ok(())
+    })
+}
+
+/// Free a string [`ggtts_capabilities`] returned. NULL is no string.
+///
+/// # Safety
+/// `s` is NULL or exactly what one `ggtts_capabilities` call wrote, freed once.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_string_free(s: *mut c_char) {
+    if !s.is_null() {
+        drop(unsafe { CString::from_raw(s) });
+    }
+}
+
+/// The calling thread's last refused key as a Rust string, for the JNI layer and the tests.
+pub fn last_error_key() -> Option<String> {
+    LAST_ERROR_KEY.with(|e| e.borrow().as_ref().map(|k| k.to_string_lossy().into_owned()))
 }
 
 /// The backend a loaded engine runs on, as its engine reports it (`ggml-cpu`, `ggml-cuda`, or the fake engine's), for

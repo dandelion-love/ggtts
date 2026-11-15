@@ -22,8 +22,15 @@ that a merge places under a released heading is caught.
   the flag, or the key in an options document, is refused. Through `ggtts-render` and `ggtts-book` the variable takes
   the table's boolean spellings (`1`, `true`, `0`, `false`) and refuses any other value; the bindings take no option
   for it, and their engine still reads exactly `1` from the environment. A C ABI load document that gives
-  `load.kitten_full_head` is refused.
+  `load.kitten_full_head` is refused. The C ABI capability statement (`ggtts_capabilities`) gains `full_head`.
 
+- **The C ABI states its options and an engine's capabilities, and names a refused option (version 5).**
+  `ggtts_options_schema()` returns the options schema built into the library (`schemas/ggtts-options-1.schema.json`
+  byte for byte). `ggtts_capabilities(handle, &json)` returns a loaded engine's capability statement as JSON
+  (`ggtts-capabilities/1`: instruction, steering, devices, hooks, step events, and the model's `speaker_names`),
+  freed with `ggtts_string_free`. `ggtts_last_error_key()` is the schema key of the option a `GGTTS_ERR_ARG`
+  refused (`render.steer`, or an unknown key itself), and NULL for any other error. Nothing existing changes.
+  `Engine::speakers()` and `ggtts_core::capabilities::statement` are the shared pieces behind it.
 - **`--judge asr-qwen,model=DIR` redraws a chunk whose read-back lost or repeated text**, for `ggtts-render
   --story` and `ggtts-book render`, from one shared option (`render.judge`). An ASR (a local Qwen3-ASR, run as
   one Python process per render) reads every draw the duration judge keeps back; a draw that lost a run of 4

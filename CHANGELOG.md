@@ -70,8 +70,9 @@ that a merge places under a released heading is caught.
   read back as 356 is not lost text and a misheard number is one slip. A single misread or missing
   character is counted, not rejected. Known limits: the fold is many-to-one, so a swap between two traditional
   characters with one simplified form reads as correct; a chunk of fewer than 4 compared characters is never
-  rejected; text with no CJK characters or numbers has nothing to compare. No front
-  end uses it yet, and every render is unchanged; `ggtts-trace/2` allows the two new verdicts.
+  rejected; text with no CJK characters or numbers has nothing to compare; a number of any length weighs one token,
+  so a dropped number, however long (a phone number), is one lost token and the draw is kept, and a number said
+  twice reads as one misread number. No front end uses it yet, and every render is unchanged; `ggtts-trace/2` allows the two new verdicts.
 - **The C ABI takes options documents (ABI version 4): `ggtts_load_opts(json, &handle)` and
   `ggtts_render_opts(handle, text, json, on_piece, user, &pcm, &len, &rate)`.** Every option of the shared options
   table reaches C as JSON, so a new option needs no new struct field, function or ABI version. A render document
@@ -106,7 +107,9 @@ that a merge places under a released heading is caught.
   `measurement`. An ASR instrument is given each chapter's own text as its reference. A `--require`d instrument
   that is not ok, or a chapter left unmeasured under `--require`, exits 3 with every chapter written. An unknown
   instrument, or a `reference_file` given for a book, is refused before anything is rendered. The instrument
-  timeout is per chapter. Without the flags a book renders exactly as before. The instrument run is one library call,
+  timeout is per chapter. A chapter's kept measurement is reused only while its FLAC, the settings and each
+  instrument's version and program (a script's bytes) are unchanged, and a chapter after an aborted one keeps it.
+  Without the flags a book renders exactly as before. The instrument run is one library call,
   `ggtts_instruments::options`, which `ggtts-render` now makes too; its reports and exit codes are unchanged.
 
 ### Changed
@@ -134,6 +137,14 @@ that a merge places under a released heading is caught.
   `--story`, `--seed`, `--stream` and its settings, the timing and duration reports, the log settings and the
   instruments. An engine name the table does not list is refused as `load.engine` rather than "unknown engine", and
   `--threads` also takes the table's spelling `-j`.
+- **`ggtts-render --text --redraw N` is refused** (`--redraw (render.redraw): --text renders one draw and keeps it;
+  redraws are a story's (--story)`). It was accepted and did nothing: `--text` renders one draw.
+- **`ggtts-book`'s public Rust API** (for a caller of the library, not the command):
+  - `book_render_options` is removed; a book's options are read with the shared table (`ggtts_book::options::parse`);
+  - `render::render_chunk` returns a `manifest::ChunkOutput` (the chunk file's bytes and the draws it made, with
+    the kept draw's verdict) instead of the bytes alone;
+  - `ChapterPlan` has a public `redraw` field, so a struct literal must set it;
+  - `ChapterOutcome::Written` has a `rejudged` field, so an exhaustive pattern must name it or use `..`.
 
 ### Changed
 

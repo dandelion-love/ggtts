@@ -120,6 +120,18 @@ that a merge places under a released heading is caught.
 
 ### Changed
 
+- **`ggtts-render --text --trace FILE` writes the `ggtts-trace/2` event stream on every engine**, as `--story` does:
+  the header, `chunk_begin`, the engine's `step`s, `chunk_end` and `end`. Before, it reached only qwen3-tts, which
+  wrote its older step-only file, and kitten-tts-2 and fake accepted it and wrote nothing. A `--trace` path that
+  cannot be written is now an error on every engine, reported after the model loads; on kitten-tts-2 and fake it used
+  to pass silently. `--trace-level` is taken with `--text` too: it needs only `--trace`, and its refusal reads
+  "--trace-level requires --trace" on `--story` as well (it was "requires a story and --trace").
+- **`ggtts-render --text --stream` is levelled by default**, as `--story`'s is. `--stream-raw` gives the decoded draw
+  exactly, which is what `--text --stream` wrote before. The `--text` FLAC is unchanged: the decoded draw, with no
+  level step. A `--text` timing report's `stream.preparation_ns` is now a number (it was null), and at
+  `--log-level info` `--text` writes the `stream`, `stream_handoff` and `trace_sink` lines a story writes.
+- **`ggtts-render --text --stream-level-seconds S` is refused**: `--text` is one chunk, which the stream levels by its
+  own gain whatever the hold, so the option changed nothing.
 - **An option an engine does not support is refused in one wording everywhere, under its schema key, before anything
   is loaded or drawn.** Each engine states what it supports (`Engine::capabilities`, `ggtts_core::capabilities`), and
   `ggtts-render`, the C ABI, Python and Kotlin refuse with the same text. The old and new wording:

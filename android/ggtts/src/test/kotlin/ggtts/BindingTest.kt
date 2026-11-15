@@ -138,11 +138,7 @@ private fun optionsDocuments() {
     refusesKey("load.engine", "an engine given twice") { Ggtts.load("fake", options = fake) }
     refusesKey("load.bogus", "an unknown load key") { Ggtts.load(options = """{"load": {"engine": "fake", "bogus": 1}}""") }
     // A refusal through the parameters carries its key too.
-    try {
-        Ggtts.load("fake", speaker = "hk_voice_777")
-    } catch (e: GgttsException) {
-        check(e.key == "load.speaker", "a refused speaker parameter names load.speaker (${e.key})")
-    }
+    refusesKey("load.speaker", "a refused speaker parameter") { Ggtts.load("fake", speaker = "hk_voice_777") }
 }
 
 /** The options schema and an engine's capability statement, from the library. */

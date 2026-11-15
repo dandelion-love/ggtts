@@ -34,8 +34,4 @@ python	render.steer_scale	#291
 render-story	render.edge_s	#283
 render-story	render.seed	#215
 render-story	render.seed_salt	#283
-render-text	observe.trace	#294
-render-text	observe.trace_level	#294
-render-text	output.stream_level_seconds	#294
-render-text	output.stream_raw	#294
 render-text	render.edge_s	#180

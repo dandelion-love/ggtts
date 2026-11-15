@@ -31,8 +31,9 @@ that a merge places under a released heading is caught.
   read back as 356 is not lost text and a misheard number is one slip. A single misread or missing
   character is counted, not rejected. Known limits: the fold is many-to-one, so a swap between two traditional
   characters with one simplified form reads as correct; a chunk of fewer than 4 compared characters is never
-  rejected; text with no CJK characters or numbers has nothing to compare. No front
-  end uses it yet, and every render is unchanged; `ggtts-trace/2` allows the two new verdicts.
+  rejected; text with no CJK characters or numbers has nothing to compare; a number of any length weighs one token,
+  so a dropped number, however long (a phone number), is one lost token and the draw is kept, and a number said
+  twice reads as one misread number. No front end uses it yet, and every render is unchanged; `ggtts-trace/2` allows the two new verdicts.
 - **The C ABI takes options documents (ABI version 4): `ggtts_load_opts(json, &handle)` and
   `ggtts_render_opts(handle, text, json, on_piece, user, &pcm, &len, &rate)`.** Every option of the shared options
   table reaches C as JSON, so a new option needs no new struct field, function or ABI version. A render document

@@ -35,6 +35,10 @@
 //!   be reached. A chunk with no CJK characters and no numbers has no tokens and always passes.
 //! * A repeated clause shorter than `min_run`, or one so misread that no `min_run` of its tokens survive in order,
 //!   reads as extra text, not as a repeat.
+//! * A number of any length weighs one token. So a dropped number is one lost token, however long (an 8-digit phone
+//!   number included), and the draw is kept; a number said twice with nothing between reads as one number of another
+//!   value, one misread token, and the draw is kept; and a doubled clause around a number counts the number as one
+//!   token, so it can fall under the repeat bar.
 //!
 //! A draw the duration judge rejects keeps its verdict and is not read back. A recogniser that fails keeps the draw
 //! (it cannot be judged), and the reading records the error.
@@ -636,6 +640,35 @@ mod tests {
         // In a sentence, the number is one token and the words around it stay.
         assert_eq!(f.fold("我有三百五十六蚊"), f.fold("我有356蚊"));
         assert_eq!(f.fold("我有三百五十六蚊").len(), 4);
+    }
+
+    struct Unused;
+
+    impl Recogniser for Unused {
+        fn recognise(&mut self, _: &[f32], _: u32, _: &str) -> Result<String, String> {
+            unreachable!("these tests read transcripts given to them")
+        }
+    }
+
+    /// The known limit (#354): a number weighs one token whatever its length, so losing a long one, or saying one
+    /// twice, does not reject the draw.
+    #[test]
+    fn a_number_of_any_length_weighs_one_token() {
+        let j = TextJudge::new(Unused, Fold::t2s().unwrap());
+        // An 8-digit phone number dropped: one lost token, and the draw is kept.
+        let r = j.read("打呢個電話23456789搵我", "打呢個電話搵我");
+        let c = &r.comparison;
+        assert_eq!((c.lost, c.longest_lost, c.wrong), (1, 1, 0), "{c:?}");
+        assert_eq!(r.verdict, None);
+        // The same number written out: still one token.
+        let r = j.read("打呢個電話二三四五六七八九搵我", "打呢個電話搵我");
+        assert_eq!(r.comparison.lost, 1, "{:?}", r.comparison);
+        assert_eq!(r.verdict, None);
+        // A number said twice with nothing between merges into one number of another value: one misread token.
+        let r = j.read("我有356蚊", "我有356356蚊");
+        let c = &r.comparison;
+        assert_eq!((c.lost, c.wrong, c.extra), (0, 1, 0), "{c:?}");
+        assert_eq!(r.verdict, None);
     }
 
     #[test]

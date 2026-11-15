@@ -68,6 +68,14 @@ class RenderQueue(private val store: QueueStore) {
     /** [id] stopped before it finished (a Stop, low memory, the service's time running out): it waits again. */
     fun requeue(id: Long) = settle(id, State.WAITING, "")
 
+    /** Drop every entry that waits (the notification's Clear queue); done and failed entries stay. Returns how many. */
+    fun clearWaiting(): Int = synchronized(this) {
+        val n = entries.count { it.state == State.WAITING }
+        entries.removeAll { it.state == State.WAITING }
+        if (n > 0) save()
+        n
+    }
+
     /**
      * An entry left RENDERING by a process that died mid-render waits again, to render from the start. Run when the
      * queue is opened.

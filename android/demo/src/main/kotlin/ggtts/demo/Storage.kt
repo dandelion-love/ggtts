@@ -254,6 +254,29 @@ class MusicFolder(context: Context) {
         }
     }
 
+    /**
+     * Remove this app's items in Music/ggtts/ still pending: a save cut off by the process being killed (a pending
+     * item is otherwise kept, hidden, for about a week). Returns how many. Android 11 and later can list pending items.
+     */
+    fun deletePending(): Int {
+        if (Build.VERSION.SDK_INT < 30) return 0
+        var n = 0
+        runCatching {
+            val args = android.os.Bundle().apply {
+                putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION,
+                    "${MediaStore.MediaColumns.RELATIVE_PATH} = ? AND ${MediaStore.MediaColumns.IS_PENDING} = 1")
+                putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, arrayOf(Storage.MUSIC_PATH))
+                putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+            }
+            resolver.query(collection, arrayOf(MediaStore.MediaColumns._ID), args, null)?.use { c ->
+                while (c.moveToNext()) {
+                    if (resolver.delete(android.content.ContentUris.withAppendedId(collection, c.getLong(0)), null, null) > 0) n++
+                }
+            }
+        }
+        return n
+    }
+
     /** The names this app has already put in Music/ggtts/. */
     fun saved(): Set<String> {
         if (!available) return emptySet()

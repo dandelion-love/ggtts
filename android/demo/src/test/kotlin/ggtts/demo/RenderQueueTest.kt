@@ -164,8 +164,59 @@ class RenderQueueTest {
         w = worker(q, sink, TtsBinding { Engine(5) { i -> if (i == 2) w.stop() } })
         val o = w.step()
         assertTrue(o.toString(), o is QueueWorker.Outcome.Stopped)
+        assertEquals(RenderStops.Reason.PERSON, (o as QueueWorker.Outcome.Stopped).reason)
         assertTrue(sink.saved.isEmpty())
         assertEquals(RenderQueue.State.WAITING, q.all.single().state)
+        assertTrue(RenderStops.stopped(o.reason, q.pending), "Nothing half-made was saved" in RenderStops.stopped(o.reason, q.pending))
+    }
+
+    // ---- #418: stopping cleanly
+
+    /**
+     * Plant: a memory stop reported as the person's, or saving what it had. A low-memory stop ends the render after its
+     * chunk with nothing saved, keeps the entry, and says it was memory.
+     */
+    @Test
+    fun aLowMemoryStopSavesNothingKeepsTheEntryAndSaysWhy() {
+        val q = RenderQueue(Store())
+        val sink = Sink()
+        q.add(request, "long"); q.add(request, "next")
+        lateinit var w: QueueWorker
+        var trims = 1 // one trim: the next render runs in full
+        w = worker(q, sink, TtsBinding { Engine(5) { i -> if (i == 1 && trims-- > 0) w.stop(RenderStops.Reason.MEMORY) } })
+        val o = w.step() as QueueWorker.Outcome.Stopped
+        assertEquals(RenderStops.Reason.MEMORY, o.reason)
+        assertTrue(sink.saved.isEmpty())
+        assertEquals(listOf(RenderQueue.State.WAITING, RenderQueue.State.WAITING), q.all.map { it.state })
+        val said = RenderStops.stopped(o.reason, q.pending)
+        assertTrue(said, "low on memory" in said && "2 waiting" in said)
+        assertTrue("low on memory" in RenderStops.stopping(RenderStops.Reason.MEMORY))
+        // The entry renders in full on the next step: a stop is never a failure.
+        assertTrue(w.step() is QueueWorker.Outcome.Done)
+    }
+
+    /**
+     * Plant: every trim stops a render. Leaving the app trims at 20 (UI hidden) and 40 (background), and the queue must
+     * go on then; only critical shortage (15, or 80 and up) stops it.
+     */
+    @Test
+    fun onlyACriticalMemoryTrimStopsARender() {
+        assertTrue(RenderStops.stopsFor(15))
+        assertTrue(RenderStops.stopsFor(80))
+        for (level in listOf(5, 10, 20, 40, 60)) assertTrue("level $level stopped a render", !RenderStops.stopsFor(level))
+    }
+
+    /** Plant: Clear queue dropping finished entries too, or none. It drops what waits; done and failed stay listed. */
+    @Test
+    fun clearQueueDropsWhatWaitsAndKeepsWhatIsSettled() {
+        val store = Store()
+        val q = RenderQueue(store)
+        val a = q.add(request, "done"); val b = q.add(request, "failed"); q.add(request, "waits"); q.add(request, "waits too")
+        q.take(); q.done(a.id, "content://a")
+        q.take(); q.failed(b.id, "gone")
+        assertEquals(2, q.clearWaiting())
+        assertEquals(listOf(RenderQueue.State.DONE, RenderQueue.State.FAILED), RenderQueue(store).all.map { it.state })
+        assertEquals(0, q.pending)
     }
 
     /** Plant: an engine in use counted as a failure. The entry waits until the engine is free. */

@@ -22,6 +22,34 @@ import android.os.IBinder
 import android.util.Log
 import java.io.File
 
+/** Why a queued render stops, which levels of a memory trim stop one, and what the person is told. */
+object RenderStops {
+    enum class Reason { PERSON, MEMORY }
+
+    /**
+     * Whether a memory trim at [level] stops a queued render: only when Android is critically short
+     * (TRIM_MEMORY_RUNNING_CRITICAL, 15, or TRIM_MEMORY_COMPLETE, 80 and up). Leaving the app (TRIM_MEMORY_UI_HIDDEN,
+     * 20, and TRIM_MEMORY_BACKGROUND, 40) does not: rendering with the app in the background is the whole point.
+     */
+    fun stopsFor(level: Int): Boolean = level == 15 || level >= 80
+
+    /** While the chunk in progress finishes: a chunk can take most of a minute, so Stop must not look ignored. */
+    fun stopping(reason: Reason): String = when (reason) {
+        Reason.PERSON -> "Stopping after the chunk in progress..."
+        Reason.MEMORY -> "The phone is low on memory: stopping after the chunk in progress..."
+    }
+
+    /** After the render stopped: what happened, that nothing half-made was saved, and what waits. */
+    fun stopped(reason: Reason, waiting: Int): String {
+        val why = when (reason) {
+            Reason.PERSON -> "Stopped."
+            Reason.MEMORY -> "Stopped because the phone was low on memory."
+        }
+        val rest = if (waiting == 0) "The queue is empty." else "$waiting waiting; they render when you next open the app."
+        return "$why Nothing half-made was saved. $rest"
+    }
+}
+
 /** Where a finished render goes: Music/ggtts/ on a phone. Writes nothing it does not finish. Returns where it went. */
 fun interface ReadSink {
     fun save(name: String, title: String, flac: ByteArray): String
@@ -44,20 +72,20 @@ class QueueWorker(
         object Busy : Outcome()
         data class Done(val entry: RenderQueue.Entry, val where: String, val seconds: Double, val renderMs: Long) : Outcome()
         data class Failed(val entry: RenderQueue.Entry, val reason: String) : Outcome()
-        data class Stopped(val entry: RenderQueue.Entry) : Outcome()
+        data class Stopped(val entry: RenderQueue.Entry, val reason: RenderStops.Reason) : Outcome()
     }
 
     @Volatile
-    private var stopRequested = false
+    private var stopRequested: RenderStops.Reason? = null
 
-    /** Stop the render in progress after its current chunk; its entry waits again. */
-    fun stop() {
-        stopRequested = true
+    /** Stop the render in progress after its current chunk, for [reason]; its entry waits again. */
+    fun stop(reason: RenderStops.Reason = RenderStops.Reason.PERSON) {
+        stopRequested = reason
     }
 
     /** Render the next waiting entry, if any, to the end, and settle it. */
     fun step(): Outcome {
-        stopRequested = false
+        stopRequested = null
         val e = queue.take() ?: return Outcome.Idle
         val tts = try {
             cache.acquire(e.request)
@@ -73,17 +101,18 @@ class QueueWorker(
             val pieces = mutableListOf<FloatArray>()
             var rate = 0
             val finished = tts.renderStream(e.text, seed) { samples, r ->
-                if (stopRequested) return@renderStream false
+                if (stopRequested != null) return@renderStream false
                 rate = r
                 pieces += samples
                 true
             }
             val renderMs = (clock() - t0) / 1_000_000
-            if (!finished || stopRequested) {
+            if (!finished || stopRequested != null) {
+                val reason = stopRequested ?: RenderStops.Reason.PERSON
                 queue.requeue(e.id)
                 ok = true
-                log("queue: entry ${e.id} stopped after ${pieces.size} chunks, $renderMs ms; it waits again")
-                return Outcome.Stopped(e)
+                log("queue: entry ${e.id} stopped (${reason.name.lowercase()}) after ${pieces.size} chunks, $renderMs ms; nothing saved, it waits again")
+                return Outcome.Stopped(e, reason)
             }
             val all = FloatArray(pieces.sumOf { it.size })
             var at = 0
@@ -136,11 +165,33 @@ class RenderService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /** Clear the waiting entries once the render in progress has stopped (the notification's Clear queue). */
+    @Volatile
+    private var clearAfterStop = false
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // The notification's Stop and Clear queue: a control, never a start.
+        when (intent?.action) {
+            ACTION_STOP, ACTION_CLEAR -> {
+                val running = thread?.isAlive == true
+                if (intent.action == ACTION_CLEAR) clearAfterStop = true
+                Log.i(MainActivity.TAG, "queue: notification ${if (intent.action == ACTION_CLEAR) "Clear queue" else "Stop"}")
+                if (running) {
+                    worker?.stop(RenderStops.Reason.PERSON)
+                    notify(RenderStops.stopping(RenderStops.Reason.PERSON))
+                } else {
+                    if (clearAfterStop) Queue.get(this).clearWaiting()
+                    stopSelf()
+                }
+                return START_NOT_STICKY
+            }
+        }
         goForeground("Preparing...")
         if (thread?.isAlive == true) return START_NOT_STICKY
         val queue = Queue.get(this)
         val music = MusicFolder(this)
+        // A render killed while its file was being written leaves a pending item; remove it before rendering again.
+        music.deletePending().takeIf { it > 0 }?.let { Log.i(MainActivity.TAG, "queue: removed $it unfinished file(s) left pending") }
         val w = QueueWorker(
             queue, Reader.shared(this),
             sink = { name, title, flac -> music.save(name, Flac.MIME, title) { it.write(flac) }.toString() },
@@ -149,16 +200,20 @@ class RenderService : Service() {
         )
         worker = w
         thread = Thread({
+            var stopped: RenderStops.Reason? = null
             while (true) {
                 notify("Rendering for later: ${queue.pending} waiting")
                 when (val o = w.step()) {
                     QueueWorker.Outcome.Idle -> break
                     QueueWorker.Outcome.Busy -> Thread.sleep(15_000) // the engine is reading; try again
-                    is QueueWorker.Outcome.Stopped -> break
+                    is QueueWorker.Outcome.Stopped -> { stopped = o.reason; break }
                     else -> Unit
                 }
             }
+            if (clearAfterStop) { queue.clearWaiting(); clearAfterStop = false }
             stopForeground(STOP_FOREGROUND_REMOVE)
+            // What happened stays in the shade after the service has gone.
+            stopped?.let { done(RenderStops.stopped(it, queue.pending)) }
             stopSelf()
         }, "ggtts-render-queue").apply { start() }
         return START_NOT_STICKY
@@ -174,6 +229,16 @@ class RenderService : Service() {
         worker?.stop()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    /** Android is critically short of memory: stop the render after its chunk; its entry waits. */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (RenderStops.stopsFor(level) && thread?.isAlive == true) {
+            Log.i(MainActivity.TAG, "queue: memory trim level $level; stopping the render")
+            worker?.stop(RenderStops.Reason.MEMORY)
+            notify(RenderStops.stopping(RenderStops.Reason.MEMORY))
+        }
     }
 
     override fun onDestroy() {
@@ -195,7 +260,13 @@ class RenderService : Service() {
         runCatching { nm.notify(ID, notification(text)) }
     }
 
-    private fun notification(text: String): Notification {
+    /** A notification that stays after the service has stopped, saying why it stopped. */
+    private fun done(text: String) {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        runCatching { nm.notify(DONE_ID, notification(text, ongoing = false)) }
+    }
+
+    private fun notification(text: String, ongoing: Boolean = true): Notification {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CHANNEL) == null) {
             nm.createNotificationChannel(NotificationChannel(CHANNEL, "Rendering for later", NotificationManager.IMPORTANCE_LOW))
@@ -206,17 +277,30 @@ class RenderService : Service() {
         )
         val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL) else
             @Suppress("DEPRECATION") Notification.Builder(this)
-        return b.setSmallIcon(android.R.drawable.ic_menu_save)
-            .setContentTitle("ggtts is rendering for later")
+        b.setSmallIcon(android.R.drawable.ic_menu_save)
+            .setContentTitle(if (ongoing) "ggtts is rendering for later" else "ggtts rendering for later")
             .setContentText(text)
-            .setOngoing(true)
+            .setStyle(Notification.BigTextStyle().bigText(text))
+            .setOngoing(ongoing)
+            .setAutoCancel(!ongoing)
             .setContentIntent(open)
-            .build()
+        if (ongoing) {
+            // Stop keeps the queue (it resumes when the app opens); Clear queue also drops what waits.
+            fun action(label: String, act: String, code: Int) = Notification.Action.Builder(null, label,
+                PendingIntent.getService(this, code, Intent(this, RenderService::class.java).setAction(act),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)).build()
+            b.addAction(action("Stop", ACTION_STOP, 10))
+            b.addAction(action("Clear queue", ACTION_CLEAR, 11))
+        }
+        return b.build()
     }
 
     companion object {
         private const val ID = 2
+        private const val DONE_ID = 3
         private const val CHANNEL = "render-queue"
+        const val ACTION_STOP = "ggtts.demo.QUEUE_STOP"
+        const val ACTION_CLEAR = "ggtts.demo.QUEUE_CLEAR"
 
         /** Start working the queue, if anything waits. */
         fun start(context: Context) {

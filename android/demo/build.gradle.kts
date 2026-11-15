@@ -34,6 +34,8 @@ android {
 // a manifest change re-runs the tests instead of reusing an up-to-date result.
 tasks.withType<Test>().configureEach {
     inputs.file("src/main/AndroidManifest.xml").withPathSensitivity(PathSensitivity.RELATIVE)
+    // IncomingTest reads MainActivity's onCreate to hold its re-creation guard to it (Launch.takesIntent).
+    inputs.file("src/main/kotlin/ggtts/demo/MainActivity.kt").withPathSensitivity(PathSensitivity.RELATIVE)
 }
 
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }

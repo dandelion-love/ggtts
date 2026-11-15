@@ -64,6 +64,28 @@ pub struct LoadArgs {
 /// Load the engine a load document names, with `Ggtts.load`'s parameters laid in: the handle, its render defaults
 /// kept as [`crate::ggtts_load_opts`] keeps them.
 pub fn load(json: &str, a: &LoadArgs) -> Result<u64, Fail> {
+    load_document(&merged(json, a)?)
+}
+
+/// `load_over`: [`load`] over an engine the caller supplies instead of one opened by name. The same path (the
+/// document and the arguments merged, the given-twice refusals, the document checked against the named engine's
+/// capabilities), and the handle registered with the load's cache settings and render defaults, so a render on it
+/// goes through [`render_opts`] as any other. For a Rust host's tests, such as the conformance test's probes of what
+/// Kotlin carries to an engine; not part of the Kotlin API.
+#[doc(hidden)]
+pub fn load_over(json: &str, a: &LoadArgs, engine: Box<dyn ggtts_core::engine::Engine + Send>) -> Result<u64, Fail> {
+    let o = merged(json, a)?;
+    let name = binding::document_engine(&o)?;
+    if let Some(caps) = ggtts_core::capabilities::Capabilities::of(&name) {
+        ggtts_core::options::check(&o, &caps).map_err(refused)?;
+    }
+    let instruction = o.render.instruction.as_deref().filter(|s| !s.is_empty());
+    let held = binding::Held::checked(engine, instruction);
+    Ok(crate::register_document(&o, held))
+}
+
+/// A load document with Kotlin's arguments laid over it: what [`load`] opens.
+fn merged(json: &str, a: &LoadArgs) -> Result<Options, Fail> {
     let mut o = Options::from_json(json).map_err(refused)?;
     binding::check_document(&o, true)?;
     check(&o)?;
@@ -126,7 +148,7 @@ pub fn load(json: &str, a: &LoadArgs) -> Result<u64, Fail> {
         o.load.offline = !allow;
         mark(&mut o, "load.offline");
     }
-    load_document(&o)
+    Ok(o)
 }
 
 /// A render call's document ([`binding::render_request`]) with Kotlin's refusals. A salt nothing gives stays the C

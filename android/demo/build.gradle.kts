@@ -35,6 +35,9 @@ android {
 // up-to-date result.
 tasks.withType<Test>().configureEach {
     inputs.file("src/main/AndroidManifest.xml").withPathSensitivity(PathSensitivity.RELATIVE)
+    // WordsTest and AboutTest read the string resources and the screen's source, which a code change alone would miss.
+    inputs.dir("src/main/res/values").withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.dir("src/main/res/values-zh-rHK").withPathSensitivity(PathSensitivity.RELATIVE)
     // IncomingTest reads MainActivity's onCreate to hold its re-creation guard to it (Launch.takesIntent), and
     // MediaControlsTest reads its showStatus and setBusy to hold the Pause button's refresh to them.
     inputs.file("src/main/kotlin/ggtts/demo/MainActivity.kt").withPathSensitivity(PathSensitivity.RELATIVE)

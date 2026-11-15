@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The demo's words, in English (the default locale). values-zh-rHK/strings.xml translates every key; a key it lacks
+     shows this English text. EnglishWords (Words.kt) holds the same values for the plain-Kotlin classes the JVM tests
+     run, and WordsTest keeps the two equal. Messages from the native library (an engine's errors) are its own and stay
+     in English. -->
+<resources>
+    <!-- The reading screen -->
+    <string name="app_title">Read aloud</string>
+    <string name="tagline">Reads text aloud in Cantonese or English, entirely on this phone.</string>
+    <string name="change_voice_description">Change the voice</string>
+    <string name="change">Change</string>
+    <string name="text_hint">What to read</string>
+    <string name="text_placeholder">Type or paste what to read aloud</string>
+    <string name="empty_text_hint">Other apps can read aloud with it too: choose ggtts as the text-to-speech engine in Android\'s settings.</string>
+    <string name="paste">Paste</string>
+    <string name="clear">Clear</string>
+    <string name="characters">%1$d characters</string>
+    <string name="read_aloud_button">▶  Read aloud</string>
+    <string name="stop_button">■  Stop</string>
+    <string name="status_elapsed">%1$s  ·  %2$d s</string>
+    <string name="to_start">To start:\n%1$s</string>
+    <string name="start_1">1. Get a voice\'s model files on this phone (about 2.5 GB; android/README.md in the ggtts repository says where).</string>
+    <string name="start_2">2. Press \"Import a model file\" and pick each one.</string>
+    <string name="start_3">3. Choose the files below and press Speak.</string>
+    <string name="save_to_music">Save to Music</string>
+    <string name="share">Share</string>
+    <string name="share_title">Share the read</string>
+
+    <!-- The voice card and the voice sheet -->
+    <string name="no_voice">No voice yet</string>
+    <string name="no_voice_detail">Import a voice\'s model files from the ⋮ menu</string>
+    <string name="voice_detail">%1$s · %2$s</string>
+    <string name="first_sound_estimate">First sound in about %1$s s on a Galaxy Z Fold5</string>
+    <string name="choose_voice">Choose a voice</string>
+    <string name="all_offline">All run offline</string>
+    <string name="voice_size">%1$.1f GB · first sound %2$s s</string>
+    <string name="sample">▶ Sample</string>
+    <string name="no_sample">No sample</string>
+    <string name="add_voice">+  Add a voice from a file</string>
+    <string name="language_cantonese">Cantonese</string>
+    <string name="language_english">English</string>
+    <string name="not_complete">Not complete yet: %1$s needs %2$s.</string>
+    <string name="need_codec">a Qwen3-TTS 12 Hz codec</string>
+    <string name="need_speaker">a named speaker (it has none)</string>
+    <string name="need_decoder">a Kitten-TTS 2 S3Gen decoder</string>
+    <string name="need_voice_json">a prepared voice JSON</string>
+    <string name="need_language_model">a Kitten-TTS 2 language model</string>
+
+    <!-- The ⋮ menu, About and Advanced -->
+    <string name="menu_import_voice">Import a voice file…</string>
+    <string name="menu_models_folder">Choose a models folder…</string>
+    <string name="about_heading">About this app</string>
+    <string name="hide_about">Hide About</string>
+    <string name="advanced">Advanced</string>
+    <string name="hide_advanced">Hide Advanced</string>
+    <string name="purpose_1">Type or paste a passage and listen to it read in a natural voice. Nothing you type leaves the phone: the app has no permission to use the internet.</string>
+    <string name="purpose_2">It is slow. The first sound takes %1$s seconds with a Cantonese voice and %2$s with an English one, so it suits listening to a passage you have chosen, not reading the screen as you go.</string>
+    <string name="purpose_3">Other apps can use it too: it is a text-to-speech engine in Android\'s settings.</string>
+    <string name="models_read_from">No model ships with this app. Model files are read from:\n%1$s</string>
+    <string name="engine_label">Engine</string>
+    <string name="model_label">Model (Qwen3-TTS talker, or Kitten-TTS 2 LM)</string>
+    <string name="codec_label">Codec (Qwen3-TTS 12 Hz codec, or Kitten-TTS 2 S3Gen)</string>
+    <string name="voice_file_label">Voice file (Kitten-TTS 2 only: the prepared voice JSON)</string>
+    <string name="speaker_hint">Speaker (Qwen3-TTS only, for example hk_voice_343)</string>
+    <string name="speaker_placeholder">the model\'s default</string>
+    <string name="cpu_threads">CPU threads</string>
+    <string name="threads_choice">%1$d threads</string>
+    <string name="none_choice">(none)</string>
+    <string name="import_model_file">Import a model file...</string>
+    <string name="speak_through_android">Speak through Android\'s TTS (ggtts as the engine)</string>
+    <string name="engine_costs">Needs %1$.1f GB of model files and about %2$.1f GB of memory. On %3$s, the first audio takes %4$s s, then each second of speech takes %5$s s to render. Not suitable for screen readers or anything interactive.</string>
+    <string name="measured_on">a Galaxy Z Fold5 (Snapdragon 8 Gen 2), 4 threads</string>
+    <string name="seconds_range">%1$d to %2$d</string>
+    <string name="about_n">about %1$d</string>
+
+    <!-- What the screen reports -->
+    <string name="still_speaking">Still speaking; press Stop first.</string>
+    <string name="preparing_voice">Preparing the voice...</string>
+    <string name="not_started">Not started: %1$s.</string>
+    <string name="stopping">Stopping after the chunk in progress...</string>
+    <string name="writing_first">Writing the first sentence (this takes 20 to 60 s)...</string>
+    <string name="speaking_chunk">Speaking: chunk %1$d ready (first audio after %2$.1f s); preparing the rest...</string>
+    <string name="paused_chunk">Paused: chunk %1$d ready (first audio after %2$.1f s); preparing the rest...</string>
+    <string name="paused_status">Paused. The rest is still being prepared; press Play to listen on.</string>
+    <string name="playing_on">Playing on.</string>
+    <string name="stopped_after">Stopped after %1$d chunk(s).</string>
+    <string name="stopped_during_playback">Stopped during playback. The whole read was rendered and saved to %1$s.</string>
+    <string name="read_done">%1$s: %2$.2f s of audio in %3$.1f s (RTF %4$.2f); first audio after %5$.1f s. Saved to %6$s</string>
+    <string name="low_memory">Low memory: %1$s used up to %2$.1f GB on the test phone, and %3$.1f GB is available now%4$s. Close other apps, or press Speak again to load anyway (the system may stop this app).</string>
+    <string name="low_memory_system">, and the system reports memory is low</string>
+    <string name="copying">Copying...</string>
+    <string name="imported">Imported %1$s (%2$d MB)</string>
+    <string name="import_unreadable">the picked file cannot be read</string>
+    <string name="import_failed">Import failed: %1$s</string>
+    <string name="folder_access_failed">Could not keep access to that folder: %1$s</string>
+    <string name="folder_status">Models folder: %1$s. %2$d file(s) there, read in place; its voices are listed.</string>
+    <string name="saved_to">Saved to %1$s (the Files app, and over USB).</string>
+    <string name="save_failed">Could not save the read: %1$s</string>
+    <string name="refused_extras">Refused %1$s: scripted model files must be names in the models directory, not paths. Nothing was applied.</string>
+
+    <!-- Speaking through Android's TextToSpeech -->
+    <string name="tts_asking">Asking Android\'s TextToSpeech for engine %1$s...</string>
+    <string name="tts_could_not_start">Android\'s TextToSpeech could not start the ggtts engine (status %1$d)</string>
+    <string name="tts_speaking">Android\'s TTS is speaking through ggtts (started after %1$d s)...</string>
+    <string name="tts_spoke">Android\'s TTS spoke the line through ggtts in %1$d s.</string>
+    <string name="tts_no_model">ggtts has no model files for %1$s yet (code %2$d): press Speak with %3$s first.</string>
+    <string name="tts_error">Android\'s TTS reported error %1$d from ggtts.</string>
+
+    <!-- The reading notification -->
+    <string name="notification_channel">Reading</string>
+    <string name="notification_starting">Starting...</string>
+    <string name="notification_stop">Stop</string>
+    <string name="notification_title">ggtts is reading</string>
+    <string name="screen_pause">❚❚  Pause</string>
+    <string name="screen_play">▶  Play</string>
+    <string name="notification_pause">Pause</string>
+    <string name="notification_play">Play</string>
+    <string name="notification_off_screen">%1$s Off screen it continues several times slower; open the app to speed it up.</string>
+    <!-- Text from other apps (Incoming.kt). -->
+    <string name="incoming_not_plain_shared">Only plain text can be shared to this app, not %1$s.</string>
+    <string name="incoming_no_text_shared">The shared item had no text in it.</string>
+    <string name="incoming_not_plain_file">Only a plain text (.txt) file can be opened in this app, not %1$s.</string>
+    <string name="incoming_file_too_big">That file is over %1$d KB. This app opens text files up to %1$d KB and %2$d characters.</string>
+    <string name="incoming_not_utf8">That file is not UTF-8 text, so it was not opened.</string>
+    <string name="incoming_empty">There was no text to read in what was %1$s.</string>
+    <string name="incoming_too_long">That text is %1$d characters. This app takes up to %2$d at a time; share a shorter part.</string>
+    <string name="incoming_path">This app opens text files shared through Android, not a path (%1$s).</string>
+    <string name="incoming_status">Text %1$s from another app: %2$d characters. Press Read aloud to hear it.</string>
+    <string name="incoming_status_replaced">Text %1$s from another app: %2$d characters, in place of what the card held. Press Read aloud to hear it.</string>
+    <string name="incoming_source_selected">selected</string>
+    <string name="incoming_source_shared">shared</string>
+    <string name="incoming_source_opened">opened</string>
+    <string name="file_unopened">That file could not be opened.</string>
+    <string name="file_unopened_why">That file could not be opened: %1$s</string>
+</resources>

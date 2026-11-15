@@ -52,18 +52,19 @@ object IncomingText {
         processText: CharSequence? = null,
         stream: String? = null,
         data: String? = null,
+        w: Words = EnglishWords,
     ): Incoming = when (action) {
-        PROCESS_TEXT -> text(processText, "selected")
+        PROCESS_TEXT -> text(processText, "selected", w)
         SEND -> when {
-            !isPlainText(type) -> Incoming.Refused("Only plain text can be shared to this app, not $type.")
-            sendText != null -> text(sendText, "shared")
-            stream != null -> file(stream)
-            else -> Incoming.Refused("The shared item had no text in it.")
+            !isPlainText(type) -> Incoming.Refused(w.get("incoming_not_plain_shared", type))
+            sendText != null -> text(sendText, "shared", w)
+            stream != null -> file(stream, w)
+            else -> Incoming.Refused(w.get("incoming_no_text_shared"))
         }
         VIEW -> when {
             data == null -> Incoming.None
-            !isPlainText(type) -> Incoming.Refused("Only a plain text (.txt) file can be opened in this app, not $type.")
-            else -> file(data)
+            !isPlainText(type) -> Incoming.Refused(w.get("incoming_not_plain_file", type))
+            else -> file(data, w)
         }
         else -> Incoming.None
     }
@@ -72,7 +73,7 @@ object IncomingText {
      * The text of a .txt file read from [input]: UTF-8 (a byte order mark is dropped), at most [MAX_FILE_BYTES] bytes
      * and [MAX_CHARS] characters. A file over either limit, or one that is not UTF-8, is refused, not cut short.
      */
-    fun readFile(input: InputStream): Incoming {
+    fun readFile(input: InputStream, w: Words = EnglishWords): Incoming {
         val bytes = input.use { s ->
             val buf = ByteArray(MAX_FILE_BYTES + 1)
             var n = 0
@@ -82,10 +83,7 @@ object IncomingText {
                 n += r
             }
             if (n > MAX_FILE_BYTES) {
-                return Incoming.Refused(
-                    "That file is over ${MAX_FILE_BYTES / 1024} KB. This app opens text files up to " +
-                        "${MAX_FILE_BYTES / 1024} KB and $MAX_CHARS characters.",
-                )
+                return Incoming.Refused(w.get("incoming_file_too_big", MAX_FILE_BYTES / 1024, MAX_CHARS))
             }
             buf.copyOf(n)
         }
@@ -96,28 +94,25 @@ object IncomingText {
                 .decode(ByteBuffer.wrap(bytes))
                 .toString()
         } catch (e: CharacterCodingException) {
-            return Incoming.Refused("That file is not UTF-8 text, so it was not opened.")
+            return Incoming.Refused(w.get("incoming_not_utf8"))
         }
-        return text(decoded.removePrefix("﻿"), "opened")
+        return text(decoded.removePrefix("﻿"), "opened", w)
     }
 
-    private fun text(raw: CharSequence?, source: String): Incoming {
+    private fun text(raw: CharSequence?, source: String, w: Words): Incoming {
         val s = clean(raw?.toString() ?: "")
         val n = characters(s)
         return when {
-            s.isEmpty() -> Incoming.Refused("There was no text to read in what was ${source}.")
-            n > MAX_CHARS -> Incoming.Refused(
-                "That text is $n characters. This app takes up to $MAX_CHARS at a time; " +
-                    "share a shorter part.",
-            )
+            s.isEmpty() -> Incoming.Refused(w.get("incoming_empty", w.get("incoming_source_$source")))
+            n > MAX_CHARS -> Incoming.Refused(w.get("incoming_too_long", n, MAX_CHARS))
             else -> Incoming.Text(s, source)
         }
     }
 
     /** Only a content URI: a file:// URI is another app's path, which this app has no permission to read. */
-    private fun file(uri: String): Incoming =
+    private fun file(uri: String, w: Words): Incoming =
         if (uri.startsWith("content://")) Incoming.File(uri)
-        else Incoming.Refused("This app opens text files shared through Android, not a path (${uri.substringBefore(':')}).")
+        else Incoming.Refused(w.get("incoming_path", uri.substringBefore(':')))
 
     private fun isPlainText(type: String?): Boolean = type?.substringBefore(';')?.trim()?.lowercase() == TEXT_PLAIN
 
@@ -126,11 +121,10 @@ object IncomingText {
 
     /**
      * What the screen says when text arrives: where it came from, how long it is, whether it replaced what the card
-     * held (never silently), and that Read aloud starts it.
+     * held (never silently), and that Read aloud starts it, in [w]'s language.
      */
-    fun status(source: String, characters: Int, replaced: Boolean): String =
-        "Text $source from another app: $characters characters" +
-            (if (replaced) ", in place of what the card held" else "") + ". Press Read aloud to hear it."
+    fun status(source: String, characters: Int, replaced: Boolean, w: Words = EnglishWords): String =
+        w.get(if (replaced) "incoming_status_replaced" else "incoming_status", w.get("incoming_source_$source"), characters)
 
     /** Line ends as \n, no NUL or other control characters but tab and newline, no edge whitespace. */
     fun clean(s: String): String =

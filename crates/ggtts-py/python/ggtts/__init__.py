@@ -214,8 +214,10 @@ class TTS:
         """Render ``text``, calling ``on_chunk(audio)`` with each chunk, in order, as soon as it is ready.
 
         ``on_chunk`` returning ``False`` stops the render; an exception it raises stops it and is raised here.
-        Returns True when the whole text was rendered, False when stopped. The chunks are the render's own samples
-        before its final level step, so their concatenation has the render's length, not its exact values.
+        Returns True when the whole text was rendered, False when stopped. Without ``options``, the chunks are the
+        render's own samples before its final level step, so their concatenation has the render's length, not its
+        exact values. With ``options``, they are levelled by default as ``ggtts-render --stream`` levels them, which
+        is the stream to play; ``{"output": {"stream": "raw"}}`` asks for the pieces before the level step.
         ``seed`` and ``options`` are as ``render``'s.
         """
         doc = _document(options)

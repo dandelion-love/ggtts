@@ -388,8 +388,10 @@ pub fn check_document(o: &Options, at_load: bool) -> Result<(), Fail> {
 
 /// The stream a binding's document asks for, as `ggtts-render --stream` reads its flags: the pieces before the level
 /// step when `output.stream` is `"raw"` or `output.stream_raw` is set, else levelled with one gain from the first
-/// `output.stream_level_seconds` ([`ggtts_core::stream::DEFAULT_HOLD_S`] when not given). The pipeline applies it
-/// ([`render_plan`]'s [`Output::Stream`]); no front end levels a stream itself.
+/// `output.stream_level_seconds` ([`ggtts_core::stream::DEFAULT_HOLD_S`] when not given). `stream_raw` makes any
+/// stream raw, `"levelled"` included, as `ggtts-render --stream FILE --stream-raw` does: `output.stream` says that
+/// the call streams, and `stream_raw` how. The pipeline applies it ([`render_plan`]'s [`Output::Stream`]); no front
+/// end levels a stream itself.
 pub fn stream_mode(o: &Options) -> StreamMode {
     if o.output.stream.as_deref() == Some("raw") || o.output.stream_raw {
         StreamMode::Raw

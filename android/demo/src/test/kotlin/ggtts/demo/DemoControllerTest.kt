@@ -183,7 +183,7 @@ class DemoControllerTest {
     @Test
     fun aFileThatIsNotAGgufShowsTheBindingsMessage() {
         val c = controller(FakeBinding(GgttsException(Ggtts.ERR_ENGINE, "/m/voice.json is not a GGUF file")))
-        c.speak(request.copy(model = "/m/voice.json"), "Hello.", Ggtts.DEFAULT_SEED)
+        c.speak(request.with(LoadRequest.LOAD, "model", "/m/voice.json"), "Hello.", Ggtts.DEFAULT_SEED)
         assertEquals(listOf("ggtts error -3: /m/voice.json is not a GGUF file"), view.errors)
         assertFalse(view.shownBusy)
     }
@@ -241,9 +241,9 @@ class DemoControllerTest {
         c.speak(request, "One.", Ggtts.DEFAULT_SEED)
         c.speak(request, "Two.", Ggtts.DEFAULT_SEED)
         assertEquals(1, binding.loads.size)
-        c.speak(request.copy(threads = 8), "Three.", Ggtts.DEFAULT_SEED)
+        c.speak(request.withThreads(8), "Three.", Ggtts.DEFAULT_SEED)
         assertEquals(2, binding.loads.size)
-        c.speak(request.copy(engine = "qwen3-tts", voice = null), "Four.", Ggtts.DEFAULT_SEED)
+        c.speak(request.with(LoadRequest.LOAD, "engine", "qwen3-tts").with(LoadRequest.LOAD, "voice", null), "Four.", Ggtts.DEFAULT_SEED)
         assertEquals(3, binding.loads.size)
     }
 }

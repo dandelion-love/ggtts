@@ -28,7 +28,7 @@ class EngineCache(private val binding: TtsBinding, private val log: (String) -> 
         try {
             val t0 = System.nanoTime()
             val e = binding.load(request)
-            log("loaded ${request.engine} in ${(System.nanoTime() - t0) / 1_000_000} ms: model=${request.model} codec=${request.codec} voice=${request.voice} threads=${request.threads}")
+            log("loaded ${request.engine} in ${(System.nanoTime() - t0) / 1_000_000} ms: ${request.options.toJson()}")
             synchronized(this) {
                 engine = e
                 loaded = request

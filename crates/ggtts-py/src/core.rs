@@ -984,7 +984,7 @@ mod tests {
         assert_eq!((code, key), (ERR_ARG, None));
     }
 
-    /// A stream through a document hands its pieces before the level step, as the plain stream does.
+    /// A stream through a raw document hands its pieces before the level step, as the plain stream does.
     #[test]
     fn a_document_stream_is_the_plain_stream() {
         let (mut a, mut b) = (Vec::new(), Vec::new());

@@ -333,6 +333,18 @@ def test_a_document_stream_is_levelled_unless_it_asks_for_raw():
     assert e.value.key == "output.stream_level_seconds"
 
 
+@pytest.mark.parametrize("output, key", [
+    ({"stream_raw": True}, "output.stream_raw"),
+    ({"stream_level_seconds": 2}, "output.stream_level_seconds"),
+    ({"stream": "levelled", "stream_raw": True}, "output.stream"),
+])
+def test_a_whole_read_refuses_the_stream_options(output, key):
+    with fake() as tts:
+        with pytest.raises(ValueError) as e:
+            tts.render(LINE, options={"output": output})
+    assert e.value.key == key, e.value.message
+
+
 def test_steering_reaches_the_engine_and_is_a_value_error_naming_its_key():
     with fake() as tts:
         with pytest.raises(ValueError) as e:

@@ -50,11 +50,18 @@ int main(int argc, char **argv) {
     ok &= code == GGTTS_OK && len > 0;
     ggtts_pcm_free(pcm, len);
 
-    /* A stream: output.stream "raw" hands each kept chunk to on_piece before the level step; pcm may be NULL. */
+    /* A stream: on_piece gets each kept chunk, levelled as ggtts-render --stream levels it (one gain from the first
+     * 5 s); pcm may be NULL. This is the one to play. */
     struct counter c = {0};
-    code = ggtts_render_opts(tts, text, "{\"output\": {\"stream\": \"raw\"}}", count, &c, NULL, NULL, NULL);
-    printf("stream: %d, %d pieces\n", (int)code, c.pieces);
+    code = ggtts_render_opts(tts, text, NULL, count, &c, NULL, NULL, NULL);
+    printf("levelled stream: %d, %d pieces\n", (int)code, c.pieces);
     ok &= code == GGTTS_OK && c.pieces > 0;
+
+    /* output.stream "raw" hands each piece over before the level step instead, as ggtts_render_stream does. */
+    struct counter raw = {0};
+    code = ggtts_render_opts(tts, text, "{\"output\": {\"stream\": \"raw\"}}", count, &raw, NULL, NULL, NULL);
+    printf("raw stream: %d, %d pieces\n", (int)code, raw.pieces);
+    ok &= code == GGTTS_OK && raw.pieces == c.pieces;
 
     /* Refused before anything is rendered, each GGTTS_ERR_ARG, the message naming the option. */
     const char *refused[] = {

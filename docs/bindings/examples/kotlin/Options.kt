@@ -22,13 +22,14 @@ fun main(args: Array<String>) {
         val pcm = tts.render("今日天氣好好。", seed = 7, options = """{"render": {"redraw": 1}}""")
         println("${pcm.samples.size} samples at ${pcm.sampleRate} Hz")
 
-        // A stream through a document: the pieces before the level step, as renderStream always hands them.
+        // A stream through a document is levelled as ggtts-render --stream levels it: one gain from the first 5 s.
+        // {"output": {"stream": "raw"}} asks for the pieces before the level step, as renderStream with no options.
         var pieces = 0
-        tts.renderStream("今日天氣好好。\n我哋去海邊行下。", options = """{"output": {"stream": "raw"}}""") { _, _ ->
+        tts.renderStream("今日天氣好好。\n我哋去海邊行下。", options = "{}") { _, _ ->
             pieces++
             true
         }
-        println("$pieces pieces")
+        println("$pieces levelled pieces")
 
         // A refused option throws GGTTS_ERR_ARG, and the exception's key is the option's schema key.
         try {

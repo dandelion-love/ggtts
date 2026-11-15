@@ -13,6 +13,14 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **A stream through an options document is levelled by default, as `ggtts-render --stream` is.** The C ABI's
+  `ggtts_render_opts` with a callback, Python's `render_stream` and `stream` with `options=`, and Kotlin's
+  `renderStream` with `options` now hand each piece levelled by one gain from the first 5 s of audio
+  (`output.stream_level_seconds` changes the hold). That is the stream to play: the same text and seed give
+  `ggtts-render --stream`'s samples. `{"output": {"stream": "raw"}}` or `"stream_raw": true` gives the pieces before
+  the level step, as before. Nothing existing changes: `ggtts_render_stream`, and the Python and Kotlin stream calls
+  without options, still stream the unlevelled pieces, and a raw document gives the same pieces it gave. In C, a
+  callback with no `output.stream`, which was refused, now streams levelled.
 - **Python and Kotlin read the options schema and an engine's capabilities from the library**, as the C ABI does
   since version 5. Python: `ggtts.options_schema()` and `TTS.capabilities()`, each a dict. Kotlin:
   `Ggtts.optionsSchema()` and `Ggtts.capabilities()`, each JSON. Both come from the same shared pieces as

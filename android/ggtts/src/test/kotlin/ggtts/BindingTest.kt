@@ -145,6 +145,23 @@ private fun optionsDocuments() {
     }
 }
 
+/** A document stream is levelled unless it asks for the pieces before the level step; no document is the old call. */
+private fun streamModes() {
+    fun joined(options: String?): FloatArray {
+        val out = mutableListOf<Float>()
+        Ggtts.load("fake").use { it.renderStream(TEXT, seed = 7, options = options) { s, _ -> out.addAll(s.toList()); true } }
+        return out.toFloatArray()
+    }
+    val old = joined(null)
+    val levelled = joined("{}")
+    check(joined("""{"output": {"stream": "raw"}}""").contentEquals(old), "a raw document stream is the old stream")
+    check(!levelled.contentEquals(old) && levelled.size == old.size, "a document stream is levelled by default")
+    check(
+        !joined("""{"output": {"stream": "levelled", "stream_level_seconds": 0}}""").contentEquals(levelled),
+        "the hold reaches the level step",
+    )
+}
+
 /** The options schema and an engine's capability statement, from the library. */
 private fun introspection() {
     val schema = Ggtts.optionsSchema()
@@ -264,6 +281,7 @@ fun main() {
     }
     optionsDocuments()
     introspection()
+    streamModes()
     qwenSettings()
     defaultModel()
 

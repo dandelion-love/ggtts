@@ -19,9 +19,11 @@ with ggtts.load(options={"load": load, "render": {"edge_s": 0.25}}) as tts:
     audio = tts.render("今日天氣好好。", seed=7, options={"render": {"redraw": 1}})
     print(f"{audio.duration:.2f} s at {audio.sample_rate} Hz")
 
-    # A stream through a document: the pieces before the level step, as render_stream hands them.
-    pieces = list(tts.stream("今日天氣好好。\n我哋去海邊行下。", options={"output": {"stream": "raw"}}))
-    print(f"{len(pieces)} pieces")
+    # A stream through a document is levelled as ggtts-render --stream levels it: one gain from the first 5 s.
+    pieces = list(tts.stream("今日天氣好好。\n我哋去海邊行下。", options={}))
+    # "raw" asks for the pieces before the level step, as a stream with no document hands them.
+    raw = list(tts.stream("今日天氣好好。\n我哋去海邊行下。", options={"output": {"stream": "raw"}}))
+    print(f"{len(pieces)} levelled pieces, {len(raw)} raw")
 
     # A refused option is an OptionError: a ValueError and a GgttsError, whose key is the option's schema key.
     try:

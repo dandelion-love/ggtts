@@ -217,7 +217,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
             (&["output.out", "output.stream_format"], Refused(NO_FILE)),
             (&["output.stream"], Carried),
-            (STREAM_LEVEL, Gap(284)),
+            (STREAM_LEVEL, Carried),
             (BOOK, Refused(NOT_BOOK_FRONT)),
         ],
     },
@@ -239,7 +239,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
             (&["output.out", "output.stream_format"], Refused(NO_FILE)),
             (&["output.stream"], Carried),
-            (STREAM_LEVEL, Gap(284)),
+            (STREAM_LEVEL, Carried),
             (BOOK, Refused(NOT_BOOK_FRONT)),
         ],
     },
@@ -274,7 +274,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
             (&["output.out", "output.stream_format"], Refused(NO_FILE)),
             (&["output.stream"], Carried),
-            (STREAM_LEVEL, Gap(284)),
+            (STREAM_LEVEL, Carried),
             (BOOK, Refused(NOT_BOOK_FRONT)),
         ],
     },
@@ -1293,12 +1293,151 @@ fn kotlin_probes() -> Vec<Probe> {
     out
 }
 
+// ── the stream mode through each binding's document ──
+
+/// Two paragraphs, so the fake engine's two chunks come back 6 dB apart and a level step has something to do.
+const STREAM_TEXT: &str = "今日天氣好好，我哋去海邊行下。\n行完之後，去食飯。";
+
+/// A binding's stream on a fresh fake engine, from a document (`None`: the call without one), the pieces joined.
+type StreamFn = fn(Option<&str>) -> Vec<f32>;
+
+/// The C ABI's stream on a fresh fake engine: `ggtts_render_opts` with `doc` and a callback, or, with `doc` `None`,
+/// the old `ggtts_render_stream` at salt 7. The pieces, joined.
+fn c_abi_stream(doc: Option<&str>) -> Vec<f32> {
+    use ggtts_ffi::{ggtts_free, ggtts_load_opts, ggtts_render_opts, ggtts_render_stream, GGTTS_OK};
+    extern "C" fn keep(user: *mut std::ffi::c_void, samples: *const f32, len: usize, _: u32) -> i32 {
+        let out = unsafe { &mut *(user as *mut Vec<f32>) };
+        out.extend_from_slice(unsafe { std::slice::from_raw_parts(samples, len) });
+        0
+    }
+    let load = CString::new(r#"{"load": {"engine": "fake"}}"#).unwrap();
+    let mut h = 0u64;
+    assert_eq!(
+        unsafe { ggtts_load_opts(load.as_ptr(), &mut h) },
+        GGTTS_OK,
+        "{}",
+        last_error()
+    );
+    let text = CString::new(STREAM_TEXT).unwrap();
+    let mut out: Vec<f32> = Vec::new();
+    let user = &mut out as *mut Vec<f32> as *mut std::ffi::c_void;
+    let code = match doc {
+        None => unsafe { ggtts_render_stream(h, text.as_ptr(), 7, Some(keep), user) },
+        Some(doc) => {
+            let doc = CString::new(doc).unwrap();
+            let null = std::ptr::null_mut();
+            unsafe {
+                ggtts_render_opts(
+                    h,
+                    text.as_ptr(),
+                    doc.as_ptr(),
+                    Some(keep),
+                    user,
+                    null,
+                    null as *mut usize,
+                    null as *mut u32,
+                )
+            }
+        }
+    };
+    assert_eq!(code, GGTTS_OK, "c-abi stream {doc:?}: {}", last_error());
+    ggtts_free(h);
+    out
+}
+
+/// Python's stream on a fresh fake engine, through its core: `render_stream_with` with `doc`, or the old
+/// `render_stream` at salt 7 with `doc` `None`.
+fn python_stream(doc: Option<&str>) -> Vec<f32> {
+    use ggtts_py::core::{load, LoadRequest};
+    let req = LoadRequest {
+        engine: Some("fake".into()),
+        ..Default::default()
+    };
+    let (h, _) = load(&req, &mut |_| {}).unwrap();
+    let mut out: Vec<f32> = Vec::new();
+    let mut keep = |s: &[f32], _: u32| {
+        out.extend_from_slice(s);
+        true
+    };
+    match doc {
+        None => h.render_stream(STREAM_TEXT, 7, &mut keep),
+        Some(doc) => h.render_stream_with(STREAM_TEXT, None, Some(doc), &mut keep),
+    }
+    .unwrap_or_else(|e| panic!("python stream {doc:?}: {e:?}"));
+    out
+}
+
+/// Kotlin's stream on a fresh fake engine, through the core under its JNI layer: `render_stream_opts` with `doc`, or,
+/// with `doc` `None`, the call `renderStream` makes without options (the C ABI's `ggtts_render_stream`).
+fn kotlin_stream(doc: Option<&str>) -> Vec<f32> {
+    use ggtts_ffi::kotlin;
+    let Some(doc) = doc else {
+        return c_abi_stream(None);
+    };
+    let h = kotlin::load(r#"{"load": {"engine": "fake"}}"#, &kotlin::LoadArgs::default()).unwrap();
+    let mut out: Vec<f32> = Vec::new();
+    kotlin::render_stream_opts(h, STREAM_TEXT, Some(doc), None, &mut |s, _| {
+        out.extend_from_slice(s);
+        true
+    })
+    .unwrap_or_else(|e| panic!("kotlin stream {doc}: {e:?}"));
+    ggtts_ffi::ggtts_free(h);
+    out
+}
+
+/// What a probe of a binding's stream saw: `old` is the binding's call without a document (the pieces before the
+/// level step), `default` its document stream with no mode given, `raw` with `"stream_raw": true`, and `held` with
+/// `"stream_level_seconds": 0`. `output.stream_raw` is carried when it gives the old pieces and the default does not
+/// (the default is levelled); `output.stream_level_seconds` when the hold changes the levelled stream.
+fn stream_seen(old: &[f32], default: &[f32], raw: &[f32], held: &[f32]) -> [(&'static str, Seen); 2] {
+    let raw_seen = if raw == old && default != old && default.len() == old.len() {
+        Seen::Carried
+    } else {
+        Seen::Dropped
+    };
+    let hold_seen = if held != default && held.len() == default.len() {
+        Seen::Carried
+    } else {
+        Seen::Dropped
+    };
+    [
+        ("output.stream_raw", raw_seen),
+        ("output.stream_level_seconds", hold_seen),
+    ]
+}
+
+/// The documents a stream probe renders: no mode (levelled), `stream_raw`, and a hold of 0 s (the first chunk alone).
+const STREAM_DOCS: [&str; 3] = [
+    r#"{"render": {"seed_salt": "7"}}"#,
+    r#"{"render": {"seed_salt": "7"}, "output": {"stream": "levelled", "stream_raw": true}}"#,
+    r#"{"render": {"seed_salt": "7"}, "output": {"stream": "levelled", "stream_level_seconds": 0}}"#,
+];
+
+fn stream_probes() -> Vec<Probe> {
+    let bindings: [(&'static str, StreamFn); 3] = [
+        ("c-abi", c_abi_stream),
+        ("python", python_stream),
+        ("kotlin", kotlin_stream),
+    ];
+    let mut out = Vec::new();
+    for (id, stream) in bindings {
+        // The C ABI's document default needs a callback and no output.stream; the stream calls of Python and Kotlin
+        // stream whatever document they are given.
+        let [default, raw, held] = STREAM_DOCS.map(|d| stream(Some(d)));
+        for (key, seen) in stream_seen(&stream(None), &default, &raw, &held) {
+            out.push((id, key.to_string(), seen));
+        }
+    }
+    out
+}
+
 fn probes() -> Vec<Probe> {
     let mut out = render_probes();
     out.extend(book_probes());
     out.extend(c_abi_probes());
     out.extend(python_probes());
     out.extend(kotlin_probes());
+    out.extend(stream_probes());
     out
 }
 
@@ -1405,12 +1544,82 @@ fn a_new_option_entered_as_a_gap_fails_naming_it() {
 #[test]
 fn a_closed_gap_still_listed_fails() {
     let mut cells = cells(TABLE, FRONT_ENDS).unwrap();
-    let key = ("c-abi".to_string(), "output.stream_raw".to_string());
+    let key = ("android".to_string(), "output.stream_raw".to_string());
     assert_eq!(cells[&key], Gap(284));
     cells.insert(key, Carried);
     let errors = check_gaps(&cells, &read(GAPS));
     assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(errors[0].contains("c-abi\\toutput.stream_raw\\t#284"), "{errors:?}");
+    assert!(errors[0].contains("android\\toutput.stream_raw\\t#284"), "{errors:?}");
+}
+
+/// #284 AC3: a document path that ignores `raw` (it levels anyway) fails: the probe sees `output.stream_raw` dropped,
+/// and the carried cell turns red. So does one that ignores the hold.
+#[test]
+fn a_document_stream_that_ignores_raw_fails() {
+    let old = c_abi_stream(None);
+    let [default, _, held] = STREAM_DOCS.map(|d| c_abi_stream(Some(d)));
+    // Planted: the raw document levelled like the default.
+    let [(key, seen), _] = stream_seen(&old, &default, &default, &held);
+    let e = verdict("c-abi", key, Carried, seen).unwrap_err();
+    assert!(
+        e.contains("output.stream_raw is Carried in the table, and the probe saw it Dropped"),
+        "{e}"
+    );
+    // Planted: the hold ignored, so the held stream is the default one.
+    let [_, (key, seen)] = stream_seen(&old, &default, &old, &default);
+    assert!(verdict("c-abi", key, Carried, seen).is_err());
+    // Unplanted, both are carried.
+    let [raw, hold] = stream_seen(&old, &default, &c_abi_stream(Some(STREAM_DOCS[1])), &held);
+    assert_eq!((raw.1, hold.1), (Seen::Carried, Seen::Carried));
+}
+
+/// #284 AC2: a binding's document stream with no mode given is `ggtts-render --stream`'s levelled stream for the same
+/// story and seed, sample for sample at the stream's 16 bits; `"raw"` is the old call, and so is a stream call with no
+/// document.
+#[test]
+fn a_document_stream_is_ggtts_renders_levelled_stream() {
+    let dir = scratch("stream-levelled");
+    // The story ggtts-render renders is the binding's: its title is the binding's story id, and the salt is the
+    // binding's seed 7 against ggtts-render's (unset) story salt, so both are given as the empty salt.
+    std::fs::write(
+        dir.join("b.txt"),
+        format!("{}\n{STREAM_TEXT}\n", ggtts_load::binding::STORY),
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_ggtts-render"))
+        .args(["--engine", "fake", "--log-level", "error", "--story", "b.txt"])
+        .args(["--stream", "s.pcm", "--stream-format", "s16le"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let bytes = std::fs::read(dir.join("s.pcm")).unwrap();
+    let body = &bytes[bytes.iter().position(|&b| b == b'\n').unwrap() + 1..];
+    let cli: Vec<i16> = body.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+    let doc = r#"{"render": {"seed_salt": ""}}"#;
+    let raw = r#"{"render": {"seed_salt": ""}, "output": {"stream": "raw"}}"#;
+    let bindings: [(&str, StreamFn); 3] = [
+        ("c-abi", c_abi_stream),
+        ("python", python_stream),
+        ("kotlin", kotlin_stream),
+    ];
+    for (id, stream) in bindings {
+        let levelled: Vec<i16> = stream(Some(doc)).iter().map(|&x| ggtts_core::flac::to_i16(x)).collect();
+        assert!(!cli.is_empty(), "ggtts-render streamed nothing");
+        assert_eq!(
+            levelled, cli,
+            "{id}: the document's default stream is not ggtts-render's levelled stream"
+        );
+        assert_eq!(
+            stream(Some(raw)).len(),
+            cli.len(),
+            "{id}: the raw stream has another length"
+        );
+        assert_ne!(stream(Some(raw)), stream(Some(doc)), "{id}: the raw stream is levelled");
+    }
+    // Without a document the stream calls are the old ones: the pieces before the level step.
+    assert_eq!(python_stream(None), c_abi_stream(None));
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// AC3: a front end that drops an option its cell says it carries fails, and a gap a probe sees carried is closed.

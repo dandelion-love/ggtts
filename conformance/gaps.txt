@@ -18,12 +18,6 @@ android	render.steer	#282
 android	render.steer_layers	#282
 android	render.steer_scale	#282
 book	render.edge_s	#283
-c-abi	output.stream_level_seconds	#284
-c-abi	output.stream_raw	#284
-kotlin	output.stream_level_seconds	#284
-kotlin	output.stream_raw	#284
-python	output.stream_level_seconds	#284
-python	output.stream_raw	#284
 render-story	render.edge_s	#283
 render-story	render.seed	#215
 render-story	render.seed_salt	#283

@@ -180,8 +180,10 @@ Two ways to get each chunk as soon as it is ready, so playback can start before 
   Return `False` to stop. An exception in `on_chunk` stops the render and is raised from `render_stream`. It returns
   True when the whole text was rendered, False when stopped.
 
-Stopping is not an error in Python: neither raises `ERR_STOPPED`. The chunks are the render's samples *before* its
-final level step. Joined, they have the render's length, but not its exact values.
+Stopping is not an error in Python: neither raises `ERR_STOPPED`. Without `options`, the chunks are the render's
+samples *before* its final level step: joined, they have the render's length, but not its exact values. With
+`options`, a stream is levelled by default, as `ggtts-render --stream` levels it, so it plays at the loudness a
+listener expects: use that for listening ([Options](#options)).
 
 This script streams, stops early both ways, tries a render from inside the callback, and shows three errors:
 
@@ -257,11 +259,12 @@ needs no new keyword. A document is a dict, or the same as a JSON string. It is 
 * **`tts.render(text, options=...)`**, **`tts.render_stream(..., options=...)`** and **`tts.stream(..., options=...)`**
   take a render document, laid over the load's defaults: `render` `seed_salt`, `instruction`, `steer` with
   `steer_scale` and `steer_layers`, `redraw` and `edge_s`, and `observe` `trace` with `trace_level` (a trace file as
-  `ggtts-render --trace` writes it). A stream's pieces come before the level step; `{"output": {"stream": "raw"}}`
-  says so and may be left out. `render` refuses `output.stream`: stream with `render_stream` or `stream`.
+  `ggtts-render --trace` writes it). A stream through a document is levelled as `ggtts-render --stream` levels it: held until the first `output.stream_level_seconds` of audio (5 s unless given) set one gain, then each piece at that gain.
+  `{"output": {"stream": "raw"}}` (or `"stream_raw": true`) hands the pieces over before the level step instead,
+  as a stream with no `options` does. `render` refuses `output.stream`: stream with `render_stream` or `stream`.
 * **Refused:** a `load` key in a render document, `render.seed` (use `seed_salt`), `render.text` and `render.story`,
   `render.judge`, `render.measure_timings`, the reports and logging, `output.out` and `output.stream_format`,
-  instruments, and the book options. A levelled stream is not taken yet.
+  instruments, and the book options.
 * **Given twice:** a value given both as an argument (`speaker=`, `instruction=`, `device=`, `threads=`, `offline=`,
   `engine=`, `model=`, `codec=`, `voice=`, or a render's `seed=`) and under its key in the document is refused,
   naming both. Neither wins, so say which you meant.
@@ -302,9 +305,11 @@ with ggtts.load(options={"load": load, "render": {"edge_s": 0.25}}) as tts:
     audio = tts.render("今日天氣好好。", seed=7, options={"render": {"redraw": 1}})
     print(f"{audio.duration:.2f} s at {audio.sample_rate} Hz")
 
-    # A stream through a document: the pieces before the level step, as render_stream hands them.
-    pieces = list(tts.stream("今日天氣好好。\n我哋去海邊行下。", options={"output": {"stream": "raw"}}))
-    print(f"{len(pieces)} pieces")
+    # A stream through a document is levelled as ggtts-render --stream levels it: one gain from the first 5 s.
+    pieces = list(tts.stream("今日天氣好好。\n我哋去海邊行下。", options={}))
+    # "raw" asks for the pieces before the level step, as a stream with no document hands them.
+    raw = list(tts.stream("今日天氣好好。\n我哋去海邊行下。", options={"output": {"stream": "raw"}}))
+    print(f"{len(pieces)} levelled pieces, {len(raw)} raw")
 
     # A refused option is an OptionError: a ValueError and a GgttsError, whose key is the option's schema key.
     try:

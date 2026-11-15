@@ -157,7 +157,7 @@ fn the_refused_key_names_the_option_and_only_that() {
         (r#"{"observe": {"log_level": "info"}}"#, "observe.log_level"),
         (r#"{"load": {"threads": 2}}"#, "load.threads"),
         (r#"{"render": {"steer": "s.safetensors"}}"#, "render.steer"),
-        (r#"{"output": {"stream": "levelled"}}"#, "output.stream"),
+        (r#"{"output": {"stream": "louder"}}"#, "output.stream"),
     ] {
         assert_eq!(render(doc, &mut pcm, &mut len, &mut rate), GGTTS_ERR_ARG, "{doc}");
         assert_eq!(key().as_deref(), Some(want), "{doc}: {}", last_error());

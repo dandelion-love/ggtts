@@ -208,7 +208,8 @@ so playback can start before the render ends.
 * Each piece is a new `FloatArray`; you may keep it.
 * Return true to go on, false to stop. A stopped render returns false; it does not throw.
 * An exception the listener throws stops the render and is thrown from `renderStream` as it is.
-* The pieces are the render's samples *before* its final level step. Joined, they have the render's length, but not
+* Without `options`, the pieces are the render's samples *before* its final level step (with `options`, they are
+  levelled by default: see [Options](#options), and use that for listening). Joined, they have the render's length, but not
   its exact values.
 
 This program streams, stops after two pieces, tries a render from inside the listener, and shows three errors:
@@ -280,11 +281,12 @@ needs no new parameter. A document is a JSON string, the C library's options doc
   any file is read.
 * **`render(text, options = ...)`** and **`renderStream(text, options = ...) { ... }`** take a render document, laid
   over the load's defaults: `render` `seed_salt`, `instruction`, `steer` with `steer_scale` and `steer_layers`,
-  `redraw` and `edge_s`. A stream's pieces come before the level step; `{"output": {"stream": "raw"}}` says so and
-  may be left out. `render` refuses `output.stream`: stream with `renderStream`.
+  `redraw` and `edge_s`. A stream through a document is levelled as `ggtts-render --stream` levels it: held until the first `output.stream_level_seconds` of audio (5 s unless given) set one gain, then each piece at that gain. `{"output": {"stream": "raw"}}` (or
+  `"stream_raw": true`) hands the pieces over before the level step instead, as `renderStream` with no options
+  does. `render` refuses `output.stream`: stream with `renderStream`.
 * **Refused:** `load.device` (the binding is CPU only), the trace (`observe.trace`: a desktop observer, with no file a
   phone user can read), instruments, a `load` key in a render document, `render.seed` (use `seed_salt`), the reports
-  and logging, `render.measure_timings`, `output.out` and the book options. A levelled stream is not taken yet.
+  and logging, `render.measure_timings`, `output.out` and the book options.
 
 **What the library states.** `Ggtts.optionsSchema()` is the options schema as JSON: every option a document may
 give, with its type, default and phase, from the library (the C library's `ggtts_options_schema`), so no schema file
@@ -325,13 +327,14 @@ fun main(args: Array<String>) {
         val pcm = tts.render("今日天氣好好。", seed = 7, options = """{"render": {"redraw": 1}}""")
         println("${pcm.samples.size} samples at ${pcm.sampleRate} Hz")
 
-        // A stream through a document: the pieces before the level step, as renderStream always hands them.
+        // A stream through a document is levelled as ggtts-render --stream levels it: one gain from the first 5 s.
+        // {"output": {"stream": "raw"}} asks for the pieces before the level step, as renderStream with no options.
         var pieces = 0
-        tts.renderStream("今日天氣好好。\n我哋去海邊行下。", options = """{"output": {"stream": "raw"}}""") { _, _ ->
+        tts.renderStream("今日天氣好好。\n我哋去海邊行下。", options = "{}") { _, _ ->
             pieces++
             true
         }
-        println("$pieces pieces")
+        println("$pieces levelled pieces")
 
         // A refused option throws GGTTS_ERR_ARG, and the exception's key is the option's schema key.
         try {

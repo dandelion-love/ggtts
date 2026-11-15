@@ -316,6 +316,23 @@ def test_a_document_stream_is_the_plain_stream():
         assert len(got) == len(plain)
 
 
+def test_a_document_stream_is_levelled_unless_it_asks_for_raw():
+    def joined(**kw):
+        with fake() as tts:
+            return b"".join(bytes(c.pcm) for c in tts.stream(TEXT, seed=7, **kw))
+
+    old = joined()
+    assert joined(options={"output": {"stream": "raw"}}) == old
+    levelled = joined(options={})
+    assert levelled != old and len(levelled) == len(old)
+    assert joined(options={"output": {"stream": "levelled"}}) == levelled
+    assert joined(options={"output": {"stream": "levelled", "stream_level_seconds": 0}}) != levelled
+    with fake() as tts:
+        with pytest.raises(ValueError) as e:
+            list(tts.stream(TEXT, options={"output": {"stream": "raw", "stream_level_seconds": 2}}))
+    assert e.value.key == "output.stream_level_seconds"
+
+
 def test_steering_reaches_the_engine_and_is_a_value_error_naming_its_key():
     with fake() as tts:
         with pytest.raises(ValueError) as e:

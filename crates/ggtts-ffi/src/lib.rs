@@ -641,12 +641,14 @@ fn render(
 }
 
 /// Render `text` with an options document (C-ABI version 4), laid over the load's render defaults; NULL is the empty
-/// document. Without `output.stream` it is a whole read: `on_piece` must be NULL, and `pcm`, `len` and `rate` get the
-/// samples, as [`ggtts_render`] gives them. With `"output": {"stream": "raw"}` each kept chunk goes to `on_piece`
-/// before the level step, as [`ggtts_render_stream`] hands it; `on_piece` is required, and `pcm`, `len` and `rate` are
-/// all NULL or all set (then they also get the whole read). A malformed document, an unknown key, a wrong type, a load option, an
-/// option a binding does not take, and one the engine does not support are [`GGTTS_ERR_ARG`] before anything is
-/// rendered.
+/// document. With `on_piece` NULL and no `output.stream` it is a whole read: `pcm`, `len` and `rate` get the samples,
+/// as [`ggtts_render`] gives them. With `on_piece` set it is a stream: each kept chunk goes to `on_piece`, levelled as
+/// `ggtts-render --stream` levels it (one gain from the first `output.stream_level_seconds`, 5 s unless given) unless
+/// the document says `"output": {"stream": "raw"}` or `"stream_raw": true`, which hand each piece over before the level
+/// step, as [`ggtts_render_stream`] does; `pcm`, `len` and `rate` are all NULL or all set (then they also get the
+/// whole read). `output.stream` with `on_piece` NULL has nowhere to send the pieces. A malformed document, an unknown
+/// key, a wrong type, a load option, an option a binding does not take, and one the engine does not support are
+/// [`GGTTS_ERR_ARG`] before anything is rendered.
 ///
 /// # Safety
 /// `text` is NUL-terminated; `options_json` is NULL or NUL-terminated; `on_piece` is NULL or a valid function; `pcm`,
@@ -672,33 +674,29 @@ pub unsafe extern "C" fn ggtts_render_opts(
         binding::check_document(&doc, false)?;
         let given = [pcm.is_null(), len.is_null(), rate.is_null()];
         let outputs = given.iter().all(|null| !null);
-        if doc.output.stream.is_some() && !outputs && given.iter().any(|null| !null) {
+        let stream = doc.output.stream.is_some() || on_piece.is_some();
+        if stream && !outputs && given.iter().any(|null| !null) {
             return Err((
                 GGTTS_ERR_ARG,
                 "a stream's pcm, len and rate are all set or all NULL: one of them alone has nowhere to write".into(),
             ));
         }
-        let result =
-            match (doc.output.stream.is_some(), on_piece) {
-                (true, None) => {
-                    return Err((
-                        GGTTS_ERR_ARG,
-                        "output.stream needs on_piece: the pieces go to it".into(),
-                    ))
-                }
-                (false, Some(_)) => return Err((
+        let result = match (doc.output.stream.is_some(), on_piece) {
+            (true, None) => {
+                return Err((
                     GGTTS_ERR_ARG,
-                    "on_piece is set, and the document asks for no stream: give \"output\": {\"stream\": \"raw\"}, \
-                     or pass NULL"
-                        .into(),
-                )),
-                (false, None) if !outputs => return Err((GGTTS_ERR_ARG, "pcm, len and rate must not be NULL".into())),
-                (false, None) => render(handle, text, &doc, None)?,
-                (true, Some(f)) => {
-                    let mut piece = |samples: &[f32], r: u32| f(user, samples.as_ptr(), samples.len(), r) == 0;
-                    render(handle, text, &doc, Some(&mut piece))?
-                }
-            };
+                    "output.stream needs on_piece: the pieces go to it".into(),
+                ))
+            }
+            (false, None) if !outputs => return Err((GGTTS_ERR_ARG, "pcm, len and rate must not be NULL".into())),
+            (false, None) => render(handle, text, &doc, None)?,
+            // A stream: levelled unless the document asks for the pieces before the level step
+            // (`binding::stream_mode`).
+            (_, Some(f)) => {
+                let mut piece = |samples: &[f32], r: u32| f(user, samples.as_ptr(), samples.len(), r) == 0;
+                render(handle, text, &doc, Some(&mut piece))?
+            }
+        };
         if outputs {
             let (samples, sample_rate) = result;
             let boxed = samples.into_boxed_slice();

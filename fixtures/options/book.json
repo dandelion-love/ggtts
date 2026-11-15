@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "book": {
+    "seed_root": "book-1",
+    "include_skippable": true
+  }
+}

@@ -20,7 +20,13 @@ pub struct Known {
     pub args: &'static [(&'static str, &'static str)],
     /// It needs the run's event stream (see [`crate::config::Entry::needs_events`]).
     pub needs_events: bool,
+    /// It compares the audio with a reference text, read from its `reference_file` arg ([`REFERENCE_ARG`]). A
+    /// front end that knows what each file says (a book, per chapter) supplies it.
+    pub takes_reference: bool,
 }
+
+/// The arg a reference-taking instrument reads its reference text from.
+pub const REFERENCE_ARG: &str = "reference_file";
 
 /// A shipped Python instrument: its script under `instruments/`, run by the Python interpreter.
 const fn python(name: &'static str, program: &'static str, about: &'static str, needs_events: bool) -> Known {
@@ -32,6 +38,7 @@ const fn python(name: &'static str, program: &'static str, about: &'static str, 
         about,
         args: &[],
         needs_events,
+        takes_reference: false,
     }
 }
 
@@ -45,6 +52,7 @@ pub const CATALOGUE: &[Known] = &[
                 tamper plants a failure",
         args: &[("mode", "ok")],
         needs_events: false,
+        takes_reference: false,
     },
     python(
         "p-stop-early",
@@ -101,6 +109,7 @@ pub const CATALOGUE: &[Known] = &[
         false,
     ),
     Known {
+        takes_reference: true,
         version: "0.2.1",
         ..python(
             "asr-sensevoice",
@@ -110,6 +119,7 @@ pub const CATALOGUE: &[Known] = &[
         )
     },
     Known {
+        takes_reference: true,
         version: "0.2.0",
         ..python(
             "asr-qwen",

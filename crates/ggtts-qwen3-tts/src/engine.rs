@@ -6,6 +6,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
+use ggtts_core::capabilities::Capabilities;
 use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm};
 use ggtts_core::hooks::{Hooks, Step, StopTrace, TensorHook, Wants};
 use ggtts_core::profile::Profile;
@@ -103,7 +104,10 @@ impl Qwen3Tts {
         voice: Voice,
         instruction: Option<&str>,
     ) -> Result<Self, EngineError> {
-        talker.check_instruction(instruction)?;
+        // A checkpoint that takes no instruction refuses one here, in the words every front end shows.
+        capabilities_of(&talker)
+            .check_instruction(instruction)
+            .map_err(|r| EngineError(r.to_string()))?;
         // An unknown speaker fails here, before any text is rendered, with the model's own speaker names.
         talker.speaker(&voice.speaker)?;
         let trace = match &voice.trace {
@@ -132,6 +136,17 @@ impl Qwen3Tts {
             trace,
         })
     }
+}
+
+/// What a Qwen3-TTS engine on `talker` supports: everything the family does, except a style instruction on a
+/// checkpoint that takes none, which then says why (its type and hidden size).
+fn capabilities_of(talker: &Talker) -> Capabilities {
+    let mut c = Capabilities::of("qwen3-tts").expect("qwen3-tts is an engine");
+    if !talker.supports_instruction() {
+        c.instruction = false;
+        c.no_instruction_why = talker.check_instruction(Some("an instruction")).err().map(|e| e.0);
+    }
+    c
 }
 
 /// The voice's language as the talker's id, or the error a user sees for one it does not know.
@@ -285,6 +300,9 @@ impl Qwen3Tts {
 }
 
 impl Engine for Qwen3Tts {
+    fn capabilities(&self) -> Capabilities {
+        capabilities_of(&self.talker)
+    }
     fn info(&self) -> &EngineInfo {
         &self.info
     }

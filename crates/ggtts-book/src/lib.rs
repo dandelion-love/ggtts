@@ -19,6 +19,7 @@ pub mod export;
 pub mod flac;
 pub mod manifest;
 pub mod mp4;
+pub mod options;
 mod package;
 pub mod plan;
 pub mod render;

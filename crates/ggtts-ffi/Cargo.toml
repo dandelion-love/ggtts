@@ -14,23 +14,23 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 ggtts-core.workspace = true
-ggtts-fake.workspace = true
-ggtts-qwen3-tts.workspace = true
-ggtts-kitten = { path = "../ggtts-kitten" }
+# The engine glue the C-ABI shares with the Python binding: loading, refusals, rendering and the panic guard.
+ggtts-load.workspace = true
 # The pinned default model files, their cache and their verified download: the same as ggtts-render's.
 ggtts-models.workspace = true
 jni = { version = "0.21", optional = true, default-features = false }
 
 [dev-dependencies]
+ggtts-fake.workspace = true
 serde_json.workspace = true
 
 [features]
 default = []
 # The engines over ggml; without it only the fake engine loads, and the others report that the build has none.
-ggml = ["ggtts-qwen3-tts/ggml", "ggtts-kitten/ggml"]
+ggml = ["ggtts-load/ggml"]
 # The CUDA backend as well, for the `cuda` device setting. Without it, asking for that device is refused.
-cuda = ["ggml", "ggtts-qwen3-tts/cuda", "ggtts-kitten/cuda"]
+cuda = ["ggml", "ggtts-load/cuda"]
 # The JNI entry points the Kotlin class calls (`Java_ggtts_Native_*`).
 jni = ["dep:jni"]
-# Test-only: an engine named `panic` whose generate panics, for the planted boundary test.
-plant = []
+# Test-only engines (`ggtts-load`'s): `panic` (generating panics), `slow` and `panic-load`, for the boundary tests.
+plant = ["ggtts-load/plant"]

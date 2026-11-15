@@ -1,25 +1,33 @@
 //! Rendering a book through one engine, chapter by chapter, resumable.
 //!
 //! The engine is passed in already loaded and is used for every chunk of every chapter, so a book loads its model
-//! once. Each chunk is generated at its planned seed ([`ChapterPlan::seed_at`], draw 0), decoded, trimmed at its
-//! edges by the profile's rule, and stored as FLAC through [`run_chapter`], so a killed render resumes where it
-//! stopped. A finished chapter is then joined from the stored chunks with the profile's pauses, levelled by the
-//! story path's level step, and written as one FLAC.
+//! once. Each chunk is rendered by the core chunk step ([`ggtts_core::pipeline::render_chunk`], the step every
+//! render is made of) at its planned seeds ([`ChapterPlan::seed_at`]) with the render options (instruction,
+//! steering, edge trim) and the observers (the trace), and stored as FLAC through [`run_chapter`], so a killed render
+//! resumes where it stopped. A finished chapter is then joined from the stored chunks with the profile's pauses,
+//! levelled by the story path's level step, and written as one FLAC.
 //!
 //! Chunks are joined from the stored files, never from memory, so a chapter rendered in one run and a chapter
 //! resumed after a kill are built from the same bytes and come out identical.
+//!
+//! Instruments run on each chapter FLAC this run wrote, through the same call as `ggtts-render`'s
+//! ([`ggtts_instruments::options`]), after every chapter is rendered and the engine is released
+//! ([`render_command_options`]).
 
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use ggtts_core::audio::trim_edges_f32;
-use ggtts_core::engine::{ChunkRequest, Engine};
+use ggtts_core::engine::{Engine, EngineInfo};
 use ggtts_core::flac::encode_flac;
-use ggtts_core::pipeline::{gap_samples, level};
+use ggtts_core::hooks::Hooks;
+use ggtts_core::options::Options;
+use ggtts_core::pipeline::{gap_samples, level, DurationJudge, Judge, Observers, RenderOptions};
 use ggtts_core::profile::Profile;
+use ggtts_core::trace::{emit_header, Events, Header, JsonlEvents, NullEvents};
 
 use crate::book::{Book, Chapter};
-use crate::manifest::{chunk_file, run_chapter, Resume, RunError};
-use crate::plan::ChapterPlan;
+use crate::manifest::{chunk_file, run_chapter, ChunkOutput, Draws, Resume, RunError};
+use crate::plan::{ChapterPlan, DEFAULT_SEED_ROOT};
 
 /// What happened to one chapter.
 #[derive(Debug, Clone, PartialEq)]
@@ -34,6 +42,8 @@ pub enum ChapterOutcome {
         resumed: usize,
         /// Why an earlier manifest was not used, if one was refused.
         refused: Option<String>,
+        /// Done chunks rendered again because the redraw setting changed what a render keeps.
+        rejudged: usize,
     },
     /// Front or back matter, left out.
     Skipped { reason: String },
@@ -46,27 +56,73 @@ pub struct ChapterReport {
     pub outcome: ChapterOutcome,
 }
 
-/// Generate, decode and edge-trim one planned chunk at its first draw's seed; the FLAC bytes to store.
-pub fn render_chunk(engine: &mut dyn Engine, plan: &ChapterPlan, index: usize) -> Result<Vec<u8>, String> {
-    let chunk = &plan.chunks[index];
-    let profile = *engine.profile();
-    let req = ChunkRequest {
-        text: &chunk.text,
-        seed: u64::from(plan.seed_at(index, 0)),
-        chunk: index as u32,
-        draw: 0,
-        instruction: None,
-        // A book render takes no steering: `None` renders exactly as without the field.
-        steer: None,
-    };
-    let generated = engine.generate(&req).map_err(|e| e.to_string())?;
-    let pcm = engine.decode(&generated.codes).map_err(|e| e.to_string())?;
-    let t = trim_edges_f32(&profile, &pcm.samples, pcm.sample_rate, profile.edge_s);
-    let kept: Vec<i16> = pcm.samples[t.start_sample..t.end_sample]
-        .iter()
-        .map(|&x| to_i16(x))
-        .collect();
-    encode_flac(&kept, pcm.sample_rate).map_err(|e| e.to_string())
+/// How a book renders its chunks: the core step's options, and whether front and back matter are rendered.
+#[derive(Debug, Clone)]
+pub struct BookRender {
+    /// Render front and back matter too.
+    pub include_skippable: bool,
+    /// The core step's options: instruction, steering, edge trim, and the redraws a chunk the judge rejects gets.
+    pub opts: RenderOptions,
+}
+
+impl BookRender {
+    /// The profile's defaults (its redraws and edge trim), with no instruction and no steering, leaving front and
+    /// back matter out.
+    pub fn for_profile(profile: &Profile) -> Self {
+        Self {
+            include_skippable: false,
+            opts: RenderOptions::for_profile(profile),
+        }
+    }
+}
+
+/// Render one planned chunk through the core chunk step ([`ggtts_core::pipeline::render_chunk`]) at the plan's seeds
+/// ([`ChapterPlan::seed_at`], draw 0, then 1, 2, ... for each redraw) with the render spec's judge, `opts` and the
+/// observers `obs`: a draw the judge rejects is redrawn up to `opts.redraw` times, as in a story. The FLAC bytes to
+/// store, and the draws made.
+pub fn render_chunk(
+    engine: &mut dyn Engine,
+    plan: &ChapterPlan,
+    index: usize,
+    opts: &RenderOptions,
+    obs: &mut Observers<'_>,
+) -> Result<ChunkOutput, String> {
+    render_chunk_judged(engine, plan, index, opts, &mut DurationJudge, obs)
+}
+
+/// [`render_chunk`] with the caller's `judge` (the options value's, [`ggtts_instruments::judge::judge`]): what a
+/// judge that reads back read in each draw is kept in the chunk's [`Draws::reads`].
+pub fn render_chunk_judged(
+    engine: &mut dyn Engine,
+    plan: &ChapterPlan,
+    index: usize,
+    opts: &RenderOptions,
+    judge: &mut dyn Judge,
+    obs: &mut Observers<'_>,
+) -> Result<ChunkOutput, String> {
+    let seeds = |i: usize, _: &str, draw: u32| plan.seed_at(i, draw);
+    let kept = ggtts_core::pipeline::render_chunk(engine, &plan.chunks[index].text, index, &seeds, judge, opts, obs)
+        .map_err(|e| e.to_string())?;
+    let pcm: Vec<i16> = kept.samples.iter().map(|&x| to_i16(x)).collect();
+    let bytes = encode_flac(&pcm, kept.sample_rate).map_err(|e| e.to_string())?;
+    let last = kept.kept();
+    Ok(ChunkOutput {
+        bytes,
+        draws: Some(Draws {
+            kept: last.draw,
+            count: kept.draws.len() as u32,
+            verdict: last.judgement.verdict.map(|v| v.as_str().to_string()),
+            reads: kept
+                .readings
+                .iter()
+                .map(|(draw, r)| {
+                    let mut r = r.clone();
+                    r["draw"] = (*draw).into();
+                    r
+                })
+                .collect(),
+        }),
+    })
 }
 
 fn to_i16(x: f32) -> i16 {
@@ -236,19 +292,120 @@ pub fn render_command_with(
     include_skippable: bool,
     load: impl FnOnce() -> Result<LoadedEngine, String>,
 ) -> Result<serde_json::Value, String> {
+    let mut options = Options::default();
+    options.output.out = Some(out.to_path_buf());
+    options.book.seed_root = Some(seed_root.to_string());
+    options.book.include_skippable = include_skippable;
+    render_command_options(book_path, &options, load)
+}
+
+/// The render options that change the audio, from the provenance record ([`ggtts_core::options::record`]): the
+/// style instruction (when not empty) and the steering. `Null` when there are neither. Every chapter manifest records
+/// it, and a resume under other render options is refused ([`crate::manifest::ManifestError::Mismatch`]).
+pub fn render_identity(options: &Options, info: &EngineInfo) -> serde_json::Value {
+    let record = ggtts_core::options::record(options, info);
+    let mut kept: serde_json::Map<String, serde_json::Value> = ["instruction", "steer"]
+        .into_iter()
+        .filter_map(|k| record.get(k).map(|v| (k.to_string(), v.clone())))
+        .collect();
+    // The judge decides which draw is kept, so a resume under another one starts the chapter again. Its ASR and run
+    // bar are its identity; the model's path and the device are where it runs, not what it decides.
+    if let Some(spec) = options
+        .render
+        .judge
+        .as_deref()
+        .and_then(|s| ggtts_instruments::judge::parse(s).ok())
+    {
+        kept.insert(
+            "judge".into(),
+            serde_json::json!({"asr": spec.name, "min_run": spec.min_run}),
+        );
+    }
+    if kept.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::Object(kept)
+    }
+}
+
+/// [`render_command`] with the shared options value ([`ggtts_core::options`]): the output directory
+/// (`output.out`), the book section (`book.seed_root`, else [`DEFAULT_SEED_ROOT`]; `book.include_skippable`), the
+/// render section's instruction and steering, and the trace (`observe.trace`, `observe.trace_level`). The load
+/// section is the caller's: `load` opens the engine. The steering file is read before the engine is loaded, so a bad
+/// one costs no model load. Options that do not apply to a book are refused by the command line before this
+/// ([`crate::options`]).
+pub fn render_command_options(
+    book_path: &Path,
+    options: &Options,
+    load: impl FnOnce() -> Result<LoadedEngine, String>,
+) -> Result<serde_json::Value, String> {
+    let out = options.output.out.as_deref().ok_or("render needs --out DIR")?;
+    let seed_root = options.book.seed_root.as_deref().unwrap_or(DEFAULT_SEED_ROOT);
     let book = Book::open(book_path).map_err(|e| e.to_string())?;
+    let mut options = options.clone();
+    options.read_steering().map_err(|e| e.to_string())?;
+    // An instrument that cannot be found, or a reference a book supplies itself, is refused before the engine
+    // loads or any chapter is rendered.
+    let instruments = ggtts_instruments::options::config(&options)?;
+    if let Some(c) = &instruments {
+        refuse_given_reference(c)?;
+    }
+    // The judge, its ASR started before the engine loads, so one that cannot run costs no model load.
+    let mut judge = ggtts_instruments::judge::judge(&options)?;
     let LoadedEngine {
         mut engine,
         files,
         speaker,
     } = load()?;
     let profile = *engine.profile();
+    let settings = BookRender {
+        include_skippable: options.book.include_skippable,
+        opts: options.render_options(&profile).map_err(|e| e.to_string())?,
+    };
     let mut plans = crate::plan::plan_book(&profile, &book, seed_root)?;
     let engine_record = provenance(engine.as_ref(), &files, speaker.as_deref());
+    let identity = render_identity(&options, engine.info());
+    let reported = ggtts_core::options::reported(&ggtts_core::options::record(&options, engine.info()));
     for plan in &mut plans {
         plan.engine = engine_record.clone();
+        plan.render = identity.clone();
     }
-    let reports = render_book_with(engine.as_mut(), &book, &plans, out, include_skippable)?;
+    let trace_level = options.observe.trace_level.unwrap_or(1);
+    let mut trace = match &options.observe.trace {
+        Some(path) => Some(
+            std::fs::File::create(path)
+                .map(|f| JsonlEvents::new(BufWriter::new(f), trace_level))
+                .map_err(|e| format!("--trace {}: {e}", path.display()))?,
+        ),
+        None => None,
+    };
+    let reports = {
+        let events: &mut dyn Events = match trace.as_mut() {
+            Some(t) => t,
+            None => &mut NullEvents,
+        };
+        let mut header = Header::for_engine(engine.as_ref(), trace_level);
+        header.instruction = settings.opts.instruction.clone().filter(|i| !i.is_empty());
+        header.steer = settings.opts.steer.as_ref().map(|s| s.record());
+        emit_header(events, &header);
+        render_book_judged(engine.as_mut(), &book, &plans, out, &settings, judge.as_mut(), events)?
+    };
+    if let Some(t) = trace {
+        t.finish().map_err(|e| format!("--trace: {e}"))?;
+    }
+    // The engine is released before any instrument runs, as in ggtts-render: an instrument may load a model of its
+    // own on the same device.
+    drop(engine);
+    let measured = match &instruments {
+        Some(config) => {
+            let models: Vec<serde_json::Value> = files
+                .iter()
+                .map(|(role, sha)| serde_json::json!({"role": role, "sha256": sha}))
+                .collect();
+            measure_chapters(config, &options, &reports, &plans, &models, &reported)?
+        }
+        None => Vec::new(),
+    };
     let chapters: Vec<_> = reports
         .iter()
         .map(|r| match &r.outcome {
@@ -257,24 +414,275 @@ pub fn render_command_with(
                 rendered,
                 resumed,
                 refused,
-            } => serde_json::json!({
-                "id": r.id,
-                "state": "written",
-                "file": file.strip_prefix(out).unwrap_or(file).to_string_lossy(),
-                "rendered": rendered.len(),
-                "resumed": resumed,
-                "refused_manifest": refused,
-            }),
+                rejudged,
+            } => {
+                let mut c = serde_json::json!({
+                    "id": r.id,
+                    "state": "written",
+                    "file": file.strip_prefix(out).unwrap_or(file).to_string_lossy(),
+                    "rendered": rendered.len(),
+                    "resumed": resumed,
+                    "refused_manifest": refused,
+                });
+                if *rejudged > 0 {
+                    c["rejudged"] = (*rejudged).into();
+                }
+                if let Some(m) = measured.iter().find(|m| m.id == r.id) {
+                    c["instruments"] = m.to_json(out);
+                }
+                c
+            }
             ChapterOutcome::Skipped { reason } => serde_json::json!({"id": r.id, "state": "skipped", "reason": reason}),
         })
         .collect();
-    Ok(serde_json::json!({
+    let mut report = serde_json::json!({
         "format": "ggtts-book-render/1",
         "book_id": book.book_id(),
         "engine": engine_record,
         "seed_root": seed_root,
         "chapters": chapters,
-    }))
+    });
+    if !identity.is_null() {
+        report["render"] = identity;
+    }
+    if let Some(config) = &instruments {
+        report["measurement"] = if measurement_complete(config, &measured) {
+            "complete"
+        } else {
+            "incomplete"
+        }
+        .into();
+    }
+    Ok(report)
+}
+
+/// Whether a chapter was measured, and when.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Measured {
+    /// Measured in this run.
+    ThisRun,
+    /// Measured by an earlier run with the same chapter FLAC and the same settings: its `measured.json`.
+    EarlierRun,
+    /// Not measured, for this reason; the next run measures it.
+    No(String),
+}
+
+/// One written chapter's instrument run: its id, its report directory, when it was measured, and what came of it
+/// (the instruments' statuses and why the measurement is incomplete; empty when it was not measured).
+pub struct ChapterMeasurement {
+    pub id: String,
+    pub report_dir: PathBuf,
+    pub measured: Measured,
+    pub status: serde_json::Map<String, serde_json::Value>,
+    pub incomplete: Vec<String>,
+}
+
+impl ChapterMeasurement {
+    /// The chapter's `instruments` entry in the render report: the report directory (relative to `out` when inside
+    /// it), when it was measured, each instrument's status, and why the measurement is incomplete, if it is.
+    pub fn to_json(&self, out: &Path) -> serde_json::Value {
+        let (measured, reason) = match &self.measured {
+            Measured::ThisRun => ("this run", None),
+            Measured::EarlierRun => ("earlier run", None),
+            Measured::No(why) => ("no", Some(why.clone())),
+        };
+        let mut v = serde_json::json!({
+            "report": self.report_dir.strip_prefix(out).unwrap_or(&self.report_dir).to_string_lossy(),
+            "measured": measured,
+            "status": self.status,
+            "complete": matches!(self.measured, Measured::ThisRun | Measured::EarlierRun) && self.incomplete.is_empty(),
+            "incomplete": self.incomplete,
+        });
+        if let Some(r) = reason {
+            v["reason"] = r.into();
+        }
+        v
+    }
+}
+
+/// Whether the book's measurement is complete: every measured chapter is, and, when an instrument is required, no
+/// written chapter was left unmeasured (as `ggtts-render` counts a required instrument that never ran).
+pub fn measurement_complete(config: &ggtts_instruments::Config, measured: &[ChapterMeasurement]) -> bool {
+    measured.iter().all(|m| match m.measured {
+        Measured::ThisRun | Measured::EarlierRun => m.incomplete.is_empty(),
+        Measured::No(_) => config.require.is_empty(),
+    })
+}
+
+/// Refuse a `reference_file` given for a book: the book gives each chapter its own text, and one file cannot be every
+/// chapter's.
+pub fn refuse_given_reference(config: &ggtts_instruments::Config) -> Result<(), String> {
+    use ggtts_instruments::catalogue::REFERENCE_ARG;
+    match config
+        .instruments
+        .iter()
+        .find(|e| e.args.iter().any(|(k, _)| k == REFERENCE_ARG))
+    {
+        Some(e) => Err(format!(
+            "--instrument {}: arg.{REFERENCE_ARG} is refused by ggtts-book render: a book gives each chapter its own \
+             text as the reference, so leave it out",
+            e.name
+        )),
+        None => Ok(()),
+    }
+}
+
+/// A chapter's spoken text, as its reference: its chunks, a line per paragraph.
+pub fn chapter_reference(plan: &ChapterPlan) -> String {
+    let mut text = String::new();
+    for c in &plan.chunks {
+        text.push_str(&c.text);
+        if c.last_in_para {
+            text.push('\n');
+        }
+    }
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text
+}
+
+/// The file in a chapter's report directory that records a finished measurement.
+pub const MEASURED_STAMP: &str = "measured.json";
+/// Its format.
+pub const MEASURED_FORMAT: &str = "ggtts-book-measured/1";
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// Measure every written chapter not yet measured with the same chapter FLAC and the same settings. A chapter whose
+/// report directory holds a matching `measured.json` is taken from it ([`Measured::EarlierRun`]); any other is
+/// measured now, and stamped when no instrument failed. So a resumed book measures the chapters an interrupted run never measured, and a re-run
+/// with other instruments measures every chapter again.
+///
+/// Each chapter is one render of the run (its id is the chapter's directory name), with its report beside its FLAC
+/// (`NNN-<id>.report`), or under `observe.report` when given (`<report>/NNN-<id>`). The run is `observe.run`, else
+/// `book-<unix seconds>`, one for the whole book. An instrument that takes a reference (an ASR) is given the chapter's
+/// own text, written to `reference.txt` in its report directory. The book's trace covers every chapter, so no chapter
+/// is given an event stream, and an instrument that needs one is `skipped` with that reason. Under
+/// `on_instrument_error: abort`, a chapter where an instrument failed stops the chapters after it ([`Measured::No`]).
+pub fn measure_chapters(
+    config: &ggtts_instruments::Config,
+    options: &Options,
+    reports: &[ChapterReport],
+    plans: &[ChapterPlan],
+    models: &[serde_json::Value],
+    reported: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<ChapterMeasurement>, String> {
+    use ggtts_instruments::catalogue::{find, REFERENCE_ARG};
+    let run = ggtts_instruments::options::run_id(options, "book");
+    let mut measured = Vec::new();
+    let mut aborted: Option<String> = None;
+    for (r, plan) in reports.iter().zip(plans) {
+        let ChapterOutcome::Written { file, .. } = &r.outcome else {
+            continue;
+        };
+        let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or(&r.id).to_string();
+        let report_dir = options
+            .observe
+            .report
+            .as_ref()
+            .map_or_else(|| file.with_extension("report"), |d| d.join(&stem));
+        let entry = |measured, status, incomplete| ChapterMeasurement {
+            id: r.id.clone(),
+            report_dir: report_dir.clone(),
+            measured,
+            status,
+            incomplete,
+        };
+        if let Some(why) = &aborted {
+            measured.push(entry(Measured::No(why.clone()), serde_json::Map::new(), Vec::new()));
+            continue;
+        }
+        // The chapter's own config: every reference-taking instrument reads the chapter's text.
+        let reference = report_dir.join("reference.txt");
+        let mut chapter_config = config.clone();
+        let mut needs_reference = false;
+        for e in &mut chapter_config.instruments {
+            if find(&e.name).is_some_and(|k| k.takes_reference) {
+                e.args
+                    .push((REFERENCE_ARG.to_string(), reference.to_string_lossy().into_owned()));
+                e.args.sort();
+                needs_reference = true;
+            }
+        }
+        let flac = std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let signature = hex(&ggtts_core::seed::sha256(
+            format!("{}\n{chapter_config:?}", hex(&ggtts_core::seed::sha256(&flac))).as_bytes(),
+        ));
+        let stamp_path = report_dir.join(MEASURED_STAMP);
+        let stamp = std::fs::read(&stamp_path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .filter(|v| v["format"] == MEASURED_FORMAT && v["signature"] == signature.as_str());
+        if let Some(v) = stamp {
+            let status = v["status"].as_object().cloned().unwrap_or_default();
+            let incomplete = v["incomplete"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            measured.push(entry(Measured::EarlierRun, status, incomplete));
+            continue;
+        }
+        // A stamp that no longer matches is removed before the run, so an interrupted run leaves none.
+        let _ = std::fs::remove_file(&stamp_path);
+        if needs_reference {
+            std::fs::create_dir_all(&report_dir).map_err(|e| format!("{}: {e}", report_dir.display()))?;
+            std::fs::write(&reference, chapter_reference(plan)).map_err(|e| format!("{}: {e}", reference.display()))?;
+        }
+        let finished = ggtts_instruments::options::Finished {
+            run: run.clone(),
+            render: stem,
+            audio: file.clone(),
+            audio_state: ggtts_core::report::AudioState::Trimmed,
+            audio_seconds: flac_seconds(file),
+            events: None,
+            models: Some(models.to_vec()),
+            reported: reported.clone(),
+            default_report_dir: report_dir.clone(),
+        };
+        let (_, summary) = ggtts_instruments::options::run(
+            &chapter_config,
+            &finished,
+            None,
+            ggtts_core::logging::Settings::default(),
+        )
+        .map_err(|e| format!("chapter {}: instruments: {e}", r.id))?;
+        let status: serde_json::Map<String, serde_json::Value> = summary
+            .envelopes
+            .iter()
+            .map(|e| (e.name.clone(), e.status.as_str().into()))
+            .collect();
+        // Only a measurement in which no instrument failed is kept for later runs: a failure (a crash, a timeout, an
+        // invalid envelope) or an abort is measured again next time.
+        if summary.failures() == 0 && !summary.aborted {
+            let stamp = serde_json::json!({
+                "format": MEASURED_FORMAT,
+                "signature": signature,
+                "run": run,
+                "status": status,
+                "incomplete": summary.incomplete,
+            });
+            crate::manifest::write_atomic(&stamp_path, stamp.to_string().as_bytes())
+                .map_err(|e| format!("{}: {e}", stamp_path.display()))?;
+        }
+        if summary.aborted {
+            aborted = Some(format!(
+                "an instrument failed on chapter {} and on_instrument_error is abort",
+                r.id
+            ));
+        }
+        measured.push(entry(Measured::ThisRun, status, summary.incomplete.clone()));
+    }
+    Ok(measured)
+}
+
+/// The chapter's length in seconds, from its FLAC's stream info.
+fn flac_seconds(path: &Path) -> Option<f64> {
+    let info = claxon::FlacReader::open(path).ok()?.streaminfo();
+    let samples = info.samples?;
+    (info.sample_rate > 0).then(|| samples as f64 / f64::from(info.sample_rate))
 }
 
 /// Render every chapter of `book` into `out`, with `engine` loaded once for all of them.
@@ -298,6 +706,48 @@ pub fn render_book_with(
     out: &Path,
     include_skippable: bool,
 ) -> Result<Vec<ChapterReport>, String> {
+    let settings = BookRender {
+        include_skippable,
+        ..BookRender::for_profile(engine.profile())
+    };
+    render_book_observed(engine, book, plans, out, &settings, &mut NullEvents)
+}
+
+/// [`render_book`] with `settings` (the core step's options and whether front and back matter are rendered), feeding
+/// every rendered chunk's trace events into `events`. Chunks resumed from an earlier run are not rendered, so they are
+/// not traced.
+pub fn render_book_observed(
+    engine: &mut dyn Engine,
+    book: &Book,
+    plans: &[ChapterPlan],
+    out: &Path,
+    settings: &BookRender,
+    events: &mut dyn Events,
+) -> Result<Vec<ChapterReport>, String> {
+    render_book_judged(engine, book, plans, out, settings, &mut DurationJudge, events)
+}
+
+/// [`render_book_observed`] with the caller's `judge` for every chunk.
+pub fn render_book_judged(
+    engine: &mut dyn Engine,
+    book: &Book,
+    plans: &[ChapterPlan],
+    out: &Path,
+    settings: &BookRender,
+    judge: &mut dyn Judge,
+    events: &mut dyn Events,
+) -> Result<Vec<ChapterReport>, String> {
+    let include_skippable = settings.include_skippable;
+    let mut hooks = Hooks::new();
+    // A chapter's manifest records the redraws its chunks were rendered with, whoever planned it.
+    let plans: Vec<ChapterPlan> = plans
+        .iter()
+        .map(|p| ChapterPlan {
+            redraw: settings.opts.redraw,
+            ..p.clone()
+        })
+        .collect();
+    let plans = &plans[..];
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     claim_output(out, &book.book_id())?;
     // Record which chapters this render plans, before rendering any: `export` takes exactly these, so a directory a
@@ -338,7 +788,14 @@ pub fn render_book_with(
         let mut rendered = Vec::new();
         let start: Resume = run_chapter(&dir, plan, |p, index| {
             rendered.push(index);
-            render_chunk(engine, p, index)
+            render_chunk_judged(
+                engine,
+                p,
+                index,
+                &settings.opts,
+                &mut *judge,
+                &mut Observers::new(&mut *events, &mut hooks),
+            )
         })
         .map_err(|e| match e {
             RunError::Render { index, reason } => format!(
@@ -362,6 +819,7 @@ pub fn render_book_with(
                 resumed: plan.chunks.len() - start.todo.len(),
                 rendered,
                 refused: start.refused.map(|e| e.to_string()),
+                rejudged: start.rejudged.len(),
             },
         });
     }

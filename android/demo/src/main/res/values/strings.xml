@@ -87,6 +87,7 @@
     <string name="low_memory_system">, and the system reports memory is low</string>
     <string name="copying">Copying...</string>
     <string name="imported">Imported %1$s (%2$d MB)</string>
+    <string name="import_unreadable">the picked file cannot be read</string>
     <string name="import_failed">Import failed: %1$s</string>
     <string name="folder_access_failed">Could not keep access to that folder: %1$s</string>
     <string name="folder_status">Models folder: %1$s. %2$d file(s) there, read in place; its voices are listed.</string>

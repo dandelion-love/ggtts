@@ -86,6 +86,7 @@
     <string name="low_memory_system">，而且系統報告記憶體不足</string>
     <string name="copying">複製緊…</string>
     <string name="imported">已匯入 %1$s（%2$d MB）</string>
+    <string name="import_unreadable">讀取唔到揀咗嘅檔案</string>
     <string name="import_failed">匯入失敗：%1$s</string>
     <string name="folder_access_failed">保留唔到嗰個資料夾嘅存取權：%1$s</string>
     <string name="folder_status">模型資料夾：%1$s。入面有 %2$d 個檔案，直接讀取；入面嘅聲音已經列出。</string>

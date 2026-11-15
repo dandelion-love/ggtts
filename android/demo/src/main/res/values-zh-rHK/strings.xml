@@ -14,6 +14,10 @@
     <string name="paste">貼上</string>
     <string name="clear">清除</string>
     <string name="characters">%1$d 個字</string>
+    <string name="read_aloud_label">朗讀</string>
+    <string name="stop_label">停止</string>
+    <string name="play_sample">試聽 %1$s</string>
+    <string name="close_sheet">關閉聲音清單</string>
     <string name="read_aloud_button">▶  朗讀</string>
     <string name="stop_button">■  停止</string>
     <string name="status_elapsed">%1$s  ·  %2$d 秒</string>

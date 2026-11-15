@@ -18,6 +18,7 @@
 pub mod audio;
 pub mod capabilities;
 pub mod engine;
+pub mod fdpath;
 pub mod flac;
 pub mod hooks;
 pub mod logging;

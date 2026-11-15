@@ -543,6 +543,7 @@ version = "0.0.1"
 dependencies = [
  "ggtts-core",
  "ggtts-ggml-sys",
+ "libc",
  "serde_json",
  "sha2",
 ]

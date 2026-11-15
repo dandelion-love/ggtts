@@ -75,17 +75,17 @@ The app asks for no storage permission. It reads model files from two places, an
 
 * **A folder you choose once** (the easiest to fill): "Choose a models folder…" in the ⋮ menu opens the system's
   folder picker; pick or create one such as `Download/ggtts`, and copy model files into it with a file manager or
-  over USB from a computer. The app keeps read access to that folder across restarts. When the folder is chosen,
-  and each time the app opens, it copies the folder's model files that it does not have yet into its own directory,
-  with the same checks as an import (below); a voice's sample in the folder plays from there. Choosing another
-  folder replaces the first. The copy doubles the space a model takes, so delete the folder's copy once the app has
-  it if space is short; the voice stays.
+  over USB from a computer. The app keeps read access to that folder across restarts, lists the voices its files
+  make, and loads them where they are, never copying them. Choosing another folder replaces the first.
 
-  Why a copy: the engine opens a model by path, and a picked file reaches it only as `/proc/self/fd/<n>`. Opening
-  that path checks access to the file underneath, which is on shared storage the app may not read without a storage
-  permission. On a Galaxy Z Fold5 (Android 17) all three loads that way failed with "Permission denied (os error
-  13)". The copy itself is quick there: 0.55 s for the 291 MB codec and 3.5 s for the 2.04 GB talker. A load from the
-  app's directory took 2.3 to 2.8 s, the same as before.
+  How: Android hands the app a picked file as an open descriptor, which reaches the engine as `/proc/self/fd/<n>`.
+  Reopening that path would check access to the file underneath, which an app without a storage permission may not
+  read ("Permission denied"). So the engine reads a path of exactly that form through the descriptor itself, without
+  reopening it (`ggtts_core::fdpath`). On a Galaxy Z Fold5 (Android 17), the Qwen3-TTS talker and codec loaded from a
+  picked folder in 1.94 to 1.96 s when cached (2.82 s the first time), against 2.04 to 2.14 s from the app's
+  directory. A Kitten-TTS 2 voice (language model, decoder and voice JSON) loaded and spoke from the folder too.
+  A provider that hands back a descriptor that cannot seek (some stream a document from elsewhere, as a pipe) gets
+  the fallback: the app copies that one file into its cache once and loads the copy. A local folder never needs it.
 * **Its own directory**, which Android 11 and later hide from file managers and USB, so it is filled from the app or
   with adb:
 

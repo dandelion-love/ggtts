@@ -9,7 +9,8 @@ import ggtts.Pcm
  * Which engine to load, from which files, and with what: one options document ([Options]), as the library's schema
  * names its keys. The screen's choices (the files, the speaker, the threads) are values in it; anything else the
  * binding takes (a style instruction, steering, an edge, redraws, the stream's level step) is a key in the same
- * document, carried to the binding unread. Paths are files on the device; a key not given is "none picked".
+ * document, carried to the binding unread. A file is a path on the device, or a content URI in the picked models
+ * folder (Storage.kt); a key not given is "none picked".
  */
 data class LoadRequest(val options: Options) {
     /** The screen's request: [engine] and the files picked; null is "none picked". */
@@ -83,6 +84,23 @@ data class LoadRequest(val options: Options) {
     }
 }
 
+/** A path the engine can open (Storage.kt's ContentPaths makes one for a picked file), and what keeps it open (closed when the engine is). */
+class Opened(val path: String, private val handle: AutoCloseable? = null) : AutoCloseable {
+    override fun close() {
+        handle?.close()
+    }
+}
+
+/** Turns a model location into a path the engine opens. */
+fun interface PathResolver {
+    fun open(location: String): Opened
+
+    companion object {
+        /** Paths only: what the JVM tests and a binding with no picked folder use. */
+        val PLAIN = PathResolver { Opened(it) }
+    }
+}
+
 /** Loads an engine. A failure is a ggtts.GgttsException carrying the binding's code, message and key. */
 fun interface TtsBinding {
     fun load(request: LoadRequest): TtsEngine
@@ -104,18 +122,33 @@ interface TtsEngine : AutoCloseable {
  * The real binding: ggtts.Ggtts over JNI, given the request's documents. [cacheDir] is where Qwen3-TTS looks for its
  * default model files when no model is picked. The demo never downloads them: `allowDownload = false` is given beside
  * the document, so a document that names `load.offline` is refused by the binding, and a missing default file is the
- * binding's error.
+ * binding's error. [paths] turns each file's location into a path the engine opens: a file in the picked models
+ * folder is a content URI, opened as `/proc/self/fd/<n>` and held open until the engine is closed (Storage.kt).
  */
-class GgttsBinding(private val cacheDir: String?) : TtsBinding {
+class GgttsBinding(private val cacheDir: String?, private val paths: PathResolver = PathResolver.PLAIN) : TtsBinding {
     override fun load(request: LoadRequest): TtsEngine {
-        val tts = Ggtts.load(allowDownload = false, options = request.loadDocument(cacheDir))
+        val held = mutableListOf<Opened>()
+        val tts = try {
+            var resolved = request
+            for (key in listOf("model", "codec", "voice")) {
+                val location = request.options[LoadRequest.LOAD, key] as? String ?: continue
+                val opened = paths.open(location).also { held += it }
+                resolved = resolved.with(LoadRequest.LOAD, key, opened.path)
+            }
+            Ggtts.load(allowDownload = false, options = resolved.loadDocument(cacheDir))
+        } catch (t: Throwable) {
+            held.forEach { runCatching { it.close() } }
+            throw t
+        }
         val whole = request.renderDocument()
         val stream = request.streamDocument()
         return object : TtsEngine {
             override fun render(text: String, seed: Long): Pcm = tts.render(text, seed, options = whole)
             override fun renderStream(text: String, seed: Long, onPiece: (FloatArray, Int) -> Boolean): Boolean =
                 tts.renderStream(text, seed, options = stream) { samples, rate -> onPiece(samples, rate) }
-            override fun close() = tts.close()
+            override fun close() {
+                try { tts.close() } finally { held.forEach { runCatching { it.close() } } }
+            }
         }
     }
 }

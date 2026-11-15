@@ -142,6 +142,11 @@ pub trait Engine {
     fn capabilities(&self) -> Capabilities {
         Capabilities::none(&self.info().family)
     }
+    /// The named speakers the loaded model has, as a speaker setting names them; empty for an engine or model with
+    /// none (the default). [`crate::capabilities::statement`] reports them.
+    fn speakers(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// Text to codec tokens for one chunk.
     fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError>;
     /// [`generate`](Engine::generate), emitting a `step` event per frame into `events` when its level is above 0.

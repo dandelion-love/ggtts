@@ -303,6 +303,9 @@ impl Engine for Qwen3Tts {
     fn capabilities(&self) -> Capabilities {
         capabilities_of(&self.talker)
     }
+    fn speakers(&self) -> Vec<String> {
+        self.talker.speaker_names()
+    }
     fn info(&self) -> &EngineInfo {
         &self.info
     }

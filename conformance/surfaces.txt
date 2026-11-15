@@ -16,6 +16,10 @@ c ggtts_free: handle
 c ggtts_last_error:
 c ggtts_load_opts: options_json, handle
 c ggtts_render_opts: handle, text, options_json, on_piece, user, pcm, len, rate
+c ggtts_options_schema:
+c ggtts_capabilities: handle, json
+c ggtts_string_free: s
+c ggtts_last_error_key:
 kotlin load: engine, model, codec, voice, threads
 kotlin loadWith: engine, model, codec, voice, threads, speaker, instruction
 kotlin loadWithModels: engine, model, codec, voice, threads, speaker, instruction, cacheDir, allowDownload

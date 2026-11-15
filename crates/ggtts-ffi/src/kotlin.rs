@@ -9,16 +9,15 @@
 //!   user can read).
 //! * **Its arguments beside the document**: `load`'s parameters, and a render's `seed`, laid into the document; one
 //!   given both ways is refused, naming both ([`binding::refuse_given_twice`]).
-//! * **Its seed**: a render with no seed and no `render.seed_salt` in the document or the load's defaults renders at
-//!   [`binding::DEFAULT_SEED`], as `Ggtts.render` always has.
+//! * **Its seed**: the call's `seed` is the document's `render.seed_salt`. With a document and no salt anywhere, the
+//!   salt is the C ABI's document default (empty), so a document renders the same samples in every binding.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use ggtts_core::options::{Options, Refusal, Source};
 use ggtts_load::binding;
 
-use crate::{defaults, load_document, refused, render};
+use crate::{load_document, refused, render};
 
 /// A code and a message.
 pub use ggtts_load::binding::Fail;
@@ -130,26 +129,17 @@ pub fn load(json: &str, a: &LoadArgs) -> Result<u64, Fail> {
     load_document(&o)
 }
 
-/// A render call's document ([`binding::render_request`]) with Kotlin's refusals and its default seed: the salt is
-/// [`binding::DEFAULT_SEED`] when neither the call, the document nor the load's defaults give one.
-fn document(handle: u64, json: Option<&str>, seed: Option<u64>, stream: bool) -> Result<Options, Fail> {
-    let mut doc = binding::render_request(json, seed, stream)?;
+/// A render call's document ([`binding::render_request`]) with Kotlin's refusals. A salt nothing gives stays the C
+/// ABI's document default (empty), as `ggtts_render_opts` renders it.
+fn document(json: Option<&str>, seed: Option<u64>, stream: bool) -> Result<Options, Fail> {
+    let doc = binding::render_request(json, seed, stream)?;
     check(&doc)?;
-    let salted = |o: &Options| o.marks.sources.contains_key("render.seed_salt");
-    let defaults_salted = defaults()
-        .get_or_insert_with(HashMap::new)
-        .get(&handle)
-        .is_some_and(salted);
-    if !salted(&doc) && !defaults_salted {
-        doc.render.seed_salt = Some(binding::DEFAULT_SEED.to_string());
-        doc.marks.sources.insert("render.seed_salt".into(), Source::Document);
-    }
     Ok(doc)
 }
 
 /// `Native.renderOpts`: the whole read of `text` with a render document, laid over the load's render defaults.
 pub fn render_opts(handle: u64, text: &str, json: Option<&str>, seed: Option<u64>) -> Result<(Vec<f32>, u32), Fail> {
-    let doc = document(handle, json, seed, false)?;
+    let doc = document(json, seed, false)?;
     render(handle, text, &doc, None)
 }
 
@@ -162,7 +152,7 @@ pub fn render_stream_opts(
     seed: Option<u64>,
     on_piece: binding::PieceSink<'_>,
 ) -> Result<bool, Fail> {
-    let doc = document(handle, json, seed, true)?;
+    let doc = document(json, seed, true)?;
     match render(handle, text, &doc, Some(on_piece)) {
         Ok(_) => Ok(true),
         Err((crate::GGTTS_ERR_STOPPED, _)) => Ok(false),
@@ -203,12 +193,30 @@ mod tests {
     /// An empty document renders as the struct render at the default seed, and the seed argument is the salt.
     #[test]
     fn an_empty_document_is_the_struct_render() {
+        // No salt anywhere: the C ABI's document render, sample for sample.
         let h = fake_doc(r#"{"load": {"engine": "fake"}}"#);
-        assert_eq!(
-            render_opts(h, TEXT, None, None).unwrap(),
-            struct_render(binding::DEFAULT_SEED)
-        );
+        let ours = render_opts(h, TEXT, None, None).unwrap();
         ggtts_free(h);
+        let h = fake_doc(r#"{"load": {"engine": "fake"}}"#);
+        let (t, d) = (CString::new(TEXT).unwrap(), CString::new("{}").unwrap());
+        let (mut p, mut n, mut r) = (std::ptr::null_mut(), 0usize, 0u32);
+        let code = unsafe {
+            crate::ggtts_render_opts(
+                h,
+                t.as_ptr(),
+                d.as_ptr(),
+                None,
+                std::ptr::null_mut(),
+                &mut p,
+                &mut n,
+                &mut r,
+            )
+        };
+        assert_eq!(code, 0);
+        let theirs = (unsafe { std::slice::from_raw_parts(p, n) }.to_vec(), r);
+        unsafe { ggtts_pcm_free(p, n) };
+        ggtts_free(h);
+        assert_eq!(ours, theirs);
         let h = fake_doc(r#"{"load": {"engine": "fake"}}"#);
         assert_eq!(render_opts(h, TEXT, Some("{}"), Some(7)).unwrap(), struct_render(7));
         ggtts_free(h);

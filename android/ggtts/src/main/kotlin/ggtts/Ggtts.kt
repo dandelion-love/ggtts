@@ -213,7 +213,8 @@ class Ggtts private constructor(private var handle: Long) : AutoCloseable {
 
     /**
      * Render [text] (one paragraph per line) to levelled PCM. [seed] is the salt of the story seed every chunk's sampler
-     * seed is derived from (`render.seed_salt`), [DEFAULT_SEED] when neither it nor [options] gives one. [options] is
+     * seed is derived from (`render.seed_salt`). Not given, it is [DEFAULT_SEED] without [options], and with them the
+     * document's salt, empty when nothing gives one, as the C-ABI's `ggtts_render_opts` renders it. [options] is
      * a render document, JSON, as the C-ABI's `ggtts_render_opts` takes it, laid over the load's `render` defaults:
      * steering, an edge, redraws, an instruction. A load option in it, `output.stream` (stream with [renderStream]),
      * the trace and any option the engine or this binding does not take throw GGTTS_ERR_ARG with the option's

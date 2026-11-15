@@ -176,13 +176,12 @@ impl Handle {
             return Ok(None);
         }
         let doc = binding::render_request(options, seed, stream)?;
-        let mut o = match &self.defaults {
+        // No salt given anywhere is the C-ABI's `ggtts_render_opts` default (an empty salt), so the same document
+        // renders the same samples in both.
+        let o = match &self.defaults {
             Some(d) => binding::layer_render(d, doc)?,
             None => doc,
         };
-        if o.render.seed_salt.is_none() {
-            o.render.seed_salt = Some(DEFAULT_SEED.to_string());
-        }
         Ok(Some(o))
     }
 
@@ -891,6 +890,15 @@ mod tests {
         assert_eq!(ours, c_abi_render(load_doc, doc));
         assert_eq!(loaded_with().0.render_with(TEXT, Some(7), Some("{}")).unwrap(), ours);
         // The load's edge is carried: without it the read is another length.
+        // No salt anywhere: the C-ABI's document default, sample for sample.
+        assert_eq!(
+            loaded_with().0.render_with(TEXT, None, Some("{}")).unwrap(),
+            c_abi_render(load_doc, "{}")
+        );
+        assert_eq!(
+            fresh().render_with(TEXT, None, Some("{}")).unwrap(),
+            c_abi_render(r#"{"load": {"engine": "fake"}}"#, "{}")
+        );
         assert_ne!(fresh().render(TEXT, 7).unwrap().0.len(), ours.0.len());
         assert_eq!(
             fresh().render_with(TEXT, Some(7), Some("{}")).unwrap(),

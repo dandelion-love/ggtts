@@ -638,6 +638,12 @@ fn render_with_models(
                 .into(),
         );
     }
+    // Redraws are a story's: the one-chunk --text plan keeps its one draw, so a --redraw there would do nothing.
+    if a.render.redraw.is_some() && a.render.text.is_some() {
+        return Err(
+            "--redraw (render.redraw): --text renders one draw and keeps it; redraws are a story's (--story)".into(),
+        );
+    }
     let mut judge = ggtts_instruments::judge::judge(&a)?;
     // Refuse a duration report that cannot be written before spending the render on it. The instrument report
     // directory is the one parent that may not exist yet: the runner creates it.

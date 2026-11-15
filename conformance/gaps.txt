@@ -51,4 +51,3 @@ render-story	render.edge_s	#283
 render-story	render.seed	#215
 render-story	render.seed_salt	#283
 render-text	render.edge_s	#180
-render-text	render.redraw	#294

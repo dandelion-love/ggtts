@@ -277,6 +277,89 @@ fn abort_stops_the_chapters_after_the_failure() {
     std::fs::remove_dir_all(root).ok();
 }
 
+/// A script instrument for the tests below: it measures one metric through the SDK, and fails on the render named
+/// by `FAIL_RENDER`, an environment variable, so the failure changes nothing a stamp records.
+fn script_instrument(root: &Path) -> (PathBuf, String) {
+    let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments/python");
+    let script = root.join("counted.py");
+    std::fs::write(
+        &script,
+        format!(
+            "import os,sys\nsys.path.insert(0, {:?})\nfrom ggtts_instrument import run\n\
+             def measure(c,e):\n if os.environ.get('FAIL_RENDER') == c.render: raise RuntimeError('planted')\n \
+             e.metric('seen',1,'1','neutral',render=c.render)\n\
+             sys.exit(run(measure,'counted','1',hooks=[]))\n",
+            sdk.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let spec = format!("counted,command={},interpreter={python},version=1", script.display());
+    (script, spec)
+}
+
+fn render_env(book: &Path, out: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+    let mut c = ggtts_book();
+    c.arg("render")
+        .arg(book)
+        .arg("--out")
+        .arg(out)
+        .args(["--engine", "fake"])
+        .args(args);
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    c.output().unwrap()
+}
+
+/// #345, point 1: under abort, a chapter after the failure that already holds a valid stamp is taken from it, not
+/// reported unmeasured. The first chapter's stamp is removed and it fails; the others were measured by the first run.
+#[test]
+fn a_valid_stamp_survives_an_earlier_chapters_abort() {
+    let book = nested().write_temp("instr-abort-stamps");
+    let root = book.parent().unwrap();
+    let out = root.join("out");
+    let (_, spec) = script_instrument(root);
+    let args = ["--instrument", spec.as_str(), "--on-instrument-error", "abort"];
+    let report = ok(&render_env(&book, &out, &args, &[]), 0);
+    let chapters = written(&report, &out);
+    assert!(chapters.len() >= 3, "{report}");
+    assert!(measured(&report, &out).iter().all(|m| m == "this run"), "{report}");
+    let first = &chapters[0].1;
+    let stem = first.file_stem().unwrap().to_str().unwrap().to_string();
+    std::fs::remove_file(first.with_extension("report").join("measured.json")).unwrap();
+    let report = ok(&render_env(&book, &out, &args, &[("FAIL_RENDER", stem.as_str())]), 0);
+    let m = measured(&report, &out);
+    assert_eq!(m[0], "this run", "{report}");
+    assert!(m[1..].iter().all(|x| x == "earlier run"), "{m:?}");
+    assert_eq!(
+        written(&report, &out)[0].0["instruments"]["status"]["counted"],
+        "failed"
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+/// #345, point 2: the stamp covers the instrument itself. The same settings measure nothing again; the same
+/// instrument edited in place (its command script) measures every chapter again.
+#[test]
+fn an_instrument_changed_in_place_measures_again() {
+    let book = nested().write_temp("instr-edited");
+    let root = book.parent().unwrap();
+    let out = root.join("out");
+    let (script, spec) = script_instrument(root);
+    let args = ["--instrument", spec.as_str()];
+    let report = ok(&render_env(&book, &out, &args, &[]), 0);
+    assert!(measured(&report, &out).iter().all(|m| m == "this run"), "{report}");
+    let report = ok(&render_env(&book, &out, &args, &[]), 0);
+    assert!(measured(&report, &out).iter().all(|m| m == "earlier run"), "{report}");
+    let mut text = std::fs::read_to_string(&script).unwrap();
+    text.push_str("# edited\n");
+    std::fs::write(&script, text).unwrap();
+    let report = ok(&render_env(&book, &out, &args, &[]), 0);
+    assert!(measured(&report, &out).iter().all(|m| m == "this run"), "{report}");
+    std::fs::remove_dir_all(root).ok();
+}
+
 /// `--report DIR` puts each chapter's report in `DIR/NNN-<chapter id>`.
 #[test]
 fn report_puts_each_chapters_report_under_it() {

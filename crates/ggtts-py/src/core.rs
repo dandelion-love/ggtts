@@ -281,6 +281,57 @@ fn load_inner(
     cache: &dyn Fn() -> Result<ggtts_models::Cache, String>,
     fetch: &dyn ggtts_models::Fetch,
 ) -> Result<(Handle, Loaded), Fail> {
+    load_merged(req, |o, engine, device| {
+        let cache_dir = o.load.cache_dir.clone();
+        let cache_in = || match &cache_dir {
+            Some(dir) => Ok(ggtts_models::Cache::new(dir.clone())),
+            None => cache(),
+        };
+        binding::open(
+            binding::Request {
+                engine,
+                model: o.load.model.clone(),
+                codec: o.load.codec.clone(),
+                voice: o.load.voice.clone(),
+                speaker: o.load.speaker.as_deref(),
+                instruction: o.render.instruction.as_deref(),
+                device,
+                threads: o.load.threads.unwrap_or(0),
+                models: Some(binding::Models {
+                    cache: &cache_in,
+                    offline: o.load.offline,
+                    fetch,
+                }),
+            },
+            &WORDING,
+            notice,
+        )
+    })
+}
+
+/// [`load`] over an engine the caller supplies instead of one opened by name: the same load path (the document and
+/// the arguments merged, the given-twice refusals, the document checked against the named engine's capabilities, the
+/// load's cache settings and render defaults kept), with `engine` held as loaded. For a Rust host's tests, such as
+/// the conformance test's probes of what Python carries to an engine; not part of the Python API.
+#[doc(hidden)]
+pub fn load_over(req: &LoadRequest, engine: Box<dyn Engine + Send>) -> Result<(Handle, Loaded), Fail> {
+    guard(|| {
+        load_merged(req, |o, _, _| {
+            let instruction = o.render.instruction.as_deref().filter(|s| !s.is_empty());
+            Ok(binding::Opened {
+                held: Held::checked(engine, instruction),
+                speaker: None,
+                files: Vec::new(),
+            })
+        })
+    })
+}
+
+/// The load path, with `open` making the engine from the merged options, the engine's name and the device.
+fn load_merged(
+    req: &LoadRequest,
+    open: impl FnOnce(&Options, &str, Device) -> Result<binding::Opened, Fail>,
+) -> Result<(Handle, Loaded), Fail> {
     let doc = match &req.options {
         None => None,
         Some(json) => {
@@ -354,30 +405,7 @@ fn load_inner(
             options::check(&o, &caps).map_err(binding::refusal_err)?;
         }
     }
-    let cache_dir = o.load.cache_dir.clone();
-    let cache_in = || match &cache_dir {
-        Some(dir) => Ok(ggtts_models::Cache::new(dir.clone())),
-        None => cache(),
-    };
-    let opened = binding::open(
-        binding::Request {
-            engine: &engine,
-            model: o.load.model.clone(),
-            codec: o.load.codec.clone(),
-            voice: o.load.voice.clone(),
-            speaker: o.load.speaker.as_deref(),
-            instruction: o.render.instruction.as_deref(),
-            device,
-            threads: o.load.threads.unwrap_or(0),
-            models: Some(binding::Models {
-                cache: &cache_in,
-                offline: o.load.offline,
-                fetch,
-            }),
-        },
-        &WORDING,
-        notice,
-    )?;
+    let opened = open(&o, &engine, device)?;
     let info = opened.held.engine().info();
     let loaded = Loaded {
         engine,

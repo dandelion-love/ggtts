@@ -589,3 +589,87 @@ fn a_document_stream_is_levelled_unless_it_asks_for_raw() {
     assert_ne!(held, default, "the hold reaches the level step");
     assert_eq!(whole.len(), old.len(), "the whole read beside a stream is the read");
 }
+
+/// FNV-1a over the samples' bits: a golden that needs no hashing crate.
+fn fnv1a(bits: &[u32]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for b in bits.iter().flat_map(|x| x.to_le_bytes()) {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+/// The stream of `TEXT` on a fresh fake engine: `ggtts_render_stream` at salt 7 with `doc` `None`, else
+/// `ggtts_render_opts` with `doc` and a callback. The samples' bits, joined.
+fn stream_bits(doc: Option<&str>) -> Vec<u32> {
+    let h = fresh();
+    let text = c(TEXT);
+    let mut out: Vec<u32> = Vec::new();
+    let user = &mut out as *mut Vec<u32> as *mut c_void;
+    let code = match doc {
+        None => unsafe { ggtts_render_stream(h, text.as_ptr(), 7, Some(collect), user) },
+        Some(d) => {
+            let d = c(d);
+            let null = ptr::null_mut();
+            unsafe {
+                ggtts_render_opts(
+                    h,
+                    text.as_ptr(),
+                    d.as_ptr(),
+                    Some(collect),
+                    user,
+                    null,
+                    null as *mut usize,
+                    null as *mut u32,
+                )
+            }
+        }
+    };
+    assert_eq!(code, GGTTS_OK, "{doc:?}: {}", last_error());
+    ggtts_free(h);
+    out
+}
+
+/// #284: golden hashes of the fake engine's streams, so a change to the raw path (which every old stream call takes)
+/// or to the levelled default turns this red, whatever the head it is compared at. Update them only with a change
+/// that means to move the samples, and say so in its CHANGELOG entry.
+#[test]
+fn the_fake_engines_streams_match_their_golden_hashes() {
+    let raw = stream_bits(None);
+    let levelled = stream_bits(Some(r#"{"render": {"seed_salt": "7"}}"#));
+    let got = (raw.len(), fnv1a(&raw), levelled.len(), fnv1a(&levelled));
+    assert_eq!(
+        got, GOLDEN,
+        "the fake engine's raw and levelled streams moved: {got:#x?}"
+    );
+    assert_eq!(
+        stream_bits(Some(r#"{"render": {"seed_salt": "7"}, "output": {"stream": "raw"}}"#)),
+        raw
+    );
+}
+
+/// (raw samples, raw hash, levelled samples, levelled hash) for `TEXT` at salt 7.
+const GOLDEN: (usize, u64, usize, u64) = (153840, 0xd99b81479d056497, 153840, 0x1724f0e9d72aa02a);
+
+/// #284: a whole read refuses the stream-level options, by key: without `output.stream` the document is refused as
+/// it is read, and with it a whole read has nowhere to stream.
+#[test]
+fn a_whole_read_refuses_the_stream_level_options() {
+    let h = fresh();
+    for (doc, key) in [
+        (r#"{"output": {"stream_raw": true}}"#, Some("output.stream_raw")),
+        (
+            r#"{"output": {"stream_level_seconds": 2}}"#,
+            Some("output.stream_level_seconds"),
+        ),
+        (r#"{"output": {"stream": "levelled", "stream_raw": true}}"#, None),
+    ] {
+        let (code, out) = render_doc(h, Some(doc));
+        assert_eq!((code, out.len()), (GGTTS_ERR_ARG, 0), "{doc}: {}", last_error());
+        let k = ggtts_last_error_key();
+        let k = (!k.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr(k) }.to_string_lossy().into_owned());
+        assert_eq!(k.as_deref(), key, "{doc}: {}", last_error());
+    }
+    ggtts_free(h);
+}

@@ -78,11 +78,11 @@ fixed means the front end hard-codes one value, and `?` is not confirmed from th
 | ASR judge (redraw a chunk that lost or repeated text, `--judge`) | Y ([#306](https://github.com/dandelion-love/ggtts/issues/306)) | refused: one draw | Y (#306) | refused: no redraws yet | refused | refused | refused |
 | redraws, chunk ceiling, sampler | N (profile only) | N | redraws: Y, `--redraw` ([#305](https://github.com/dandelion-love/ggtts/issues/305)); ceiling and sampler N | N | N | N | N |
 | edge trim | Y | N ([#180](https://github.com/dandelion-love/ggtts/issues/180)) | Y | Y | Y | Y | Y |
-| trace and level | Y | qwen3-tts only, the engine's step file; accepted and ignored on kitten-tts-2 and fake | Y (since #279) | N | N | N | N |
+| trace and level | Y | Y (since [#294](https://github.com/dandelion-love/ggtts/issues/294)) | Y (since #279) | N | N | N | N |
 | tensor hooks | N | N | N | N | N | N | N |
 | instruments, report | Y | Y | Y, per chapter written ([#295](https://github.com/dandelion-love/ggtts/issues/295)) | N | N | N | N |
 | timing and duration reports, log settings | Y | Y | N | N | N | N | ? |
-| stream | Y: levelled by default, `--stream-raw` | one unlevelled piece; `--stream-raw` and `--stream-level-seconds` accepted and ignored | N | Y: unlevelled pieces only | as C | as C | as C |
+| stream | Y: levelled by default, `--stream-raw` | Y: levelled by default, `--stream-raw` (since #294) | N | Y: unlevelled pieces only | as C | as C | as C |
 | output | FLAC, WAV or s16le stream | same | FLAC per chapter, export | PCM | PCM | PCM, FLAC | played, saved |
 | speech rate and pitch (Android `SynthesisRequest`) | n/a | n/a | n/a | n/a | n/a | n/a | ignored silently |
 
@@ -94,8 +94,8 @@ What the table shows beyond missing cells:
   binding streams the pieces before the level step. Since [#276](https://github.com/dandelion-love/ggtts/issues/276)
   the pipeline applies the levelled stream (`Output::Stream` with `StreamMode::Levelled`), so a binding can have it;
   the bindings still ask for `Raw`.
-* **Options are accepted and dropped.** `--text` takes `--trace` on engines that write nothing, and the stream
-  levelling flags, without effect.
+* **Options were accepted and dropped.** Until [#294](https://github.com/dandelion-love/ggtts/issues/294), `--text`
+  took `--trace` on engines that wrote nothing, and the stream levelling flags, without effect. It now carries them.
 
 **The render entry points.** Since [#276](https://github.com/dandelion-love/ggtts/issues/276), `ggtts-core` has one:
 `render_plan(engine, chunks, seeds, judge, opts, observers, output)` (`crates/ggtts-core/src/pipeline.rs`), with any

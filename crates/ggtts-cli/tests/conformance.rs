@@ -104,6 +104,8 @@ const ANDROID_TRACE: &str = "the trace is a desktop observer: refused on Android
 const CPU_ONLY: &str = "the Android build is CPU only";
 const NEVER_DOWNLOADS: &str = "the app never downloads: its models are installed with it";
 const PARITY_TOOL: &str = "an engine parity tool; render with ggtts-render --engine kitten-tts-2";
+const TEXT_HOLD: &str =
+    "--text renders one chunk, and the stream levels it by its own gain whatever the hold; give it with --story";
 const TEXT_JUDGE: &str = "--text renders one draw and keeps it; the judge redraws a story's chunks (--story)";
 const NO_JUDGE: &str =
     "the ASR judge starts a Python process beside the render: judge with ggtts-render --story or ggtts-book";
@@ -162,6 +164,8 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.story"], Refused(ONE_OF)),
             (&["render.seed_salt"], Refused(TEXT_SALT)),
             (&["render.judge"], Refused(TEXT_JUDGE)),
+            // Owned by #336 (PR 384 refuses --redraw on --text and removes this line). The number stays 294 because
+            // the baseline only shrinks: scripts/check_conformance_base.py refuses an edited line as an added one.
             (&["render.redraw"], Gap(294)),
             (&["render.edge_s"], Gap(180)),
             (TRACE, Carried),
@@ -169,7 +173,8 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (LOG, Carried),
             (INSTRUMENTS, Carried),
             (&["output.out", "output.stream", "output.stream_format"], Carried),
-            (STREAM_LEVEL, Carried),
+            (&["output.stream_raw"], Carried),
+            (&["output.stream_level_seconds"], Refused(TEXT_HOLD)),
             (BOOK, Refused(NOT_A_BOOK)),
         ],
     },
@@ -601,6 +606,13 @@ fn render_probes() -> Vec<Probe> {
                 Seen::Dropped
             },
         );
+        if mode == "text" {
+            let r = render(&p("hold"), mode, &["--stream", "st.wav", "--stream-level-seconds", "0"]);
+            push(
+                "output.stream_level_seconds",
+                by_front_end_refusal(&r, "--stream-level-seconds"),
+            );
+        }
 
         // The judge, through the stand-in ASR worker: carried when the trace records what it read back.
         let model = scratch(&p("judge-model"));

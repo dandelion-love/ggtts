@@ -32,7 +32,7 @@
 //! the file's sha256, the layers and the scale.
 //! `--engine auto` (the default) picks the engine from the model's `general.architecture`. `--text` renders one
 //! request at one seed (default 20260905). `--story` reads a story file (title line, then one paragraph per line)
-//! and renders it on the core's story path. For stories `--trace` writes a complete ggtts-trace/2 event stream;
+//! and renders it on the core's story path. On both, `--trace` writes a complete ggtts-trace/2 event stream;
 //! tracing is read-only, so the FLAC is the same with or without it. Engines need the `ggml` feature (and
 //! `--device cuda` the `cuda` feature); without it only `--version` and the fake engine work.
 //!
@@ -314,6 +314,10 @@ fn refusal_settings(args: &[String], env: &dyn Fn(&str) -> Option<String>) -> Lo
     }
 }
 
+/// Why `--text` refuses `--stream-level-seconds`.
+const TEXT_HOLD: &str = "--stream-level-seconds (output.stream_level_seconds): --text renders one chunk, and the \
+stream levels it by its own gain whatever the hold; give it with --story";
+
 /// The model engines this binary can carry, by architecture name: `load_engine` has an arm for each, and
 /// `engine_lines` lists them when the build has them. `every_engine_has_a_load_arm` holds the two together.
 const ENGINES: &[&str] = &["qwen3-tts", "kitten-tts-2"];
@@ -574,6 +578,10 @@ fn render_with_models(
     if a.observe.trace_level.is_some() && a.observe.trace.is_none() {
         return Err("--trace-level requires --trace".into());
     }
+    // One chunk is levelled by its own gain whatever the hold, so a hold length would change nothing on --text.
+    if a.output.stream_level_seconds.is_some() && a.render.text.is_some() {
+        return Err(TEXT_HOLD.into());
+    }
     if a.observe.timing_report.as_ref().is_some_and(|p| p.exists()) {
         return Err("--timing-report must be a new file".into());
     }
@@ -739,8 +747,8 @@ fn render_with_models(
     // under the same levelling options. `--text` keeps its one draw, untrimmed and unlevelled, so its FLAC is the
     // decoded draw as it always was (#180's question, not this one's).
     let text_mode = a.render.text.is_some();
-    let (title, chunks) = match (&a.render.text, preplanned) {
-        (Some(text), None) => (
+    let (title, chunks) = match &a.render.text {
+        Some(text) => (
             String::new(),
             vec![PlannedChunk {
                 para: 0,
@@ -749,8 +757,7 @@ fn render_with_models(
                 last_in_para: true,
             }],
         ),
-        (None, Some(planned)) => planned,
-        _ => return Err("give exactly one of --text and --story".into()),
+        None => preplanned.expect("a story was planned before loading"),
     };
     let (samples, rate) = {
         let profile = *engine.profile();
@@ -2793,6 +2800,17 @@ mod text_path {
                 ],
             );
             assert_eq!(code, 0, "{engine}");
+            // Traced, the chunk is generated through `generate_traced`; the FLAC is the untraced render's.
+            let plain = dir.join(format!("{engine}-untraced.flac"));
+            assert_eq!(
+                text_render(engine, &["--out".into(), plain.to_string_lossy().into_owned()]),
+                0
+            );
+            assert_eq!(
+                std::fs::read(&out).unwrap(),
+                std::fs::read(&plain).unwrap(),
+                "{engine}: the FLAC is the same with or without --trace"
+            );
             let lines: Vec<serde_json::Value> = std::fs::read_to_string(&trace)
                 .unwrap()
                 .lines()
@@ -2825,7 +2843,7 @@ mod text_path {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let text = "今日天氣好好，我哋去公園行下。";
-        for (tag, extra) in [("levelled", None), ("raw", Some("--stream-raw")), ("zero", Some("0"))] {
+        for (tag, extra) in [("levelled", None), ("raw", Some("--stream-raw"))] {
             let requests = Rc::new(RefCell::new(Vec::new()));
             let decoded = Rc::new(RefCell::new(Vec::new()));
             let stream = dir.join(format!("{tag}.s16"));
@@ -2842,11 +2860,7 @@ mod text_path {
                 "--stream-format".into(),
                 "s16le".into(),
             ];
-            match extra {
-                Some("--stream-raw") => line.push("--stream-raw".into()),
-                Some(s) => line.extend(["--stream-level-seconds".into(), s.into()]),
-                None => {}
-            }
+            line.extend(extra.map(String::from));
             let args = options_from(&line, &|_| None).unwrap();
             let (r, d) = (requests.clone(), decoded.clone());
             let code = render_with_loader(args, quiet(), move |_, _, _| {
@@ -2880,5 +2894,26 @@ mod text_path {
             );
         }
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `--text --stream-level-seconds` is refused by name: one chunk is levelled by its own gain whatever the hold.
+    #[test]
+    fn text_refuses_a_stream_hold() {
+        let line = [
+            "--engine",
+            "fake",
+            "--text",
+            "你好。",
+            "--stream",
+            "-",
+            "--stream-level-seconds",
+            "0",
+        ];
+        let args = options_from(&line.map(String::from), &|_| None).unwrap();
+        let e = render_with_loader(args, quiet(), |_, _, _| {
+            Ok(Box::new(ggtts_fake::FakeEngine::default()) as Box<dyn Engine>)
+        })
+        .unwrap_err();
+        assert_eq!(e, TEXT_HOLD);
     }
 }

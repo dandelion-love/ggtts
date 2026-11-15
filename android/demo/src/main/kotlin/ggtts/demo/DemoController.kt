@@ -50,6 +50,8 @@ class DemoController(
     private val onSpoke: (LoadRequest) -> Unit = {},
     /** Where engines are loaded and held; the app passes the one it shares with the system engine. */
     private val cache: EngineCache = EngineCache(binding, log),
+    /** What it reports, in the phone's language on a phone ([ResourceWords]); English by default. */
+    private val words: Words = EnglishWords,
 ) {
     /** A load the user was warned about; the same request again goes ahead. Main thread only. */
     private var warnedFor: LoadRequest? = null
@@ -63,14 +65,14 @@ class DemoController(
 
     fun speak(request: LoadRequest, text: String, seed: Long) {
         if (busy) {
-            view.showStatus("Still speaking; press Stop first.")
+            view.showStatus(words.get("still_speaking"))
             return
         }
         // Before a load (not when this engine is already loaded), warn once if memory is short; the same request
         // again goes ahead.
         if (!cache.holds(request) && warnedFor != request) {
             val (available, low) = memory()
-            EngineCosts.memoryWarning(request.engine, available, low)?.let {
+            EngineCosts.memoryWarning(request.engine, available, low, words)?.let {
                 warnedFor = request
                 log("memory warning: $it")
                 view.showError(it)
@@ -81,7 +83,7 @@ class DemoController(
         busy = true
         stopRequested = false
         view.setBusy(true)
-        view.showStatus("Preparing the voice...")
+        view.showStatus(words.get("preparing_voice"))
         background(Runnable {
             val outcome: Result<String> = try {
                 Result.success(run(request, text, seed))
@@ -91,7 +93,7 @@ class DemoController(
                 Result.failure(IllegalStateException("ggtts error ${e.code}: ${e.message}"))
             } catch (e: EngineInUse) {
                 log("refused: ${e.message}")
-                Result.failure(IllegalStateException("Not started: ${e.message}."))
+                Result.failure(IllegalStateException(words.get("not_started", e.message ?: "")))
             } catch (e: RuntimeException) {
                 audio.stop()
                 log("error: $e")
@@ -115,7 +117,7 @@ class DemoController(
         if (!busy) return
         stopRequested = true
         audio.stop()
-        view.showStatus("Stopping after the chunk in progress...")
+        view.showStatus(words.get("stopping"))
     }
 
     /** Release the loaded engine, if any, unless a read (this screen's or the system engine's) is using it. */
@@ -135,7 +137,7 @@ class DemoController(
     }
 
     private fun read(tts: TtsEngine, request: LoadRequest, text: String, seed: Long): String {
-        main(Runnable { view.showStatus("Writing the first sentence (this takes 20 to 60 s)...") })
+        main(Runnable { view.showStatus(words.get("writing_first")) })
         val t0 = clock()
         var firstMs = -1L
         var rate = 0
@@ -152,7 +154,7 @@ class DemoController(
             audio.play(samples)
             val n = pieces.size
             main(Runnable {
-                view.showStatus("Speaking: chunk $n ready (first audio after %.1f s); preparing the rest...".format(firstMs / 1000.0))
+                view.showStatus(words.get("speaking_chunk", n, firstMs / 1000.0))
             })
             true
         }
@@ -162,7 +164,7 @@ class DemoController(
             // stream plays on unless it is stopped here (stop is idempotent).
             audio.stop()
             log("stopped after ${pieces.size} chunks, $renderMs ms")
-            return "Stopped after ${pieces.size} chunk(s)."
+            return words.get("stopped_after", pieces.size)
         }
         val all = FloatArray(pieces.sumOf { it.size })
         var at = 0
@@ -183,10 +185,8 @@ class DemoController(
         // A Stop while the last chunks play out cuts the playback short: say so, not that the read finished.
         if (stopRequested) {
             log("stopped during playback, after rendering ${pieces.size} chunks")
-            return "Stopped during playback. The whole read was rendered and saved to $path."
+            return words.get("stopped_during_playback", path)
         }
-        return "${request.engine}: %.2f s of audio in %.1f s (RTF %.2f); first audio after %.1f s. Saved to $path".format(
-            seconds, renderMs / 1000.0, rtf, firstMs / 1000.0,
-        )
+        return words.get("read_done", request.engine, seconds, renderMs / 1000.0, rtf, firstMs / 1000.0, path)
     }
 }

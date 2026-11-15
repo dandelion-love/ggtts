@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The demo's words in Traditional Chinese, as Hong Kong readers write them. Every key in values/strings.xml has an
+     entry here (WordsTest checks); format arguments keep their numbers and types. File, model and engine names
+     (Qwen3-TTS, Kitten-TTS 2, GGUF, JSON) stay as they are. -->
+<resources>
+    <!-- The reading screen -->
+    <string name="app_title">朗讀</string>
+    <string name="tagline">用廣東話或英文朗讀文字，全部喺呢部手機上完成。</string>
+    <string name="change_voice_description">更改聲音</string>
+    <string name="change">更改</string>
+    <string name="text_hint">要讀嘅內容</string>
+    <string name="text_placeholder">輸入或貼上要朗讀嘅文字</string>
+    <string name="empty_text_hint">其他應用程式都可以用佢朗讀：喺 Android 設定入面揀 ggtts 做文字轉語音引擎就得。</string>
+    <string name="paste">貼上</string>
+    <string name="clear">清除</string>
+    <string name="characters">%1$d 個字</string>
+    <string name="read_aloud_button">▶  朗讀</string>
+    <string name="stop_button">■  停止</string>
+    <string name="status_elapsed">%1$s  ·  %2$d 秒</string>
+    <string name="to_start">開始之前：\n%1$s</string>
+    <string name="start_1">1. 將一個聲音嘅模型檔案放入呢部手機（大約 2.5 GB；ggtts 程式庫入面嘅 android/README.md 有講去邊度攞）。</string>
+    <string name="start_2">2. 撳「匯入模型檔案」，逐個揀。</string>
+    <string name="start_3">3. 喺下面揀好檔案，再撳朗讀。</string>
+    <string name="save_to_music">儲存到音樂</string>
+    <string name="share">分享</string>
+    <string name="share_title">分享呢段朗讀</string>
+
+    <!-- The voice card and the voice sheet -->
+    <string name="no_voice">未有聲音</string>
+    <string name="no_voice_detail">喺 ⋮ 選單匯入一個聲音嘅模型檔案</string>
+    <string name="voice_detail">%1$s · %2$s</string>
+    <string name="first_sound_estimate">喺 Galaxy Z Fold5 上大約 %1$s 秒後開始出聲</string>
+    <string name="choose_voice">揀聲音</string>
+    <string name="all_offline">全部離線運行</string>
+    <string name="voice_size">%1$.1f GB · %2$s 秒後出聲</string>
+    <string name="sample">▶ 試聽</string>
+    <string name="no_sample">冇試聽</string>
+    <string name="add_voice">+  從檔案加入聲音</string>
+    <string name="language_cantonese">廣東話</string>
+    <string name="language_english">英文</string>
+    <string name="not_complete">未齊：%1$s 仲欠%2$s。</string>
+    <string name="need_codec">一個 Qwen3-TTS 12 Hz codec</string>
+    <string name="need_speaker">一個有名嘅講者（佢一個都冇）</string>
+    <string name="need_decoder">一個 Kitten-TTS 2 S3Gen 解碼器</string>
+    <string name="need_voice_json">一個準備好嘅聲音 JSON</string>
+    <string name="need_language_model">一個 Kitten-TTS 2 語言模型</string>
+
+    <!-- The ⋮ menu, About and Advanced -->
+    <string name="menu_import_voice">匯入聲音檔案…</string>
+    <string name="menu_models_folder">揀模型資料夾…</string>
+    <string name="about_heading">關於呢個應用程式</string>
+    <string name="hide_about">收埋「關於」</string>
+    <string name="advanced">進階</string>
+    <string name="hide_advanced">收埋「進階」</string>
+    <string name="purpose_1">輸入或貼上一段文字，聽佢用自然嘅聲音讀出嚟。你輸入嘅嘢唔會離開呢部手機：呢個應用程式冇使用互聯網嘅權限。</string>
+    <string name="purpose_2">佢比較慢。用廣東話聲音，第一下出聲要 %1$s 秒；用英文聲音要 %2$s 秒。所以適合聽一段你揀好嘅文字，唔適合一路睇一路讀出畫面。</string>
+    <string name="purpose_3">其他應用程式都用得：佢係 Android 設定入面嘅一個文字轉語音引擎。</string>
+    <string name="models_read_from">呢個應用程式冇附帶模型。模型檔案從呢度讀取：\n%1$s</string>
+    <string name="engine_label">引擎</string>
+    <string name="model_label">模型（Qwen3-TTS talker，或者 Kitten-TTS 2 LM）</string>
+    <string name="codec_label">Codec（Qwen3-TTS 12 Hz codec，或者 Kitten-TTS 2 S3Gen）</string>
+    <string name="voice_file_label">聲音檔案（只限 Kitten-TTS 2：準備好嘅聲音 JSON）</string>
+    <string name="speaker_hint">講者（只限 Qwen3-TTS，例如 hk_voice_343）</string>
+    <string name="speaker_placeholder">模型預設</string>
+    <string name="cpu_threads">CPU 線程</string>
+    <string name="threads_choice">%1$d 條線程</string>
+    <string name="none_choice">（無）</string>
+    <string name="import_model_file">匯入模型檔案…</string>
+    <string name="speak_through_android">經 Android 文字轉語音朗讀（用 ggtts 做引擎）</string>
+    <string name="engine_costs">需要 %1$.1f GB 模型檔案，同大約 %2$.1f GB 記憶體。喺%3$s上，第一下出聲要 %4$s 秒，之後每秒語音要 %5$s 秒去生成。唔適合讀屏軟件或者任何即時互動嘅用途。</string>
+    <string name="measured_on">Galaxy Z Fold5（Snapdragon 8 Gen 2，4 條線程）</string>
+    <string name="seconds_range">%1$d 至 %2$d</string>
+    <string name="about_n">大約 %1$d</string>
+
+    <!-- What the screen reports -->
+    <string name="still_speaking">仲讀緊；請先撳停止。</string>
+    <string name="preparing_voice">準備緊聲音…</string>
+    <string name="not_started">未開始：%1$s。</string>
+    <string name="stopping">讀完而家呢段就停…</string>
+    <string name="writing_first">生成緊第一句（要 20 至 60 秒）…</string>
+    <string name="speaking_chunk">朗讀緊：第 %1$d 段準備好（%2$.1f 秒後出聲）；繼續準備其餘部分…</string>
+    <string name="stopped_after">讀咗 %1$d 段之後停咗。</string>
+    <string name="stopped_during_playback">播放途中停咗。成段朗讀已經生成好，儲存咗喺 %1$s。</string>
+    <string name="read_done">%1$s：%2$.2f 秒語音，用咗 %3$.1f 秒（RTF %4$.2f）；%5$.1f 秒後出聲。儲存咗喺 %6$s</string>
+    <string name="low_memory">記憶體不足：%1$s 喺測試手機上最多用咗 %2$.1f GB，而家得返 %3$.1f GB%4$s。請關閉其他應用程式，或者再撳一次朗讀照樣載入（系統可能會停止呢個應用程式）。</string>
+    <string name="low_memory_system">，而且系統報告記憶體不足</string>
+    <string name="copying">複製緊…</string>
+    <string name="imported">已匯入 %1$s（%2$d MB）</string>
+    <string name="import_failed">匯入失敗：%1$s</string>
+    <string name="folder_access_failed">保留唔到嗰個資料夾嘅存取權：%1$s</string>
+    <string name="folder_status">模型資料夾：%1$s。入面有 %2$d 個檔案，直接讀取；入面嘅聲音已經列出。</string>
+    <string name="saved_to">已儲存到 %1$s（喺「檔案」應用程式，或者經 USB 都睇到）。</string>
+    <string name="save_failed">儲存唔到呢段朗讀：%1$s</string>
+    <string name="refused_extras">拒絕咗 %1$s：指令提供嘅模型檔案一定要係模型資料夾入面嘅檔案名，唔可以係路徑。乜都冇套用。</string>
+
+    <!-- Speaking through Android's TextToSpeech -->
+    <string name="tts_asking">向 Android 文字轉語音要求引擎 %1$s…</string>
+    <string name="tts_could_not_start">Android 文字轉語音啟動唔到 ggtts 引擎（狀態 %1$d）</string>
+    <string name="tts_speaking">Android 文字轉語音經 ggtts 朗讀緊（%1$d 秒後開始）…</string>
+    <string name="tts_spoke">Android 文字轉語音經 ggtts 讀完，用咗 %1$d 秒。</string>
+    <string name="tts_no_model">ggtts 仲未有 %1$s 嘅模型檔案（代碼 %2$d）：請先用 %3$s 撳一次朗讀。</string>
+    <string name="tts_error">Android 文字轉語音報告 ggtts 出錯（%1$d）。</string>
+
+    <!-- The reading notification -->
+    <string name="notification_channel">朗讀</string>
+    <string name="notification_starting">開始緊…</string>
+    <string name="notification_stop">停止</string>
+    <string name="notification_title">ggtts 朗讀緊</string>
+    <string name="notification_off_screen">%1$s\n離開畫面之後，Android 會用手機較慢嘅核心繼續朗讀，會慢幾倍。打開應用程式就會快返。</string>
+</resources>

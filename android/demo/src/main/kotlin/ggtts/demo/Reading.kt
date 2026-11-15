@@ -153,6 +153,7 @@ object Reader {
             background = { worker.execute(it) },
             main = { handler.post(it) },
             log = log,
+            words = ResourceWords(app),
             memory = {
                 val info = ActivityManager.MemoryInfo()
                 (app.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(info)
@@ -198,7 +199,7 @@ class ReadingService : Service() {
                 Reader.controller(this).stop()
             },
             goForeground = {
-                val n = notification(this, Reader.lastStatus.ifEmpty { "Starting..." })
+                val n = notification(this, Reader.lastStatus.ifEmpty { getString(R.string.notification_starting) })
                 if (Build.VERSION.SDK_INT >= 29) {
                     startForeground(ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
                 } else {
@@ -253,7 +254,7 @@ class ReadingService : Service() {
         private fun notification(context: Context, text: String): Notification {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CHANNEL) == null) {
-                nm.createNotificationChannel(NotificationChannel(CHANNEL, "Reading", NotificationManager.IMPORTANCE_LOW))
+                nm.createNotificationChannel(NotificationChannel(CHANNEL, context.getString(R.string.notification_channel), NotificationManager.IMPORTANCE_LOW))
             }
             val stop = PendingIntent.getService(
                 context, 0, Intent(context, ReadingService::class.java).setAction(ForegroundGate.ACTION_STOP),
@@ -265,14 +266,14 @@ class ReadingService : Service() {
             )
             val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(context, CHANNEL) else
                 @Suppress("DEPRECATION") Notification.Builder(context)
-            val full = "$text\nOff screen, Android runs the read on the phone's slow cores: it continues, several times slower. Open the app to speed it up."
+            val full = context.getString(R.string.notification_off_screen, text)
             return b.setSmallIcon(android.R.drawable.ic_media_play)
-                .setContentTitle("ggtts is reading")
+                .setContentTitle(context.getString(R.string.notification_title))
                 .setContentText(text)
                 .setStyle(Notification.BigTextStyle().bigText(full))
                 .setOngoing(true)
                 .setContentIntent(open)
-                .addAction(Notification.Action.Builder(null, "Stop", stop).build())
+                .addAction(Notification.Action.Builder(null, context.getString(R.string.notification_stop), stop).build())
                 .build()
         }
     }

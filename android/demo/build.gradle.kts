@@ -34,6 +34,10 @@ android {
 // a manifest change re-runs the tests instead of reusing an up-to-date result.
 tasks.withType<Test>().configureEach {
     inputs.file("src/main/AndroidManifest.xml").withPathSensitivity(PathSensitivity.RELATIVE)
+    // WordsTest and AboutTest read the string resources and the screen's source, which a code change alone would miss.
+    inputs.dir("src/main/res/values").withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.dir("src/main/res/values-zh-rHK").withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.file("src/main/kotlin/ggtts/demo/MainActivity.kt").withPathSensitivity(PathSensitivity.RELATIVE)
 }
 
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }

@@ -208,10 +208,12 @@ Text can reach the app three ways, and none of them needs a permission:
 - **Selection menu:** select text in another app and pick **Read aloud** from the menu (`ACTION_PROCESS_TEXT`).
 - **Open a file:** open a `.txt` file with the app, or share one to it. It must be UTF-8 and at most 256 KB.
 
-Each fills the text card, keeps the voice as it is, and says where the text came from. **Nothing starts a read by
-itself**: you press Read aloud. Another app chooses what it sends, so a read it could start would be that app speaking
-through this one. Text over 20,000 characters is refused with that limit named, not cut short. A file that is not
-UTF-8 is refused too, and so is anything that is not plain text.
+Each fills the text card, keeps the voice as it is, and says where the text came from and whether it replaced what
+the card held. **Nothing starts a read by itself**: you press Read aloud. Another app chooses what it sends, so a read
+it could start would be that app speaking through this one. Text over 20,000 characters (counted as a reader counts
+them: an emoji is one) is refused with that limit named, not cut short. A file that is not UTF-8 is refused too, and so
+is anything that is not plain text. The text is taken once: if the screen is re-created later (dark mode or the
+language changed), it keeps what you have in the card rather than taking the shared text again.
 
 ## ggtts as Android's text-to-speech engine
 

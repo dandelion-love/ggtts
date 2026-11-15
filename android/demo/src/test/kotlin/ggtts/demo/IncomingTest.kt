@@ -3,12 +3,66 @@
 package ggtts.demo
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
+import java.io.File
 
 class IncomingTest {
     private fun refusedWhy(i: Incoming): String = (i as? Incoming.Refused)?.why ?: error("not refused: $i")
+
+    /** MainActivity's onCreate, from its signature to its closing brace. */
+    private fun onCreate(): String {
+        val f = File("src/main/kotlin/ggtts/demo/MainActivity.kt")
+        assertTrue("MainActivity.kt not found from ${File(".").absolutePath}", f.isFile)
+        val src = f.readText()
+        val start = src.indexOf("override fun onCreate(savedInstanceState: Bundle?)")
+        assertTrue("no onCreate in MainActivity.kt", start >= 0)
+        return src.substring(start, src.indexOf("\n    }\n", start))
+    }
+
+    /** A screen takes its intent on a fresh start only, never when it is re-created from saved state. */
+    @Test
+    fun onlyAFreshStartTakesItsIntent() {
+        assertTrue(Launch.takesIntent(null))
+        assertFalse("a re-created screen would put the old share back over the user's edits", Launch.takesIntent(Any()))
+    }
+
+    /**
+     * The review finding on PR 404: onCreate took its intent on every creation, so a re-created screen put the original
+     * share back over the user's edits. It now takes it only under [Launch.takesIntent], and restores the card's text
+     * from the saved state. Deleting the guard (a bare `applyIntent(intent)`) fails this test.
+     */
+    @Test
+    fun aRecreatedScreenKeepsTheUsersTextAndDoesNotRetakeTheShare() {
+        val body = onCreate()
+        val calls = Regex("""applyIntent\(""").findAll(body).count()
+        assertEquals("onCreate calls applyIntent once, under the guard:\n$body", 1, calls)
+        assertTrue(
+            "onCreate takes its intent only on a fresh start:\n$body",
+            "if (Launch.takesIntent(savedInstanceState)) applyIntent(intent)" in body,
+        )
+        assertTrue("onCreate restores the card's text:\n$body", "savedInstanceState?.getString(STATE_TEXT)" in body)
+        val src = File("src/main/kotlin/ggtts/demo/MainActivity.kt").readText()
+        assertTrue("onSaveInstanceState saves the card's text", "outState.putString(STATE_TEXT, text.text.toString())" in src)
+    }
+
+    @Test
+    fun charactersAreCountedAsAReaderCountsThem() {
+        assertEquals("an emoji is one character, not two UTF-16 units", 3, IncomingText.characters("a😀字"))
+        val atLimit = "😀".repeat(IncomingText.MAX_CHARS)
+        assertEquals(Incoming.Text(atLimit, "shared"), IncomingText.parse(IncomingText.SEND, "text/plain", sendText = atLimit))
+    }
+
+    @Test
+    fun theStatusSaysWhenSharedTextReplacedTheCard() {
+        assertEquals(
+            "Text shared from another app: 15 characters. Press Read aloud to hear it.",
+            IncomingText.status("shared", 15, replaced = false),
+        )
+        assertTrue(IncomingText.status("selected", 9, replaced = true).contains("in place of what the card held"))
+    }
 
     @Test
     fun sharedPlainTextFillsTheCard() {

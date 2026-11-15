@@ -32,7 +32,10 @@ object IncomingText {
     const val PROCESS_TEXT = "android.intent.action.PROCESS_TEXT"
     const val TEXT_PLAIN = "text/plain"
 
-    /** The most characters the card takes from another app: about an hour and a half of speech, many hours to render. */
+    /**
+     * The most characters the card takes from another app: about an hour and a half of speech, many hours to render.
+     * Counted as a reader counts them ([characters]): an emoji or a rare CJK character is one, not two.
+     */
     const val MAX_CHARS = 20_000
 
     /** The largest .txt file read: enough for [MAX_CHARS] characters of CJK text (3 bytes each in UTF-8) and more. */
@@ -100,10 +103,11 @@ object IncomingText {
 
     private fun text(raw: CharSequence?, source: String): Incoming {
         val s = clean(raw?.toString() ?: "")
+        val n = characters(s)
         return when {
             s.isEmpty() -> Incoming.Refused("There was no text to read in what was ${source}.")
-            s.length > MAX_CHARS -> Incoming.Refused(
-                "That text is ${s.length} characters. This app takes up to $MAX_CHARS at a time; " +
+            n > MAX_CHARS -> Incoming.Refused(
+                "That text is $n characters. This app takes up to $MAX_CHARS at a time; " +
                     "share a shorter part.",
             )
             else -> Incoming.Text(s, source)
@@ -117,9 +121,30 @@ object IncomingText {
 
     private fun isPlainText(type: String?): Boolean = type?.substringBefore(';')?.trim()?.lowercase() == TEXT_PLAIN
 
+    /** Characters as a reader counts them: Unicode code points, so a character outside the BMP is one, not two. */
+    fun characters(s: String): Int = s.codePointCount(0, s.length)
+
+    /**
+     * What the screen says when text arrives: where it came from, how long it is, whether it replaced what the card
+     * held (never silently), and that Read aloud starts it.
+     */
+    fun status(source: String, characters: Int, replaced: Boolean): String =
+        "Text $source from another app: $characters characters" +
+            (if (replaced) ", in place of what the card held" else "") + ". Press Read aloud to hear it."
+
     /** Line ends as \n, no NUL or other control characters but tab and newline, no edge whitespace. */
     fun clean(s: String): String =
         s.replace("\r\n", "\n").replace('\r', '\n')
             .filter { it == '\n' || it == '\t' || !it.isISOControl() }
             .trim()
+}
+
+/**
+ * Whether a screen being created takes its intent. Only a fresh start does: a re-created screen (dark mode or the
+ * language changed, or the process restored from Recents) still holds the original intent, and taking it again would
+ * put an old share back over the user's edits, or press Speak again for the debug build's adb extras. [savedState] is
+ * onCreate's savedInstanceState, null on a fresh start.
+ */
+object Launch {
+    fun takesIntent(savedState: Any?): Boolean = savedState == null
 }

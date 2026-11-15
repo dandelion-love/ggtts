@@ -77,6 +77,8 @@ import java.util.concurrent.Executors
 class MainActivity : AppCompatActivity(), DemoView {
     companion object {
         const val TAG = "ggtts-demo"
+        /** The card's text across a re-creation (onSaveInstanceState). */
+        private const val STATE_TEXT = "ggtts.demo.text"
         private const val PICK = 1
         private const val NONE = "(none)"
         val ENGINES = listOf("qwen3-tts", "kitten-tts-2")
@@ -156,8 +158,18 @@ class MainActivity : AppCompatActivity(), DemoView {
         setContentView(layout())
         refreshFiles()
         Reader.screen = this
-        applyIntent(intent)
+        // A re-created screen (dark mode or the language changed, or the process restored from Recents) keeps what the
+        // user had in the card and does not take its intent again: that intent is still the original share or adb
+        // extras, and applying it again would put the shared text back over the user's edits, or press Speak again.
+        savedInstanceState?.getString(STATE_TEXT)?.let { text.setText(it) }
+        if (Launch.takesIntent(savedInstanceState)) applyIntent(intent)
         syncFolder()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        // The text field is built in code with no id, so the platform does not save it: the screen does.
+        outState.putString(STATE_TEXT, text.text.toString())
     }
 
     override fun onTrimMemory(level: Int) {
@@ -709,6 +721,8 @@ class MainActivity : AppCompatActivity(), DemoView {
                         Incoming.Refused("That file could not be opened: ${e.message}")
                     }
                     runOnUiThread {
+                        // The screen may have been closed while the file was read: then there is nothing to fill.
+                        if (isDestroyed) return@runOnUiThread
                         when (read) {
                             is Incoming.Text -> showIncoming(read)
                             is Incoming.Refused -> {
@@ -724,12 +738,17 @@ class MainActivity : AppCompatActivity(), DemoView {
         return true
     }
 
-    /** Put [incoming]'s text in the card, and say where it came from and that Read aloud starts it. */
+    /**
+     * Put [incoming]'s text in the card, and say where it came from, how long it is, whether it replaced what the card
+     * held, and that Read aloud starts it.
+     */
     private fun showIncoming(incoming: Incoming.Text) {
+        val replaced = text.text.toString().let { it.isNotBlank() && it != incoming.text && it !in EXAMPLES.values }
         text.setText(incoming.text)
         text.setSelection(0)
-        Log.i(TAG, "incoming ${incoming.source}: ${incoming.text.length} characters")
-        showStatus("Text ${incoming.source} from another app: ${incoming.text.length} characters. Press Read aloud to hear it.")
+        val n = IncomingText.characters(incoming.text)
+        Log.i(TAG, "incoming ${incoming.source}: $n characters${if (replaced) ", replacing the card's text" else ""}")
+        showStatus(IncomingText.status(incoming.source, n, replaced))
     }
 
     private fun applyIntent(intent: Intent?) {

@@ -11,8 +11,26 @@ that a merge places under a released heading is caught.
 
 ## Unreleased
 
+## v0.1.0-rc.13 (2026-11-15)
+
+This pre-release is cut from `rc`. Its CUDA promotion gate (`scripts/rc_gate.sh`) has not run yet; the CPU checks in CI passed.
+
 ### Added
 
+- **Qwen3-TTS's sampler settings, frame cap and language are options**: `--temperature`, `--top-k`, `--top-p`,
+  `--repetition-penalty`, `--max-frames` and `--language` (`load.temperature` and the rest), with the reference CLI's
+  meanings, and `--subtalker-temperature`, `--subtalker-top-k` and `--subtalker-top-p` for the code predictor, which
+  otherwise samples with the talker's settings. Unset, each is the value every render had before (0.9, 50, 1.0, 1.05,
+  1200 frames, `zh`), so a render without them is unchanged. A temperature at or below 0, or a top-k of 1 (talker or
+  sub-talker), is greedy decoding and is refused, since greedy decoding does not terminate on this model. `ggtts-render`, `ggtts-book` and the load documents
+  of the C ABI, Python (`options=`) and Kotlin (`options`) take them; Kitten-TTS 2 refuses each by its key. A render given any records them as `sampling` in its
+  record, trace header, timing and duration reports, and a book's manifests, so a resume under other settings
+  renders the chapter again. The capability statement (`ggtts_capabilities`) gains `sampler`.
+- **A model file can be given as an open descriptor, `/proc/self/fd/<n>`.** Every front end's model, codec and
+  voice paths take that form, and the engine reads through descriptor `n` without reopening the path. This is how an
+  Android app hands over a file the user picked with the system picker: reopening the path fails with "Permission
+  denied" for an app without a storage permission. Any other path opens as before. The Android demo uses it to load
+  voices from a folder chosen once (⋮ "Choose a models folder…") in place, with no copy.
 - **`--steer` takes an `https://` URL or `hf://<owner>/<repo>[@<revision>]/<path>`, downloaded once into the
   cache.** A published steering preset renders in one command, with no separate download. The file goes into the same per-user cache as the model files
   (`GGTTS_CACHE_DIR`, or `load.cache_dir`), at `urls/<sha256 of the URL>/<file name>`, and later runs reuse it.

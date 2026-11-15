@@ -35,6 +35,8 @@ android {
 // up-to-date result.
 tasks.withType<Test>().configureEach {
     inputs.file("src/main/AndroidManifest.xml").withPathSensitivity(PathSensitivity.RELATIVE)
+    // IncomingTest reads MainActivity's onCreate to hold its re-creation guard to it (Launch.takesIntent), and
+    // MediaControlsTest reads its showStatus and setBusy to hold the Pause button's refresh to them.
     inputs.file("src/main/kotlin/ggtts/demo/MainActivity.kt").withPathSensitivity(PathSensitivity.RELATIVE)
 }
 

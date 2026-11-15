@@ -77,6 +77,11 @@ import java.util.concurrent.Executors
 class MainActivity : AppCompatActivity(), DemoView {
     companion object {
         const val TAG = "ggtts-demo"
+        /** The card's text across a re-creation (onSaveInstanceState), when it fits the saved state. */
+        private const val STATE_TEXT = "ggtts.demo.text"
+        /** The cache file holding the card's text when it is too long for the saved state ([Launch.MAX_SAVED_CHARS]). */
+        private const val STATE_TEXT_FILE = "ggtts.demo.text-file"
+        private const val CARD_FILE = "card-text.txt"
         private const val PICK = 1
         private const val NONE = "(none)"
         val ENGINES = listOf("qwen3-tts", "kitten-tts-2")
@@ -157,8 +162,31 @@ class MainActivity : AppCompatActivity(), DemoView {
         setContentView(layout())
         refreshFiles()
         Reader.screen = this
-        applyIntent(intent)
-        syncFolder()
+        // A re-created screen (dark mode or the language changed, or the process restored from Recents) keeps what the
+        // user had in the card and does not take its intent again: that intent is still the original share or adb
+        // extras, and applying it again would put the shared text back over the user's edits, or press Speak again.
+        savedInstanceState?.let { saved ->
+            saved.getString(STATE_TEXT)
+                ?: saved.getString(STATE_TEXT_FILE)?.let { runCatching { File(cacheDir, it).readText() }.getOrNull() }
+        }?.let { text.setText(it) }
+        if (Launch.takesIntent(savedInstanceState, intent.flags)) applyIntent(intent)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        // The text field is built in code with no id, so the platform does not save it: the screen does. The saved
+        // state crosses the binder, so a long card (pasted or typed; nothing else limits it) goes to a cache file and
+        // only its name is saved: a Bundle over the binder limit would crash the app when the screen stops.
+        val s = text.text.toString()
+        if (Launch.fitsSavedState(s)) {
+            outState.putString(STATE_TEXT, s)
+            // A long card saved earlier is no longer the card: its file goes.
+            File(cacheDir, CARD_FILE).delete()
+        } else {
+            runCatching { File(cacheDir, CARD_FILE).writeText(s) }
+                .onSuccess { outState.putString(STATE_TEXT_FILE, CARD_FILE) }
+                .onFailure { Log.w(TAG, "the card's text (${s.length} characters) was not saved: $it") }
+        }
     }
 
     override fun onTrimMemory(level: Int) {
@@ -224,6 +252,8 @@ class MainActivity : AppCompatActivity(), DemoView {
         // The read and the loaded engine stay with the process (see Reader); only this screen goes.
         if (Reader.screen === this) Reader.screen = null
         worker.shutdown()
+        // The screen is closing for good (not re-created), so nothing will restore a long card's file: it goes.
+        if (isFinishing) File(cacheDir, CARD_FILE).delete()
         super.onDestroy()
     }
 
@@ -559,8 +589,8 @@ class MainActivity : AppCompatActivity(), DemoView {
     }
 
     private fun refreshFiles() {
-        // The app's own directory, and the picked folder's samples (its model files are copied in: syncFolder).
-        catalog = Catalog.merge(Catalog.appEntries(modelsDir), folder.entries().filter { it.name.endsWith(Voices.SAMPLE_SUFFIX) })
+        // The app's own directory first, then the picked folder, read in place (a name in both is the app directory's).
+        catalog = Catalog.merge(Catalog.appEntries(modelsDir), folder.entries())
         exportSamples()
         val listed = catalog.names
         val steps = About.gettingStarted(listed.size)
@@ -701,7 +731,75 @@ class MainActivity : AppCompatActivity(), DemoView {
         s.setSelection(i)
     }
 
+    /**
+     * Text another app handed over (Incoming.kt): shared, picked from the selection menu, or a .txt opened with the
+     * app. It fills the text card and nothing else: no read starts until the user presses Read aloud. Returns whether
+     * the intent was such a hand-over, so the debug build's adb extras (which can press Speak) are not read from it.
+     */
+    private fun takeIncoming(intent: Intent): Boolean {
+        val stream = if (Build.VERSION.SDK_INT >= 33) {
+            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION") intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+        }
+        val incoming = IncomingText.parse(
+            intent.action,
+            intent.type ?: intent.data?.let { contentResolver.getType(it) },
+            sendText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT),
+            processText = intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT),
+            stream = stream?.toString(),
+            data = intent.data?.toString(),
+        )
+        when (incoming) {
+            is Incoming.None -> return false
+            is Incoming.Refused -> {
+                Log.i(TAG, "incoming refused: ${incoming.why}")
+                showError(incoming.why)
+            }
+            is Incoming.Text -> showIncoming(incoming)
+            is Incoming.File -> {
+                // Off the main thread: a provider may be slow. The file is capped at IncomingText.MAX_FILE_BYTES.
+                val uri = Uri.parse(incoming.uri)
+                Thread {
+                    val read = try {
+                        contentResolver.openInputStream(uri)?.let { IncomingText.readFile(it) }
+                            ?: Incoming.Refused("That file could not be opened.")
+                    } catch (e: Exception) {
+                        Incoming.Refused("That file could not be opened: ${e.message}")
+                    }
+                    runOnUiThread {
+                        // The screen may have been closed while the file was read: then there is nothing to fill.
+                        if (isDestroyed) return@runOnUiThread
+                        when (read) {
+                            is Incoming.Text -> showIncoming(read)
+                            is Incoming.Refused -> {
+                                Log.i(TAG, "incoming file refused: ${read.why}")
+                                showError(read.why)
+                            }
+                            else -> {}
+                        }
+                    }
+                }.start()
+            }
+        }
+        return true
+    }
+
+    /**
+     * Put [incoming]'s text in the card, and say where it came from, how long it is, whether it replaced what the card
+     * held, and that Read aloud starts it.
+     */
+    private fun showIncoming(incoming: Incoming.Text) {
+        val replaced = text.text.toString().let { it.isNotBlank() && it != incoming.text && it !in EXAMPLES.values }
+        text.setText(incoming.text)
+        text.setSelection(0)
+        val n = IncomingText.characters(incoming.text)
+        Log.i(TAG, "incoming ${incoming.source}: $n characters${if (replaced) ", replacing the card's text" else ""}")
+        showStatus(IncomingText.status(incoming.source, n, replaced))
+    }
+
     private fun applyIntent(intent: Intent?) {
+        if (intent != null && takeIncoming(intent)) return
         // The scripted extras (file names in the models directory, and Speak pressed for you) are for testing a debug
         // build from adb. Another app can send this exported activity an intent too, so a release build ignores them,
         // and a debug build takes only names of files already in the models directory (pick).
@@ -815,48 +913,10 @@ class MainActivity : AppCompatActivity(), DemoView {
             showError("Could not keep access to that folder: ${it.message}")
             return
         }
-        Log.i(TAG, "models folder: $uri (${folder.entries().size} files)")
+        val n = folder.entries().size
+        Log.i(TAG, "models folder: $uri ($n files)")
         refreshFiles()
-        syncFolder()
-    }
-
-    private var syncing = false
-
-    /**
-     * Copy the picked folder's model files that the app directory lacks into it, checked as an import is, one at a
-     * time on the worker; the voices refresh after each. The engine cannot open a picked file in place (Storage.kt).
-     */
-    private fun syncFolder() {
-        if (syncing) return
-        val todo = Storage.toCopy(folder.entries(), ModelImport.listed(modelsDir).toSet())
-        if (todo.isEmpty()) return
-        syncing = true
-        val where = folder.describe() ?: "the models folder"
-        worker.execute {
-            var failed = 0
-            todo.forEachIndexed { i, e ->
-                handler.post { showStatus("Copying ${e.name} from $where (${i + 1} of ${todo.size})...") }
-                val t0 = SystemClock.elapsedRealtime()
-                val r = runCatching {
-                    (contentResolver.openInputStream(Uri.parse(e.location)) ?: throw ImportException("cannot read ${e.name}"))
-                        .use { ModelImport(modelsDir).importFile(e.name, e.size, it) }
-                }
-                val ms = SystemClock.elapsedRealtime() - t0
-                if (r.isFailure) failed++
-                r.fold({ Log.i(TAG, "folder copy: ${e.name} (${it.length()} bytes) in $ms ms") },
-                    { Log.w(TAG, "folder copy: ${e.name} refused after $ms ms: ${it.message}") })
-                handler.post {
-                    refreshFiles()
-                    r.exceptionOrNull()?.let { showError("Not copied from $where: ${it.message}") }
-                }
-            }
-            val copied = todo.size - failed
-            handler.post {
-                syncing = false
-                // A refusal stays on screen; a clean run says so.
-                if (failed == 0) showStatus("Copied $copied model file(s) from $where; their voices are listed.")
-            }
-        }
+        showStatus("Models folder: ${folder.describe() ?: uri}. $n file(s) there, read in place; its voices are listed.")
     }
 
     /** Save and Share for the last finished read, under the player. */

@@ -75,17 +75,17 @@ The app asks for no storage permission. It reads model files from two places, an
 
 * **A folder you choose once** (the easiest to fill): "Choose a models folder…" in the ⋮ menu opens the system's
   folder picker; pick or create one such as `Download/ggtts`, and copy model files into it with a file manager or
-  over USB from a computer. The app keeps read access to that folder across restarts. When the folder is chosen,
-  and each time the app opens, it copies the folder's model files that it does not have yet into its own directory,
-  with the same checks as an import (below); a voice's sample in the folder plays from there. Choosing another
-  folder replaces the first. The copy doubles the space a model takes, so delete the folder's copy once the app has
-  it if space is short; the voice stays.
+  over USB from a computer. The app keeps read access to that folder across restarts, lists the voices its files
+  make, and loads them where they are, never copying them. Choosing another folder replaces the first.
 
-  Why a copy: the engine opens a model by path, and a picked file reaches it only as `/proc/self/fd/<n>`. Opening
-  that path checks access to the file underneath, which is on shared storage the app may not read without a storage
-  permission. On a Galaxy Z Fold5 (Android 17) all three loads that way failed with "Permission denied (os error
-  13)". The copy itself is quick there: 0.55 s for the 291 MB codec and 3.5 s for the 2.04 GB talker. A load from the
-  app's directory took 2.3 to 2.8 s, the same as before.
+  How: Android hands the app a picked file as an open descriptor, which reaches the engine as `/proc/self/fd/<n>`.
+  Reopening that path would check access to the file underneath, which an app without a storage permission may not
+  read ("Permission denied"). So the engine reads a path of exactly that form through the descriptor itself, without
+  reopening it (`ggtts_core::fdpath`). On a Galaxy Z Fold5 (Android 17), the Qwen3-TTS talker and codec loaded from a
+  picked folder in 1.94 to 1.96 s when cached (2.82 s the first time), against 2.04 to 2.14 s from the app's
+  directory. A Kitten-TTS 2 voice (language model, decoder and voice JSON) loaded and spoke from the folder too.
+  A provider that hands back a descriptor that cannot seek (some stream a document from elsewhere, as a pipe) gets
+  the fallback: the app copies that one file into its cache once and loads the copy. A local folder never needs it.
 * **Its own directory**, which Android 11 and later hide from file managers and USB, so it is filled from the app or
   with adb:
 
@@ -203,6 +203,22 @@ nothing is being read.
 - **One read at a time.** The screen and the system engine share one loaded engine, and one of them reads with it at
   a time. While one reads, the other is refused with a message (the screen) or `ERROR_SERVICE` (the system engine)
   rather than load a second model beside it. Android's memory trims never release the engine during either read.
+
+## Text from other apps
+
+Text can reach the app three ways, and none of them needs a permission:
+
+- **Share:** share plain text to "ggtts Text-to-Speech" from another app's share sheet (`ACTION_SEND`, `text/plain`).
+- **Selection menu:** select text in another app and pick **Read aloud** from the menu (`ACTION_PROCESS_TEXT`).
+- **Open a file:** open a `.txt` file with the app, or share one to it. It must be UTF-8 and at most 256 KB.
+
+Each fills the text card, keeps the voice as it is, and says where the text came from and whether it replaced what
+the card held. **Nothing starts a read by itself**: you press Read aloud. Another app chooses what it sends, so a read
+it could start would be that app speaking through this one. Text over 20,000 characters (counted as a reader counts
+them: an emoji is one) is refused with that limit named, not cut short. A file that is not UTF-8 is refused too, and so
+is anything that is not plain text. The text is taken once: if the screen is re-created later (dark mode or the
+language changed), or the app is opened again from Recents, it keeps what you have in the card rather than taking the
+shared text again.
 
 ## ggtts as Android's text-to-speech engine
 

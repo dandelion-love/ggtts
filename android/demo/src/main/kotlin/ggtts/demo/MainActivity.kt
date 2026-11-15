@@ -112,6 +112,7 @@ class MainActivity : AppCompatActivity(), DemoView {
     private lateinit var threads: Spinner
     private lateinit var speak: MaterialButton
     private lateinit var stop: MaterialButton
+    private lateinit var pause: MaterialButton
     private lateinit var systemSpeak: MaterialButton
     private var platformTts: TextToSpeech? = null
     private var askedForNotifications = false
@@ -289,9 +290,25 @@ class MainActivity : AppCompatActivity(), DemoView {
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         importButton.isEnabled = !busy
         showReadActions(busy)
+        refreshPause()
+    }
+
+    /** The read as the media controls see it: none, playing or paused (MediaControls.state). */
+    private fun playerState() = MediaControls.state(controller.busy, controller.paused)
+
+    /** The screen's Pause or Play, from the read's state whatever changed it (this button, the notification, a headset). */
+    private fun refreshPause() {
+        if (!::pause.isInitialized) return
+        val state = playerState()
+        val label = MediaControls.screenLabel(state, tr)
+        pause.visibility = if (label == null) View.GONE else View.VISIBLE
+        if (label != null) pause.text = label
+        // TalkBack reads the word, not the symbols.
+        pause.contentDescription = MediaControls.toggleLabel(state)
     }
 
     override fun showStatus(text: String) {
+        refreshPause()
         lastStatus = text
         statusIsError = false
         status.visibility = View.VISIBLE
@@ -528,8 +545,20 @@ class MainActivity : AppCompatActivity(), DemoView {
             textSize = 18f
         }
         stop.setOnClickListener { controller.stop() }
+        // Pause or Play beside Stop while a read runs: the same toggle as the notification and the media session
+        // (MediaControls), so a pause from the headset turns this button into Play too.
+        pause = MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
+            visibility = View.GONE; textSize = 18f
+        }
+        pause.setOnClickListener {
+            MediaControls.toggleAction(playerState())?.let { MediaControls.apply(it, controller) }
+            refreshPause()
+        }
+        val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        controls.addView(pause, LinearLayout.LayoutParams(0, dp(56), 1f).apply { rightMargin = dp(8) })
+        controls.addView(stop, LinearLayout.LayoutParams(0, dp(56), 1f))
         footer.addView(speak, lp(h = dp(56), top = dp(10)))
-        footer.addView(stop, lp(h = dp(56), top = dp(10)))
+        footer.addView(controls, lp(top = dp(10)))
         footer.addView(readActionsRow(), lp(top = dp(8)))
 
         engines.check(100)

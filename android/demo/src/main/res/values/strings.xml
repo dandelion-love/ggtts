@@ -111,6 +111,8 @@
     <string name="notification_starting">Starting...</string>
     <string name="notification_stop">Stop</string>
     <string name="notification_title">ggtts is reading</string>
+    <string name="screen_pause">❚❚  Pause</string>
+    <string name="screen_play">▶  Play</string>
     <string name="notification_pause">Pause</string>
     <string name="notification_play">Play</string>
     <string name="notification_off_screen">%1$s Off screen it continues several times slower; open the app to speed it up.</string>

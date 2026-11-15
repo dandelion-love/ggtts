@@ -114,6 +114,8 @@ object EnglishWords : Words {
         "notification_starting" to "Starting...",
         "notification_stop" to "Stop",
         "notification_title" to "ggtts is reading",
+        "screen_pause" to "❚❚  Pause",
+        "screen_play" to "▶  Play",
         "notification_pause" to "Pause",
         "notification_play" to "Play",
         "notification_off_screen" to "%1\$s Off screen it continues several times slower; open the app to speed it up.",

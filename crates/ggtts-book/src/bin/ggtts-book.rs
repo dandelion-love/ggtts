@@ -6,7 +6,12 @@
 //! ggtts-book render BOOK.epub --out DIR [--engine qwen3-tts|kitten-tts-2|fake] [--seed-root R]
 //!                  [--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME]
 //!                  [--device cpu|cuda] [--threads N] [--offline]
+//!                  [--instruction TEXT] [--steer FILE [--steer-scale X] [--steer-layers L,L]]
+//!                  [--trace FILE [--trace-level 1|2]] [--redraw N [--judge asr-qwen,model=DIR[,device=cpu|cuda][,min_run=N]]]
 //!                  [--include-skippable]
+//!                  [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE.yaml] [--require NAME]...
+//!                  [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort]
+//!                  [--instrument-timeout S] [--report DIR] [--run ID]
 //!                                   render every chapter into DIR, resuming what an earlier run finished
 //! ggtts-book export DIR --out BOOK.flac|BOOK.m4b
 //!                                   join a finished render into one FLAC with a chapter mark per chapter
@@ -26,23 +31,42 @@
 //! `DIR` to resume; a `DIR` holding another book is refused. `--include-skippable` renders the front and back
 //! matter too. Each chapter FLAC is tagged: TITLE, ALBUM, ARTIST, TRACKNUMBER.
 //!
+//! The flags are the shared options table's (`ggtts_core::options`), read by its parser, so each means what it means
+//! in `ggtts-render`: `--instruction`, `--steer` and its scale and layers reach every chunk's request, and `--trace`
+//! writes one ggtts-trace/2 stream for the chunks this run renders. Each chunk is judged, and one the judge rejects is
+//! redrawn up to `--redraw` times (unset: the engine profile's), as in a story; each chunk's manifest entry records
+//! the kept draw and the number of draws. `--judge` adds an ASR that reads each draw back, so a chunk that lost or
+//! repeated a run of its text is redrawn too, and records what it read per chunk (`docs/book.md`). The instrument flags are ggtts-render's: the instruments run on each
+//! chapter FLAC this run wrote (not on a chapter an earlier run finished), with one report per chapter beside its
+//! FLAC (`NNN-<chapter id>.report`, or `--report DIR/NNN-<chapter id>`). An unknown instrument is refused before
+//! anything is rendered. A table option a book does not take (`--text`, `--story`, `--seed`, `--stream`, the
+//! timing and duration reports, the log) is refused by name with the reason. A chapter's
+//! manifest records the instruction and steering, and a resume under different ones starts the chapter again, naming
+//! the difference.
+//!
 //! `export` refuses a render that is not finished, or that mixes seed roots or engines, naming the chapter.
 //!
-//! Exit 0 on success; 2 when the book or the engine is refused (the reason on stderr), a render fails (what was
-//! finished is kept), or the command line is wrong.
+//! Exit 0 on success; 3 when every chapter is written but a `--require`d instrument is not ok on some chapter (the
+//! measurement is INCOMPLETE, as for ggtts-render); 2 when the book or the engine is refused (the reason on stderr),
+//! a render fails (what was finished is kept), or the command line is wrong.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use ggtts_book::plan::{engine_profile, plan_book, DEFAULT_SEED_ROOT};
-use ggtts_book::render::{render_command_with, LoadedEngine};
+use ggtts_book::render::{render_command_options, LoadedEngine};
 use ggtts_book::Book;
+use ggtts_core::options::Options;
 use serde_json::json;
 
 const USAGE: &str = "usage: ggtts-book inspect BOOK.epub [--engine qwen3-tts|fake] [--seed-root R]\n       \
 ggtts-book render BOOK.epub --out DIR [--engine qwen3-tts|kitten-tts-2|fake] [--seed-root R]\n                  \
 [--model M.gguf] [--codec C.gguf] [--voice REF.json] [--speaker NAME] [--device cpu|cuda] [--threads N] [--offline]\n                  \
-[--include-skippable]\n       \
+[--instruction TEXT] [--steer FILE [--steer-scale X] [--steer-layers L,L]] [--trace FILE [--trace-level 1|2]]\n                  \
+[--redraw N [--judge asr-qwen,model=DIR[,device=cpu|cuda][,min_run=N]]] [--include-skippable]\n                  \
+[--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]...\n                  \
+[--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] \
+[--report DIR] [--run ID]\n       \
 ggtts-book export DIR --out BOOK.flac|BOOK.m4b\n       \
 ggtts-book --version";
 
@@ -65,11 +89,13 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("export") => export(&args[1..]),
-        Some(command @ ("inspect" | "render")) => match Options::parse(command, &args[1..]) {
-            Ok(o) if command == "inspect" => inspect(o),
-            Ok(o) => render(o),
-            Err(e) => fail(&format!("{e}\n{USAGE}")),
-        },
+        Some(command @ ("inspect" | "render")) => {
+            match ggtts_book::options::parse(command, &args[1..], &|name| std::env::var(name).ok()) {
+                Ok((book, o)) if command == "inspect" => inspect(&book, o),
+                Ok((book, o)) => render(&book, o),
+                Err(e) => fail(&format!("{e}\n{USAGE}")),
+            }
+        }
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -77,92 +103,18 @@ fn main() -> ExitCode {
     }
 }
 
-struct Options {
-    book: String,
-    seed_root: String,
-    out: Option<PathBuf>,
-    include_skippable: bool,
-    load: ggtts_load::Request,
-}
-
-impl Options {
-    fn parse(command: &str, args: &[String]) -> Result<Options, String> {
-        let mut o = Options {
-            book: String::new(),
-            seed_root: DEFAULT_SEED_ROOT.to_string(),
-            out: None,
-            include_skippable: false,
-            load: ggtts_load::Request {
-                engine: "qwen3-tts".into(),
-                ..Default::default()
-            },
-        };
-        let render_only = |flag: &str| -> Result<(), String> {
-            if command == "render" {
-                Ok(())
-            } else {
-                Err(format!("{flag} is for render"))
-            }
-        };
-        let mut book = None;
-        let mut it = args.iter();
-        while let Some(arg) = it.next() {
-            match arg.as_str() {
-                "--offline" => {
-                    render_only("--offline")?;
-                    o.load.offline = true;
-                }
-                "--include-skippable" => {
-                    render_only("--include-skippable")?;
-                    o.include_skippable = true;
-                }
-                flag @ ("--engine" | "--seed-root" | "--out" | "--model" | "--codec" | "--voice" | "--speaker"
-                | "--device" | "--threads") => {
-                    let value = it.next().ok_or_else(|| format!("{flag} needs a value"))?.clone();
-                    if !matches!(flag, "--engine" | "--seed-root") {
-                        render_only(flag)?;
-                    }
-                    match flag {
-                        "--engine" => o.load.engine = value,
-                        "--seed-root" => o.seed_root = value,
-                        "--out" => o.out = Some(PathBuf::from(value)),
-                        "--model" => o.load.model = Some(PathBuf::from(value)),
-                        "--codec" => o.load.codec = Some(PathBuf::from(value)),
-                        "--voice" => o.load.voice = Some(PathBuf::from(value)),
-                        "--speaker" => o.load.speaker = Some(value),
-                        "--device" => o.load.device = Some(value),
-                        _ => {
-                            let n: i32 = value
-                                .parse()
-                                .map_err(|_| format!("--threads must be a number, not {value}"))?;
-                            if n < 1 {
-                                return Err("--threads must be at least 1".into());
-                            }
-                            o.load.threads = Some(n);
-                        }
-                    }
-                }
-                a if a.starts_with("--") => return Err(format!("unknown option {a}")),
-                _ if book.is_none() => book = Some(arg.clone()),
-                _ => return Err("one book at a time".to_string()),
-            }
-        }
-        o.book = book.ok_or("no book named")?;
-        Ok(o)
-    }
-}
-
-fn inspect(o: Options) -> ExitCode {
+fn inspect(book_path: &Path, o: Options) -> ExitCode {
     let engine = o.load.engine;
+    let seed_root = o.book.seed_root.unwrap_or_else(|| DEFAULT_SEED_ROOT.to_string());
     let profile = match engine_profile(&engine) {
         Ok(p) => p,
         Err(e) => return fail(&e),
     };
-    let book = match Book::open(Path::new(&o.book)) {
+    let book = match Book::open(book_path) {
         Ok(book) => book,
         Err(e) => return fail(&e.to_string()),
     };
-    let plans = match plan_book(&profile, &book, &o.seed_root) {
+    let plans = match plan_book(&profile, &book, &seed_root) {
         Ok(plans) => plans,
         Err(e) => return fail(&e),
     };
@@ -171,7 +123,7 @@ fn inspect(o: Options) -> ExitCode {
         "engine": engine,
         "profile": profile.name,
         "ceiling": profile.story_ceiling,
-        "seed_root": o.seed_root,
+        "seed_root": seed_root,
         "seed_key": ggtts_book::plan::SEED_KEY_VERSION,
     });
     for (chapter, plan) in out["chapters"]
@@ -218,19 +170,21 @@ fn load_engine(req: ggtts_load::Request) -> Result<LoadedEngine, String> {
     })
 }
 
-fn render(o: Options) -> ExitCode {
-    let Some(out_dir) = o.out else {
+fn render(book_path: &Path, o: Options) -> ExitCode {
+    if o.output.out.is_none() {
         return fail("render needs --out DIR");
-    };
-    let req = o.load;
-    match render_command_with(Path::new(&o.book), &out_dir, &o.seed_root, o.include_skippable, || {
-        load_engine(req)
-    }) {
+    }
+    let req = o.load.clone();
+    match render_command_options(book_path, &o, || load_engine(req)) {
         Ok(report) => {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&report).expect("JSON values serialize")
             );
+            if report["measurement"] == "incomplete" {
+                eprintln!("ggtts-book: measurement INCOMPLETE: a required instrument is not ok (see each chapter's instruments)");
+                return ExitCode::from(ggtts_instruments::runner::EXIT_INCOMPLETE);
+            }
             ExitCode::SUCCESS
         }
         Err(e) => fail(&e),

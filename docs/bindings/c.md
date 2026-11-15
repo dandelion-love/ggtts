@@ -163,6 +163,8 @@ the calling thread is `ggtts_last_error()`.
 | `ggtts_pcm_free(pcm, len)` | Free a buffer `ggtts_render` returned. |
 | `ggtts_free(handle)` | Release the engine. |
 | `ggtts_last_error()` | This thread's last error message. Empty after a success. |
+| `ggtts_load_opts(json, &handle)` | Version 4: load from an [options document](#options-documents). |
+| `ggtts_render_opts(handle, text, json, on_piece, user, &pcm, &len, &rate)` | Version 4: render, whole or streamed, with an options document. |
 
 ## Loading
 
@@ -361,6 +363,127 @@ int main(int argc, char **argv) {
 }
 ```
 
+## Options documents
+
+Version 4 takes every option of the shared options table as a JSON document, so an option added to the table reaches C
+with no new field, function or ABI version. The schema is `schemas/ggtts-options-1.schema.json`, and
+[docs/options.md](../options.md) describes the sections. **`ggtts_settings` is frozen at version 3**: no field is ever
+added to it, and the struct functions keep working unchanged. A document and a struct never meet in one call.
+
+`ggtts_load_opts(json, &handle)` takes the `load` section, and `render` defaults that every render on the handle
+starts from:
+
+```json
+{"load": {"engine": "qwen3-tts", "speaker": "hk_voice_777", "offline": true},
+ "render": {"instruction": "Speak slowly and softly."}}
+```
+
+`"engine"` may be `"auto"`, the default: the model's architecture, read from its GGUF, and with no model
+`"qwen3-tts"`. The struct loads take no `"auto"`. A document with no `model` loads the engine's default files, as
+`ggtts-render` does. A missing one is downloaded
+unless `"offline": true`, which is the struct's `allow_download = 0`.
+
+`ggtts_render_opts(handle, text, json, on_piece, user, &pcm, &len, &rate)` renders `text` with a render document,
+laid over the load's defaults. NULL is the empty document.
+
+* **A whole read** has no `output.stream`: `on_piece` must be NULL, and `pcm`, `len` and `rate` get the samples, as
+  `ggtts_render` gives them.
+* **A stream** is `{"output": {"stream": "raw"}}`: each kept chunk goes to `on_piece` before the level step, as
+  `ggtts_render_stream` hands it. `on_piece` is required, and `pcm`, `len` and `rate` are all NULL or all set (then
+  they also get the whole read).
+* **What a render document takes:**
+  * `render`: `seed_salt` (`ggtts_render`'s seed, as a string), `instruction`, `steer` with `steer_scale` and
+    `steer_layers`, `redraw` and `edge_s`.
+  * `observe`: `trace` with `trace_level`, a trace file as `ggtts-render --trace` writes it.
+* **What it refuses:**
+  * any `load` key (they are fixed when the engine loads);
+  * `render.text`, `render.story` and `render.seed`: the text is the argument, and the seed is `seed_salt`;
+  * `render.measure_timings`, the reports and logging: the C ABI returns PCM, not timings or files;
+  * `output.out` and `output.stream_format`;
+  * the book options.
+  * A levelled stream (`"levelled"`, `stream_raw` and `stream_level_seconds`) is not taken yet.
+
+An unknown key, a value of the wrong type, a malformed document, a stream with no `on_piece`, a whole read with one,
+and an option the engine does not support (steering on Kitten-TTS 2, say) are each `GGTTS_ERR_ARG`, refused before
+anything is rendered, and the message names the option.
+
+<!-- example: examples/c/options.c -->
+```c
+/* options.c: load and render with options documents, the JSON form of every option (C-ABI version 4).
+ *
+ *   ./options           the test engine
+ *   ./options fake      the same
+ */
+#include <stdio.h>
+
+#include "ggtts.h"
+
+struct counter {
+    int pieces;
+};
+
+static int32_t count(void *user, const float *samples, size_t len, uint32_t rate) {
+    struct counter *c = user;
+    (void)samples;
+    (void)len;
+    (void)rate;
+    c->pieces++;
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    (void)argv;
+    if (argc > 1 && argv[1][0] != 'f') {
+        fprintf(stderr, "this example runs on the fake engine only\n");
+        return 1;
+    }
+    if (ggtts_abi_version() < 4) {
+        fprintf(stderr, "this library is C-ABI version %u: the options documents need 4\n", ggtts_abi_version());
+        return 1;
+    }
+    /* The load document: the load section, and render defaults every render on the handle starts from. */
+    uint64_t tts = 0;
+    int32_t code = ggtts_load_opts("{\"load\": {\"engine\": \"fake\"}, \"render\": {\"seed_salt\": \"7\"}}", &tts);
+    if (code != GGTTS_OK) {
+        fprintf(stderr, "load failed (%d): %s\n", (int)code, ggtts_last_error());
+        return 1;
+    }
+    const char *text = "\xe4\xbb\x8a\xe6\x97\xa5\xe5\xa4\xa9\xe6\xb0\xa3\xe5\xa5\xbd\xe5\xa5\xbd\xe3\x80\x82"; /* 今日天氣好好。 */
+    int ok = 1;
+
+    /* A whole read: no output.stream, so on_piece is NULL and the samples come back in pcm. NULL is the empty
+     * document: the load's defaults as they are. */
+    float *pcm = NULL;
+    size_t len = 0;
+    uint32_t rate = 0;
+    code = ggtts_render_opts(tts, text, "{\"render\": {\"edge_s\": 0.2}}", NULL, NULL, &pcm, &len, &rate);
+    printf("whole read: %d, %lu samples at %u Hz\n", (int)code, (unsigned long)len, (unsigned)rate);
+    ok &= code == GGTTS_OK && len > 0;
+    ggtts_pcm_free(pcm, len);
+
+    /* A stream: output.stream "raw" hands each kept chunk to on_piece before the level step; pcm may be NULL. */
+    struct counter c = {0};
+    code = ggtts_render_opts(tts, text, "{\"output\": {\"stream\": \"raw\"}}", count, &c, NULL, NULL, NULL);
+    printf("stream: %d, %d pieces\n", (int)code, c.pieces);
+    ok &= code == GGTTS_OK && c.pieces > 0;
+
+    /* Refused before anything is rendered, each GGTTS_ERR_ARG, the message naming the option. */
+    const char *refused[] = {
+        "{\"render\": {\"no_such_option\": 1}}",                 /* not an option */
+        "{\"load\": {\"threads\": 2}}",                         /* a load option, in a render document */
+        "{\"render\": {\"steer\": \"steer.safetensors\"}}",     /* the fake engine cannot steer */
+        "{\"render\": ",                                        /* not JSON */
+    };
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        code = ggtts_render_opts(tts, text, refused[i], NULL, NULL, &pcm, &len, &rate);
+        printf("refused: %d: %s\n", (int)code, ggtts_last_error());
+        ok &= code == GGTTS_ERR_ARG;
+    }
+    ggtts_free(tts);
+    return ok ? 0 : 1;
+}
+```
+
 ## Errors
 
 Every status is one of these. `ggtts_last_error()` says which case it is. A refused load writes no handle.
@@ -408,6 +531,7 @@ struct, a struct field or a code is added. A function never changes its signatur
 | 1 | `ggtts_load`, `ggtts_render`, `ggtts_render_stream`, `ggtts_pcm_free`, `ggtts_free`, `ggtts_last_error` |
 | 2 | `ggtts_load_with`, `ggtts_settings` (speaker, instruction), `ggtts_abi_version` |
 | 3 | `ggtts_settings.device`, `.cache_dir` and `.allow_download`: the device and the default model |
+| 4 | `ggtts_load_opts` and `ggtts_render_opts`: [options documents](#options-documents). `ggtts_settings` is frozen at version 3. |
 
 A program built against the version-3 header checks `ggtts_abi_version() >= 3` before passing the longer struct. A
 version-2 library refuses it with `GGTTS_ERR_ARG`, so the check gives a clearer message, not safety. A version-3
@@ -415,7 +539,8 @@ library loads a version-2 struct exactly as before.
 
 ## What it does not do
 
-* Per-render speakers or instructions: the settings are per engine. Load another engine to change them.
+* Per-render speakers: the speaker is fixed when the engine loads. Load another engine to change it. (An instruction
+  can change per render, in a render document.)
 * Write audio files. You get PCM; write it as you like (the example writes WAV).
 * Report download progress. `ggtts-render` and Python do.
 * The JNI entry points the Kotlin binding needs: the archive's library exports the C ABI only. See

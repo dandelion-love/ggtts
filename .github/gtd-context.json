@@ -1,0 +1,19 @@
+{
+  "manifest_version": 4,
+  "profile": "software",
+  "skill_version": "0.42.0",
+  "skill_commit": "8b200510ac8e501302ea0a966fed0360ecf50143",
+  "project": {
+    "owner": "dandelion-love",
+    "number": 4
+  },
+  "stamped_at": "2026-11-14T16:30:00Z",
+  "last_synced_at": "2026-11-14T16:30:00Z",
+  "notify": {
+    "mentions": {
+      "james": "hobpond"
+    },
+    "push": "web-push",
+    "new_issues": "view"
+  }
+}

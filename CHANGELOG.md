@@ -11,8 +11,108 @@ that a merge places under a released heading is caught.
 
 ## Unreleased
 
+### Added
+
+- **`--judge asr-qwen,model=DIR` redraws a chunk whose read-back lost or repeated text**, for `ggtts-render
+  --story` and `ggtts-book render`, from one shared option (`render.judge`). An ASR (a local Qwen3-ASR, run as
+  one Python process per render) reads every draw the duration judge keeps back; a draw that lost a run of 4
+  characters or more (`min_run=N`), or said one twice, is rejected and redrawn at the chunk's next seed, up to
+  `--redraw`. CJK characters (folded to simplified) and numbers (by value) are compared. An ASR that dies or misses its deadline
+  (`timeout=S`, 120 s per draw; `start_timeout=S`, 600 s to load) stops the render, which a rerun resumes. The trace records each reading in a new
+  `read` event, and a book's chapter manifest in each chunk's `reads`. Off by default. It needs `--redraw N`, and is
+  refused before anything is drawn when its ASR cannot start; `--text` and the bindings refuse it. A trace with
+  text verdicts replays, taking them as recorded.
+- **A text judge in the `ggtts-core` library: `textjudge::TextJudge`.** It judges a draw for duration as before,
+  then reads it back with a recogniser the caller supplies (`textjudge::Recogniser`) and rejects a draw that lost
+  text (`lost-text`: a run of 4 characters or more, a quarter of a chunk of 8 or more, or 8 in a row lost or
+  misread) or said a stretch twice (`repeated-text`, found through a misread character or a filler at the join).
+  Both texts are compared as CJK characters folded to simplified with OpenCC's character table, vendored in the
+  crate, and each number (written out, in digits or mixed, as in 3萬) as one token for its value, so 三百五十六
+  read back as 356 is not lost text and a misheard number is one slip. A single misread or missing
+  character is counted, not rejected. Known limits: the fold is many-to-one, so a swap between two traditional
+  characters with one simplified form reads as correct; a chunk of fewer than 4 compared characters is never
+  rejected; text with no CJK characters or numbers has nothing to compare. No front
+  end uses it yet, and every render is unchanged; `ggtts-trace/2` allows the two new verdicts.
+- **The C ABI takes options documents (ABI version 4): `ggtts_load_opts(json, &handle)` and
+  `ggtts_render_opts(handle, text, json, on_piece, user, &pcm, &len, &rate)`.** Every option of the shared options
+  table reaches C as JSON, so a new option needs no new struct field, function or ABI version. A render document
+  takes the seed salt, an instruction, steering, redraws, the edge trim and a trace file; `{"output": {"stream":
+  "raw"}}` streams to `on_piece`. A malformed document, an unknown key, a load key in a render document and an option
+  the engine does not support are `GGTTS_ERR_ARG` before anything renders. **`ggtts_settings` is frozen at version
+  3**; the struct functions keep working unchanged and now render through the same path, sample for sample. See
+  [docs/bindings/c.md](docs/bindings/c.md#options-documents).
+- **One render entry point in the `ggtts-core` library: `pipeline::render_plan`.** It renders a plan with any trace
+  level, tensor hooks and output (the whole read, or a stream raw or levelled) in one call, so combinations that had
+  no function before, such as hooks with a stream, now work. It is built from a public step, `pipeline::render_chunk`,
+  which renders one chunk (draws at the caller's seeds, the judge, redraws, edge trim) for a caller with its own plan.
+  `render_story`, `render_story_traced`, `render_story_hooked` and `render_story_streamed` keep working unchanged, and
+  no output changes. `RenderOptions` gains `trim` and `level` (both on by default, as before); code that builds it
+  field by field instead of from `RenderOptions::for_profile` must set them. `ggtts-render --text` now renders
+  through the same entry point, with both off, and its output is unchanged.
+- **`ggtts-book render` takes `--instruction`, `--steer` (with `--steer-scale` and `--steer-layers`) and `--trace`
+  (with `--trace-level`)**, meaning what they mean in `ggtts-render`: its flags are read by the shared options table,
+  and every chunk is rendered by the core chunk step. A book rendered without them is byte-identical to before. Each
+  chapter manifest records the instruction and steering, and a resume under different ones renders the chapter again,
+  naming the difference; a manifest written before this resumes as "no instruction, no steering".
+- **`ggtts-book render --redraw N` redraws a chunk the judge rejects**, up to N times at the chunk's seeds for draws
+  1, 2, ..., through the same judge as a story. Unset is the engine profile's (0 for `qwen3-tts`), so a book renders
+  as before unless asked; at 0 the output and manifests are byte-identical. With redraws, each chunk's manifest entry
+  records its kept draw, its draw count and the kept draw's verdict, and a resume at a different `--redraw` renders
+  again only the chunks whose outcome the new setting changes. `--redraw` is the shared options table's spelling of
+  `render.redraw`, so `ggtts-render --story --redraw N` takes it too and its usage names it.
+- **`ggtts-book render` runs instruments**: `--instrument`, `--instruments`, `--require`, `--instrument-device`,
+  `--on-instrument-error`, `--instrument-timeout`, `--report` and `--run`, meaning what they mean in `ggtts-render`.
+  They run on each chapter FLAC not yet measured with the same settings, with one report per chapter beside it
+  (`NNN-<chapter id>.report/`), and the render report gains each chapter's `instruments` entry and the book's
+  `measurement`. An ASR instrument is given each chapter's own text as its reference. A `--require`d instrument
+  that is not ok, or a chapter left unmeasured under `--require`, exits 3 with every chapter written. An unknown
+  instrument, or a `reference_file` given for a book, is refused before anything is rendered. The instrument
+  timeout is per chapter. Without the flags a book renders exactly as before. The instrument run is one library call,
+  `ggtts_instruments::options`, which `ggtts-render` now makes too; its reports and exit codes are unchanged.
+
 ### Changed
 
+- **An option an engine does not support is refused in one wording everywhere, under its schema key, before anything
+  is loaded or drawn.** Each engine states what it supports (`Engine::capabilities`, `ggtts_core::capabilities`), and
+  `ggtts-render`, the C ABI, Python and Kotlin refuse with the same text. The old and new wording:
+  - a speaker: `--speaker is only supported by the qwen3-tts engine` (ggtts-render) and `a speaker is only supported
+    by the qwen3-tts engine, not fake` (the bindings) are now `load.speaker: a speaker is only supported by the
+    qwen3-tts engine, not fake`;
+  - an instruction: `--instruction is only supported by the qwen3-tts engine` (ggtts-render) and `the fake engine
+    takes no style instruction; only qwen3-tts custom_voice (1.7B) and voice_design checkpoints do` (the bindings) are
+    now `render.instruction: the fake engine takes no style instruction, which is only supported by the qwen3-tts
+    engine's custom_voice (1.7B) and voice_design checkpoints`. A Qwen3-TTS checkpoint that takes none keeps its own
+    explanation, now after `render.instruction: `;
+  - steering: `--steer is only supported by the qwen3-tts engine, not fake` is now `render.steer: the fake engine
+    cannot apply steering, which is only supported by the qwen3-tts engine`;
+  - a tensor hook asking for a value the engine does not export is refused before the first draw:
+    `hooks: the kitten-tts-2 engine exports nothing to tensor hooks, and a hook wants logits`.
+
+  `ggtts-render --engine fake --device cuda` is now refused (`load.device: the fake engine runs on cpu, not cuda`), as
+  the bindings already refused it; the fake engine had ignored the device. Renders that were accepted before are
+  unchanged.
+- **`ggtts-book` refuses the options of the shared table it does not take by name, with the reason**: `--text`,
+  `--story`, `--seed`, `--stream` and its settings, the timing and duration reports, the log settings and the
+  instruments. An engine name the table does not list is refused as `load.engine` rather than "unknown engine", and
+  `--threads` also takes the table's spelling `-j`.
+
+### Changed
+
+- **`ggtts-render` reads its flags, `GGTTS_LOG_LEVEL`, `GGTTS_LOG_FORMAT` and `GGTTS_CACHE_DIR` through the options
+  table** (`ggtts_core::options`), a flag winning over its variable as before. Its output, `--help` and reports are
+  unchanged, and the refusals it had words for keep them. A few command lines it used to accept, or refuse later, are
+  now refused as they are read, before any model file is touched:
+  - `--threads` below 1;
+  - an `--engine` other than `auto`, `qwen3-tts`, `kitten-tts-2` or `fake`;
+  - a `--device` other than `cpu` or `cuda` for every engine (kitten-tts-2 rendered on the CPU for any value but
+    `cuda`, the fake engine ignored it, and a build without engines never reached the check);
+  - an empty `--run`, or an empty path for `--out`, `--model`, `--codec`, `--voice`, `--story`, `--stream`, `--trace`,
+    `--report`, the reports or `--instruments`;
+  - an `--on-instrument-error`, `--instrument-device` or `--instrument-timeout` value the instruments would refuse,
+    even with no instrument asked for.
+
+  An empty `GGTTS_LOG_LEVEL` or `GGTTS_LOG_FORMAT` is now unset rather than an error. `--stream-format raw` is still
+  s16le.
 - **The Android app says what it is for before anything technical**: it reads text aloud in Cantonese or English,
   on the phone only, slowly, and is not for screen readers. A fresh install also lists the steps to a first read.
   A test fails if the app gains the internet permission while the screen says it has none.
@@ -47,6 +147,7 @@ that a merge places under a released heading is caught.
 - **Stop in the Android demo is immediate and safe at any moment.** It no longer holds the screen for up to a second
   while playback winds down, a Stop pressed while the last chunk plays is reported as stopped rather than as a
   finished read, and a Stop pressed just as a read starts no longer lets its first chunk play on.
+
 
 ## v0.1.0-rc.12 (2026-11-13)
 

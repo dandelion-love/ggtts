@@ -8,7 +8,8 @@
 //!   is [`GGTTS_ERR_BUSY`], never a deadlock. Different engines render at once, and [`ggtts_free`] never waits for a
 //!   render: it drops the registry's reference, and the engine goes when the render holding it returns.
 //! * **No panic unwinds across the boundary.** The entry points that reach an engine or the registry
-//!   ([`ggtts_load`], [`ggtts_load_with`], [`ggtts_render`], [`ggtts_render_stream`], [`ggtts_free`]) run inside
+//!   ([`ggtts_load`], [`ggtts_load_with`], [`ggtts_load_opts`], [`ggtts_render`], [`ggtts_render_stream`],
+//!   [`ggtts_render_opts`], [`ggtts_free`]) run inside
 //!   `catch_unwind`, and a panic comes back as [`GGTTS_ERR_PANIC`] with its message; the engine that panicked is
 //!   dropped from the registry. [`ggtts_pcm_free`], [`ggtts_last_error`] and [`ggtts_abi_version`] are not wrapped:
 //!   one drops a box, one reads a thread-local, one returns a constant. `catch_unwind` catches unwinding panics only: an abort, a stack overflow or a crash in C code
@@ -19,44 +20,52 @@
 //!   behaviour. Version 2 added [`ggtts_load_with`] and [`GgttsSettings`] (a Qwen3-TTS speaker and style
 //!   instruction). Version 3 added three trailing fields to [`GgttsSettings`]: the device, and the default model
 //!   files' cache directory and download permission. A version-2 struct (its `size` is
-//!   [`GGTTS_SETTINGS_V2_SIZE`]) still loads exactly as it did.
+//!   [`GGTTS_SETTINGS_V2_SIZE`]) still loads exactly as it did. Version 4 added [`ggtts_load_opts`] and
+//!   [`ggtts_render_opts`], which take options documents (JSON, every option of `ggtts_core::options::TABLE`);
+//!   [`GgttsSettings`] is frozen at version 3, and a new option goes in a document.
+//! * **One render path.** [`ggtts_render`] and [`ggtts_render_stream`] build the document their arguments mean and
+//!   render it as [`ggtts_render_opts`] does ([`binding::render_document`]); the struct loads build the options their
+//!   settings mean and load them as [`ggtts_load_opts`] does, keeping their own refusals' words.
 //!
 //! With the `jni` feature, `jni.rs` adds the `Java_ggtts_Native_*` entry points over the same functions.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr, CString};
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::sync::{Mutex, MutexGuard};
 
-use ggtts_core::engine::{refuse_instruction, ChunkRequest, Engine};
-use ggtts_core::pipeline::{plan_story, render_story, render_story_streamed, RenderError, RenderOptions};
-use ggtts_core::trace::NullEvents;
+use ggtts_core::options::{Options, Refusal, Source};
+use ggtts_load::binding::{self, Held, Slot};
+
+#[path = "../../ggtts-cli/src/gguf_arch.rs"]
+#[allow(dead_code)]
+mod gguf_arch;
 
 #[cfg(feature = "jni")]
 mod jni;
 
-pub const GGTTS_OK: i32 = 0;
+pub const GGTTS_OK: i32 = binding::OK;
 /// A NULL, non-UTF-8 or out-of-range argument.
-pub const GGTTS_ERR_ARG: i32 = -1;
+pub const GGTTS_ERR_ARG: i32 = binding::ERR_ARG;
 /// No engine with this id: never loaded, already freed, or `0`.
-pub const GGTTS_ERR_HANDLE: i32 = -2;
+pub const GGTTS_ERR_HANDLE: i32 = binding::ERR_HANDLE;
 /// The engine refused: a missing file, not a GGUF, an unknown engine, a failed render.
-pub const GGTTS_ERR_ENGINE: i32 = -3;
+pub const GGTTS_ERR_ENGINE: i32 = binding::ERR_ENGINE;
 /// A panic inside ggtts, caught at the boundary.
-pub const GGTTS_ERR_PANIC: i32 = -4;
+pub const GGTTS_ERR_PANIC: i32 = binding::ERR_PANIC;
 /// The stream callback asked to stop.
-pub const GGTTS_ERR_STOPPED: i32 = -5;
+pub const GGTTS_ERR_STOPPED: i32 = binding::ERR_STOPPED;
 /// The engine is rendering: a call on it from its own stream callback, or from another thread meanwhile.
-pub const GGTTS_ERR_BUSY: i32 = -6;
+pub const GGTTS_ERR_BUSY: i32 = binding::ERR_BUSY;
 
 /// The C-ABI's version: 1 was the surface before [`ggtts_load_with`]; 2 added it and [`GgttsSettings`]; 3 added the
-/// struct's `device`, `cache_dir` and `allow_download` fields.
-pub const GGTTS_ABI_VERSION: u32 = 3;
+/// struct's `device`, `cache_dir` and `allow_download` fields; 4 added [`ggtts_load_opts`] and [`ggtts_render_opts`].
+pub const GGTTS_ABI_VERSION: u32 = 4;
 
-/// The settings [`ggtts_load_with`] takes, by pointer. `size` is `sizeof(ggtts_settings)` as the caller's header
+/// The settings [`ggtts_load_with`] takes, by pointer. **Frozen at version 3**: no field is ever added; a new option
+/// goes in an options document ([`ggtts_load_opts`], [`ggtts_render_opts`]). `size` is `sizeof(ggtts_settings)` as the caller's header
 /// declares it, so a later version can add fields and still tell an older caller's struct apart. A NULL or empty
 /// string is no setting: the result is what [`ggtts_load`] gives.
 #[repr(C)]
@@ -88,10 +97,7 @@ pub extern "C" fn ggtts_abi_version() -> u32 {
     GGTTS_ABI_VERSION
 }
 
-/// The story id every binding render uses: the seed of each chunk is derived from it, the text and the seed given.
-const STORY: &str = "ggtts-binding";
-
-type Fail = (i32, String);
+type Fail = binding::Fail;
 
 thread_local! {
     static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
@@ -102,72 +108,33 @@ fn set_error(msg: &str) {
     LAST_ERROR.with(|e| *e.borrow_mut() = c);
 }
 
-/// Run `f`, turning an error or a panic into a status, and record the message.
+/// Run `f`, turning an error or a panic into a status ([`binding::guard`]), and record the message.
 fn guard(f: impl FnOnce() -> Result<(), Fail>) -> i32 {
-    match catch_unwind(AssertUnwindSafe(f)) {
-        Ok(Ok(())) => {
+    match binding::guard(f) {
+        Ok(()) => {
             set_error("");
             GGTTS_OK
         }
-        Ok(Err((code, msg))) => {
+        Err((code, msg)) => {
             set_error(&msg);
             code
         }
-        Err(p) => {
-            let msg = p
-                .downcast_ref::<&str>()
-                .map(|s| s.to_string())
-                .or_else(|| p.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "a panic with no message".into());
-            set_error(&format!("panic inside ggtts: {msg}"));
-            GGTTS_ERR_PANIC
-        }
     }
 }
-
-/// An engine in the registry. `Engine` has no `Send` bound, and the real engines are not `Send` to the compiler (raw
-/// ggml pointers; Kitten-TTS 2 shares its backend through `Rc`), so a `Held` is built in one of two ways only:
-/// [`Held::checked`], where the compiler proves the engine `Send`, or [`Held::assume_send`], whose every caller argues
-/// it for that one engine. It carries the style instruction its renders use, given at load (`None` for none).
-struct Held {
-    engine: Box<dyn Engine>,
-    instruction: Option<String>,
-}
-
-impl Held {
-    fn checked(e: Box<dyn Engine + Send>) -> Self {
-        Held {
-            engine: e,
-            instruction: None,
-        }
-    }
-
-    /// # Safety
-    /// The engine may be moved to another thread whole and used there by one thread at a time: nothing in it is tied
-    /// to the thread that made it, and nothing it shares (an `Rc`, a pointer) is reachable from outside it.
-    #[cfg_attr(not(feature = "ggml"), allow(dead_code))]
-    unsafe fn assume_send(e: Box<dyn Engine>) -> Self {
-        Held {
-            engine: e,
-            instruction: None,
-        }
-    }
-
-    #[cfg_attr(not(any(feature = "ggml", test)), allow(dead_code))]
-    fn with_instruction(mut self, instruction: Option<&str>) -> Self {
-        self.instruction = instruction.map(String::from);
-        self
-    }
-}
-
-// SAFETY: every `Held` is `Send` by the compiler's proof or by its constructor's per-engine argument (above), and its
-// engine is used under its own mutex, one call at a time.
-unsafe impl Send for Held {}
-
-type Slot = Arc<Mutex<Held>>;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static ENGINES: Mutex<Option<HashMap<u64, Slot>>> = Mutex::new(None);
+/// The render defaults a load document gave, by handle: every render on it starts from them.
+static DEFAULTS: Mutex<Option<HashMap<u64, Options>>> = Mutex::new(None);
+
+fn defaults() -> MutexGuard<'static, Option<HashMap<u64, Options>>> {
+    DEFAULTS.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// A refused option, as [`GGTTS_ERR_ARG`] with its schema key.
+fn refused(r: Refusal) -> Fail {
+    (GGTTS_ERR_ARG, r.to_string())
+}
 
 /// The registry, locked for a lookup, an insert or a remove and never longer. None of those panics, so a poisoned lock
 /// still holds a whole map.
@@ -182,41 +149,39 @@ fn no_engine(handle: u64) -> Fail {
     )
 }
 
-/// Run `f` on the engine. The registry lock is released before `f` runs, so `f` (and a stream callback inside it) may
-/// call any entry point; the engine's own lock is taken with `try_lock`, so a second call on a rendering engine is
-/// [`GGTTS_ERR_BUSY`]. If `f` panics, the engine is dropped from the registry before the panic goes on to [`guard`].
-/// `f` gets the engine and the instruction it was loaded with.
-fn with_engine<T>(handle: u64, f: impl FnOnce(&mut dyn Engine, Option<&str>) -> Result<T, Fail>) -> Result<T, Fail> {
+/// Run `f` on the engine ([`binding::with_engine`]). The registry lock is released before `f` runs, so `f` (and a
+/// stream callback inside it) may call any entry point; the engine's own lock is taken with `try_lock`, so a second
+/// call on a rendering engine is [`GGTTS_ERR_BUSY`]. If `f` panics, the engine is dropped from the registry and the
+/// call is [`GGTTS_ERR_PANIC`]. `f` gets the engine and the instruction it was loaded with.
+fn with_engine<T>(
+    handle: u64,
+    f: impl FnOnce(&mut dyn ggtts_core::engine::Engine, Option<&str>) -> Result<T, Fail>,
+) -> Result<T, Fail> {
     let slot = registry()
         .get_or_insert_with(HashMap::new)
         .get(&handle)
         .cloned()
         .ok_or_else(|| no_engine(handle))?;
-    let mut held = match slot.try_lock() {
-        Ok(h) => h,
-        Err(TryLockError::WouldBlock) => {
-            return Err((
+    binding::with_engine(
+        &slot,
+        |why| match why {
+            binding::Unusable::Busy => (
                 GGTTS_ERR_BUSY,
                 format!(
                     "the engine with handle {handle} is rendering (a call from its own stream callback, or from \
                      another thread)"
                 ),
-            ))
-        }
-        // A panic inside a render evicts the engine and poisons its lock (below), so a call that looked it up just
-        // before the eviction never uses it either.
-        Err(TryLockError::Poisoned(_)) => return Err(no_engine(handle)),
-    };
-    let h = &mut *held;
-    match catch_unwind(AssertUnwindSafe(|| f(h.engine.as_mut(), h.instruction.as_deref()))) {
-        Ok(r) => r,
-        Err(p) => {
-            // The registry is never locked while an engine's lock is waited on, so taking it here cannot deadlock.
+            ),
+            // A panic inside a render evicts the engine (below), so a call that looked it up just before the
+            // eviction never uses it either.
+            binding::Unusable::Poisoned | binding::Unusable::Panicked => no_engine(handle),
+        },
+        // The registry is never locked while an engine's lock is waited on, so taking it here cannot deadlock.
+        || {
             registry().get_or_insert_with(HashMap::new).remove(&handle);
-            // `held` drops while this panic unwinds, which poisons the engine's lock on purpose.
-            std::panic::resume_unwind(p)
-        }
-    }
+        },
+        f,
+    )
 }
 
 /// A required C string argument.
@@ -244,37 +209,16 @@ unsafe fn opt_arg<'a>(p: *const c_char, name: &str) -> Result<Option<&'a str>, F
     }
 }
 
-/// A model file must exist and be a GGUF before any engine is asked to load it.
-fn check_gguf(what: &str, path: &Path) -> Result<(), Fail> {
-    let mut magic = [0u8; 4];
-    let read = std::fs::File::open(path).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic));
-    let path = path.display();
-    match read {
-        Err(e) => Err((GGTTS_ERR_ENGINE, format!("{what} {path}: {e}"))),
-        Ok(()) if &magic != b"GGUF" => Err((GGTTS_ERR_ENGINE, format!("{what} {path}: not a GGUF file"))),
-        Ok(()) => Ok(()),
-    }
-}
-
-/// The device an engine runs on.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum Device {
-    #[default]
-    Cpu,
-    Cuda,
-}
-
-impl Device {
-    /// `cpu` or `cuda`; `None` (no setting) is `cpu`.
-    fn parse(s: Option<&str>) -> Result<Self, Fail> {
-        match s {
-            None | Some("cpu") => Ok(Device::Cpu),
-            Some("cuda") => Ok(Device::Cuda),
-            Some(other) => Err((
+/// The device setting: `cpu` or `cuda`; `None` (no setting) is `cpu`.
+fn parse_device(s: Option<&str>) -> Result<binding::Device, Fail> {
+    match s {
+        None => Ok(binding::Device::Cpu),
+        Some(name) => binding::Device::from_name(name).ok_or_else(|| {
+            (
                 GGTTS_ERR_ARG,
-                format!("settings.device must be cpu or cuda, not {other:?}"),
-            )),
-        }
+                format!("settings.device must be cpu or cuda, not {name:?}"),
+            )
+        }),
     }
 }
 
@@ -355,30 +299,45 @@ impl<'a> Settings<'a> {
         }
         Ok(settings)
     }
+}
 
-    /// The engines other than Qwen3-TTS take neither setting, and refuse one before any file is read rather than
-    /// ignore it. Both are [`GGTTS_ERR_ARG`], an argument the engine does not take; an instruction carries the
-    /// library's own message for an engine that takes none.
-    fn refuse_for(&self, engine: &str) -> Result<(), Fail> {
-        if self.speaker.is_some() {
-            return Err((
-                GGTTS_ERR_ARG,
-                format!("a speaker is only supported by the qwen3-tts engine, not {engine}"),
-            ));
-        }
-        let req = ChunkRequest {
-            text: "",
-            seed: 0,
-            chunk: 0,
-            draw: 0,
-            instruction: self.instruction,
-            steer: None,
-        };
-        refuse_instruction(&req, engine).map_err(|e| (GGTTS_ERR_ARG, e.0))
+/// How the C-ABI words the refusals that name its own settings ([`binding::Wording`]).
+const WORDING: binding::Wording = binding::Wording {
+    choose_speaker: ". Choose one with the speaker setting",
+    device_setting: "settings.device",
+    cpu_only,
+    no_engines_for_defaults: "",
+    offline_hint: " (downloading is off: allow it with the allow_download setting)",
+    file_checks: binding::FileChecks::InTurn,
+};
+
+/// How a load document words the same refusals: by the document's keys.
+const DOCUMENT_WORDING: binding::Wording = binding::Wording {
+    choose_speaker: ". Choose one with load.speaker",
+    device_setting: "load.device",
+    cpu_only,
+    no_engines_for_defaults: "",
+    offline_hint: " (downloading is off: set load.offline to false to allow it)",
+    file_checks: binding::FileChecks::InTurn,
+};
+
+fn cpu_only(engine: &str, _: binding::Device) -> String {
+    format!("the {engine} engine runs on the CPU only")
+}
+
+/// The cache a version-3 load resolves the default model files in: `cache_dir`, else ggtts-render's.
+fn cache_for(cache_dir: Option<&str>) -> Result<ggtts_models::Cache, String> {
+    match cache_dir {
+        Some(dir) => Ok(ggtts_models::Cache::new(PathBuf::from(dir))),
+        None => ggtts_models::Cache::default_root()
+            .map(ggtts_models::Cache::new)
+            .map_err(|e| format!("{e}, or the cache_dir setting")),
     }
 }
 
-/// The engine for a name. The fake engine needs no files.
+/// The engine for a name ([`binding::open`]). The fake engine needs no files. With version-3 settings and engine
+/// `qwen3-tts`, a model or codec not given is the pinned default `ggtts-render` uses, from the same cache and verified
+/// against the same sha256, downloaded only when `allow_download` is set.
 fn open_engine(
     engine: &str,
     model: Option<&str>,
@@ -386,257 +345,38 @@ fn open_engine(
     voice: Option<&str>,
     threads: i32,
     settings: Settings<'_>,
+    wording: &binding::Wording,
 ) -> Result<Held, Fail> {
-    let threads = if threads <= 0 { 4 } else { threads };
+    // The C-ABI refuses a setting the engine does not take before it reads the device; `binding::open` checks again.
     if engine != "qwen3-tts" {
-        settings.refuse_for(engine)?;
+        binding::refuse_settings(engine, settings.speaker, settings.instruction)?;
     }
-    let device = Device::parse(settings.device)?;
-    if engine == "fake" {
-        if device != Device::Cpu {
-            return Err((GGTTS_ERR_ARG, "the fake engine runs on the CPU only".into()));
-        }
-        return Ok(Held::checked(Box::new(ggtts_fake::FakeEngine::default())));
-    }
-    #[cfg(feature = "plant")]
-    if engine == "panic" {
-        return Ok(Held::checked(Box::new(planted::Panics(
-            ggtts_fake::FakeEngine::default(),
-        ))));
-    }
-    #[cfg(feature = "plant")]
-    if engine == "panic-load" {
-        panic!("planted panic in load");
-    }
-    if !matches!(engine, "qwen3-tts" | "kitten-tts-2") {
-        return Err((GGTTS_ERR_ENGINE, format!("no engine named {engine:?}")));
-    }
-    // Refused before any file is read or downloaded.
-    if device == Device::Cuda && !cfg!(feature = "cuda") {
-        return Err((
-            GGTTS_ERR_ENGINE,
-            "this build has no CUDA backend (built without the cuda feature): settings.device cuda is not \
-             available; use cpu"
-                .into(),
-        ));
-    }
-    let mut settings = settings;
-    let (model, codec) = match (settings.models, ggtts_models::defaults_for(engine)) {
-        (Some(models), Some(defaults)) if model.is_none() || codec.is_none() => {
-            let files = default_files(
-                defaults,
-                model,
-                codec,
-                models,
-                cfg!(feature = "ggml"),
-                &ggtts_models::Http::default(),
-            )?;
-            if settings.speaker.is_none() {
-                settings.speaker = files.speaker;
-            }
-            (Some(files.model), Some(files.codec))
-        }
-        _ => (model.map(PathBuf::from), codec.map(PathBuf::from)),
-    };
-    let model = model.ok_or((GGTTS_ERR_ARG, format!("the {engine} engine needs a model")))?;
-    check_gguf("model", &model)?;
-    let codec = codec.ok_or((GGTTS_ERR_ARG, format!("the {engine} engine needs a codec")))?;
-    check_gguf("codec", &codec)?;
-    load_real(engine, &model, &codec, voice, threads, settings, device)
-}
-
-/// The files a version-3 load uses when the model or the codec is not given, resolved as `ggtts-render` resolves them
-/// with no `--model` or `--codec` (`ggtts_models`): a path given is used as it is; a path not given is the engine's
-/// pinned file in the cache, verified against its sha256, and downloaded first only when `models.allow_download` is
-/// set. Nothing is looked up for a build that cannot render it.
-fn default_files(
-    defaults: &ggtts_models::Defaults,
-    model: Option<&str>,
-    codec: Option<&str>,
-    models: Models<'_>,
-    engines_built: bool,
-    fetch: &dyn ggtts_models::Fetch,
-) -> Result<DefaultFiles, Fail> {
-    if !engines_built {
-        return Err((
-            GGTTS_ERR_ENGINE,
-            format!(
-                "this build has no {} engine (built without the ggml feature)",
-                defaults.engine
-            ),
-        ));
-    }
-    let root = match models.cache_dir {
-        Some(dir) => PathBuf::from(dir),
-        None => ggtts_models::Cache::default_root()
-            .map_err(|e| (GGTTS_ERR_ENGINE, format!("{e}, or the cache_dir setting")))?,
-    };
-    let mut given = vec![model.map(PathBuf::from), codec.map(PathBuf::from)];
-    given.resize(defaults.files.len(), None);
-    let cache = ggtts_models::Cache::new(root);
-    let files =
-        ggtts_models::resolve(defaults, &given, &cache, !models.allow_download, fetch, &mut |_| {}).map_err(|e| {
-            if e.contains("offline mode does not download") {
-                (
-                    GGTTS_ERR_ENGINE,
-                    format!("{e} (downloading is off: allow it with the allow_download setting)"),
-                )
-            } else {
-                (GGTTS_ERR_ENGINE, e)
-            }
-        })?;
-    let mut paths = files.into_iter().map(|f| f.path);
-    match (paths.next(), paths.next()) {
-        (Some(model_path), Some(codec_path)) => Ok(DefaultFiles {
-            model: model_path,
-            codec: codec_path,
-            // The default model gets its default speaker, as in ggtts-render; a given model keeps its own.
-            speaker: if model.is_none() {
-                defaults.default_speaker
-            } else {
-                None
-            },
-        }),
-        _ => Err((
-            GGTTS_ERR_ENGINE,
-            format!("{}: the default files are not a model and a codec", defaults.engine),
-        )),
-    }
-}
-
-/// What [`default_files`] resolved: the model and codec paths, and the speaker to use when none is given.
-#[derive(Debug, PartialEq, Eq)]
-struct DefaultFiles {
-    model: PathBuf,
-    codec: PathBuf,
-    speaker: Option<&'static str>,
-}
-
-/// The Qwen3-TTS voice for the settings: the library's default voice on `device`, with the speaker given in place of
-/// its default speaker.
-#[cfg(feature = "ggml")]
-fn qwen_voice(settings: Settings<'_>, device: Device) -> ggtts_qwen3_tts::engine::Voice {
-    let mut voice = ggtts_qwen3_tts::engine::Voice {
-        device: match device {
-            Device::Cpu => ggtts_qwen3_tts::cpu::Device::Cpu,
-            Device::Cuda => ggtts_qwen3_tts::cpu::Device::Cuda,
-        },
-        ..Default::default()
-    };
-    if let Some(speaker) = settings.speaker {
-        voice.speaker = speaker.to_string();
-    }
-    voice
-}
-
-/// The library's load error, as a binding caller reads it: its unknown-speaker message names the CLI flag, which a
-/// binding caller does not have.
-#[cfg(feature = "ggml")]
-fn qwen_load_error(e: ggtts_core::engine::EngineError) -> Fail {
-    let msg =
-        e.0.replace(". Choose one with --speaker", ". Choose one with the speaker setting");
-    (GGTTS_ERR_ENGINE, msg)
-}
-
-#[cfg(feature = "ggml")]
-fn load_real(
-    engine: &str,
-    model: &Path,
-    codec: &Path,
-    voice: Option<&str>,
-    threads: i32,
-    settings: Settings<'_>,
-    device: Device,
-) -> Result<Held, Fail> {
-    let refused = |e: String| (GGTTS_ERR_ENGINE, e);
-    match engine {
-        // The library checks both settings while loading, before any text is rendered: an instruction the checkpoint
-        // takes none of, then a speaker the model does not have (with the model's speakers in the message).
-        "qwen3-tts" => ggtts_qwen3_tts::engine::Qwen3Tts::load_for(
-            model,
-            codec,
+    let device = parse_device(settings.device)?;
+    let cache_dir = settings.models.and_then(|m| m.cache_dir);
+    let cache = || cache_for(cache_dir);
+    let http = ggtts_models::Http::default();
+    let models = settings.models.map(|m| binding::Models {
+        cache: &cache,
+        offline: !m.allow_download,
+        fetch: &http,
+    });
+    let opened = binding::open(
+        binding::Request {
+            engine,
+            model: model.map(PathBuf::from),
+            codec: codec.map(PathBuf::from),
+            voice: voice.map(PathBuf::from),
+            speaker: settings.speaker,
+            instruction: settings.instruction,
+            device,
             threads,
-            qwen_voice(settings, device),
-            settings.instruction,
-        )
-        // SAFETY: Qwen3-TTS is not `Send` to the compiler only for its raw ggml pointers (contexts, tensors,
-        // graphs, backend buffers), every one allocated by this engine and reachable only through it. It holds no
-        // `Rc` and no thread-local, and neither of ggml's backends it may run on keeps per-thread state between
-        // graph runs: the CPU backend keeps none, and the CUDA backend has no `thread_local` and selects its device
-        // on every call (`ggml_cuda_set_device`), so its streams and cuBLAS handles, used by one thread at a time,
-        // may be used from any thread. The engine is sound to move whole and use from one thread at a time.
-        .map(|e| unsafe { Held::assume_send(Box::new(e)) }.with_instruction(settings.instruction))
-        .map_err(qwen_load_error),
-        _ => {
-            let voice = voice.ok_or((GGTTS_ERR_ARG, "the kitten-tts-2 engine needs a voice".to_string()))?;
-            ggtts_kitten::engine::KittenEngine::open(
-                model,
-                codec,
-                Path::new(voice),
-                threads as usize,
-                match device {
-                    Device::Cpu => ggtts_kitten::backend::Device::Cpu,
-                    Device::Cuda => ggtts_kitten::backend::Device::Cuda,
-                },
-            )
-            // SAFETY: Kitten-TTS 2 is not `Send` to the compiler for its raw ggml pointers and for the `Rc<Backend>`
-            // its parts share. Every clone of that `Rc` lives inside this engine, and the registry hands out no
-            // reference to its parts, so the clones always move together and their count is only ever touched by the
-            // one thread using the engine. Neither backend keeps per-thread state (as for Qwen3-TTS above).
-            .map(|e| unsafe { Held::assume_send(Box::new(e)) })
-            .map_err(refused)
-        }
-    }
+            models,
+        },
+        wording,
+        &mut |_| {},
+    )?;
+    Ok(opened.held)
 }
-
-#[cfg(not(feature = "ggml"))]
-fn load_real(
-    engine: &str,
-    _: &Path,
-    _: &Path,
-    _: Option<&str>,
-    _: i32,
-    _: Settings<'_>,
-    _: Device,
-) -> Result<Held, Fail> {
-    Err((
-        GGTTS_ERR_ENGINE,
-        format!("this build has no {engine} engine (built without the ggml feature)"),
-    ))
-}
-
-/// Text to the story path's chunks: one paragraph per non-empty line.
-fn plan(engine: &dyn Engine, text: &str) -> Result<Vec<ggtts_core::text::PlannedChunk>, Fail> {
-    let paragraphs: Vec<String> = text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(String::from)
-        .collect();
-    if paragraphs.is_empty() {
-        return Err((GGTTS_ERR_ARG, "text is empty".into()));
-    }
-    plan_story(engine.profile(), &paragraphs).map_err(|e| (GGTTS_ERR_ARG, e.to_string()))
-}
-
-/// The story options: the seed as the salt, and the instruction the engine was loaded with (`None` renders exactly as
-/// before instructions existed).
-fn options(engine: &dyn Engine, seed: u64, instruction: Option<&str>) -> RenderOptions {
-    RenderOptions {
-        seed_salt: seed.to_string(),
-        instruction: instruction.map(String::from),
-        ..RenderOptions::for_profile(engine.profile())
-    }
-}
-
-fn render_error(e: RenderError) -> Fail {
-    match e {
-        RenderError::Sink(m) if m == STOPPED => (GGTTS_ERR_STOPPED, "the stream callback asked to stop".into()),
-        other => (GGTTS_ERR_ENGINE, other.to_string()),
-    }
-}
-
-const STOPPED: &str = "stopped by the callback";
 
 /// Load an engine and write its handle.
 ///
@@ -686,7 +426,9 @@ pub unsafe extern "C" fn ggtts_load_with(
     })
 }
 
-/// The body of both loads.
+/// The body of both struct loads: the options the arguments and settings mean, loaded as a document is
+/// ([`load_options`]). A struct load reads the default model files only with a version-3 struct, and keeps its own
+/// refusals' words: the device is read as the struct reads it, after a setting the engine does not take.
 ///
 /// # Safety
 /// As [`ggtts_load`].
@@ -702,20 +444,108 @@ unsafe fn load(
     if handle.is_null() {
         return Err((GGTTS_ERR_ARG, "handle is NULL".into()));
     }
-    let e = open_engine(
-        unsafe { arg(engine, "engine") }?,
-        unsafe { opt_arg(model, "model") }?,
-        unsafe { opt_arg(codec, "codec") }?,
-        unsafe { opt_arg(voice, "voice") }?,
-        threads,
-        settings,
-    )?;
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    registry()
-        .get_or_insert_with(HashMap::new)
-        .insert(id, Arc::new(Mutex::new(e)));
+    let engine = unsafe { arg(engine, "engine") }?;
+    let (model, codec, voice) = unsafe {
+        (
+            opt_arg(model, "model")?,
+            opt_arg(codec, "codec")?,
+            opt_arg(voice, "voice")?,
+        )
+    };
+    let mut o = Options::default();
+    o.load.engine = engine.to_string();
+    o.load.model = model.map(PathBuf::from);
+    o.load.codec = codec.map(PathBuf::from);
+    o.load.voice = voice.map(PathBuf::from);
+    o.load.speaker = settings.speaker.map(String::from);
+    o.load.device = settings.device.map(String::from);
+    o.load.threads = Some(threads);
+    o.render.instruction = settings.instruction.map(String::from);
+    if let Some(m) = settings.models {
+        o.load.cache_dir = m.cache_dir.map(PathBuf::from);
+        o.load.offline = !m.allow_download;
+    }
+    let id = load_options(&o, settings.models.is_some(), false)?;
     unsafe { *handle = id };
     Ok(())
+}
+
+/// Load the engine an options value names, register it and return its handle. `default_files`: a model or codec not
+/// given is the engine's pinned default, from `load.cache_dir`, downloaded unless `load.offline`. `document`: the
+/// value is a load document, checked whole against the engine before anything is read ([`ggtts_core::options::check`]);
+/// otherwise only a speaker or instruction the engine does not take is refused first, as the struct loads always have.
+fn load_options(o: &Options, default_files: bool, document: bool) -> Result<u64, Fail> {
+    let path = |p: &Option<PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned());
+    let (model, codec, voice) = (path(&o.load.model), path(&o.load.codec), path(&o.load.voice));
+    // "auto" is a document's engine only: a struct load names its engine, and "auto" is no engine there.
+    let engine = match (o.load.engine.as_str(), &model) {
+        ("auto", Some(m)) if document => gguf_arch::architecture(std::path::Path::new(m))
+            .map_err(|e| (GGTTS_ERR_ENGINE, format!("load.model {m}: {e}")))?,
+        ("auto", None) if document => "qwen3-tts".to_string(),
+        (e, _) => e.to_string(),
+    };
+    if document {
+        if let Some(caps) = ggtts_core::capabilities::Capabilities::of(&engine) {
+            ggtts_core::options::check(o, &caps).map_err(refused)?;
+        }
+    }
+    let cache_dir = path(&o.load.cache_dir);
+    let settings = Settings {
+        speaker: o.load.speaker.as_deref().filter(|s| !s.is_empty()),
+        instruction: o.render.instruction.as_deref().filter(|s| !s.is_empty()),
+        device: o.load.device.as_deref(),
+        models: default_files.then_some(Models {
+            cache_dir: cache_dir.as_deref(),
+            allow_download: !o.load.offline,
+        }),
+    };
+    let e = open_engine(
+        &engine,
+        model.as_deref(),
+        codec.as_deref(),
+        voice.as_deref(),
+        o.load.threads.unwrap_or(0),
+        settings,
+        if document { &DOCUMENT_WORDING } else { &WORDING },
+    )?;
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    registry().get_or_insert_with(HashMap::new).insert(id, binding::slot(e));
+    Ok(id)
+}
+
+/// Load an engine from an options document (C-ABI version 4): the `load` section, and `render` defaults every render
+/// on the handle starts from. A document with no model loads the engine's default files, downloading a missing one
+/// unless `load.offline` is true. A malformed document, an unknown key, a wrong type, an option a load does not take
+/// (a trace, a stream, a report) and one the engine does not support are [`GGTTS_ERR_ARG`] before anything is read.
+///
+/// # Safety
+/// `options_json` is NULL or NUL-terminated; `handle` is NULL or writable.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_load_opts(options_json: *const c_char, handle: *mut u64) -> i32 {
+    guard(|| {
+        if handle.is_null() {
+            return Err((GGTTS_ERR_ARG, "handle is NULL".into()));
+        }
+        let json = unsafe { arg(options_json, "options_json") }?;
+        let o = Options::from_json(json).map_err(refused)?;
+        binding::check_document(&o, true)?;
+        let id = load_options(&o, true, true)?;
+        // The render defaults, kept with the handle: the render section, marked as given where the document gave it.
+        let mut kept = Options {
+            render: o.render.clone(),
+            ..Options::default()
+        };
+        kept.marks.sources = o
+            .marks
+            .sources
+            .iter()
+            .filter(|(k, _)| k.starts_with("render."))
+            .map(|(k, s)| (k.clone(), *s))
+            .collect();
+        defaults().get_or_insert_with(HashMap::new).insert(id, kept);
+        unsafe { *handle = id };
+        Ok(())
+    })
 }
 
 /// Render `text` to mono f32 PCM. Free the buffer with [`ggtts_pcm_free`].
@@ -736,17 +566,14 @@ pub unsafe extern "C" fn ggtts_render(
             return Err((GGTTS_ERR_ARG, "pcm, len and rate must not be NULL".into()));
         }
         let text = unsafe { arg(text, "text") }?;
-        let read = with_engine(handle, |e, instruction| {
-            let chunks = plan(e, text)?;
-            let opts = options(e, seed, instruction);
-            render_story(e, STORY, &chunks, &opts).map_err(render_error)
-        })?;
-        let boxed = read.samples.into_boxed_slice();
+        let doc = seed_document(seed);
+        let (samples, sample_rate) = render(handle, text, &doc, None)?;
+        let boxed = samples.into_boxed_slice();
         let n = boxed.len();
         unsafe {
             *pcm = Box::into_raw(boxed) as *mut f32;
             *len = n;
-            *rate = read.sample_rate;
+            *rate = sample_rate;
         }
         Ok(())
     })
@@ -770,18 +597,113 @@ pub unsafe extern "C" fn ggtts_render_stream(
     guard(|| {
         let on_piece = on_piece.ok_or((GGTTS_ERR_ARG, "on_piece is NULL".to_string()))?;
         let text = unsafe { arg(text, "text") }?;
-        with_engine(handle, |e, instruction| {
-            let chunks = plan(e, text)?;
-            let opts = options(e, seed, instruction);
-            let mut sink = |p: ggtts_core::pipeline::StreamPiece<'_>| {
-                if on_piece(user, p.samples.as_ptr(), p.samples.len(), p.sample_rate) == 0 {
-                    Ok(())
-                } else {
-                    Err(STOPPED.to_string())
+        let mut doc = seed_document(seed);
+        doc.output.stream = Some("raw".into());
+        doc.marks.sources.insert("output.stream".into(), Source::Document);
+        let mut piece = |samples: &[f32], rate: u32| on_piece(user, samples.as_ptr(), samples.len(), rate) == 0;
+        render(handle, text, &doc, Some(&mut piece)).map(drop)
+    })
+}
+
+/// The render document `seed` means on the struct functions: the story seed's salt, marked as given so it is laid
+/// over a load document's defaults as a document's would be.
+fn seed_document(seed: u64) -> Options {
+    let mut doc = Options::default();
+    doc.render.seed_salt = Some(seed.to_string());
+    doc.marks.sources.insert("render.seed_salt".into(), Source::Document);
+    doc
+}
+
+/// Render `text` on the engine `handle` names with a render document laid over the load's defaults, the instruction
+/// it was loaded with standing in for one the document does not give ([`binding::render_document`]).
+fn render(
+    handle: u64,
+    text: &str,
+    doc: &Options,
+    on_piece: Option<binding::PieceSink<'_>>,
+) -> Result<(Vec<f32>, u32), Fail> {
+    let base = defaults().get_or_insert_with(HashMap::new).get(&handle).cloned();
+    let mut o = match base {
+        Some(b) => b.layer(doc.clone()).map_err(refused)?,
+        None => doc.clone(),
+    };
+    with_engine(handle, |e, instruction| {
+        if o.render.instruction.is_none() {
+            o.render.instruction = instruction.map(String::from);
+        }
+        binding::render_document(e, text, &o, on_piece)
+    })
+}
+
+/// Render `text` with an options document (C-ABI version 4), laid over the load's render defaults; NULL is the empty
+/// document. Without `output.stream` it is a whole read: `on_piece` must be NULL, and `pcm`, `len` and `rate` get the
+/// samples, as [`ggtts_render`] gives them. With `"output": {"stream": "raw"}` each kept chunk goes to `on_piece`
+/// before the level step, as [`ggtts_render_stream`] hands it; `on_piece` is required, and `pcm`, `len` and `rate` are
+/// all NULL or all set (then they also get the whole read). A malformed document, an unknown key, a wrong type, a load option, an
+/// option a binding does not take, and one the engine does not support are [`GGTTS_ERR_ARG`] before anything is
+/// rendered.
+///
+/// # Safety
+/// `text` is NUL-terminated; `options_json` is NULL or NUL-terminated; `on_piece` is NULL or a valid function; `pcm`,
+/// `len` and `rate` are writable, or (for a stream only) NULL; `user` is passed through untouched.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ggtts_render_opts(
+    handle: u64,
+    text: *const c_char,
+    options_json: *const c_char,
+    on_piece: Option<PieceFn>,
+    user: *mut c_void,
+    pcm: *mut *mut f32,
+    len: *mut usize,
+    rate: *mut u32,
+) -> i32 {
+    guard(|| {
+        let text = unsafe { arg(text, "text") }?;
+        let doc = match unsafe { opt_arg(options_json, "options_json") }? {
+            None => Options::default(),
+            Some(json) => Options::from_render_json(json).map_err(refused)?,
+        };
+        binding::check_document(&doc, false)?;
+        let given = [pcm.is_null(), len.is_null(), rate.is_null()];
+        let outputs = given.iter().all(|null| !null);
+        if doc.output.stream.is_some() && !outputs && given.iter().any(|null| !null) {
+            return Err((
+                GGTTS_ERR_ARG,
+                "a stream's pcm, len and rate are all set or all NULL: one of them alone has nowhere to write".into(),
+            ));
+        }
+        let result =
+            match (doc.output.stream.is_some(), on_piece) {
+                (true, None) => {
+                    return Err((
+                        GGTTS_ERR_ARG,
+                        "output.stream needs on_piece: the pieces go to it".into(),
+                    ))
+                }
+                (false, Some(_)) => return Err((
+                    GGTTS_ERR_ARG,
+                    "on_piece is set, and the document asks for no stream: give \"output\": {\"stream\": \"raw\"}, \
+                     or pass NULL"
+                        .into(),
+                )),
+                (false, None) if !outputs => return Err((GGTTS_ERR_ARG, "pcm, len and rate must not be NULL".into())),
+                (false, None) => render(handle, text, &doc, None)?,
+                (true, Some(f)) => {
+                    let mut piece = |samples: &[f32], r: u32| f(user, samples.as_ptr(), samples.len(), r) == 0;
+                    render(handle, text, &doc, Some(&mut piece))?
                 }
             };
-            render_story_streamed(e, STORY, &chunks, &opts, &mut NullEvents, &mut sink).map_err(render_error)
-        })?;
+        if outputs {
+            let (samples, sample_rate) = result;
+            let boxed = samples.into_boxed_slice();
+            let n = boxed.len();
+            unsafe {
+                *pcm = Box::into_raw(boxed) as *mut f32;
+                *len = n;
+                *rate = sample_rate;
+            }
+        }
         Ok(())
     })
 }
@@ -805,6 +727,7 @@ pub extern "C" fn ggtts_free(handle: u64) -> i32 {
     guard(|| {
         // The registry guard is a temporary, so it is released before `slot`, and the engine with it, drops.
         let slot = registry().get_or_insert_with(HashMap::new).remove(&handle);
+        defaults().get_or_insert_with(HashMap::new).remove(&handle);
         slot.map(drop).ok_or_else(|| no_engine(handle))
     })
 }
@@ -826,38 +749,16 @@ pub fn last_error() -> String {
     LAST_ERROR.with(|e| e.borrow().to_string_lossy().into_owned())
 }
 
-#[cfg(feature = "plant")]
-mod planted {
-    use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm};
-    use ggtts_core::profile::Profile;
-
-    /// The fake engine, except that generating panics: the planted defect for the boundary test.
-    pub struct Panics(pub ggtts_fake::FakeEngine);
-
-    impl Engine for Panics {
-        fn info(&self) -> &EngineInfo {
-            self.0.info()
-        }
-        fn profile(&self) -> &Profile {
-            self.0.profile()
-        }
-        fn generate(&mut self, _req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
-            panic!("planted panic in generate")
-        }
-        fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
-            self.0.decode(codes)
-        }
-    }
-}
-
 #[cfg(test)]
 mod chunk_input_tests {
     use super::*;
+    use ggtts_core::engine::Engine;
+    use std::sync::Arc;
 
     #[test]
     fn punctuation_only_is_an_argument_error_before_render() {
         let engine = ggtts_fake::FakeEngine::default();
-        let (code, message) = plan(&engine, "？！").unwrap_err();
+        let (code, message) = binding::plan(&engine, "？！").unwrap_err();
         assert_eq!(code, GGTTS_ERR_ARG);
         assert!(message.contains("punctuation-only"));
     }
@@ -907,7 +808,7 @@ mod chunk_input_tests {
         let handle = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         registry()
             .get_or_insert_with(HashMap::new)
-            .insert(handle, Arc::new(Mutex::new(Held::checked(Box::new(engine)))));
+            .insert(handle, binding::slot(Held::checked(Box::new(engine), None)));
         let (mut pcm, mut len, mut rate) = (std::ptr::null_mut(), 0, 0);
         assert_eq!(
             unsafe { ggtts_render(handle, text.as_ptr(), 1, &mut pcm, &mut len, &mut rate) },
@@ -932,13 +833,17 @@ mod chunk_input_tests {
         assert_eq!(ggtts_free(handle), GGTTS_OK);
     }
 
-    /// The fake engine, recording each request's instruction and rendering it as none.
+    /// The fake engine, recording each request's instruction and rendering it as none. A stand-in for an engine that
+    /// takes an instruction, so it says so.
     struct Recording {
         inner: ggtts_fake::FakeEngine,
         seen: Arc<Mutex<Vec<Option<String>>>>,
     }
 
     impl Engine for Recording {
+        fn capabilities(&self) -> ggtts_core::capabilities::Capabilities {
+            ggtts_core::capabilities::Capabilities::of("qwen3-tts").unwrap()
+        }
         fn info(&self) -> &ggtts_core::engine::EngineInfo {
             self.inner.info()
         }
@@ -971,12 +876,9 @@ mod chunk_input_tests {
             seen: seen.clone(),
         };
         let handle = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        registry().get_or_insert_with(HashMap::new).insert(
-            handle,
-            Arc::new(Mutex::new(
-                Held::checked(Box::new(engine)).with_instruction(instruction),
-            )),
-        );
+        registry()
+            .get_or_insert_with(HashMap::new)
+            .insert(handle, binding::slot(Held::checked(Box::new(engine), instruction)));
         let text = std::ffi::CString::new("今日天氣好好，我哋去海邊行下。\n行完之後，去食飯。").unwrap();
         let (mut pcm, mut len, mut rate) = (std::ptr::null_mut(), 0, 0);
         assert_eq!(
@@ -1077,18 +979,44 @@ mod default_model_tests {
         root
     }
 
+    /// The default files a version-3 load with these settings resolves, as [`open_engine`] resolves them: the C-ABI's
+    /// cache and wording.
+    fn default_files(
+        model: Option<&str>,
+        codec: Option<&str>,
+        models: Models<'_>,
+        engines_built: bool,
+        fetch: &Recording,
+    ) -> Result<binding::DefaultFiles, Fail> {
+        let cache = || cache_for(models.cache_dir);
+        let models = binding::Models {
+            cache: &cache,
+            offline: !models.allow_download,
+            fetch,
+        };
+        binding::resolve_defaults(
+            &ggtts_models::QWEN3_TTS,
+            model.map(PathBuf::from),
+            codec.map(PathBuf::from),
+            &models,
+            engines_built,
+            &WORDING,
+            &mut |_| {},
+        )
+    }
+
     fn resolve(
-        root: &Path,
+        root: &std::path::Path,
         model: Option<&str>,
         codec: Option<&str>,
         allow_download: bool,
         fetch: &Recording,
-    ) -> Result<DefaultFiles, Fail> {
+    ) -> Result<binding::DefaultFiles, Fail> {
         let models = Models {
             cache_dir: Some(root.to_str().unwrap()),
             allow_download,
         };
-        default_files(&ggtts_models::QWEN3_TTS, model, codec, models, true, fetch)
+        default_files(model, codec, models, true, fetch)
     }
 
     /// With no paths, the pinned default files from the cache and the default model's default speaker; a given path
@@ -1103,12 +1031,8 @@ mod default_model_tests {
         let fetch = Recording::default();
         let files = resolve(&root, None, None, false, &fetch).unwrap();
         assert_eq!(
-            files,
-            DefaultFiles {
-                model: cache.path_for(talker),
-                codec: cache.path_for(codec),
-                speaker: Some("hk_voice_343"),
-            }
+            (files.model, files.codec, files.speaker),
+            (cache.path_for(talker), cache.path_for(codec), Some("hk_voice_343"))
         );
         let files = resolve(&root, Some("my-talker.gguf"), None, false, &fetch).unwrap();
         assert_eq!(files.model, PathBuf::from("my-talker.gguf"));
@@ -1156,7 +1080,7 @@ mod default_model_tests {
             cache_dir: Some(root.to_str().unwrap()),
             allow_download: true,
         };
-        let (code, msg) = default_files(&ggtts_models::QWEN3_TTS, None, None, models, false, &fetch).unwrap_err();
+        let (code, msg) = default_files(None, None, models, false, &fetch).unwrap_err();
         assert_eq!(code, GGTTS_ERR_ENGINE);
         assert_eq!(
             msg,

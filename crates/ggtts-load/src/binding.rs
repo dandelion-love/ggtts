@@ -665,6 +665,8 @@ pub struct Request<'a> {
     /// `None`: only the paths given are loaded (the C-ABI's version-2 struct and NULL settings). `Some`: a model or
     /// codec not given is the engine's pinned default, from the cache, as `ggtts-render` resolves it.
     pub models: Option<Models<'a>>,
+    /// The Qwen3-TTS sampler settings, frame cap and language (an options document's load section); default: none.
+    pub tuning: crate::Tuning,
 }
 
 /// A loaded engine, the speaker in effect (the one given, or the default model's default speaker; `None` for the
@@ -767,6 +769,7 @@ pub fn open(req: Request<'_>, wording: &Wording, notice: &mut dyn FnMut(&str)) -
         req.device,
         speaker.as_deref(),
         instruction,
+        &req.tuning,
         wording,
     )?;
     Ok(Opened { held, speaker, files })
@@ -876,6 +879,7 @@ fn load_real(
     device: Device,
     speaker: Option<&str>,
     instruction: Option<&str>,
+    tuning: &crate::Tuning,
     wording: &Wording,
 ) -> Result<Held, Fail> {
     match engine {
@@ -890,6 +894,7 @@ fn load_real(
             if let Some(s) = speaker {
                 v.speaker = s.to_string();
             }
+            tuning.apply(&mut v);
             // The library checks both settings while loading, before any text is rendered: an instruction the
             // checkpoint takes none of, then a speaker the model does not have (with the model's speakers).
             ggtts_qwen3_tts::engine::Qwen3Tts::load_for(model, codec, threads, v, instruction)
@@ -933,6 +938,7 @@ fn load_real(
     _: Device,
     _: Option<&str>,
     _: Option<&str>,
+    _: &crate::Tuning,
     _: &Wording,
 ) -> Result<Held, Fail> {
     Err(engine_err(format!(
@@ -1035,6 +1041,7 @@ mod tests {
                 device: Device::Cpu,
                 threads: 0,
                 models: None,
+                tuning: Default::default(),
             },
             &wording(),
             &mut |_| {},

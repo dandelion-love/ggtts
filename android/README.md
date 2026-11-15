@@ -185,7 +185,11 @@ to first audio, how long the render took, and its real-time factor.
 ## Leaving the screen during a read
 
 A read belongs to the app, not its screen. Leave the screen and the read goes on, in a foreground service. Its
-notification shows the progress and has Stop, and reopening the app shows where the read is. The loaded model stays
+notification is a media notification, with Pause or Play and Stop, and reopening the app shows where the read is.
+The read publishes a media session, so the lock screen, a headset or Bluetooth play/pause button, and
+`adb shell cmd media_session dispatch pause` (or `play`) control it too. Pause holds what is still to play:
+rendering goes on while paused, and Play plays on from where it stopped, nothing skipped. Stop ends the read as
+before. No permission is added for this. The loaded model stays
 loaded between reads, shared with the system engine below, and is released when Android asks for memory back while
 nothing is being read.
 

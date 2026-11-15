@@ -496,11 +496,12 @@ Version 5 lets a binding read these from the library, so it ships no schema file
   ```json
   {"format": "ggtts-capabilities/1", "family": "qwen3-tts", "instruction": true, "no_instruction_why": null,
    "steering": true, "speakers": true, "speaker_names": ["..."], "devices": ["cpu", "cuda"],
-   "hooks": {"p_stop": true, "logits": true}, "step_events": true}
+   "hooks": {"p_stop": true, "logits": true}, "step_events": true, "full_head": false}
   ```
 
   `speaker_names` lists the loaded model's speakers, and is empty for an engine without them. A checkpoint that takes
-  no instruction says why in `no_instruction_why`. The fields are the engine's own capabilities, the ones an options
+  no instruction says why in `no_instruction_why`. `full_head` is true for an engine that can compute its whole output
+  head (Kitten-TTS 2, `load.kitten_full_head`). The fields are the engine's own capabilities, the ones an options
   document is checked against. A freed or unknown handle is `GGTTS_ERR_HANDLE`, and `json` is NULL on any error.
 * **`ggtts_last_error_key()`** is the schema key of the option the thread's last call refused, when that call returned
   `GGTTS_ERR_ARG` for one option. Steering on an engine that cannot steer gives `"render.steer"`, and an unknown key

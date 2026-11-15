@@ -92,15 +92,18 @@ pub struct Header {
     /// The render's steering, as [`Steering::record`](crate::steer::Steering::record) writes it: the file's sha256,
     /// the layers applied and the scale. Absent from the line for an unsteered render.
     pub steer: Option<Value>,
+    /// Kitten-TTS 2 computed its whole output head (`load.kitten_full_head`). Absent from the line when false.
+    pub kitten_full_head: bool,
 }
 
 impl Header {
-    /// Sets the instruction and the steering from a provenance record ([`crate::options::record`]): its
-    /// [`REPORTED`](crate::options::REPORTED) fields, as every report carries them.
+    /// Sets the instruction, the steering and the whole-head switch from a provenance record
+    /// ([`crate::options::record`]): its [`REPORTED`](crate::options::REPORTED) fields, as every report carries them.
     pub fn set_reported(&mut self, record: &Value) {
         let reported = crate::options::reported(record);
         self.instruction = reported.get("instruction").and_then(Value::as_str).map(str::to_string);
         self.steer = reported.get("steer").cloned();
+        self.kitten_full_head = reported.get("kitten_full_head") == Some(&Value::Bool(true));
     }
 
     /// A header for `engine` at `trace_level`, including declared measurement semantics.
@@ -122,6 +125,7 @@ impl Header {
             models: Vec::new(),
             instruction: None,
             steer: None,
+            kitten_full_head: false,
         }
     }
 }
@@ -228,6 +232,9 @@ impl Event<'_> {
                 }
                 put(&mut m, "instruction", h.instruction.clone());
                 put(&mut m, "steer", h.steer.clone());
+                if h.kitten_full_head {
+                    m.insert("kitten_full_head".into(), true.into());
+                }
             }
             Event::ChunkBegin {
                 chunk,

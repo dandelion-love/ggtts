@@ -38,6 +38,15 @@ def load(model_dir, device):
         )
 
 
+def load_error(e):
+    """Why the model did not load, as ggtts reports it: the error's class only, since its message can name paths or
+    carry what the model printed. A missing package also gives its module's name, which carries neither and says what
+    to install."""
+    if isinstance(e, ModuleNotFoundError) and e.name:
+        return f"ModuleNotFoundError: {e.name}"
+    return type(e).__name__
+
+
 def read(model, audio):
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         result = model.transcribe([str(audio)], language="Cantonese")
@@ -61,7 +70,7 @@ def main():
     try:
         model = load(a.model, a.device)
     except Exception as e:  # noqa: BLE001 - the reason goes back to ggtts, not the speech
-        say({"error": f"the model did not load ({type(e).__name__})"})
+        say({"error": f"the model did not load ({load_error(e)})"})
         return 2
     say({"ready": True})
     for line in sys.stdin:

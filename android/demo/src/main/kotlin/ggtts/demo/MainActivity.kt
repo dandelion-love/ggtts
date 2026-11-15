@@ -180,6 +180,8 @@ class MainActivity : AppCompatActivity(), DemoView {
         val s = text.text.toString()
         if (Launch.fitsSavedState(s)) {
             outState.putString(STATE_TEXT, s)
+            // A long card saved earlier is no longer the card: its file goes.
+            File(cacheDir, CARD_FILE).delete()
         } else {
             runCatching { File(cacheDir, CARD_FILE).writeText(s) }
                 .onSuccess { outState.putString(STATE_TEXT_FILE, CARD_FILE) }
@@ -250,6 +252,8 @@ class MainActivity : AppCompatActivity(), DemoView {
         // The read and the loaded engine stay with the process (see Reader); only this screen goes.
         if (Reader.screen === this) Reader.screen = null
         worker.shutdown()
+        // The screen is closing for good (not re-created), so nothing will restore a long card's file: it goes.
+        if (isFinishing) File(cacheDir, CARD_FILE).delete()
         super.onDestroy()
     }
 

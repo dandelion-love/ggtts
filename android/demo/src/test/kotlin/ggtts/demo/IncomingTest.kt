@@ -49,7 +49,19 @@ class IncomingTest {
         val check = save.indexOf("if (Launch.fitsSavedState(s))")
         val put = save.indexOf("outState.putString(STATE_TEXT, s)")
         assertTrue("onSaveInstanceState checks the cap before it saves the text:\n$save", check in 0 until put)
-        assertTrue("a longer card goes to a file:\n$save", "File(cacheDir, CARD_FILE).writeText(s)" in save)
+        // The two branches, split at `} else {`: the text itself goes in the Bundle only when it fits.
+        val split = save.indexOf("} else {", check)
+        assertTrue("onSaveInstanceState has a long-card branch:\n$save", split > check)
+        val fits = save.substring(check, split)
+        val long = save.substring(split)
+        assertEquals("the text is put in the Bundle exactly once, when it fits:\n$save", 1, Regex("""putString\(STATE_TEXT,""").findAll(save).count())
+        assertTrue("the fitting branch puts the text and deletes an old long-card file:\n$fits",
+            "outState.putString(STATE_TEXT, s)" in fits && "File(cacheDir, CARD_FILE).delete()" in fits)
+        assertTrue("a longer card goes to a file:\n$long", "File(cacheDir, CARD_FILE).writeText(s)" in long)
+        assertTrue("the long branch saves only the file's name:\n$long",
+            "outState.putString(STATE_TEXT_FILE, CARD_FILE)" in long && "putString(STATE_TEXT," !in long)
+        val destroy = src.substring(src.indexOf("override fun onDestroy"), src.indexOf("super.onDestroy()", src.indexOf("override fun onDestroy")))
+        assertTrue("a finishing screen deletes the long-card file:\n$destroy", "if (isFinishing) File(cacheDir, CARD_FILE).delete()" in destroy)
     }
 
     /**

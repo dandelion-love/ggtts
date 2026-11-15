@@ -68,7 +68,12 @@ const LOAD: &[&str] = &[
 ];
 const KITTEN_HEAD: &[&str] = &["load.kitten_full_head"];
 const SAMPLER: &[&str] = &ggtts_core::options::SAMPLER;
-const STEER: &[&str] = &["render.steer", "render.steer_scale", "render.steer_layers"];
+const STEER: &[&str] = &[
+    "render.steer",
+    "render.steer_scale",
+    "render.steer_layers",
+    "render.steer_scales",
+];
 const TRACE: &[&str] = &["observe.trace", "observe.trace_level"];
 const CODES: &[&str] = &["observe.codes"];
 const REPORTS: &[&str] = &["observe.timing_report", "observe.duration_report"];
@@ -298,7 +303,10 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.judge"], Refused(NO_JUDGE)),
             (&["render.steer"], Carried),
             // Probed on `Recorder`, an engine that steers and redraws, loaded through `kotlin::load_over`.
-            (&["render.steer_scale", "render.steer_layers"], Carried),
+            (
+                &["render.steer_scale", "render.steer_layers", "render.steer_scales"],
+                Carried,
+            ),
             (&["render.edge_s"], Carried),
             (&["render.redraw"], Carried),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
@@ -341,7 +349,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Carried),
             (&["render.judge"], Refused(NO_JUDGE)),
-            (&["render.steer", "render.edge_s"], Carried),
+            (&["render.steer", "render.edge_s", "render.steer_scales"], Carried),
             // Handed to the binding in the document like the rest, so the app carries them exactly when the Kotlin
             // binding does (its probes on `Recorder`). The app cannot carry more than the binding:
             // `the_app_carries_no_more_than_its_binding` holds the two rows together.
@@ -797,6 +805,7 @@ fn sample_value(d: &Descriptor) -> Option<&'static str> {
         Kind::Int { .. } | Kind::Number { .. } | Kind::Seed => Some("1"),
         Kind::Choice(choices) => choices.first().copied(),
         Kind::Layers => Some("0"),
+        Kind::Numbers => Some("1.5"),
         _ => Some("x"),
     }
 }
@@ -1400,11 +1409,13 @@ fn python_probes() -> Vec<Probe> {
     out
 }
 
-/// What [`Recorder`] saw: each request's draw, and the steering it carried (its scale and layers).
+/// What [`Recorder`] saw: each request's draw, and the steering it carried (its scale and layers, and its per-layer
+/// scales when it had them).
 #[derive(Default)]
 struct Recorded {
     draws: Vec<u32>,
     steer: Vec<(f64, Vec<u32>)>,
+    scales: Vec<Option<Vec<f64>>>,
 }
 
 /// An engine that steers, for the probes the fake engine cannot answer: the fake engine stating Qwen3-TTS's
@@ -1434,6 +1445,7 @@ impl ggtts_core::engine::Engine for Recorder {
         seen.draws.push(req.draw);
         if let Some(s) = req.steer {
             seen.steer.push((s.scale, s.layer_indices()));
+            seen.scales.push(s.scales.clone());
         }
         drop(seen);
         let long = req.text.repeat(20);
@@ -1513,6 +1525,23 @@ fn python_engine_probes(dir: &Path) -> Vec<Probe> {
         "render.steer_layers",
         match (first(&plain), first(&layered)) {
             (Some((_, all)), Some((_, one))) if all == vec![0, 1] && one == vec![1] => Seen::Carried,
+            _ => Seen::Dropped,
+        },
+    );
+    // Per-layer scales: given in the document's layer order (1, then 0), the engine is handed each layer's own,
+    // ascending by layer.
+    let (per_layer, _) = run(
+        qwen,
+        &format!(
+            r#"{{"render": {{"steer": {steer}, "steer_layers": [1, 0], "steer_scales": [0.5, 0.25], "redraw": 0}}}}"#
+        ),
+    );
+    push(
+        "render.steer_scales",
+        match per_layer.scales.first() {
+            Some(Some(s)) if s == &vec![0.25, 0.5] && first(&per_layer).map(|f| f.1) == Some(vec![0, 1]) => {
+                Seen::Carried
+            }
             _ => Seen::Dropped,
         },
     );
@@ -1693,7 +1722,8 @@ fn kotlin_probes() -> Vec<Probe> {
 
 /// Kotlin's `load(options=…)` through its native load path (`ggtts_ffi::kotlin::load_over`) over [`Recorder`], loaded
 /// as qwen3-tts so the document is checked against an engine that steers, and rendered through `render_opts` as the
-/// binding renders: `render.steer_scale` and `render.steer_layers` are seen in the steering the engine is handed,
+/// binding renders: `render.steer_scale`, `render.steer_layers` and `render.steer_scales` are seen in the steering
+/// the engine is handed,
 /// `render.redraw` in the draws it is asked for, and `load.cache_dir` in the offline refusal of an uncached steering
 /// URL, which names the cache the load gave. As Python's ([`python_engine_probes`]).
 fn kotlin_engine_probes() -> Vec<Probe> {
@@ -1751,6 +1781,23 @@ fn kotlin_engine_probes() -> Vec<Probe> {
         "render.steer_layers",
         match (first(&plain), first(&layered)) {
             (Some((_, all)), Some((_, one))) if all == vec![0, 1] && one == vec![1] => Seen::Carried,
+            _ => Seen::Dropped,
+        },
+    );
+    // Per-layer scales: given in the document's layer order (1, then 0), the engine is handed each layer's own,
+    // ascending by layer.
+    let (per_layer, _) = run(
+        qwen,
+        &format!(
+            r#"{{"render": {{"steer": {steer}, "steer_layers": [1, 0], "steer_scales": [0.5, 0.25], "redraw": 0}}}}"#
+        ),
+    );
+    push(
+        "render.steer_scales",
+        match per_layer.scales.first() {
+            Some(Some(s)) if s == &vec![0.25, 0.5] && first(&per_layer).map(|f| f.1) == Some(vec![0, 1]) => {
+                Seen::Carried
+            }
             _ => Seen::Dropped,
         },
     );

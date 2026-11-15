@@ -30,6 +30,13 @@ that a merge places under a released heading is caught.
   the engine once pays no process, model load or hash per chunk. `render.seed` was refused in a render document
   before; it is refused with `seed_salt` (the render call's own seed), `redraw` or `edge_s`, and in a load document,
   each under `render.seed`, and an empty text under `render.text`.
+- **A steering scale per layer: `--steer-scales` (`render.steer_scales`).** One scale per layer of `--steer-layers`,
+  in its order, so a file of unit-length directions can carry the per-layer push lengths that unit-vector steering
+  methods use; at `s × |v_L|` it renders what `--steer-scale s` renders over the unnormalised vectors. Every front
+  end that takes steering takes it. It is refused when its length differs from `--steer-layers`, when a value is not
+  finite, without `--steer-layers`, and together with `--steer-scale`. A render with it records `scales` in place of
+  `scale` in its `steer` record (the trace header, the timing and duration reports, a book's manifest); the three
+  schemas allow it, within their format versions.
 
 ## v0.1.0-rc.13 (2026-11-15)
 

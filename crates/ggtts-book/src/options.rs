@@ -39,6 +39,7 @@ pub const RENDER_TAKES: &[&str] = &[
     "render.steer",
     "render.steer_scale",
     "render.steer_layers",
+    "render.steer_scales",
     "render.redraw",
     "render.edge_s",
     "render.judge",

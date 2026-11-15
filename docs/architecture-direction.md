@@ -84,7 +84,7 @@ fixed means the front end hard-codes one value, and `?` is not confirmed from th
 | timing and duration reports, log settings | Y | Y | N | N | N | N | ? |
 | stream | Y: levelled by default, `--stream-raw` | Y: levelled by default, `--stream-raw` (since #294) | N | Y: unlevelled pieces only | as C | as C | as C |
 | output | FLAC, WAV or s16le stream | same | FLAC per chapter, export | PCM | PCM | PCM, FLAC | played, saved |
-| speech rate and pitch (Android `SynthesisRequest`) | n/a | n/a | n/a | n/a | n/a | n/a | ignored silently |
+| speech rate and pitch (Android `SynthesisRequest`) | n/a | n/a | n/a | n/a | n/a | n/a | refused: one log line per read (since [#282](https://github.com/dandelion-love/ggtts/issues/282)) |
 
 What the table shows beyond missing cells:
 

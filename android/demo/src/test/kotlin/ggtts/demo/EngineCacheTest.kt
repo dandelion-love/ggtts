@@ -62,7 +62,7 @@ class EngineCacheTest {
         assertEquals(listOf("start", "done"), out.events)
 
         // Another engine replaces it, and the first is closed.
-        screen.speak(qwen.copy(threads = 8), "x", Ggtts.DEFAULT_SEED)
+        screen.speak(qwen.withThreads(8), "x", Ggtts.DEFAULT_SEED)
         assertEquals(2, loads.size)
         assertTrue(engines[0].closed)
         assertFalse(engines[1].closed)

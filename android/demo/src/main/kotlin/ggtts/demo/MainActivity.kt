@@ -83,7 +83,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         val LINES = mapOf("qwen3-tts" to "今日天氣好好。", "kitten-tts-2" to "Hello from ggtts, running on this phone.")
         val THREADS = listOf(2, 4, 6, 8)
         /** The binding's default. See android/README.md for what more threads buy on a phone. */
-        const val DEFAULT_THREADS = 4
+        const val DEFAULT_THREADS = LoadRequest.DEFAULT_THREADS
         private const val REQUEST_NOTIFICATIONS = 2
         private const val PICK_FOLDER = 3
     }
@@ -727,8 +727,7 @@ class MainActivity : AppCompatActivity(), DemoView {
             codec = path(codec),
             voice = if (engine == "kitten-tts-2") path(voice) else null,
             speaker = if (engine == "qwen3-tts") speaker.text.toString().trim().ifEmpty { null } else null,
-            threads = THREADS[threads.selectedItemPosition],
-        )
+        ).withThreads(THREADS[threads.selectedItemPosition])
         Log.i(TAG, "speak: $request")
         controller.speak(request, text.text.toString(), Ggtts.DEFAULT_SEED)
     }

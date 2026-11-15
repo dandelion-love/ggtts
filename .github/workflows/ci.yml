@@ -292,6 +292,13 @@ jobs:
           one events.log cargo test --locked --release -p ggtts-cli --features ggml --test no_change_real \
             each_event_instrument_preserves_real_qwen_tokens_and_samples -- --exact --ignored --nocapture
           grep -F "model=tiny-fixture" events.log
+      - name: The book's steering on the tiny model (a steered chapter differs from an unsteered one, and does not resume it)
+        run: |
+          set -euo pipefail
+          # Cargo exits zero when no test ran, so the run must report its one test passed.
+          cargo test --release --locked -p ggtts-book --features ggml --test steer_tiny -- --ignored --nocapture 2>&1 \
+            | tee steer-book.log
+          grep -F "test result: ok. 1 passed; 0 failed" steer-book.log
       - name: Planted, a talker that is not the pinned cut is refused (the check fails closed)
         run: |
           set -u

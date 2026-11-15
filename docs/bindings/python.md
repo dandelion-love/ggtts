@@ -153,7 +153,10 @@ python first_render.py kitten-tts-2 kitten-lm.gguf kitten-s3gen.gguf prepared-vo
   as `ggtts-render --story` does. It is the C library's render: the same text and seed give the same samples.
 * **The seed** fixes the random draws. It is the **seed salt**: each chunk's sampler seed is derived from the text, a
   fixed story id and this salt, so it is not the sampler seed of `ggtts-render --text --seed`. In an options document
-  its key is `render.seed_salt` (a string). With neither, the salt is `ggtts.DEFAULT_SEED`, 20260905.
+  its key is `render.seed_salt` (a string). With no `seed` and no `options`, the salt is `ggtts.DEFAULT_SEED`,
+  20260905. With `options` and no salt given (by `seed`, the document or the load's defaults), the salt is empty, as
+  the C library's `ggtts_render_opts` leaves it, so the same document renders the same samples in both. Pass `seed`
+  to keep a render the same with and without a document.
 * **`options`** is a render document, laid over the load's render defaults. See [Options](#options).
 
 An `Audio` holds mono float32 samples:

@@ -224,14 +224,32 @@ const FRONT_ENDS: &[FrontEnd] = &[
     FrontEnd {
         id: "python",
         cells: &[
-            (LOAD, Carried),
+            (
+                &[
+                    "load.engine",
+                    "load.model",
+                    "load.codec",
+                    "load.voice",
+                    "load.speaker",
+                    "load.device",
+                    "load.threads",
+                    "load.offline",
+                ],
+                Carried,
+            ),
+            // The cache is read only by a build with engines: probed with the ggml feature.
+            (&["load.cache_dir"], Gap(291)),
             (KITTEN_HEAD, Refused(ENGINE_READS_ENV)),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
             (&["render.judge"], Refused(NO_JUDGE)),
-            (STEER, Carried),
-            (&["render.redraw", "render.edge_s"], Carried),
+            (&["render.steer"], Carried),
+            // Read only by an engine that steers, which the fake engine is not: probed on a real model only.
+            (&["render.steer_scale", "render.steer_layers"], Gap(291)),
+            (&["render.edge_s"], Carried),
+            // A redraw needs a draw the judge rejects, which the fake engine never gives.
+            (&["render.redraw"], Gap(291)),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Carried),
             (REPORTS, Refused(NO_TIMINGS)),
@@ -265,8 +283,12 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.story"], Refused(NO_STORY_FILE)),
             (&["render.seed"], Refused(BINDING_SEED)),
             (&["render.judge"], Refused(NO_JUDGE)),
-            (STEER, Carried),
-            (&["render.redraw", "render.edge_s"], Carried),
+            (&["render.steer"], Carried),
+            // Read only by an engine that steers, which the fake engine is not: probed on a real model only.
+            (&["render.steer_scale", "render.steer_layers"], Gap(292)),
+            (&["render.edge_s"], Carried),
+            // A redraw needs a draw the judge rejects, which the fake engine never gives.
+            (&["render.redraw"], Gap(292)),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Refused(ANDROID_TRACE)),
             (REPORTS, Refused(NO_TIMINGS)),
@@ -1099,7 +1121,7 @@ fn python_probes() -> Vec<Probe> {
             },
         );
     }
-    // The edge kept at each chunk changes the read's length, as a load default and in a render document.
+    // The edge kept at each chunk, given in a render document, changes the read's length.
     let edged = render(r#"{"render": {"edge_s": 1.5}}"#).unwrap().0;
     push(
         "render.edge_s",
@@ -1128,19 +1150,19 @@ fn python_probes() -> Vec<Probe> {
             Seen::Dropped
         },
     );
-    // The load document's engine is the engine loaded.
+    // The load document's engine is the engine loaded: "fake", where the document's default ("auto", with no model)
+    // would be qwen3-tts.
+    let named = load(
+        &LoadRequest {
+            options: Some(r#"{"load": {"engine": "fake"}}"#.into()),
+            ..Default::default()
+        },
+        &mut |_| {},
+    );
     push(
         "load.engine",
-        match guard_keyed(|| {
-            load(
-                &LoadRequest {
-                    options: Some(r#"{"load": {"engine": "nonesuch"}}"#.into()),
-                    ..Default::default()
-                },
-                &mut |_| {},
-            )
-        }) {
-            Err(((_, msg), _)) if msg.contains("nonesuch") => Seen::Carried,
+        match named {
+            Ok((_, loaded)) if loaded.engine == "fake" && loaded.family == "fake" => Seen::Carried,
             _ => Seen::Dropped,
         },
     );

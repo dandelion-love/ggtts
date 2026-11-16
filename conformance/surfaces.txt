@@ -35,6 +35,8 @@ kotlin free: handle
 dart Ggtts: lib
 dart abiVersion:
 dart load: options
+dart optionsSchema:
 dart capabilities: handle
 dart render: handle, text, options
+dart renderStream: handle, text, options, onPiece
 dart free: handle

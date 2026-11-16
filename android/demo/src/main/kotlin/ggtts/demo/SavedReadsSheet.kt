@@ -89,12 +89,23 @@ class SavedReadsSheet(
                     if (gate.begin()) openFeedback(audio, d, tasks, gate)
                 }
                 line.addView(button)
+                val export = MaterialButton(activity, null, M.attr.materialButtonOutlinedStyle).apply {
+                    text = activity.getString(R.string.feedback_export)
+                    setOnClickListener {
+                        val folder = library.folder
+                        if (folder == null) {
+                            d.dismiss()
+                            pickFolder()
+                        } else exportFeedback(audio, folder, d, tasks)
+                    }
+                }
+                line.addView(export)
                 col.addView(line)
                 checks.add(Triple(audio, status, button))
             }
         }
         val list = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
-        for (r in reads) list.addView(row(r, d))
+        for (r in reads) list.addView(row(r, d, tasks))
         col.addView(ScrollView(activity).apply { addView(list) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         d.setContentView(col)
         d.setOnDismissListener { tasks.close(); player?.release(); player = null }
@@ -116,7 +127,7 @@ class SavedReadsSheet(
         dialog = d
     }
 
-    private fun row(r: SavedRead, d: BottomSheetDialog) = LinearLayout(activity).apply {
+    private fun row(r: SavedRead, d: BottomSheetDialog, tasks: FeedbackTaskSession) = LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(0, dp(12), 0, dp(4))
         addView(TextView(activity).apply { text = r.title; setTextAppearance(M.style.TextAppearance_Material3_TitleMedium) })
@@ -124,10 +135,25 @@ class SavedReadsSheet(
             text = SavedReads.describe(r) + if (r.owned) "" else " · from the chosen folder"
             setTextAppearance(M.style.TextAppearance_Material3_BodySmall)
         })
-        addView(TextView(activity).apply {
-            text = activity.getString(R.string.feedback_export_unavailable)
-            setTextAppearance(M.style.TextAppearance_Material3_BodySmall)
-        })
+        if (library.folder != null) {
+            val exportedButton = MaterialButton(activity, null, M.attr.materialButtonOutlinedStyle).apply {
+                text = activity.getString(R.string.feedback_open_export)
+            }
+            val weakDialog = WeakReference(d)
+            val weakButton = WeakReference(exportedButton)
+            val gate = FeedbackOpenGate { enabled ->
+                if (weakDialog.get()?.isShowing == true) weakButton.get()?.isEnabled = enabled
+            }
+            exportedButton.setOnClickListener {
+                if (gate.begin()) openExportedFeedback(r, d, tasks, gate)
+            }
+            addView(exportedButton)
+        } else {
+            addView(TextView(activity).apply {
+                text = activity.getString(R.string.feedback_export_unavailable)
+                setTextAppearance(M.style.TextAppearance_Material3_BodySmall)
+            })
+        }
         val buttons = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
         fun button(label: String, onClick: () -> Unit) = MaterialButton(activity, null, M.attr.materialButtonOutlinedStyle).apply {
             text = label; setOnClickListener { onClick() }
@@ -156,23 +182,115 @@ class SavedReadsSheet(
                 (owner as? DemoView)?.showError(owner.getString(R.string.feedback_unavailable))
                 return@submit
             }
+            val lease = FeedbackSessionRegistry.acquire(input.digest)
+            if (lease == null) {
+                gate.finish()
+                (owner as? DemoView)?.showError(owner.getString(R.string.feedback_in_use))
+                return@submit
+            }
             var panel: Dialog? = null
             var host: OfflineFeedbackHost? = null
             try {
                 val dialog = Dialog(owner)
                 val web = WebView(owner)
-                val pageHost = OfflineFeedbackHost(owner, web, input)
+                val pageHost = OfflineFeedbackHost(owner, web, input, lease)
                 panel = dialog
                 host = pageHost
                 dialog.setContentView(web)
-                dialog.setOnDismissListener { pageHost.close(); gate.finish() }
+                dialog.setOnDismissListener {
+                    try { pageHost.close() } finally { lease.close(); gate.finish() }
+                }
                 pageHost.show(owner)
                 dialog.show()
                 dialog.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
             } catch (e: Exception) {
-                if (panel?.isShowing == true) panel.dismiss() else host?.close()
-                gate.finish()
+                try { if (panel?.isShowing == true) panel.dismiss() else host?.close() }
+                finally { lease.close(); gate.finish() }
                 (owner as? DemoView)?.showError(owner.getString(R.string.feedback_unavailable))
+            }
+        }
+    }
+
+    private fun exportFeedback(audio: File, folder: Uri, sheet: BottomSheetDialog, tasks: FeedbackTaskSession) {
+        val owner = WeakReference(activity)
+        val visible = WeakReference(sheet)
+        val resolver = activity.contentResolver
+        val resultDir = File(activity.filesDir, "feedback-results")
+        tasks.submit({
+            runCatching {
+                FeedbackSidecarExport(FileSavedEvidenceStore(), FeedbackResultStore(resultDir))
+                    .export(SafFeedbackDocumentProvider(resolver, folder), audio)
+            }
+        }) { result ->
+            val a = owner.get()
+            if (a != null && !a.isFinishing && !a.isDestroyed && visible.get()?.isShowing == true) {
+                result.fold(
+                    { (a as? DemoView)?.showStatus(a.getString(R.string.feedback_export_done)) },
+                    { (a as? DemoView)?.showError(a.getString(R.string.feedback_export_failed)) },
+                )
+            }
+        }
+    }
+
+    private fun openExportedFeedback(read: SavedRead, sheet: BottomSheetDialog, tasks: FeedbackTaskSession, gate: FeedbackOpenGate) {
+        val folder = library.folder ?: run { gate.finish(); return }
+        val owner = WeakReference(activity)
+        val visible = WeakReference(sheet)
+        val resolver = activity.contentResolver
+        val resultDir = File(activity.filesDir, "feedback-results")
+        tasks.submit({
+            runCatching {
+                val provider = SafFeedbackDocumentProvider(resolver, folder)
+                val id = provider.find(read.name) ?: error("audio missing")
+                val listed = resolver.openInputStream(Uri.parse(read.uri))?.use { it.readBytes() } ?: error("audio unreadable")
+                check(provider.read(id).contentEquals(listed)) { "listed audio differs" }
+                val pair = FeedbackSidecarExport(FileSavedEvidenceStore(), FeedbackResultStore(resultDir))
+                    .reopenPage(provider, read.name) ?: error("feedback unavailable")
+                pair
+            }
+        }) { result ->
+            val a = owner.get()
+            if (a == null || a.isFinishing || a.isDestroyed || visible.get()?.isShowing != true) return@submit
+            val pair = result.getOrElse {
+                gate.finish()
+                (a as? DemoView)?.showError(a.getString(R.string.feedback_unavailable))
+                return@submit
+            }
+            val input = pair.input
+            val lease = FeedbackSessionRegistry.acquire(input.digest)
+            if (lease == null) {
+                gate.finish()
+                (a as? DemoView)?.showError(a.getString(R.string.feedback_in_use))
+                return@submit
+            }
+            try {
+                if (!FeedbackResultStore(resultDir).restoreExport(input, pair.result)) throw FeedbackConflict()
+            } catch (e: Exception) {
+                lease.close()
+                gate.finish()
+                val message = if (e is FeedbackConflict) R.string.feedback_conflict else R.string.feedback_unavailable
+                (a as? DemoView)?.showError(a.getString(message))
+                return@submit
+            }
+            var panel: Dialog? = null
+            var host: OfflineFeedbackHost? = null
+            try {
+                val dialog = Dialog(a)
+                panel = dialog
+                val web = WebView(a)
+                val actual = OfflineFeedbackHost(a, web, input, lease)
+                host = actual
+                dialog.setContentView(web)
+                dialog.setOnDismissListener {
+                    try { actual.close() } finally { lease.close(); gate.finish() }
+                }
+                actual.show(a)
+                dialog.show()
+                dialog.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            } catch (_: Exception) {
+                try { if (panel?.isShowing == true) panel.dismiss() else host?.close() }
+                finally { lease.close(); gate.finish() }
+                (a as? DemoView)?.showError(a.getString(R.string.feedback_unavailable))
             }
         }
     }
@@ -188,3 +306,5 @@ class SavedReadsSheet(
         Log.i(MainActivity.TAG, "saved reads: playing ${r.name}")
     }
 }
+
+private class FeedbackConflict : Exception()

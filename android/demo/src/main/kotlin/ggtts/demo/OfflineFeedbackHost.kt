@@ -13,16 +13,17 @@ import java.io.ByteArrayInputStream
  * Hosts only the bundled feedback page with caller-supplied validated input.
  * This is not wired to a read selector and does not establish feedback eligibility.
  */
-class OfflineFeedbackHost(context: Context, private val view: WebView,
-                          private val input: PreparedFeedbackInput) {
+internal class OfflineFeedbackHost(context: Context, private val view: WebView,
+                          private val input: PreparedFeedbackInput,
+                          private val lease: FeedbackSessionRegistry.Lease) {
     private val store = FeedbackResultStore(java.io.File(context.filesDir, "feedback-results"))
 
     private inner class Bridge {
         @JavascriptInterface fun save(json: String): Boolean = try {
-            store.save(input, json); true
+            lease.runIfActive { store.save(input, json); true } ?: false
         } catch (_: Exception) { false }
 
-        @JavascriptInterface fun load(): String = store.load(input) ?: ""
+        @JavascriptInterface fun load(): String = lease.runIfActive { store.load(input) ?: "" } ?: ""
     }
 
     fun show(context: Context) {
@@ -55,7 +56,7 @@ class OfflineFeedbackHost(context: Context, private val view: WebView,
     fun close() {
         view.removeJavascriptInterface("FeedbackHost")
         view.stopLoading()
-        view.destroy()
+        try { view.destroy() } finally { lease.close() }
     }
 
     companion object { private const val ORIGIN = "https://offline.ggtts.invalid/" }

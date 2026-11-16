@@ -170,6 +170,12 @@ object EnglishWords : Words {
         "feedback_available" to "Feedback available for this verified read.",
         "feedback_unavailable" to "Feedback unavailable: this read lacks valid saved audio or playback evidence.",
         "feedback_export_unavailable" to "Feedback is unavailable for Music exports and older reads.",
+        "feedback_export" to "Export audio and feedback",
+        "feedback_open_export" to "Open exported feedback",
+        "feedback_export_done" to "Audio and feedback exported to the chosen folder.",
+        "feedback_export_failed" to "Could not export audio and feedback. Check that feedback was saved and the chosen folder is writable.",
+        "feedback_conflict" to "The exported feedback differs from the private feedback. Both were kept; this export cannot be opened here.",
+        "feedback_in_use" to "This feedback is already open. Close it before opening it again.",
     )
 
     override fun get(key: String, vararg args: Any?): String {

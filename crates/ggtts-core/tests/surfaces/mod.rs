@@ -81,6 +81,11 @@ pub const NOT_OPTIONS: &[(Surface, &str, &str)] = &[
     (Surface::C, "on_piece", "the stream's callback, not a value"),
     (Surface::C, "callback", "the evidence stream's callback, not an option"),
     (Surface::Dart, "onPiece", "the stream's callback, not a value"),
+    (
+        Surface::Dart,
+        "cancellationToken",
+        "an opaque cancellation handle, not a render option",
+    ),
     (Surface::Dart, "text", "the content to render, not an option"),
     (Surface::C, "user", "the callback's own pointer, passed through"),
     (Surface::C, "len", "an out-parameter"),

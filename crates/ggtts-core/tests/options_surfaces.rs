@@ -58,7 +58,7 @@ fn each_surface_is_read_from_its_source() {
     ] {
         assert!(has(Surface::Kotlin, n), "{n} not read from Ggtts.kt: {:?}", s[3].1);
     }
-    for n in ["handle", "text", "options", "onPiece"] {
+    for n in ["handle", "text", "options", "onPiece", "cancellationToken"] {
         assert!(has(Surface::Dart, n), "{n} not read from apps/flutter/lib/ggtts.dart");
     }
 }

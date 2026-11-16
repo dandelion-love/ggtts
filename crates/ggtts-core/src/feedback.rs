@@ -194,6 +194,74 @@ pub fn render_html(input: &Value) -> Result<String, String> {
     let embedded=format!("<meta name=\"feedback-input-sha256\" content=\"{digest}\"><script id=\"feedback-input\" type=\"application/json\">{data}</script>");
     Ok(TEMPLATE.replacen(MARKER, &embedded, 1))
 }
+/// Evidence for a chunk in the already verified, final heard PCM.
+pub struct HeardChunk<'a> {
+    pub text: &'a str,
+    pub draw: u32,
+    pub seed: u64,
+    pub stop: crate::engine::Stop,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// The caller must verify that the hash identifies the file decoded to PCM.
+pub fn from_heard_pcm(
+    pcm: &[i16],
+    rate: u32,
+    chunks: &[HeardChunk<'_>],
+    page_id: &str,
+    output_sha256: &str,
+    provenance: Value,
+) -> Result<FeedbackBundle, String> {
+    if !valid_id(page_id)
+        || rate == 0
+        || pcm.is_empty()
+        || chunks.is_empty()
+        || provenance.as_object().is_none_or(|m| m.is_empty())
+        || output_sha256.len() != 64
+        || !output_sha256
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err("invalid heard audio evidence".into());
+    }
+    let mut items = Vec::new();
+    let mut records = Vec::new();
+    let mut end = 0;
+    for (i, c) in chunks.iter().enumerate() {
+        if c.text.is_empty()
+            || c.start < end
+            || (i == 0 && c.start != 0)
+            || c.start > pcm.len()
+            || pcm[end..c.start].iter().any(|v| *v != 0)
+            || c.start >= c.end
+            || c.end > pcm.len()
+            || c.stop == crate::engine::Stop::Abort
+        {
+            return Err(format!("inconsistent heard chunk {i}"));
+        }
+        let audio = encode_flac(&pcm[c.start..c.end], rate).map_err(|e| e.to_string())?;
+        let id = format!("chunk-{i}");
+        records.push(json!({"id":id,"chunk":i,"draw":c.draw,"seed":c.seed,
+            "start":c.start,"end":c.end,"text_sha256":hex(&sha256(c.text.as_bytes())),
+            "audio_sha256":hex(&sha256(&audio)),"stop":c.stop.as_str()}));
+        items.push(json!({"id":id,"text":c.text,"audio":format!("data:audio/flac;base64,{}",b64(&audio))}));
+        end = c.end;
+    }
+    if end != pcm.len() {
+        return Err("unmapped trailing audio".into());
+    }
+    let input = json!({"format":"ggtts-feedback-input/1","id":page_id,"items":items});
+    let digest = input_digest(&input)?;
+    Ok(FeedbackBundle {
+        input,
+        provenance: json!({
+            "format":"ggtts-feedback-provenance/1","id":page_id,"input_sha256":digest,
+            "output_sha256":output_sha256,"sample_rate":rate,"output_samples":pcm.len(),
+            "render":provenance,"chunks":records
+        }),
+    })
+}
 /// Map final, levelled Read.samples, never decoded/pre-trim draw samples.
 pub fn from_read(read: &Read, page_id: &str, provenance: Value) -> Result<FeedbackBundle, String> {
     if !valid_id(page_id) {

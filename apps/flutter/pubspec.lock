@@ -333,6 +333,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.19.0"
+  mp_audio_stream:
+    dependency: "direct main"
+    description:
+      name: mp_audio_stream
+      sha256: a3d084a5eb058f643e4a3f33f61d960b086885122f0871afa2c7a5aaacb72050
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.3.0"
   objective_c:
     dependency: transitive
     description:

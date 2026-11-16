@@ -31,6 +31,35 @@ fn run(t: &mut Talker, layers: &[usize], steer: Option<&Steering>) -> (Generatio
 fn selected_layers_match_individual_captures_without_changing_generation() {
     let path = std::env::var("GGTTS_TWO_LAYER_TALKER").expect("set GGTTS_TWO_LAYER_TALKER");
     let mut talker = Talker::load(std::path::Path::new(&path), 4).unwrap();
+    #[cfg(feature = "plant")]
+    if let Ok(name) = std::env::var("GGTTS_LAYER_TEST_PLANT") {
+        use ggtts_qwen3_tts::talker::Plant;
+        let plant = match name.as_str() {
+            "wrong-prefill" => Plant::LayerCaptureWrongPrefillRow,
+            "shift" => Plant::LayerCaptureShift,
+            "missing" => Plant::LayerCaptureMissingExport,
+            "omit-eos" => Plant::LayerCaptureOmitEos,
+            "draw" => Plant::LayerHookDraw,
+            other => panic!("unknown test plant: {other}"),
+        };
+        let reference = if name == "omit-eos" {
+            let mut eos = Talker::load_planted(
+                std::path::Path::new(&path),
+                4,
+                Default::default(),
+                Plant::ForceEosAfterFirstDecode,
+            )
+            .unwrap();
+            run(&mut eos, &[0, 1], None)
+        } else {
+            run(&mut talker, &[0, 1], None)
+        };
+        let mut subject = Talker::load_planted(std::path::Path::new(&path), 4, Default::default(), plant).unwrap();
+        let observed = run(&mut subject, &[0, 1], None);
+        assert_eq!(observed.0, reference.0, "capture changed generated codes or stop");
+        assert_eq!(observed.1, reference.1, "capture records differ from reference");
+        return;
+    }
     let (plain, none) = run(&mut talker, &[], None);
     let (both, rows) = run(&mut talker, &[0, 1], None);
     let (first, zero) = run(&mut talker, &[0], None);

@@ -1236,7 +1236,7 @@ fn render_with_models(
             publish_layer_stats(&path, &bytes).map_err(|e| format!("--feedback-page audio: {e}"))?;
             path
         } else {
-            write_flac(out, &samples, rate).map_err(|e| format!("{}: {e}", out.display()))?
+            write_flac(out, samples, rate).map_err(|e| format!("{}: {e}", out.display()))?
         };
         artifact_write_ns = Some(started.elapsed().as_nanos());
         if log.enabled(LogLevel::Info) {

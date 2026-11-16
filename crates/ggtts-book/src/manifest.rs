@@ -95,8 +95,8 @@ pub struct Manifest {
     pub plan: ChapterPlan,
     /// One entry per planned chunk: `Some` once it is done.
     pub done: Vec<Option<Output>>,
-    /// Each done chunk's draws, when recorded. Written only when the plan allows redraws
-    /// ([`ChapterPlan::redraw`] above 0), so a render at redraw 0 writes the manifest it wrote before draws existed.
+    /// Draw identity and verdict for each done chunk when the renderer records them. New renders record even draw 0;
+    /// older manifests without these optional fields remain readable.
     pub draws: Vec<Option<Draws>>,
     /// How long each done chunk took to render (generate, decode, trim and encode), in milliseconds. Recorded for
     /// reading back; never checked.
@@ -253,7 +253,7 @@ impl Manifest {
                 chunk
             }).collect::<Vec<_>>(),
         });
-        // Written only when the render allows redraws, so a render at redraw 0 writes the bytes it wrote before.
+        // The redraw limit is omitted at zero; kept-draw identity is recorded independently when available.
         if p.redraw > 0 {
             body["redraw"] = p.redraw.into();
         }

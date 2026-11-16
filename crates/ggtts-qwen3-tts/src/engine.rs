@@ -311,6 +311,12 @@ impl Qwen3Tts {
 
 impl Qwen3Tts {
     /// The speaker every request renders with: the one the voice named, or the model's default resolved at load.
+    /// Install a test-only barrier in cancellable generation's first frame.
+    #[cfg(feature = "plant")]
+    pub fn set_cancel_loop_probe(&mut self, probe: Option<std::sync::Arc<dyn Fn() + Send + Sync>>) {
+        self.talker.set_cancel_loop_probe(probe);
+    }
+
     pub fn speaker(&self) -> &str {
         &self.voice.speaker
     }

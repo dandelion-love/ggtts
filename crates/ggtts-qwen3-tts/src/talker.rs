@@ -437,6 +437,8 @@ pub struct Talker {
     cache: Option<Cache>,
     cp_cache: Option<Cache>,
     plant: Plant,
+    #[cfg(feature = "plant")]
+    cancel_loop_probe: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// Typed metadata reads, as `get_u32_any` and `get_f32_any` do (`transformer_loader_metadata.cpp:12-30`).
@@ -837,7 +839,15 @@ impl Talker {
             cache: None,
             cp_cache: None,
             plant,
+            #[cfg(feature = "plant")]
+            cancel_loop_probe: None,
         })
+    }
+
+    /// Test-only synchronization at cancellable generation's first frame.
+    #[cfg(feature = "plant")]
+    pub fn set_cancel_loop_probe(&mut self, probe: Option<std::sync::Arc<dyn Fn() + Send + Sync>>) {
+        self.cancel_loop_probe = probe;
     }
 
     pub fn speaker_id(&self, name: &str) -> Option<i32> {
@@ -1210,6 +1220,12 @@ impl Talker {
         let mut frame_codes = vec![0i32; c.n_codebooks as usize];
         let mut stop = Stop::Cap;
         for frame in 0..max_len {
+            #[cfg(feature = "plant")]
+            if frame == 0 && cancel.is_some() {
+                if let Some(probe) = &self.cancel_loop_probe {
+                    probe();
+                }
+            }
             if cancel.is_some_and(|signal| signal.is_cancelled()) {
                 return Ok(ggtts_core::cancel::CancelOutcome::Stopped);
             }

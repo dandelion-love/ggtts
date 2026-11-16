@@ -121,14 +121,25 @@ class HttpListeningSource implements ListeningSource {
     }
   }
 
-  void _ok(int status) {
+  void _ok(int status, Uint8List bytes) {
     if (status == 401) {
       throw ListeningException('Sign-in expired. Please sign in again.');
     }
     if (status < 200 || status >= 300) {
+      var retryable = status == 408 || status == 429 || status >= 500;
+      try {
+        final error = _json(bytes)['error'];
+        if (error is Map && error['retryable'] is bool) {
+          retryable = error['retryable'] as bool;
+        }
+      } catch (_) {
+        // An absent or malformed error body falls back to the status class.
+      }
+      // Authorization failures are never retried automatically, even if mislabelled.
+      if (status == 403) retryable = false;
       throw ListeningException(
         'The source could not complete the request (HTTP $status).',
-        automaticRetry: status == 408 || status == 429 || status >= 500,
+        automaticRetry: retryable,
       );
     }
   }
@@ -141,7 +152,7 @@ class HttpListeningSource implements ListeningSource {
       method: 'POST',
       body: {'username': user, 'password': password},
     );
-    _ok(status);
+    _ok(status, bytes);
     final token = _json(bytes)['access_token'];
     if (token is! String || token.isEmpty) {
       throw ListeningException(
@@ -157,7 +168,7 @@ class HttpListeningSource implements ListeningSource {
       _api('/v1/listening-sessions'),
       authenticated: true,
     );
-    _ok(status);
+    _ok(status, bytes);
     try {
       return (_json(bytes)['sessions'] as List)
           .map(
@@ -182,7 +193,7 @@ class HttpListeningSource implements ListeningSource {
         _api(path),
         authenticated: true,
       );
-      _ok(refreshStatus);
+      _ok(refreshStatus, refreshBytes);
       try {
         clip.audioUrl = Uri.parse(_json(refreshBytes)['audio_url'] as String);
       } catch (_) {
@@ -190,7 +201,7 @@ class HttpListeningSource implements ListeningSource {
       }
       (status, bytes) = await _request(clip.audioUrl);
     }
-    _ok(status);
+    _ok(status, bytes);
     return ListeningAudio(bytes, refreshed: refreshed);
   }
 
@@ -207,7 +218,7 @@ class HttpListeningSource implements ListeningSource {
       body: body,
       key: key,
     );
-    _ok(status);
+    _ok(status, bytes);
     final result = _json(bytes);
     if (status != 200 ||
         result['accepted'] != true ||

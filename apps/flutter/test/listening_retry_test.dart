@@ -63,11 +63,15 @@ void main() {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     addTearDown(() => server.close(force: true));
     var status = 500;
+    bool? serverRetryable;
     server.listen((request) async {
       if (request.uri.path == '/v1/auth/token') {
         request.response.write('{"access_token":"token"}');
       } else {
         request.response.statusCode = status;
+        if (serverRetryable != null) {
+          request.response.write('{"error":{"retryable":$serverRetryable}}');
+        }
       }
       await request.response.close();
     });
@@ -89,6 +93,22 @@ void main() {
       } on ListeningException catch (e) {
         expect(e.automaticRetry, pair.$2, reason: 'HTTP ${pair.$1}');
       }
+    }
+    status = 500;
+    serverRetryable = false;
+    try {
+      await source.submit('s', {'clip_id': 'c'}, 'key');
+      fail('expected a non-retryable server error');
+    } on ListeningException catch (e) {
+      expect(e.automaticRetry, isFalse);
+    }
+    status = 403;
+    serverRetryable = true;
+    try {
+      await source.submit('s', {'clip_id': 'c'}, 'key');
+      fail('expected authorization failure');
+    } on ListeningException catch (e) {
+      expect(e.automaticRetry, isFalse);
     }
   });
 }

@@ -132,6 +132,57 @@ void main() {
       expect(source.keys.length, 2);
       expect(source.keys.first, source.keys.last);
       expect(await queue.read(), isEmpty);
+      expect(find.text('keep this note'), findsNothing);
+      await tester.tap(find.text('All clips'));
+      await tester.pumpAndSettle();
+      expect(find.text('Discard unsent marks?'), findsNothing);
     },
   );
+  testWidgets('retry preserves a draft edited after it was queued', (
+    tester,
+  ) async {
+    final source = FakeSource();
+    final queue = MemoryQueue();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ListeningPage(
+          sourceFactory: (_) => source,
+          queue: queue,
+          play: (_) async {},
+        ),
+      ),
+    );
+    await tester.enterText(
+      find.byKey(const Key('listening-source')),
+      'https://listener.example',
+    );
+    await tester.enterText(find.byKey(const Key('listening-user')), 'listener');
+    await tester.enterText(
+      find.byKey(const Key('listening-password')),
+      'secret',
+    );
+    await tester.tap(find.text('Sign in'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Assigned'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('A\u{1F600}B'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('character-1')));
+    await tester.enterText(find.byType(TextField).last, 'first');
+    await tester.ensureVisible(find.text('Submit marks'));
+    await tester.tap(find.text('Submit marks'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).last, 'new edit');
+    await tester.tap(find.byTooltip('Retry pending'));
+    await tester.pumpAndSettle();
+    expect(find.text('new edit'), findsOneWidget);
+    expect(
+      find.text('Pending marks uploaded. Any current draft is still here.'),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('All clips'));
+    await tester.pumpAndSettle();
+    expect(find.text('Discard unsent marks?'), findsOneWidget);
+    expect(source.keys.first, source.keys.last);
+  });
 }

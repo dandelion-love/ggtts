@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
@@ -126,9 +127,9 @@ class _ListeningPageState extends State<ListeningPage> {
     }
   });
 
-  Future<void> _submit() => _run(() async {
+  Map<String, Object?> _submissionBody() {
     final marks = _marks.toList()..sort();
-    final body = <String, Object?>{
+    return <String, Object?>{
       'clip_id': _clip!.id,
       'verdict': _verdict,
       'note': _note.text.isEmpty ? null : _note.text,
@@ -137,6 +138,10 @@ class _ListeningPageState extends State<ListeningPage> {
           {'start': i, 'end': i + 1, 'verdict': _markVerdict, 'note': null},
       ],
     };
+  }
+
+  Future<void> _submit() => _run(() async {
+    final body = _submissionBody();
     final item = <String, dynamic>{
       'source': _source!.identity,
       'user': _signedInUser!,
@@ -166,17 +171,38 @@ class _ListeningPageState extends State<ListeningPage> {
   });
 
   Future<void> _retry() => _run(() async {
+    final before = await _queue!.read();
     final sent = await _queue!.retry(_source!, _signedInUser!);
-    final remaining = (await _queue!.read())
+    final after = await _queue!.read();
+    final remaining = after
         .where(
           (x) => x['source'] == _source!.identity && x['user'] == _signedInUser,
         )
         .length;
+    final keysRemaining = after.map((x) => x['key']).toSet();
+    final matched =
+        _clip != null &&
+        before.any(
+          (item) =>
+              item['source'] == _source!.identity &&
+              item['user'] == _signedInUser &&
+              item['session'] == _session!.id &&
+              !keysRemaining.contains(item['key']) &&
+              jsonEncode(item['body']) == jsonEncode(_submissionBody()),
+        );
     if (mounted) {
       setState(() {
         _pendingKey = remaining == 0 ? null : _pendingKey;
+        if (matched) {
+          _marks.clear();
+          _note.clear();
+          _verdict = 'unsure';
+          _markVerdict = 'reject';
+        }
         _status = remaining == 0
-            ? 'Pending marks uploaded. Any current draft is still here.'
+            ? (matched
+                  ? 'Pending marks uploaded.'
+                  : 'Pending marks uploaded. Any current draft is still here.')
             : (_queue!.lastError?.contains('Sign-in expired') == true
                   ? 'Sign-in expired. Sign out and sign in again; marks remain queued.'
                   : '${_queue!.lastError ?? 'Upload failed.'} Uploaded $sent; $remaining still queued. Retry when ready.');

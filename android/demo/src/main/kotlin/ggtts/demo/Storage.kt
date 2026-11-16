@@ -146,7 +146,7 @@ class ContentPaths(context: Context) : PathResolver {
                 part.delete()
             }
         }
-        android.util.Log.i(MainActivity.TAG, "picked file does not seek; loading a copy: $copy")
+        android.util.Log.i(MainActivity.TAG, "model_input outcome=copied")
         return Opened(copy.path)
     }
 

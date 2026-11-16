@@ -52,7 +52,7 @@ class GgttsTtsService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         val text = request.charSequenceText?.toString() ?: request.text ?: ""
-        Log.i(MainActivity.TAG, "system engine: synthesize ${request.language}-${request.country}, ${text.length} chars")
+        Log.i(MainActivity.TAG, "system_render outcome=start chars=${text.length}")
         val out = object : SynthesisOut {
             override val maxBytes = callback.maxBufferSize
             override fun start(sampleRate: Int) {

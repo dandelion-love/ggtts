@@ -302,7 +302,7 @@ class RenderService : Service() {
                     is QueueWorker.Outcome.Stopped -> { stopped = o.reason; break }
                     is QueueWorker.Outcome.Halted -> { stopped = o.reason; break }
                     is QueueWorker.Outcome.RecoveryBlocked -> {
-                        Log.e(MainActivity.TAG, "queue: entry ${o.entry.id} remains pending; publication could not be verified: ${o.reason}")
+                        Log.e(MainActivity.TAG, "queue: publication recovery blocked")
                         done("A saved read could not be verified. It remains queued; no duplicate was created.")
                         break
                     }

@@ -51,4 +51,15 @@ class DiagnosticLogTest {
         assertTrue(records[0], "outcome=ok" in records[0])
         assertTrue(records[1], "outcome=failure" in records[1])
     }
+    @Test fun recoveryBlockedLogContainsOnlyFixedOutcome() {
+        val source = java.io.File("src/main/kotlin/ggtts/demo/RenderService.kt").readText()
+        val branch = source.substringAfter("is QueueWorker.Outcome.RecoveryBlocked -> {")
+            .substringBefore("done(")
+        assertTrue(branch, """Log.e(MainActivity.TAG, "queue: publication recovery blocked")""" in branch)
+        assertFalse(branch, "o.reason" in branch || "o.entry" in branch)
+        // A planted source interpolation must be rejected by the same check.
+        val planted = branch.replace("publication recovery blocked", "publication recovery blocked " + '$' + "{o.reason}")
+        assertTrue(planted, "o.reason" in planted)
+    }
+
 }

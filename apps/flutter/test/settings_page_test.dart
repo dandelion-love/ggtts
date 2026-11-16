@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -15,6 +16,15 @@ class FakeStore extends SettingsStore {
   Future<void> save(Map<String, Object?> value) async {
     validateSettings(value);
     document = value;
+  }
+}
+
+class DelayedStore extends FakeStore {
+  final gate = Completer<void>();
+  @override
+  Future<void> save(Map<String, Object?> value) async {
+    await gate.future;
+    await super.save(value);
   }
 }
 
@@ -136,4 +146,136 @@ void main() {
       'load': {'model': '/safe/model.gguf'},
     });
   });
+  testWidgets(
+    'picker cancel preserves path; selection persists and error is visible',
+    (tester) async {
+      final store = FakeStore();
+      store.document = {
+        'load': {'model': '/existing.gguf'},
+      };
+      var attempt = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsPage(
+            store: store,
+            pickFile: (kind) async {
+              expect(kind, 'model');
+              attempt++;
+              if (attempt == 1) return null;
+              if (attempt == 2) return '/private/imported.gguf';
+              throw StateError('provider failure');
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      Future<void> choose() async {
+        await tester.tap(find.byTooltip('Choose model file'));
+        await tester.pumpAndSettle();
+      }
+
+      await choose();
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('model_path')))
+            .controller!
+            .text,
+        '/existing.gguf',
+      );
+      await choose();
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('model_path')))
+            .controller!
+            .text,
+        '/private/imported.gguf',
+      );
+      await choose();
+      expect(
+        find.text('Could not select or import the file. Please try again.'),
+        findsOneWidget,
+      );
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('model_path')))
+            .controller!
+            .text,
+        '/private/imported.gguf',
+      );
+      await tester.ensureVisible(find.text('Save settings'));
+      await tester.tap(find.text('Save settings'));
+      await tester.pumpAndSettle();
+      expect(
+        (store.document['load'] as Map)['model'],
+        '/private/imported.gguf',
+      );
+    },
+  );
+  testWidgets(
+    'discard removes a new private import; save in progress preserves it',
+    (tester) async {
+      final root = Directory.systemTemp.createTempSync('settings-import-');
+      Future<void> settleIo() async {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 100)),
+        );
+        await tester.pump();
+      }
+
+      try {
+        final discardedDir = Directory('${root.path}/discard')..createSync();
+        final discarded = File('${discardedDir.path}/model.gguf')
+          ..writeAsStringSync('GGUF');
+        await tester.pumpWidget(
+          MaterialApp(
+            home: SettingsPage(
+              store: FakeStore(),
+              pickedFilesAreOwned: true,
+              pickFile: (_) async => discarded.path,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('Choose model file'));
+        await tester.pumpAndSettle();
+        await tester.pumpWidget(const SizedBox());
+        await settleIo();
+        expect(discarded.existsSync(), isFalse);
+
+        final keepDir = Directory('${root.path}/keep')..createSync();
+        final kept = File('${keepDir.path}/model.gguf')
+          ..writeAsStringSync('GGUF');
+        final store = DelayedStore();
+        await tester.pumpWidget(
+          MaterialApp(
+            home: SettingsPage(
+              store: store,
+              pickedFilesAreOwned: true,
+              pickFile: (_) async => kept.path,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('Choose model file'));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.text('Save settings'));
+        await tester.tap(find.text('Save settings'));
+        await tester.pump();
+        await tester.pumpWidget(const SizedBox());
+        await settleIo();
+        expect(
+          kept.existsSync(),
+          isTrue,
+          reason: 'pending save must not lose its file',
+        );
+        store.gate.complete();
+        await settleIo();
+        expect(kept.existsSync(), isTrue);
+        expect((store.document['load'] as Map)['model'], kept.path);
+      } finally {
+        await tester.pumpWidget(const SizedBox());
+        if (root.existsSync()) root.deleteSync(recursive: true);
+      }
+    },
+  );
 }

@@ -1,11 +1,25 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:material_ui/material_ui.dart';
 
 import 'settings_store.dart';
+import 'model_picker.dart';
 
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key, required this.store, this.devices = const []});
+  const SettingsPage({
+    super.key,
+    required this.store,
+    this.devices = const [],
+    this.pickFile = pickModelFile,
+    this.pickedFilesAreOwned,
+  });
   final SettingsStore store;
   final List<String> devices;
+  final Future<String?> Function(String) pickFile;
+
+  /// Test seam: Android's picker returns freshly imported app-owned files.
+  final bool? pickedFilesAreOwned;
   @override
   State<SettingsPage> createState() => _SettingsPageState();
 }
@@ -20,6 +34,30 @@ class _SettingsPageState extends State<SettingsPage> {
   String? _engine;
   String? _device;
   String? _error;
+  bool _picking = false;
+  bool _saving = false;
+  final Set<String> _uncommittedImports = {};
+  bool get _ownsPicks => widget.pickedFilesAreOwned ?? Platform.isAndroid;
+
+  void _discardImport(String path) {
+    unawaited(() async {
+      try {
+        final file = File(path);
+        await file.delete();
+        await file.parent
+            .delete(); // only an empty, newly created import directory
+      } catch (_) {
+        // The selected file remains private; cleanup is best-effort.
+      }
+    }());
+  }
+
+  void _discardUncommitted() {
+    for (final path in _uncommittedImports) {
+      _discardImport(path);
+    }
+    _uncommittedImports.clear();
+  }
 
   @override
   void initState() {
@@ -47,7 +85,61 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
+  Future<void> _pick(String kind, TextEditingController controller) async {
+    if (_picking || _saving) return;
+    setState(() {
+      _picking = true;
+      _error = null;
+    });
+    try {
+      final selected = await widget.pickFile(kind);
+      if (selected != null) {
+        if (_ownsPicks) _uncommittedImports.add(selected);
+        if (mounted) {
+          setState(() => controller.text = selected);
+        } else if (_uncommittedImports.remove(selected)) {
+          _discardImport(selected);
+        }
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () =>
+              _error = 'Could not select or import the file. Please try again.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _picking = false);
+    }
+  }
+
+  Widget _fileField(
+    String kind,
+    String label,
+    String key,
+    TextEditingController controller,
+  ) {
+    return Row(
+      children: [
+        Expanded(
+          child: TextField(
+            key: Key(key),
+            controller: controller,
+            decoration: InputDecoration(labelText: label),
+          ),
+        ),
+        IconButton(
+          tooltip: 'Choose $kind file',
+          onPressed: _picking || _saving ? null : () => _pick(kind, controller),
+          icon: const Icon(Icons.folder_open),
+        ),
+      ],
+    );
+  }
+
   Future<void> _save() async {
+    if (_saving || _picking) return;
+    setState(() => _saving = true);
     try {
       final doc = Map<String, Object?>.from(_document!);
       final load = Map<String, Object?>.from((doc['load'] as Map?) ?? {});
@@ -87,15 +179,29 @@ class _SettingsPageState extends State<SettingsPage> {
         load['cache_dir'] = _cache.text.trim();
       }
       doc['load'] = load;
+      final committedPaths = [
+        load['model'],
+        load['codec'],
+        load['voice'],
+      ].whereType<String>().toSet();
       await widget.store.save(doc);
+      _uncommittedImports.removeAll(committedPaths);
       if (mounted) Navigator.of(context).pop(true);
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
+    } finally {
+      _saving = false;
+      if (mounted) {
+        setState(() {});
+      } else {
+        _discardUncommitted();
+      }
     }
   }
 
   @override
   void dispose() {
+    if (!_saving) _discardUncommitted();
     _threads.dispose();
     _cache.dispose();
     _model.dispose();
@@ -141,29 +247,27 @@ class _SettingsPageState extends State<SettingsPage> {
                     onChanged: (value) => setState(() => _engine = value),
                   ),
                   const Text(
-                    'Optional paths must be readable by the app. On Android, document-provider links are not supported here.',
+                    'Choose a file or enter an app-readable path. Android imports selected files into private storage.',
                   ),
-                  TextField(
-                    key: const Key('model_path'),
-                    controller: _model,
-                    decoration: const InputDecoration(
-                      labelText: 'Model file path (blank for default)',
-                    ),
+                  _fileField(
+                    'model',
+                    'Model file path (blank for default)',
+                    'model_path',
+                    _model,
                   ),
-                  TextField(
-                    key: const Key('codec_path'),
-                    controller: _codec,
-                    decoration: const InputDecoration(
-                      labelText: 'Codec file path (blank for default)',
-                    ),
+                  _fileField(
+                    'codec',
+                    'Codec file path (blank for default)',
+                    'codec_path',
+                    _codec,
                   ),
-                  TextField(
-                    key: const Key('voice_path'),
-                    controller: _voice,
-                    decoration: const InputDecoration(
-                      labelText: 'Prepared voice file path (optional)',
-                    ),
+                  _fileField(
+                    'voice',
+                    'Prepared voice file path (optional)',
+                    'voice_path',
+                    _voice,
                   ),
+                  if (_picking) const Text('Selecting or importing a file&'),
                   DropdownButtonFormField<String>(
                     initialValue: _device,
                     decoration: const InputDecoration(labelText: 'Device'),
@@ -195,7 +299,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     ),
                   ),
                   FilledButton(
-                    onPressed: _save,
+                    onPressed: _picking || _saving ? null : _save,
                     child: const Text('Save settings'),
                   ),
                   if (_error != null)

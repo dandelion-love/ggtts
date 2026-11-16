@@ -67,13 +67,28 @@ class Pcm {
   double get seconds => samples.length / rate;
 }
 
-/// Opens the library: on Android the jniLibs copy, on Linux the bundle's lib/ (or GGTTS_LIB).
+/// Open the platform library and check its ABI before looking up newer entry points.
 DynamicLibrary openGgtts() {
-  if (Platform.isAndroid) return DynamicLibrary.open('libggtts_ffi.so');
   final override = Platform.environment['GGTTS_LIB'];
-  if (override != null && override.isNotEmpty) return DynamicLibrary.open(override);
   final exeDir = File(Platform.resolvedExecutable).parent.path;
-  return DynamicLibrary.open('$exeDir/lib/libggtts_ffi.so');
+  final String path;
+  if (override != null && override.isNotEmpty) {
+    path = override;
+  } else if (Platform.isAndroid) {
+    path = 'libggtts_ffi.so';
+  } else if (Platform.isLinux) {
+    path = '$exeDir/lib/libggtts_ffi.so';
+  } else if (Platform.isWindows) {
+    path = '$exeDir/ggtts_ffi.dll';
+  } else {
+    throw UnsupportedError('ggtts is not packaged for ${Platform.operatingSystem}');
+  }
+  final lib = DynamicLibrary.open(path);
+  final abi = lib.lookupFunction<_AbiVersionC, _AbiVersionD>('ggtts_abi_version')();
+  if (abi < requiredAbi) {
+    throw StateError('library ABI $abi is older than the $requiredAbi this app needs');
+  }
+  return lib;
 }
 
 class Ggtts {

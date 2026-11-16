@@ -10,11 +10,16 @@ class DiagnosticLog(
     private val sink: (String) -> Unit = {},
     private val clock: () -> Long = System::nanoTime,
 ) {
-    fun start(stage: DiagnosticStage): Event = Event(stage, sequence.incrementAndGet(), clock())
+    private fun safeTime(): Long = try { clock() } catch (_: Throwable) { 0L }
+    fun start(stage: DiagnosticStage): Event = Event(stage, sequence.incrementAndGet(), safeTime())
     inner class Event internal constructor(private val stage: DiagnosticStage, private val id: Long, private val started: Long) {
         fun finish(outcome: DiagnosticOutcome) {
-            val ms = ((clock() - started).coerceAtLeast(0) / 1_000_000)
-            sink("stage=${stage.name.lowercase()} outcome=${outcome.name.lowercase()} operation=$id elapsed_ms=$ms")
+            val ms = ((safeTime() - started).coerceAtLeast(0) / 1_000_000)
+            try {
+                sink("stage=${stage.name.lowercase()} outcome=${outcome.name.lowercase()} operation=$id elapsed_ms=$ms")
+            } catch (_: Throwable) {
+                // Diagnostics must never alter the operation they describe.
+            }
         }
     }
     companion object { private val sequence = AtomicLong() }
@@ -28,4 +33,9 @@ internal class BridgeDiagnosticLimiter {
         val first = if (ok) success.compareAndSet(false, true) else failure.compareAndSet(false, true)
         if (first) event.finish(if (ok) DiagnosticOutcome.OK else DiagnosticOutcome.FAILURE)
     }
+}
+
+/** An injected logging callback must never alter the operation being logged. */
+internal fun bestEffortLog(sink: (String) -> Unit): (String) -> Unit = { message ->
+    try { sink(message) } catch (_: Throwable) {}
 }

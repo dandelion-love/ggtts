@@ -58,11 +58,13 @@ class QueueWorker(
     private val cache: EngineCache,
     private val sink: ReadSink,
     private val seed: Long,
-    private val log: (String) -> Unit = {},
+    log: (String) -> Unit = {},
     private val clock: () -> Long = System::nanoTime,
     /** Wall-clock milliseconds, for the saved file's name. */
     private val now: () -> Long = System::currentTimeMillis,
 ) {
+    private val log = bestEffortLog(log)
+
     /** What one [step] did. */
     sealed class Outcome {
         object Idle : Outcome()

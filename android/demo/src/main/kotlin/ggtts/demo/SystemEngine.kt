@@ -121,10 +121,12 @@ interface SynthesisOut {
 class SynthesisSession(
     private val binding: TtsBinding,
     private val voices: VoiceStore,
-    private val log: (String) -> Unit = {},
+    log: (String) -> Unit = {},
     /** Where engines are loaded and held; the app passes the one it shares with the demo's screen. */
     private val cache: EngineCache = EngineCache(binding, log),
 ) {
+    private val log = bestEffortLog(log)
+
     @Volatile
     private var stopped = false
 

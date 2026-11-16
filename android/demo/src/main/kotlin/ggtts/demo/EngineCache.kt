@@ -8,7 +8,8 @@ package ggtts.demo
 class EngineInUse(engine: String) :
     RuntimeException("the $engine engine is busy with another read (this screen or Android's TTS); try again when it ends")
 
-class EngineCache(private val binding: TtsBinding, private val log: (String) -> Unit = {}) {
+class EngineCache(private val binding: TtsBinding, log: (String) -> Unit = {}) {
+    private val log = bestEffortLog(log)
     private var loaded: LoadRequest? = null
     private var engine: TtsEngine? = null
     private var inUse = false

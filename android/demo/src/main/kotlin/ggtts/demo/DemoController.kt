@@ -56,7 +56,7 @@ class DemoController(
     private val background: (Runnable) -> Unit,
     /** Posts to the main thread. */
     private val main: (Runnable) -> Unit,
-    private val log: (String) -> Unit = {},
+    log: (String) -> Unit = {},
     /** The clock, in nanoseconds; tests pass their own. */
     private val clock: () -> Long = System::nanoTime,
     /** Available memory in bytes, and whether the system reports memory is low; tests pass their own. */
@@ -70,6 +70,8 @@ class DemoController(
     private val diagnostics: DiagnosticLog = DiagnosticLog(log),
     private val evidenceStore: SavedEvidenceStore? = null,
 ) {
+    private val log = bestEffortLog(log)
+
     /** A load the user was warned about; the same request again goes ahead. Main thread only. */
     private var warnedFor: LoadRequest? = null
 

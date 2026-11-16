@@ -19,6 +19,11 @@ class MainActivity : FlutterActivity() {
     private var active = false
     private var closeActive: (() -> Unit)? = null
 
+    override fun onStop() {
+        AndroidPlaybackBridge.interruptActive()
+        super.onStop()
+    }
+
     override fun onDestroy() {
         closeActive?.invoke()
         super.onDestroy()
@@ -26,6 +31,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        AndroidPlaybackBridge.configure(applicationContext)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "ggtts/shared_feedback")
             .setMethodCallHandler { call, result ->
                 if (call.method != "open") { result.notImplemented(); return@setMethodCallHandler }

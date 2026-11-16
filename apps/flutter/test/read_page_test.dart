@@ -105,4 +105,37 @@ void main() {
       'offline': false,
     });
   });
+  testWidgets('prepare uses saved model and voice paths', (tester) async {
+    Map<String, Object?>? observed;
+    final settings = <String, Object?>{
+      'load': {
+        'engine': 'kitten-tts-2',
+        'model': '/models/lm.gguf',
+        'codec': '/models/codec.gguf',
+        'voice': '/models/voice.json',
+      },
+    };
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ReadPage(
+          prepare: (doc) async {
+            observed = doc;
+            return {
+              'schema': <String, Object?>{},
+              'capabilities': <String, Object?>{},
+            };
+          },
+          loadSettings: () async => settings,
+        ),
+      ),
+    );
+    await tester.tap(find.text('Prepare model (download if needed)'));
+    await tester.pumpAndSettle();
+    final load = observed!['load'] as Map;
+    expect(load['engine'], 'kitten-tts-2');
+    expect(load['model'], '/models/lm.gguf');
+    expect(load['codec'], '/models/codec.gguf');
+    expect(load['voice'], '/models/voice.json');
+    expect(load['offline'], false);
+  });
 }

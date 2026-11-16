@@ -21,6 +21,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import java.io.File
+import java.util.concurrent.atomic.AtomicReference
 
 /** Why a queued render stops, which levels of a memory trim stop one, and what the person is told. */
 object RenderStops {
@@ -75,20 +76,18 @@ class QueueWorker(
         data class Stopped(val entry: RenderQueue.Entry, val reason: RenderStops.Reason) : Outcome()
     }
 
-    private val stopLock = Any()
-    @Volatile
-    private var stopRequested: RenderStops.Reason? = null
+    private val stopRequested = AtomicReference<RenderStops.Reason?>(null)
 
     /** Stop the render in progress after its current chunk, for [reason]; its entry waits again. */
     fun stop(reason: RenderStops.Reason = RenderStops.Reason.PERSON) {
-        synchronized(stopLock) { if (stopRequested == null) stopRequested = reason }
+        stopRequested.compareAndSet(null, reason)
     }
 
     /** Render the next waiting entry, if any, to the end, and settle it. */
     fun step(): Outcome {
-        stopRequested?.let { return Outcome.Halted(it) }
+        stopRequested.get()?.let { return Outcome.Halted(it) }
         val e = queue.take() ?: return Outcome.Idle
-        stopRequested?.let {
+        stopRequested.get()?.let {
             queue.requeue(e.id)
             return Outcome.Stopped(e, it)
         }
@@ -106,14 +105,14 @@ class QueueWorker(
             val pieces = mutableListOf<FloatArray>()
             var rate = 0
             val finished = tts.renderStream(e.text, seed) { samples, r ->
-                if (stopRequested != null) return@renderStream false
+                if (stopRequested.get() != null) return@renderStream false
                 rate = r
                 pieces += samples
                 true
             }
             val renderMs = (clock() - t0) / 1_000_000
-            if (!finished || stopRequested != null) {
-                val reason = stopRequested ?: RenderStops.Reason.PERSON
+            if (!finished || stopRequested.get() != null) {
+                val reason = stopRequested.get() ?: RenderStops.Reason.PERSON
                 queue.requeue(e.id)
                 ok = true
                 log("queue: entry ${e.id} stopped (${reason.name.lowercase()}) after ${pieces.size} chunks, $renderMs ms; nothing saved, it waits again")
@@ -124,9 +123,10 @@ class QueueWorker(
             for (p in pieces) { p.copyInto(all, at); at += p.size }
             if (all.isEmpty() || rate <= 0) return fail(e, "the render made no audio")
             val where = sink.save(Storage.queuedName(e.request.engine, now()), e.title, Flac.encode(all, rate, e.title)) { publish ->
-                synchronized(stopLock) {
-                    if (stopRequested != null) false else { publish(); true }
-                }
+                // This atomic read is the publication gate. A Stop observed first cancels the pending item; once the
+                // gate is passed, publication owns the item and its result is settled as DONE or FAILED. In
+                // particular, Stop never waits for a potentially slow MediaStore provider call.
+                if (stopRequested.get() != null) false else { publish(); true }
             }
             queue.done(e.id, where)
             ok = true
@@ -135,7 +135,7 @@ class QueueWorker(
             return Outcome.Done(e, where, seconds, renderMs)
         } catch (t: Throwable) {
             if (t is SaveCancelled) {
-                val reason = stopRequested ?: RenderStops.Reason.PERSON
+                val reason = stopRequested.get() ?: RenderStops.Reason.PERSON
                 queue.requeue(e.id)
                 ok = true
                 return Outcome.Stopped(e, reason)
@@ -183,22 +183,26 @@ class RenderService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    /** Clear the waiting entries once the render in progress has stopped (the notification's Clear queue). */
-    @Volatile
-    private var clearAfterStop = false
+    /** Linearizes a notification's Clear queue with the worker's final shutdown handoff. */
+    private val clearHandoff = QueueClearHandoff()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // The notification's Stop and Clear queue: a control, never a start.
         when (intent?.action) {
             ACTION_STOP, ACTION_CLEAR -> {
+                val clearing = intent.action == ACTION_CLEAR
                 val running = thread?.isAlive == true
-                if (intent.action == ACTION_CLEAR) clearAfterStop = true
-                Log.i(MainActivity.TAG, "queue: notification ${if (intent.action == ACTION_CLEAR) "Clear queue" else "Stop"}")
-                if (running) {
+                val handedToWorker = clearing && running && clearHandoff.requestClear()
+                Log.i(MainActivity.TAG, "queue: notification ${if (clearing) "Clear queue" else "Stop"}")
+                if (clearing && !handedToWorker) {
+                    // The worker already crossed its shutdown handoff (or is not running); no future worker step will
+                    // consume this request, so this caller owns clearing the waiting entries now.
+                    Queue.get(this).clearWaiting()
+                }
+                if (running && (!clearing || handedToWorker)) {
                     worker?.stop(RenderStops.Reason.PERSON)
                     notify(RenderStops.stopping(RenderStops.Reason.PERSON, ResourceWords(this)))
                 } else {
-                    if (clearAfterStop) Queue.get(this).clearWaiting()
                     stopSelf()
                 }
                 return START_NOT_STICKY
@@ -215,6 +219,7 @@ class RenderService : Service() {
             log = { Log.i(MainActivity.TAG, it) },
         )
         worker = w
+        clearHandoff.begin()
         thread = Thread({
             var stopped: RenderStops.Reason? = null
             while (true) {
@@ -227,7 +232,7 @@ class RenderService : Service() {
                     else -> Unit
                 }
             }
-            if (clearAfterStop) { queue.clearWaiting(); clearAfterStop = false }
+            if (clearHandoff.finish()) queue.clearWaiting()
             stopForeground(STOP_FOREGROUND_REMOVE)
             // What happened stays in the shade after the service has gone.
             stopped?.let { done(RenderStops.stopped(it, queue.pending, ResourceWords(this))) }

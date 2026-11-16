@@ -37,10 +37,13 @@ Initialize the repository's ggml submodule before building on any platform. Host
 
 ## Model files
 
-The app loads the engine's default model from the engine's cache with downloads off (`"offline": true`), so a
-missing model is reported, never fetched by surprise. On Linux the cache is `~/.cache/ggtts` (or `GGTTS_CACHE_DIR`).
-On Android it is the app's private documents folder. For a debuggable trial build, stage the verified cache through
-the app's own identity (install the APK first):
+The explicit **Prepare model** action may download the default model when it is missing; reading uses the cache
+offline. Settings can instead select an engine and enter model, codec and prepared-voice file paths that the app
+can read. Blank paths use engine defaults. On Android these are filesystem paths accessible to the app, not
+`content://` document-provider links; this screen does not yet provide a system file picker, Wi-Fi-only policy,
+or resumable download. On Linux the cache is `~/.cache/ggtts` (or `GGTTS_CACHE_DIR`); on Android it is the app's
+private documents folder. For a debuggable trial build, stage the verified cache through the app's own identity
+(install the APK first):
 
 ```bash
 adb shell 'mkdir -p /sdcard/Android/data/dev.ggtts.ggtts_app/files/ggtts-cache'

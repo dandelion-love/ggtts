@@ -14,6 +14,10 @@ class _SettingsPageState extends State<SettingsPage> {
   Map<String, Object?>? _document;
   final _threads = TextEditingController();
   final _cache = TextEditingController();
+  final _model = TextEditingController();
+  final _codec = TextEditingController();
+  final _voice = TextEditingController();
+  String? _engine;
   String? _device;
   String? _error;
 
@@ -31,6 +35,10 @@ class _SettingsPageState extends State<SettingsPage> {
       setState(() {
         _document = doc;
         _device = load['device'] as String?;
+        _engine = load['engine'] == 'auto' ? null : load['engine'] as String?;
+        _model.text = load['model'] as String? ?? '';
+        _codec.text = load['codec'] as String? ?? '';
+        _voice.text = load['voice'] as String? ?? '';
         _threads.text = load['threads']?.toString() ?? '';
         _cache.text = load['cache_dir'] as String? ?? '';
       });
@@ -43,6 +51,22 @@ class _SettingsPageState extends State<SettingsPage> {
     try {
       final doc = Map<String, Object?>.from(_document!);
       final load = Map<String, Object?>.from((doc['load'] as Map?) ?? {});
+      if (_engine == null || _engine == 'auto') {
+        load.remove('engine');
+      } else {
+        load['engine'] = _engine;
+      }
+      for (final entry in {
+        'model': _model.text,
+        'codec': _codec.text,
+        'voice': _voice.text,
+      }.entries) {
+        if (entry.value.trim().isEmpty) {
+          load.remove(entry.key);
+        } else {
+          load[entry.key] = entry.value;
+        }
+      }
       if (_device == null) {
         load.remove('device');
       } else {
@@ -74,6 +98,9 @@ class _SettingsPageState extends State<SettingsPage> {
   void dispose() {
     _threads.dispose();
     _cache.dispose();
+    _model.dispose();
+    _codec.dispose();
+    _voice.dispose();
     super.dispose();
   }
 
@@ -88,6 +115,55 @@ class _SettingsPageState extends State<SettingsPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  DropdownButtonFormField<String>(
+                    key: const Key('engine'),
+                    initialValue: _engine,
+                    decoration: const InputDecoration(labelText: 'Engine'),
+                    items: [
+                      const DropdownMenuItem(
+                        value: null,
+                        child: Text('Automatic'),
+                      ),
+                      const DropdownMenuItem(
+                        value: 'qwen3-tts',
+                        child: Text('Qwen3-TTS'),
+                      ),
+                      const DropdownMenuItem(
+                        value: 'kitten-tts-2',
+                        child: Text('Kitten-TTS 2'),
+                      ),
+                      if (_engine == 'fake')
+                        const DropdownMenuItem(
+                          value: 'fake',
+                          child: Text('Fake test engine (saved)'),
+                        ),
+                    ],
+                    onChanged: (value) => setState(() => _engine = value),
+                  ),
+                  const Text(
+                    'Optional paths must be readable by the app. On Android, document-provider links are not supported here.',
+                  ),
+                  TextField(
+                    key: const Key('model_path'),
+                    controller: _model,
+                    decoration: const InputDecoration(
+                      labelText: 'Model file path (blank for default)',
+                    ),
+                  ),
+                  TextField(
+                    key: const Key('codec_path'),
+                    controller: _codec,
+                    decoration: const InputDecoration(
+                      labelText: 'Codec file path (blank for default)',
+                    ),
+                  ),
+                  TextField(
+                    key: const Key('voice_path'),
+                    controller: _voice,
+                    decoration: const InputDecoration(
+                      labelText: 'Prepared voice file path (optional)',
+                    ),
+                  ),
                   DropdownButtonFormField<String>(
                     initialValue: _device,
                     decoration: const InputDecoration(labelText: 'Device'),

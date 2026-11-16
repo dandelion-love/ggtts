@@ -51,6 +51,29 @@ void validateSettings(Map<String, Object?> document) {
   if (load is! Map<String, dynamic>) {
     throw const FormatException('load must be an object.');
   }
+  if (load.containsKey('engine') &&
+      !const [
+        'auto',
+        'qwen3-tts',
+        'kitten-tts-2',
+        'fake',
+      ].contains(load['engine'])) {
+    throw const FormatException(
+      'engine must be auto, qwen3-tts, kitten-tts-2 or fake.',
+    );
+  }
+  for (final key in ['model', 'codec', 'voice']) {
+    if (!load.containsKey(key)) continue;
+    final value = load[key];
+    if (value is! String || value.trim().isEmpty || value.contains('\u0000')) {
+      throw FormatException('$key must be a nonempty file path without NUL.');
+    }
+    if (value.startsWith('content://')) {
+      throw FormatException(
+        '$key cannot be a document-provider link; use an app-readable file path.',
+      );
+    }
+  }
   if (load.containsKey('device') &&
       load['device'] != 'cpu' &&
       load['device'] != 'cuda') {

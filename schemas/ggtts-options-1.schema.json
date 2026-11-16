@@ -330,6 +330,15 @@
           ],
           "x-ggtts-phase": "render"
         },
+        "feedback_page": {
+          "description": "Create an offline feedback page and provenance companion from this render; requires --out.",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-flags": [
+            "--feedback-page"
+          ],
+          "x-ggtts-phase": "render"
+        },
         "instrument": {
           "default": [],
           "description": "An instrument to run on the finished render, NAME[,KEY=VALUE]...; repeatable.",

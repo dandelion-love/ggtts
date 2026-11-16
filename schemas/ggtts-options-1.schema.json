@@ -373,7 +373,7 @@
           "x-ggtts-phase": "render"
         },
         "layer_stats": {
-          "description": "Write selected talker layer statistics to a new artifact.",
+          "description": "Write selected talker layer statistics to a new artifact; requires --out, --trace and --codes.",
           "minLength": 1,
           "type": "string",
           "x-ggtts-flags": [

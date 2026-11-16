@@ -490,7 +490,7 @@ pub const TABLE: &[Descriptor] = &[
     Descriptor {
         flags: &["--layer-stats"],
         requires: Some("layer_stats_layers"),
-        help: "Write selected talker layer statistics to a new artifact.",
+        help: "Write selected talker layer statistics to a new artifact; requires --out, --trace and --codes.",
         ..row("layer_stats", SO, R, path(), "null")
     },
     Descriptor {

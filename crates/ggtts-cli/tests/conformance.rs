@@ -840,6 +840,39 @@ fn sampler_documents() -> Vec<(String, String)> {
 /// A probe: the front end, the option key, and what it saw.
 type Probe = (&'static str, String, Seen);
 
+#[test]
+fn layer_stats_requires_distinct_durable_artifacts() {
+    let missing = render(
+        "layer-stats-missing",
+        "text",
+        &["--layer-stats", "layers.json", "--layer-stats-layers", "0"],
+    );
+    assert!(
+        !missing.ok && missing.stderr.contains("requires --out, --trace and --codes"),
+        "{}",
+        missing.stderr
+    );
+    let collision = render(
+        "layer-stats-collision",
+        "text",
+        &[
+            "--layer-stats",
+            "layers.json",
+            "--layer-stats-layers",
+            "0",
+            "--trace",
+            "same.jsonl",
+            "--codes",
+            "same.jsonl",
+        ],
+    );
+    assert!(
+        !collision.ok && collision.stderr.contains("must be distinct"),
+        "{}",
+        collision.stderr
+    );
+}
+
 fn render_probes() -> Vec<Probe> {
     let mut out = Vec::new();
     for mode in ["story", "text"] {
@@ -871,7 +904,20 @@ fn render_probes() -> Vec<Probe> {
         let r = render(&p("codes"), mode, &["--codes", "c.jsonl"]);
         push("observe.codes", by_file(&r, "c.jsonl", "--codes"));
         // The fake engine refuses layer hooks; reaching that refusal proves both options reached the render.
-        let r = render(&p("layer-stats"), mode, &["--layer-stats", "layers.json", "--layer-stats-layers", "0"]);
+        let r = render(
+            &p("layer-stats"),
+            mode,
+            &[
+                "--layer-stats",
+                "layers.json",
+                "--layer-stats-layers",
+                "0",
+                "--trace",
+                "t.jsonl",
+                "--codes",
+                "c.jsonl",
+            ],
+        );
         let seen = by_engine_refusal(&r, "does not support talker layer hooks");
         push("observe.layer_stats", seen);
         push("observe.layer_stats_layers", seen);
@@ -1248,7 +1294,10 @@ fn c_abi_document_probes(plain: usize) -> Vec<Probe> {
         ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
         ("observe.log_format", r#"{"observe": {"log_format": "json"}}"#),
         ("observe.codes", r#"{"observe": {"codes": "c.jsonl"}}"#),
-        ("observe.layer_stats", r#"{"observe": {"layer_stats": "layers.json", "layer_stats_layers": [0]}}"#),
+        (
+            "observe.layer_stats",
+            r#"{"observe": {"layer_stats": "layers.json", "layer_stats_layers": [0]}}"#,
+        ),
         ("output.out", r#"{"output": {"out": "o.flac"}}"#),
         ("render.judge", r#"{"render": {"judge": "asr-qwen,model=m"}}"#),
     ] {
@@ -1414,7 +1463,10 @@ fn python_probes() -> Vec<Probe> {
         ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
         ("observe.log_format", r#"{"observe": {"log_format": "json"}}"#),
         ("observe.codes", r#"{"observe": {"codes": "c.jsonl"}}"#),
-        ("observe.layer_stats", r#"{"observe": {"layer_stats": "layers.json", "layer_stats_layers": [0]}}"#),
+        (
+            "observe.layer_stats",
+            r#"{"observe": {"layer_stats": "layers.json", "layer_stats_layers": [0]}}"#,
+        ),
         ("output.out", r#"{"output": {"out": "o.flac"}}"#),
         ("render.judge", r#"{"render": {"judge": "asr-qwen,model=m"}}"#),
     ] {

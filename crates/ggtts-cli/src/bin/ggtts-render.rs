@@ -629,6 +629,11 @@ fn render_with_models(
     resolve: impl FnOnce(&mut Options, &str, LogSettings) -> Result<Vec<ggtts_models::ModelFile>, String>,
 ) -> Result<u8, String> {
     if let Some(path) = &a.observe.layer_stats {
+        if a.output.out.is_none() || a.observe.trace.is_none() || a.observe.codes.is_none() {
+            return Err(
+                "--layer-stats requires --out, --trace and --codes for a verifiable same-render artifact".into(),
+            );
+        }
         if std::fs::symlink_metadata(path).is_ok() {
             return Err("--layer-stats must be a new file".into());
         }
@@ -643,6 +648,15 @@ fn render_with_models(
                 .join(name))
         };
         let target = absolute(path)?;
+        let durable = [
+            a.output.out.as_deref().unwrap(),
+            a.observe.trace.as_deref().unwrap(),
+            a.observe.codes.as_deref().unwrap(),
+        ];
+        let names = durable.iter().map(|p| absolute(p)).collect::<Result<Vec<_>, _>>()?;
+        if names[0] == names[1] || names[0] == names[2] || names[1] == names[2] {
+            return Err("--out, --trace and --codes must be distinct with --layer-stats".into());
+        }
         let other = [
             a.output.out.as_deref(),
             a.observe.trace.as_deref(),
@@ -1150,9 +1164,16 @@ fn render_with_models(
     }
     let publish_stats = || -> Result<(), String> {
         if let (Some(path), Some(records)) = (&a.observe.layer_stats, &layer_stats_records) {
+            let artifact = |path: &Path| -> Result<serde_json::Value, String> {
+                let sha256 = ggtts_models::sha256_file(path)?;
+                Ok(serde_json::json!({"path": path, "sha256": sha256}))
+            };
+            let audio = artifact(written.as_deref().ok_or("--layer-stats: audio was not written")?)?;
+            let trace = artifact(a.observe.trace.as_deref().ok_or("--layer-stats: trace missing")?)?;
+            let codes = artifact(a.observe.codes.as_deref().ok_or("--layer-stats: codes missing")?)?;
             let doc = serde_json::json!({
                 "format": "ggtts-layer-stats/1", "complete": true,
-                "render": { "title": title, "audio": a.output.out, "trace": a.observe.trace, "codes": a.observe.codes },
+                "render": { "title": title, "audio": audio, "trace": trace, "codes": codes },
                 "models": model_files, "engine": engine_info.family, "backend": engine_info.backend,
                 "settings": a, "dtype": "f32", "accumulation_dtype": "f64",
                 "boundary": "post-residual and steering, before final normalization",
@@ -1218,7 +1239,7 @@ fn render_with_models(
             .map_err(|e| format!("--timing-report {}: {e}", path.display()))?;
         writeln!(file, "{report}").map_err(|e| format!("--timing-report {}: {e}", path.display()))
     };
-    let (Some(config), Some(path)) = (instruments, written) else {
+    let (Some(config), Some(path)) = (instruments, written.clone()) else {
         if let (Some(path), Some(data)) = (&a.observe.duration_report, &duration_data) {
             write_duration(path, data)?;
         }

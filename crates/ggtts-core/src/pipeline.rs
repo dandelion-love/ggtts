@@ -485,6 +485,13 @@ pub fn render_chunk(
     opts: &RenderOptions,
     obs: &mut Observers<'_>,
 ) -> Result<KeptChunk, RenderError> {
+    if !obs.hooks.layers().is_empty() && !engine.supports_layer_hooks() {
+        return Err(EngineError(format!(
+            "the {} engine does not support talker layer hooks",
+            engine.info().family
+        ))
+        .into());
+    }
     let events = &mut *obs.events;
     let tracing = events.level() > 0;
     let mut timings = opts.measure_timings.then(StageTimings::default);

@@ -634,41 +634,38 @@ fn render_with_models(
                 "--layer-stats requires --out, --trace and --codes for a verifiable same-render artifact".into(),
             );
         }
-        if std::fs::symlink_metadata(path).is_ok() {
-            return Err("--layer-stats must be a new file".into());
-        }
-        let absolute = |p: &Path| -> Result<std::path::PathBuf, String> {
-            let parent = p
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or(Path::new("."));
-            let name = p.file_name().ok_or("invalid output path")?;
-            Ok(std::fs::canonicalize(parent)
-                .map_err(|e| format!("output directory: {e}"))?
-                .join(name))
-        };
-        let target = absolute(path)?;
-        let durable = [
-            a.output.out.as_deref().unwrap(),
-            a.observe.trace.as_deref().unwrap(),
-            a.observe.codes.as_deref().unwrap(),
-        ];
-        let names = durable.iter().map(|p| absolute(p)).collect::<Result<Vec<_>, _>>()?;
-        if names[0] == names[1] || names[0] == names[2] || names[1] == names[2] {
-            return Err("--out, --trace and --codes must be distinct with --layer-stats".into());
-        }
-        let other = [
-            a.output.out.as_deref(),
+        // Refuse every existing target (including symlinks and hard links) before opening
+        // anything. This avoids platform-specific inode identity and preserves prior files.
+        let flac = a.output.out.as_ref().unwrap().with_extension("flac");
+        let paths = [
+            Some(path.as_path()),
+            Some(flac.as_path()),
             a.observe.trace.as_deref(),
             a.observe.codes.as_deref(),
             a.observe.timing_report.as_deref(),
             a.observe.duration_report.as_deref(),
             a.output.stream.as_deref().filter(|s| *s != "-").map(Path::new),
         ];
-        for output in other.into_iter().flatten() {
-            if absolute(output)? == target {
-                return Err("--layer-stats must differ from other output paths".into());
+        let mut names = Vec::new();
+        for output in paths.into_iter().flatten() {
+            if std::fs::symlink_metadata(output).is_ok() {
+                return Err(format!(
+                    "--layer-stats requires new output files: {} already exists",
+                    output.display()
+                ));
             }
+            let parent = output
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            let name = output.file_name().ok_or("invalid output path")?;
+            let absolute = std::fs::canonicalize(parent)
+                .map_err(|e| format!("output directory: {e}"))?
+                .join(name);
+            if names.contains(&absolute) {
+                return Err("--layer-stats requires distinct output paths".into());
+            }
+            names.push(absolute);
         }
     }
     // The table refuses --trace-level without --trace.

@@ -867,10 +867,141 @@ fn layer_stats_requires_distinct_durable_artifacts() {
         ],
     );
     assert!(
-        !collision.ok && collision.stderr.contains("must be distinct"),
+        !collision.ok && collision.stderr.contains("distinct output paths"),
         "{}",
         collision.stderr
     );
+}
+
+#[test]
+fn layer_stats_refuses_flac_extension_and_stream_collisions_before_writes() {
+    let extension = render(
+        "layer-extension",
+        "text",
+        &[
+            "--out",
+            "audio.wav",
+            "--trace",
+            "audio.flac",
+            "--codes",
+            "c.jsonl",
+            "--layer-stats",
+            "layers.json",
+            "--layer-stats-layers",
+            "0",
+        ],
+    );
+    assert!(
+        !extension.ok && extension.stderr.contains("distinct output paths"),
+        "{}",
+        extension.stderr
+    );
+    assert!(!extension.dir.join("audio.flac").exists());
+    let stats = render(
+        "layer-extension-stats",
+        "text",
+        &[
+            "--out",
+            "audio.wav",
+            "--trace",
+            "t.jsonl",
+            "--codes",
+            "c.jsonl",
+            "--layer-stats",
+            "audio.flac",
+            "--layer-stats-layers",
+            "0",
+        ],
+    );
+    assert!(
+        !stats.ok && stats.stderr.contains("distinct output paths"),
+        "{}",
+        stats.stderr
+    );
+    assert!(!stats.dir.join("audio.flac").exists());
+    let stream = render(
+        "layer-stream",
+        "text",
+        &[
+            "--out",
+            "audio.wav",
+            "--trace",
+            "t.jsonl",
+            "--codes",
+            "c.jsonl",
+            "--stream",
+            "t.jsonl",
+            "--layer-stats",
+            "layers.json",
+            "--layer-stats-layers",
+            "0",
+        ],
+    );
+    assert!(
+        !stream.ok && stream.stderr.contains("distinct output paths"),
+        "{}",
+        stream.stderr
+    );
+    assert!(!stream.dir.join("t.jsonl").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn layer_stats_refuses_existing_symlink_and_hardlink_outputs() {
+    use std::os::unix::fs::symlink;
+    let dir = scratch("layer-existing-alias");
+    std::fs::write(dir.join("source"), b"preserve").unwrap();
+    symlink("source", dir.join("trace.jsonl")).unwrap();
+    std::fs::hard_link(dir.join("source"), dir.join("codes.jsonl")).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_ggtts-render"))
+        .current_dir(&dir)
+        .args([
+            "--engine",
+            "fake",
+            "--text",
+            "hello",
+            "--out",
+            "o.flac",
+            "--trace",
+            "trace.jsonl",
+            "--codes",
+            "codes.jsonl",
+            "--layer-stats",
+            "layers.json",
+            "--layer-stats-layers",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("already exists"));
+    assert_eq!(std::fs::read(dir.join("source")).unwrap(), b"preserve");
+    assert!(!dir.join("o.flac").exists());
+    std::fs::remove_file(dir.join("trace.jsonl")).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_ggtts-render"))
+        .current_dir(&dir)
+        .args([
+            "--engine",
+            "fake",
+            "--text",
+            "hello",
+            "--out",
+            "o.flac",
+            "--trace",
+            "trace.jsonl",
+            "--codes",
+            "codes.jsonl",
+            "--layer-stats",
+            "layers.json",
+            "--layer-stats-layers",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("already exists"));
+    assert_eq!(std::fs::read(dir.join("source")).unwrap(), b"preserve");
+    assert!(!dir.join("trace.jsonl").exists());
 }
 
 fn render_probes() -> Vec<Probe> {

@@ -3135,3 +3135,31 @@ fn a_stale_exception_fails() {
         "{errors:?}"
     );
 }
+
+/// A new C cancellation parameter remains visible even after the API is snapshotted.
+#[test]
+fn a_new_c_cancellation_parameter_fails_the_snapshot() {
+    let src = read("crates/ggtts-ffi/include/ggtts.h");
+    let planted = src.replacen(
+        "int32_t ggtts_cancel_signal(uint64_t token);",
+        "int32_t ggtts_cancel_signal(uint64_t token, uint32_t mystery);",
+        1,
+    );
+    assert_ne!(planted, src, "the plant applies");
+    let mut now = surfaces::binding_entries();
+    now.retain(|e| !e.line().starts_with("c ggtts_cancel_signal:"));
+    now.extend(
+        surfaces::header_entries(&planted)
+            .into_iter()
+            .filter(|e| e.line().starts_with("c ggtts_cancel_signal:")),
+    );
+    let diff = snapshot_diff(&read(SNAPSHOT), &now);
+    assert!(
+        diff.iter().any(|l| l == "+ c ggtts_cancel_signal: token, mystery"),
+        "{diff:?}"
+    );
+    assert!(
+        diff.iter().any(|l| l.contains("mystery: no row of the options table")),
+        "{diff:?}"
+    );
+}

@@ -63,6 +63,12 @@ pub const NOT_OPTIONS: &[(Surface, &str, &str)] = &[
         "listener",
         "the evidence stream's callback, not an option",
     ),
+    (Surface::C, "out", "the cancellation token out-parameter"),
+    (
+        Surface::C,
+        "token",
+        "an opaque cancellation handle, not a render option",
+    ),
     (Surface::C, "size", "the struct's own size, its version"),
     (Surface::C, "settings", "the struct the settings are in"),
     (Surface::C, "handle", "the engine handle"),
@@ -238,6 +244,10 @@ pub fn c_names() -> Vec<String> {
     out.extend(names(between(&h, "int32_t ggtts_render(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_load_opts(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_render_opts(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_cancel_new(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_cancel_signal(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_cancel_free(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_render_opts_cancellable(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_render_stream_evidence(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_render_document_evidence(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_capabilities(", ");")));

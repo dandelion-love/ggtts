@@ -516,6 +516,8 @@ pub fn render_chunk(
     render_chunk_inner(engine, text, index, seeds, judge, opts, obs, false)
 }
 
+// Shares render_chunk inputs; evidence streaming additionally refuses aborted draws.
+#[allow(clippy::too_many_arguments)]
 fn render_chunk_inner(
     engine: &mut dyn Engine,
     text: &str,

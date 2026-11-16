@@ -147,7 +147,7 @@ The CPU capture path has been exercised for identity and alignment; its
 performance overhead has not been measured. On 2026-11-15, the one-layer
 engine identity test also passed on an RTX 3080 Ti with the CUDA backend: hooked
 and unhooked generated codes and decoded samples were identical within that
-backend. This validates only the one-layer capture path on that host. The
-synthetic two-layer alignment and steering controls have only run on CPU;
-multi-layer CUDA alignment and performance overhead remain unmeasured. Do not
-infer multi-layer CUDA alignment or CUDA performance from this result.
+backend. The synthetic two-layer capture and alignment test also passed on
+that RTX 3080 Ti using CUDA. These checks cover the tested fixtures and host;
+they do not establish speech quality or general CUDA parity. Capture performance
+overhead remains unmeasured.

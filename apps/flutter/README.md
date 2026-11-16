@@ -11,16 +11,27 @@ options table carries. This is the spike that decides the stack for the cross-pl
 Flutter stable (tested with 3.50.0) and the toolchains below. The native library is built first and is never
 committed (`.gitignore`).
 
-```bash
-# Linux desktop: needs clang, ninja-build, pkg-config, libgtk-3-dev, liblzma-dev and the GStreamer dev packages.
-apps/flutter/tool/build_native.sh linux
-cd apps/flutter && flutter run -d linux
+Linux x86_64 and Android arm64-v8a plus x86_64 use a single command each from the repository root:
 
-# Android arm64: NDK 27.2.12479018 (ANDROID_NDK_HOME), cargo-ndk, the aarch64-linux-android Rust target,
-# a host libclang for bindgen (LIBCLANG_PATH), and JDK 17 or newer for Gradle.
-apps/flutter/tool/build_native.sh android
-cd apps/flutter && flutter build apk --target-platform android-arm64
+```bash
+apps/flutter/tool/build_app.sh linux
+apps/flutter/tool/build_app.sh android
 ```
+
+Linux needs Rust (the pinned toolchain), clang, ninja-build, pkg-config, GTK 3 and GStreamer development
+packages, liblzma-dev, and the GStreamer good and PulseAudio runtime plugins. Android additionally needs NDK
+27.2.12479018 (`ANDROID_NDK_HOME`), cargo-ndk, both Rust targets, a host libclang for bindgen, and JDK 17 or newer.
+The APK includes both native ABIs.
+
+On Windows x86_64, install Flutter's Windows desktop prerequisites, Rust's MSVC target, CMake and libclang, then:
+
+```powershell
+./apps/flutter/tool/build_windows.ps1
+```
+
+This builds the C library and bundles it beside the app executable. Set `LIBCLANG_PATH` if bindgen cannot find it.
+Initialize the repository's ggml submodule before building on any platform. Hosted Flutter packaging is opt-in via
+`GGTTS_FLUTTER_CI=enabled`; local builds are the evidence while hosted minutes are unavailable.
 
 ## Model files
 

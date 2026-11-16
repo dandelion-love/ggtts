@@ -374,7 +374,7 @@ impl Engine for Qwen3Tts {
                     });
                 }
             }
-            deliver(req, trace, &mut *hooks.borrow_mut(), frame, token, p_stop, logits);
+            deliver(req, trace, *hooks.borrow_mut(), frame, token, p_stop, logits);
         };
         let mut on_layer = |frame: i32, token: i32, layer: usize, is_eos: bool, values: &[f32]| {
             let step = LayerStep {

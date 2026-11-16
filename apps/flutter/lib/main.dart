@@ -4,11 +4,13 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:material_ui/material_ui.dart';
-import 'package:mp_audio_stream/mp_audio_stream.dart';
+import 'package:mp_audio_stream/ggtts_audio_session.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'ggtts.dart';
+import 'audio_drain.dart';
 import 'read_options.dart';
+import 'read_control_gate.dart';
 import 'read_worker_outcome.dart';
 import 'pcm_queue.dart';
 import 'settings_page.dart';
@@ -50,10 +52,93 @@ Future<Map<String, Object?>> inspectModel(Map<String, Object?> document) =>
       }
     });
 
-/// The native callback is synchronous on this worker; each piece is copied by the binding before sending it.
+/// Controls are executed outside the UI and rendering isolates. The token and
+/// reservation are unique to this read, so late messages cannot affect another.
+void controlWorker(SendPort parent) {
+  final commands = ReceivePort();
+  AudioSession? audio;
+  CancellationApi? cancellation;
+  int? token;
+  try {
+    cancellation = CancellationApi(openGgtts());
+    token = cancellation.create();
+    audio = AudioSession.reserve();
+    if (audio == null) throw StateError('Audio output is already in use.');
+    parent.send({'port': commands.sendPort, 'audio': audio.id, 'token': token});
+  } catch (error) {
+    if (audio != null) audio.release();
+    if (token != null) cancellation?.free(token);
+    parent.send({'error': error.toString()});
+    commands.close();
+    return;
+  }
+  final session = audio;
+  final cancel = cancellation;
+  final cancelToken = token;
+  commands.listen((dynamic message) {
+    final command = message as Map;
+    final reply = command['reply'] as SendPort;
+    try {
+      switch (command['op']) {
+        case 'pause':
+          if (session.pause() != 0) throw StateError('Could not pause audio.');
+        case 'resume':
+          if (session.resume() != 0) {
+            throw StateError('Could not resume audio.');
+          }
+        case 'stop':
+          Object? cancelError;
+          try {
+            cancel.signal(cancelToken);
+          } catch (error) {
+            cancelError = error;
+          }
+          final stopResult = session.stop();
+          if (cancelError != null) throw cancelError;
+          if (stopResult != 0 && session.state() != -1) {
+            throw StateError('Could not stop audio.');
+          }
+        case 'close':
+          Object? cleanupError;
+          try {
+            if (session.state() != -1 && session.release() != 0) {
+              throw StateError('Audio cleanup failed.');
+            }
+          } catch (error) {
+            cleanupError = error;
+          }
+          try {
+            cancel.free(cancelToken);
+          } catch (error) {
+            cleanupError ??= error;
+          }
+          reply.send(cleanupError?.toString());
+          commands.close();
+          return;
+        default:
+          throw StateError('Unknown audio command.');
+      }
+      reply.send(null);
+    } catch (error) {
+      reply.send(error.toString());
+    }
+  });
+}
+
+Future<String?> controlCommand(SendPort port, String op) async {
+  final reply = ReceivePort();
+  try {
+    port.send({'op': op, 'reply': reply.sendPort});
+    return await reply.first as String?;
+  } finally {
+    reply.close();
+  }
+}
+
+/// Native callbacks remain synchronous on the render isolate.
 void renderWorker(Map<String, Object?> request) async {
   final port = request['port'] as SendPort;
-  final audio = getAudioStream();
+  final audio = AudioSession.attach(request['audio'] as int);
   var audioReady = false;
   int? sampleRate;
   PcmQueue? queue;
@@ -75,43 +160,42 @@ void renderWorker(Map<String, Object?> request) async {
           Map<String, Object?>.from(request['render'] as Map),
           (piece) {
             if (!audioReady) {
-              if (audio.init(
-                    sampleRate: piece.rate,
-                    channels: 1,
-                    bufferMilliSec: 5000,
-                    waitingBufferMilliSec: 0,
-                  ) !=
-                  0) {
+              if (audio.init(sampleRate: piece.rate) != 0) {
+                if (audio.state() == 3) throw ReadStopped();
                 throw StateError('Could not initialize audio playback.');
               }
               audioReady = true;
               sampleRate = piece.rate;
               queue = PcmQueue(audio.push);
-              audio.resume();
+              port.send({'audioReady': true});
             }
             if (sampleRate != piece.rate) {
               throw StateError('Audio sample rate changed during the read.');
             }
             pending!.append(piece);
             queue!.add(piece.samples);
-            port.send({'samples': piece.samples.length, 'rate': piece.rate});
             return true;
           },
+          cancellationToken: request['token'] as int,
         );
-        // At most five seconds remains in the native ring after the last write.
-        if (audioReady) sleep(const Duration(milliseconds: 5100));
+        if (audioReady) {
+          drainAudio(state: audio.state, softwareEmpty: audio.softwareEmpty);
+        }
+        if (audio.state() == 3) throw ReadStopped();
       } finally {
         engine.free(handle);
       }
     },
     cleanup: () {
-      if (audioReady) audio.uninit();
+      if (audio.release() != 0) throw StateError('Audio cleanup failed.');
     },
     finish: () => pending!.finish(),
     discard: () async {
       await pending?.discard();
     },
     send: port.send,
+    isStopped: (error) =>
+        error is ReadStopped || (error is GgttsException && error.code == -5),
   );
 }
 
@@ -120,9 +204,15 @@ class ReadPage extends StatefulWidget {
     super.key,
     this.prepare = inspectModel,
     this.loadSettings = loadSavedSettings,
+    this.controlEntry = controlWorker,
+    this.renderEntry = renderWorker,
+    this.readDirectory,
   });
   final Future<Map<String, Object?>> Function(Map<String, Object?>) prepare;
   final Future<Map<String, Object?>> Function() loadSettings;
+  final void Function(SendPort) controlEntry;
+  final void Function(Map<String, Object?>) renderEntry;
+  final Future<Directory> Function()? readDirectory;
   @override
   State<ReadPage> createState() => _ReadPageState();
 }
@@ -130,8 +220,11 @@ class ReadPage extends StatefulWidget {
 class _ReadPageState extends State<ReadPage> {
   final _text = TextEditingController(text: '今日天氣幾好，我哋出去行下啦。');
   final _steering = TextEditingController();
-  ReceivePort? _receive;
-  Isolate? _worker;
+  SendPort? _control;
+  ReadControlGate _gate = ReadControlGate();
+  bool _audioReady = false;
+  bool _paused = false;
+  bool _controlPending = false;
   bool _busy = false;
   String _status = 'Prepare the model to get started.';
   String? _error;
@@ -230,9 +323,10 @@ class _ReadPageState extends State<ReadPage> {
     try {
       final cache = await _cacheDir();
       if (!mounted) return;
-      final library = SavedReads(
-        Directory('${(await getApplicationSupportDirectory()).path}/reads'),
-      );
+      final readRoot = widget.readDirectory == null
+          ? Directory('${(await getApplicationSupportDirectory()).path}/reads')
+          : await widget.readDirectory!();
+      final library = SavedReads(readRoot);
       if (!mounted) return;
       _library = library;
       final load = composeLoadDocument(_settings, cache, speaker: speaker);
@@ -241,48 +335,100 @@ class _ReadPageState extends State<ReadPage> {
         'load_document': load,
         'render_document': render,
       };
-      final port = ReceivePort();
-      _receive = port;
-      final worker = await Isolate.spawn(
-        renderWorker,
-        <String, Object?>{
-          'port': port.sendPort,
-          'load': load,
-          'render': render,
-          'options': options,
-          'library': library.root.path,
-          'text': text,
-        },
-        onError: port.sendPort,
-        onExit: port.sendPort,
+      _gate = ReadControlGate();
+      _audioReady = false;
+      _paused = false;
+      final controlEvents = ReceivePort();
+      await Isolate.spawn(
+        widget.controlEntry,
+        controlEvents.sendPort,
+        onError: controlEvents.sendPort,
+        onExit: controlEvents.sendPort,
       );
-      if (!mounted) {
-        worker.kill(priority: Isolate.immediate);
-        port.close();
-        return;
-      }
-      _worker = worker;
-      await for (final dynamic message in port) {
-        if (!mounted) break;
-        if (message is! Map) {
-          throw StateError('Read worker exited unexpectedly: $message');
-        }
-        final event = message;
-        if (event['error'] != null) throw StateError(event['error']);
-        if (event['done'] == true) {
-          _pendingToken = event['token'] as String;
-          break;
-        }
-        debugPrint(
-          'ggtts-read: received ${event['samples']} samples at ${event['rate']} Hz',
+      final dynamic startup = await controlEvents.first;
+      if (startup is! Map) throw StateError('Control worker exited: $startup');
+      final initial = startup;
+      controlEvents.close();
+      if (initial['error'] != null) throw StateError(initial['error']);
+      final control = initial['port'] as SendPort;
+      _control = control;
+      if (mounted) setState(() {});
+      final port = ReceivePort();
+      try {
+        await Isolate.spawn(
+          widget.renderEntry,
+          <String, Object?>{
+            'port': port.sendPort,
+            'load': load,
+            'render': render,
+            'options': options,
+            'library': library.root.path,
+            'text': text,
+            'audio': initial['audio'],
+            'token': initial['token'],
+          },
+          onError: port.sendPort,
+          onExit: port.sendPort,
         );
+        if (_gate.stopRequested || !mounted) {
+          _gate.requestStop();
+          await controlCommand(control, 'stop');
+        }
+        var workerStopped = false;
+        await for (final dynamic message in port) {
+          if (message is! Map) {
+            throw StateError('Read worker exited unexpectedly: $message');
+          }
+          if (message['audioReady'] == true) {
+            if (mounted) setState(() => _audioReady = true);
+            continue;
+          }
+          if (message['stopped'] == true) {
+            workerStopped = true;
+            _gate.finish();
+            break;
+          }
+          if (message['error'] != null) {
+            _gate.finish();
+            throw StateError(message['error']);
+          }
+          if (message['done'] == true) {
+            _gate.finish();
+            final token = message['token'] as String;
+            if (_gate.stopRequested || !mounted) {
+              await library.discardPending(token);
+            } else {
+              _pendingToken = token;
+            }
+            break;
+          }
+        }
+        if (mounted) {
+          setState(
+            () => _status = _gate.stopRequested || workerStopped
+                ? 'Read stopped.'
+                : 'Audio submitted. Save the read or discard it.',
+          );
+        }
+      } finally {
+        _gate.finish();
+        port.close();
+        _control = null;
+        if (mounted) setState(() {});
+        final closeError = await controlCommand(control, 'close');
+        if ((!mounted || _gate.stopRequested) && _pendingToken != null) {
+          final token = _pendingToken!;
+          _pendingToken = null;
+          await library.discardPending(token);
+        }
+        if (closeError != null) {
+          final token = _pendingToken;
+          _pendingToken = null;
+          if (token != null) await library.discardPending(token);
+          throw StateError(closeError);
+        }
       }
-      if (mounted) {
-        setState(() => _status = 'Read complete. Save it or discard it.');
-      }
-      debugPrint('ggtts-read: generation complete');
     } catch (error) {
-      debugPrint('ggtts-read: read failed: $error');
       if (mounted) {
         setState(() {
           _error = error.toString();
@@ -290,12 +436,47 @@ class _ReadPageState extends State<ReadPage> {
         });
       }
     } finally {
-      _receive?.close();
-      _receive = null;
-      _worker?.kill(priority: Isolate.immediate);
-      _worker = null;
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _audioReady = false;
+          _controlPending = false;
+        });
+      }
     }
+  }
+
+  void _stopRead({bool updateUi = true}) {
+    if (!_gate.requestStop()) return;
+    if (mounted && updateUi) setState(() => _status = 'Stopping...');
+    final control = _control;
+    if (control != null) {
+      controlCommand(control, 'stop').then((error) {
+        if (error != null && mounted) setState(() => _error = error);
+      });
+    }
+  }
+
+  Future<void> _togglePause() async {
+    final control = _control;
+    if (control == null ||
+        _controlPending ||
+        _gate.stopRequested ||
+        _gate.terminal) {
+      return;
+    }
+    setState(() => _controlPending = true);
+    final error = await controlCommand(control, _paused ? 'resume' : 'pause');
+    if (!mounted) return;
+    setState(() {
+      _controlPending = false;
+      if (error != null) {
+        _error = error;
+      } else if (!_gate.stopRequested) {
+        _paused = !_paused;
+        _status = _paused ? 'Paused.' : 'Reading...';
+      }
+    });
   }
 
   Future<void> _saveRead() async {
@@ -383,8 +564,7 @@ class _ReadPageState extends State<ReadPage> {
 
   @override
   void dispose() {
-    _receive?.close();
-    _worker?.kill(priority: Isolate.immediate);
+    _stopRead(updateUi: false);
     _text.dispose();
     _steering.dispose();
     super.dispose();
@@ -480,6 +660,24 @@ class _ReadPageState extends State<ReadPage> {
                     : null,
                 child: const Text('Speak'),
               ),
+              if (_busy && _control != null) ...[
+                TextButton(
+                  onPressed: _gate.stopRequested || _gate.terminal
+                      ? null
+                      : () => _stopRead(),
+                  child: const Text('Stop'),
+                ),
+                TextButton(
+                  onPressed:
+                      _audioReady &&
+                          !_controlPending &&
+                          !_gate.stopRequested &&
+                          !_gate.terminal
+                      ? _togglePause
+                      : null,
+                  child: Text(_paused ? 'Resume' : 'Pause'),
+                ),
+              ],
               if (_pendingToken != null) ...[
                 FilledButton(
                   onPressed: _busy ? null : _saveRead,

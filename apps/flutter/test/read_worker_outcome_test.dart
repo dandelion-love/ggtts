@@ -44,6 +44,43 @@ void main() {
     },
   );
 
+  test('stopped read discards only after successful cleanup', () async {
+    final order = <String>[];
+    await runReadOutcome(
+      generate: () async {
+        throw const _Stop();
+      },
+      cleanup: () {
+        order.add('cleanup');
+      },
+      finish: () => throw StateError('must not finish'),
+      discard: () async {
+        order.add('discard');
+      },
+      isStopped: (e) => e is _Stop,
+      send: (event) {
+        expect(event, {'stopped': true});
+        order.add('send');
+      },
+    );
+    expect(order, ['cleanup', 'discard', 'send']);
+  });
+
+  test('cleanup failure after stop remains an error', () async {
+    final events = <Map<String, Object?>>[];
+    await runReadOutcome(
+      generate: () async {
+        throw const _Stop();
+      },
+      cleanup: () => throw StateError('cleanup failure'),
+      finish: () => throw StateError('must not finish'),
+      discard: () async {},
+      isStopped: (e) => e is _Stop,
+      send: events.add,
+    );
+    expect(events.single['error'], contains('cleanup failure'));
+  });
+
   test('successful cleanup precedes ready marker and completion', () async {
     final order = <String>[];
     await runReadOutcome(
@@ -67,4 +104,8 @@ void main() {
     );
     expect(order, ['generate', 'cleanup', 'finish', 'send']);
   });
+}
+
+class _Stop implements Exception {
+  const _Stop();
 }

@@ -118,6 +118,14 @@
     <string name="render_nothing">Nothing to render: type or paste a passage first.</string>
     <string name="render_needs_music">Rendering for later saves to Music, which needs Android 10 or later.</string>
     <string name="render_queued">Queued \"%1$s\" to render for later (%2$d waiting). It goes to %3$s.</string>
+    <string name="render_stopping_memory">The phone is low on memory: stopping after the chunk in progress...</string>
+    <string name="render_stopped_person_empty">Stopped. Nothing half-made was saved. The queue is empty.</string>
+    <string name="render_stopped_person_waiting">Stopped. Nothing half-made was saved. %1$d waiting; they render when you next open the app.</string>
+    <string name="render_stopped_memory_empty">Stopped because the phone was low on memory. Nothing half-made was saved. The queue is empty.</string>
+    <string name="render_stopped_memory_waiting">Stopped because the phone was low on memory. Nothing half-made was saved. %1$d waiting; they render when you next open the app.</string>
+    <string name="render_clear_queue">Clear queue</string>
+    <string name="render_preparing">Preparing...</string>
+    <string name="render_waiting">Rendering for later: %1$d waiting</string>
     <string name="render_channel">Rendering for later</string>
     <string name="render_notification_title">ggtts is rendering for later</string>
     <string name="licences_title">Licences and privacy</string>

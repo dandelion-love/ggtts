@@ -116,6 +116,14 @@
     <string name="render_nothing">冇嘢可以讀：請先打字或者貼上一段文字。</string>
     <string name="render_needs_music">留低遲啲聽會存去「音樂」，要 Android 10 或以上。</string>
     <string name="render_queued">已排隊：「%1$s」會留低遲啲聽（仲有 %2$d 個等緊），會存去 %3$s。</string>
+    <string name="render_stopping_memory">手機記憶體不足，讀完而家呢段就停…</string>
+    <string name="render_stopped_person_empty">已停止，未完成嘅錄音冇儲存。佇列已清空。</string>
+    <string name="render_stopped_person_waiting">已停止，未完成嘅錄音冇儲存。仲有 %1$d 個等緊，下次打開應用程式就會繼續準備。</string>
+    <string name="render_stopped_memory_empty">手機記憶體不足，已停止。未完成嘅錄音冇儲存，佇列已清空。</string>
+    <string name="render_stopped_memory_waiting">手機記憶體不足，已停止。未完成嘅錄音冇儲存。仲有 %1$d 個等緊，下次打開應用程式就會繼續準備。</string>
+    <string name="render_clear_queue">清空佇列</string>
+    <string name="render_preparing">準備中…</string>
+    <string name="render_waiting">準備遲啲聽嘅錄音：仲有 %1$d 個等緊</string>
     <string name="render_channel">留低遲啲聽</string>
     <string name="render_notification_title">ggtts 喺度準備遲啲聽嘅錄音</string>
     <string name="licences_title">授權及私隱</string>

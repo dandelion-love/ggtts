@@ -187,6 +187,7 @@ pub fn statement(engine: &dyn crate::engine::Engine) -> serde_json::Value {
     } = engine.capabilities();
     serde_json::json!({
         "format": STATEMENT_FORMAT,
+        "cancellable": engine.supports_cancellation(),
         "family": family,
         "instruction": instruction,
         "no_instruction_why": no_instruction_why,

@@ -37,11 +37,17 @@ Initialize the repository's ggml submodule before building on any platform. Host
 
 The app loads the engine's default model from the engine's cache with downloads off (`"offline": true`), so a
 missing model is reported, never fetched by surprise. On Linux the cache is `~/.cache/ggtts` (or `GGTTS_CACHE_DIR`).
-On Android it is the app's external files folder, where `adb` can place the files:
+On Android it is the app's private documents folder. For a debuggable trial build, stage the verified cache through
+the app's own identity (install the APK first):
 
 ```bash
+adb shell 'mkdir -p /sdcard/Android/data/dev.ggtts.ggtts_app/files/ggtts-cache'
 adb push ~/.cache/ggtts/models /sdcard/Android/data/dev.ggtts.ggtts_app/files/ggtts-cache/
+adb shell 'run-as dev.ggtts.ggtts_app mkdir -p app_flutter/ggtts-cache/models'
+adb shell 'run-as dev.ggtts.ggtts_app cp -R /sdcard/Android/data/dev.ggtts.ggtts_app/files/ggtts-cache/models/. app_flutter/ggtts-cache/models/'
 ```
+
+This is a developer-only staging procedure; a user-facing model provisioner remains needed.
 
 ## Checks
 

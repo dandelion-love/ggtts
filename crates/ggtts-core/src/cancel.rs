@@ -103,12 +103,13 @@ mod tests {
         let (started, waiting) = mpsc::channel();
         let worker = thread::spawn(move || {
             started.send(()).unwrap();
-            while !worker_signal.is_cancelled() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !worker_signal.is_cancelled() && std::time::Instant::now() < deadline {
                 thread::yield_now();
             }
-            true
+            worker_signal.is_cancelled()
         });
-        waiting.recv().unwrap();
+        waiting.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
         signal.cancel();
         assert!(worker.join().unwrap());
         assert!(!CancelSignal::new().is_cancelled());

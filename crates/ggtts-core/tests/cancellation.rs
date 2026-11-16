@@ -60,8 +60,12 @@ impl Engine for BlockingFake {
         signal: &CancelSignal,
     ) -> Result<CancelOutcome<Generated>, EngineError> {
         self.started.send(()).unwrap();
-        while !signal.is_cancelled() {
-            thread::yield_now();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !signal.is_cancelled() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        if !signal.is_cancelled() {
+            return Err(EngineError("test cancellation timed out".into()));
         }
         Ok(CancelOutcome::Stopped)
     }
@@ -99,7 +103,7 @@ fn pipeline_stops_blocked_generation_without_decode_or_delivery() {
             Output::Whole,
         )
     });
-    waiting.recv().unwrap();
+    waiting.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     signal.cancel();
     assert!(matches!(worker.join().unwrap(), Err(RenderError::Stopped)));
     assert_eq!(decoded.load(Ordering::SeqCst), 0);

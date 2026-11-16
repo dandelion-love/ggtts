@@ -1484,8 +1484,12 @@ mod cancellation_ffi_tests {
             if self.first {
                 self.first = false;
                 self.started.send(()).unwrap();
-                while !signal.is_cancelled() {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while !signal.is_cancelled() && std::time::Instant::now() < deadline {
                     std::thread::yield_now();
+                }
+                if !signal.is_cancelled() {
+                    return Err(EngineError("test cancellation timed out".into()));
                 }
                 Ok(CancelOutcome::Stopped)
             } else {

@@ -2754,6 +2754,27 @@ fn a_new_python_keyword_fails_the_snapshot() {
     assert!(known(TABLE, Surface::Python, "model"));
 }
 
+/// A new Dart render parameter must still be detected after recording cancellation.
+#[test]
+fn a_new_dart_render_parameter_fails_the_snapshot() {
+    let src = read("apps/flutter/lib/ggtts.dart");
+    let planted = src.replacen(
+        "    int? cancellationToken,",
+        "    int? cancellationToken, int? mysteryControl,",
+        1,
+    );
+    assert_ne!(planted, src, "the plant applies");
+    let mut now = surfaces::binding_entries();
+    now.retain(|entry| entry.surface != Surface::Dart);
+    now.extend(surfaces::dart_entries(&planted));
+    let diff = snapshot_diff(&read(SNAPSHOT), &now);
+    assert!(
+        diff.iter()
+            .any(|line| line.contains("mysteryControl: no row of the options table")),
+        "{diff:?}"
+    );
+}
+
 /// A newly exposed Dart binding call must make the snapshot fail.
 #[test]
 fn a_new_dart_call_fails_the_snapshot() {

@@ -82,7 +82,6 @@ pub fn with_tags(flac: &[u8], tags: &[(String, String)]) -> io::Result<Vec<u8>> 
 pub struct StreamWriter {
     out: BufWriter<File>,
     block: Vec<i16>,
-    frame: u64,
     written: u64,
     total: u64,
 }
@@ -105,7 +104,7 @@ impl StreamWriter {
         let mut out = BufWriter::new(File::create(path)?);
         out.write_all(b"fLaC")?;
         let mut si = Bits::default();
-        si.put(BLOCK as u64, 16);
+        si.put(16, 16); // variable-block lower bound
         si.put(BLOCK as u64, 16);
         si.put(0, 24);
         si.put(0, 24);
@@ -124,7 +123,6 @@ impl StreamWriter {
         Ok(StreamWriter {
             out,
             block: Vec::with_capacity(BLOCK),
-            frame: 0,
             written: 0,
             total,
         })
@@ -156,7 +154,7 @@ impl StreamWriter {
         let mut h = Bits::default();
         h.put(0x3ffe, 14);
         h.put(0, 1);
-        h.put(0, 1); // fixed block size
+        h.put(1, 1); // variable block size: header carries the first sample number
         let size_code = if self.block.len() == BLOCK { 0b1100 } else { 0b0111 };
         h.put(size_code, 4);
         h.put(0, 4); // sample rate from STREAMINFO
@@ -164,7 +162,7 @@ impl StreamWriter {
         h.put(0b100, 3); // 16 bits per sample
         h.put(0, 1);
         let mut frame = h.bytes();
-        frame.extend(utf8_number(self.frame));
+        frame.extend(utf8_number(self.written));
         if size_code == 0b0111 {
             frame.extend(((self.block.len() - 1) as u16).to_be_bytes());
         }
@@ -177,7 +175,6 @@ impl StreamWriter {
         frame.extend(crc.to_be_bytes());
         self.out.write_all(&frame)?;
         self.written += self.block.len() as u64;
-        self.frame += 1;
         self.block.clear();
         Ok(())
     }
@@ -226,7 +223,7 @@ fn utf8_number(v: u64) -> Vec<u8> {
         return vec![v as u8];
     }
     let mut n = 2;
-    while v >= 1u64 << (5 * n + 1) {
+    while n < 7 && v >= 1u64 << (5 * n + 1) {
         n += 1;
     }
     let mut out = vec![0u8; n];
@@ -291,7 +288,7 @@ mod tests {
         w.finish().unwrap();
         let ours = std::fs::read(&path).unwrap();
         let frames = |f: &[u8]| -> Vec<u8> {
-            let start = f.windows(2).position(|w| w == [0xff, 0xf8]).unwrap();
+            let start = f.windows(2).position(|w| w == [0xff, 0xf9]).unwrap();
             f[start..].to_vec()
         };
         assert_eq!(frames(&ours), frames(&core));

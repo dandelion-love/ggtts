@@ -26,8 +26,19 @@ def crc(data, width, poly):
 def plant_fixed(data):
     """Rewrite variable-block frame headers to the earlier defective fixed-block scheme."""
     total = int.from_bytes(data[18:26], "big") & ((1 << 36) - 1)
-    result = bytearray(data[:42])
-    pos = 42
+    # Preserve every metadata block: the book writer adds Vorbis comments.
+    pos = 4
+    while True:
+        if pos + 4 > len(data):
+            raise AssertionError("truncated metadata")
+        last = data[pos] & 0x80
+        size = int.from_bytes(data[pos+1:pos+4], "big")
+        pos += 4 + size
+        if pos > len(data):
+            raise AssertionError("truncated metadata body")
+        if last:
+            break
+    result = bytearray(data[:pos])
     frame_number = 0
     offset = 0
     while offset < total:
@@ -213,15 +224,45 @@ void main(List<String> args) {
         if flutter_pcm != pcm(flutter_plant) or "N/A" in pts(flutter_file) or "N/A" not in pts(flutter_plant):
             raise AssertionError("Flutter FLAC plant must preserve PCM and break final PTS")
         print("Flutter PCM sha256", hashlib.sha256(flutter_pcm).hexdigest(), flush=True)
-        for name, data in (("good",good),("plant",bad),("flutter-good",flutter_good),("flutter-plant",flutter_bad)):
+        # Exercise the public book StreamWriter itself in a tiny offline Rust
+        # executable; append in uneven batches to cover its streaming boundary.
+        crate = d / "book-writer"
+        (crate / "src").mkdir(parents=True)
+        (crate / "Cargo.toml").write_text(
+            '[package]\nname="browser-book-writer-fixture"\nversion="0.0.0"\nedition="2021"\n'
+            '[dependencies]\nggtts-book={path=' + json.dumps(str(ROOT / "crates/ggtts-book")) + '}\n',
+            encoding="utf-8")
+        (crate / "src/main.rs").write_text(
+            'use ggtts_book::flac::StreamWriter;\n'
+            'fn main() { let p=std::env::args().nth(1).unwrap(); '
+            'let samples:Vec<i16>=(0..23760).map(|i| ((i%101)-50)*321).collect(); '
+            'let mut w=StreamWriter::create(std::path::Path::new(&p),24000,samples.len() as u64,&[]).unwrap(); '
+            'for part in samples.chunks(997) { w.push(part).unwrap(); } w.finish().unwrap(); }\n',
+            encoding="utf-8")
+        book_file = d / "book.flac"
+        env = dict(os.environ, CARGO_TARGET_DIR=str(ROOT / "target"))
+        subprocess.run([cargo, "run", "--quiet", "--offline", "--manifest-path",
+                        str(crate / "Cargo.toml"), "--", str(book_file)], env=env, check=True)
+        book_good = book_file.read_bytes()
+        book_bad = plant_fixed(book_good)
+        book_plant = d / "book-plant.flac"
+        book_plant.write_bytes(book_bad)
+        expected = b"".join(struct.pack("<h", ((i % 101) - 50) * 321) for i in range(23760))
+        book_pcm = pcm(book_file)
+        if book_pcm != expected or book_pcm != pcm(book_plant):
+            raise AssertionError("book writer or plant changed expected PCM")
+        if "N/A" in pts(book_file) or "N/A" not in pts(book_plant):
+            raise AssertionError("book writer plant must break final PTS")
+        print("Book PCM sha256", hashlib.sha256(book_pcm).hexdigest(), flush=True)
+        for name, data in (("good",good),("plant",bad),("flutter-good",flutter_good),("flutter-plant",flutter_bad),("book-good",book_good),("book-plant",book_bad)):
             page=d/(name+".html")
             uri="data:audio/flac;base64,"+base64.b64encode(data).decode("ascii")
             page.write_text("<!doctype html><audio src='"+uri+"'></audio>",encoding="utf-8")
             observed=browser_result(chrome,page,d/(name+"-profile"))
             print(name,observed,flush=True)
-            if name in ("good","flutter-good") and observed.get("outcome")!="ended":
+            if name in ("good","flutter-good","book-good") and observed.get("outcome")!="ended":
                 raise AssertionError("fixed FLAC did not finish browser playback")
-            if name in ("plant","flutter-plant") and (observed.get("outcome") not in ("error","rejected") or "PTS is not defined" not in (observed.get("message") or "")):
+            if name in ("plant","flutter-plant","book-plant") and (observed.get("outcome") not in ("error","rejected") or "PTS is not defined" not in (observed.get("message") or "")):
                 raise AssertionError("planted defect did not trigger the expected demux error")
 
 if __name__=="__main__":

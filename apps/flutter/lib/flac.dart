@@ -10,7 +10,7 @@ class FlacWriter {
   FlacWriter(File file) : _file = file.openSync(mode: FileMode.write);
   final RandomAccessFile _file;
   final Float32List _buffer = Float32List(4096);
-  int _buffered = 0, _total = 0, _frame = 0;
+  int _buffered = 0, _total = 0;
   int? _rate;
   bool _closed = false;
 
@@ -64,7 +64,7 @@ class FlacWriter {
     final header = _Bits()
       ..put(0x3ffe, 14)
       ..put(0, 1)
-      ..put(0, 1)
+      ..put(1, 1)
       ..put(count == 4096 ? 12 : 7, 4)
       ..put(0, 4)
       ..put(0, 4)
@@ -72,7 +72,7 @@ class FlacWriter {
       ..put(0, 1);
     final frame = BytesBuilder(copy: false)
       ..add(header.take())
-      ..add(_utf8Number(_frame++));
+      ..add(_utf8Number(_total - count));
     if (count != 4096) frame.add([(count - 1) >> 8, (count - 1) & 255]);
     frame.add([_crc(frame.toBytes(), 8, 0x07), 2]);
     for (var i = 0; i < count; i++) {
@@ -90,6 +90,12 @@ class FlacWriter {
     if (_closed) throw StateError('FLAC writer is closed');
     if (_rate == null || _total == 0) throw StateError('no audio was rendered');
     if (_buffered > 0) _writeFrame();
+    final minBlockSize = _total % 4096 == 0 ? 4096 : _total % 4096;
+    final blockSizes = _Bits()
+      ..put(minBlockSize, 16)
+      ..put(4096, 16);
+    _file.setPositionSync(8);
+    _file.writeFromSync(blockSizes.take());
     final summary = _Bits()
       ..put(_rate!, 20)
       ..put(0, 3)

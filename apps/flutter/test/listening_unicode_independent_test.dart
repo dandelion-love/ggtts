@@ -42,7 +42,11 @@ class MemoryQueue extends ListeningQueue {
   }
 
   @override
-  Future<int> retry(ListeningSource source, String user) async {
+  Future<int> retry(
+    ListeningSource source,
+    String user, {
+    bool automatic = false,
+  }) async {
     for (final item in List<Map<String, dynamic>>.of(items)) {
       await source.submit(
         item['session'] as String,

@@ -63,4 +63,21 @@ class FeedbackResultStoreTest {
         val asset = File("src/main/assets/feedback-page.html")
         assertEquals(shared.readText(), asset.readText())
     }
+    @Test fun exportRestoreNeverOverwritesDifferentOrCorruptPrivateResult() {
+        val dir = Files.createTempDirectory("feedback-conflict").toFile()
+        try {
+            val i = input()
+            val exported = result(i)
+            val different = exported.replace("\"rating\":\"unsure\"", "\"rating\":\"accept\"")
+            val store = FeedbackResultStore(dir)
+            assertTrue(store.restoreExport(i, exported))
+            assertTrue(store.restoreExport(i, exported))
+            assertFalse(store.restoreExport(i, different))
+            assertEquals(exported, store.load(i))
+            val target = File(dir, i.digest + ".json")
+            target.writeText("{")
+            assertFalse(store.restoreExport(i, exported))
+            assertEquals("{", target.readText())
+        } finally { dir.deleteRecursively() }
+    }
 }

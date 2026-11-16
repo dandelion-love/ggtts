@@ -169,4 +169,10 @@
     <string name="feedback_available">此已驗證朗讀可提供回饋。</string>
     <string name="feedback_unavailable">無法提供回饋：此朗讀缺少有效的音訊或播放記錄。</string>
     <string name="feedback_export_unavailable">匯出到音樂及較舊的朗讀未能提供回饋。</string>
+    <string name="feedback_export">匯出音訊及回饋</string>
+    <string name="feedback_open_export">開啟已匯出的回饋</string>
+    <string name="feedback_export_done">音訊及回饋已匯出到所選資料夾。</string>
+    <string name="feedback_export_failed">無法匯出音訊及回饋。請確認回饋已儲存且所選資料夾可寫入。</string>
+    <string name="feedback_conflict">匯出的回饋與私人回饋不同。兩者均已保留，無法在此開啟這份匯出回饋。</string>
+    <string name="feedback_in_use">此回饋已開啟。請先關閉，再重新開啟。</string>
 </resources>

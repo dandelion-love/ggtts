@@ -75,8 +75,23 @@ private fun sha(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
 
 /** Validated result files are keyed by exact input digest; writes are atomic within this directory. */
 class FeedbackResultStore(private val dir: File) {
-    fun save(input: PreparedFeedbackInput, json: String) {
+    companion object { private val lock = Any() }
+
+    fun save(input: PreparedFeedbackInput, json: String) = synchronized(lock) {
         input.validateResult(json)
+        write(input, json)
+    }
+
+    /** Preserve both sources when an existing private result differs or is unreadable. */
+    fun restoreExport(input: PreparedFeedbackInput, json: String): Boolean = synchronized(lock) {
+        input.validateResult(json)
+        val target = File(dir, input.digest + ".json")
+        if (target.exists()) return@synchronized load(input) == json
+        write(input, json)
+        true
+    }
+
+    private fun write(input: PreparedFeedbackInput, json: String) {
         check(dir.isDirectory || dir.mkdirs())
         val target = File(dir, input.digest + ".json")
         val temp = File(dir, UUID.randomUUID().toString() + ".tmp")
@@ -85,6 +100,7 @@ class FeedbackResultStore(private val dir: File) {
             check(temp.renameTo(target)) { "cannot publish feedback" }
         } finally { temp.delete() }
     }
+
     fun load(input: PreparedFeedbackInput): String? = try {
         val json = File(dir, input.digest + ".json").readText(Charsets.UTF_8)
         input.validateResult(json)

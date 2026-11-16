@@ -69,8 +69,19 @@ object Flac {
         return out.toByteArray()
     }
 
-    /** The TITLE tag of a FLAC stream written by [encode], or null. */
-    fun title(flac: ByteArray): String? {
+    /** A FLAC stream's length in seconds, from its STREAMINFO (rate and sample count), or null if it gives none. */
+    fun seconds(flac: ByteArray): Double? {
+        if (flac.size < 26 || (flac[4].toInt() and 0x7f) != 0) return null
+        val rate = ((flac[18].toInt() and 0xff) shl 12) or ((flac[19].toInt() and 0xff) shl 4) or ((flac[20].toInt() and 0xff) shr 4)
+        val count = ((flac[21].toLong() and 0x0f) shl 32) or ((flac[22].toLong() and 0xff) shl 24) or
+            ((flac[23].toLong() and 0xff) shl 16) or ((flac[24].toLong() and 0xff) shl 8) or (flac[25].toLong() and 0xff)
+        return if (rate > 0 && count > 0) count.toDouble() / rate else null
+    }
+
+    /** The TITLE tag of a FLAC stream written by [encode], or null (also for a stream cut short). */
+    fun title(flac: ByteArray): String? = runCatching { titleOrThrow(flac) }.getOrNull()
+
+    private fun titleOrThrow(flac: ByteArray): String? {
         var p = 4
         while (p + 4 <= flac.size) {
             val header = flac[p].toInt() and 0xff

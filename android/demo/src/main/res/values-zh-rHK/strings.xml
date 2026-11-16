@@ -111,6 +111,13 @@
 
     <!-- Licences and privacy -->
     <string name="menu_licences">授權及私隱</string>
+    <string name="menu_saved_reads">已儲存嘅朗讀</string>
+    <string name="render_for_later">留低遲啲聽</string>
+    <string name="render_nothing">冇嘢可以讀：請先打字或者貼上一段文字。</string>
+    <string name="render_needs_music">留低遲啲聽會存去「音樂」，要 Android 10 或以上。</string>
+    <string name="render_queued">已排隊：「%1$s」會留低遲啲聽（仲有 %2$d 個等緊），會存去 %3$s。</string>
+    <string name="render_channel">留低遲啲聽</string>
+    <string name="render_notification_title">ggtts 喺度準備遲啲聽嘅錄音</string>
     <string name="licences_title">授權及私隱</string>
     <string name="privacy_heading">私隱</string>
     <string name="privacy_statement">呢個應用程式唔會收集任何資料。佢冇使用互聯網嘅權限，所以你輸入、朗讀或者儲存嘅嘢都唔會離開呢部手機，亦唔會保存任何帳戶或者使用記錄。</string>

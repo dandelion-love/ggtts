@@ -66,7 +66,7 @@ class LicencesTest {
     @Test
     fun theMenuOpensTheScreen() {
         val src = File("src/main/kotlin/ggtts/demo/MainActivity.kt").readText()
-        assertTrue("header.menu.add(0, 5, 4, getString(R.string.menu_licences))" in src)
-        assertTrue("5 -> showLicences()" in src)
+        assertTrue("header.menu.add(0, MenuIds.LICENCES, 5, getString(R.string.menu_licences))" in src)
+        assertTrue("MenuIds.LICENCES -> showLicences()" in src)
     }
 }

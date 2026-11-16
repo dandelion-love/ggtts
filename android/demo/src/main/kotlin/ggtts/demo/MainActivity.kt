@@ -90,6 +90,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         const val DEFAULT_THREADS = LoadRequest.DEFAULT_THREADS
         private const val REQUEST_NOTIFICATIONS = 2
         private const val PICK_FOLDER = 3
+        private const val PICK_READS_FOLDER = 4
     }
 
     // Storage (Storage.kt): the picked models folder, Music/ggtts/, and every model file listed from both.
@@ -114,6 +115,10 @@ class MainActivity : AppCompatActivity(), DemoView {
     private lateinit var stop: MaterialButton
     private lateinit var pause: MaterialButton
     private lateinit var laterButton: MaterialButton
+    /** The ⋮ menu's Saved reads: this install's reads in Music/ggtts/, and an earlier install's once the folder is picked. */
+    private val savedReads by lazy {
+        SavedReadsSheet(this, ReadsLibrary(this)) { startActivityForResult(ReadsLibrary.pickIntent(), PICK_READS_FOLDER) }
+    }
     private lateinit var systemSpeak: MaterialButton
     private var platformTts: TextToSpeech? = null
     private var askedForNotifications = false
@@ -512,18 +517,21 @@ class MainActivity : AppCompatActivity(), DemoView {
 
         val scroll = NestedScrollView(this).apply { addView(col) }
         // The ⋮ menu: everything that is not reading. The two section items say whether they open or close.
-        header.menu.add(0, 1, 0, getString(R.string.menu_import_voice))
-        header.menu.add(0, 4, 1, getString(R.string.menu_models_folder))
-        val aboutItem = header.menu.add(0, 2, 2, getString(R.string.about_heading))
-        val advItem = header.menu.add(0, 3, 3, getString(R.string.advanced))
-        header.menu.add(0, 5, 4, getString(R.string.menu_licences))
+        // Item ids are MenuIds' names, never numbers: two items with one id open each other's action (MenuIdsTest).
+        header.menu.add(0, MenuIds.IMPORT, 0, getString(R.string.menu_import_voice))
+        header.menu.add(0, MenuIds.MODELS_FOLDER, 1, getString(R.string.menu_models_folder))
+        header.menu.add(0, MenuIds.SAVED_READS, 2, getString(R.string.menu_saved_reads))
+        val aboutItem = header.menu.add(0, MenuIds.ABOUT, 3, getString(R.string.about_heading))
+        val advItem = header.menu.add(0, MenuIds.ADVANCED, 4, getString(R.string.advanced))
+        header.menu.add(0, MenuIds.LICENCES, 5, getString(R.string.menu_licences))
         header.setOnMenuItemClickListener { item: MenuItem ->
             when (item.itemId) {
-                1 -> pickFile()
-                2 -> aboutItem.title = getString(if (toggleSection(scroll, about)) R.string.hide_about else R.string.about_heading)
-                3 -> advItem.title = getString(if (toggleSection(scroll, adv)) R.string.hide_advanced else R.string.advanced)
-                4 -> chooseFolder()
-                5 -> showLicences()
+                MenuIds.IMPORT -> pickFile()
+                MenuIds.ABOUT -> aboutItem.title = getString(if (toggleSection(scroll, about)) R.string.hide_about else R.string.about_heading)
+                MenuIds.ADVANCED -> advItem.title = getString(if (toggleSection(scroll, adv)) R.string.hide_advanced else R.string.advanced)
+                MenuIds.MODELS_FOLDER -> chooseFolder()
+                MenuIds.SAVED_READS -> savedReads.show()
+                MenuIds.LICENCES -> showLicences()
             }
             true
         }
@@ -574,7 +582,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         footer.addView(speak, lp(h = dp(56), top = dp(10)))
         // Render for later: the passage goes to a background queue and to Music/ggtts/, without playing (#416).
         laterButton = MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
-            text = "Render for later"
+            text = getString(R.string.render_for_later)
             setOnClickListener { renderLater() }
         }
         footer.addView(laterButton, lp(top = dp(4)))
@@ -952,13 +960,13 @@ class MainActivity : AppCompatActivity(), DemoView {
     /** Queue the text to render in the background, saved to Music/ggtts/ as FLAC, without playing (RenderService). */
     private fun renderLater() {
         val line = text.text.toString()
-        if (line.isBlank()) { showError("Nothing to render: type or paste a passage first."); return }
-        if (!music.available) { showError("Rendering for later saves to Music, which needs Android 10 or later."); return }
+        if (line.isBlank()) { showError(getString(R.string.render_nothing)); return }
+        if (!music.available) { showError(getString(R.string.render_needs_music)); return }
         askForNotifications()
         val e = Queue.get(this).add(currentRequest(), line)
         Log.i(TAG, "queue: added entry ${e.id} \"${e.title}\"")
         RenderService.start(this)
-        showStatus("Queued \"${e.title}\" to render for later (${Queue.get(this).pending} waiting). It goes to ${Storage.MUSIC_PATH}.")
+        showStatus(getString(R.string.render_queued, e.title, Queue.get(this).pending, Storage.MUSIC_PATH))
     }
 
     // ---- importing a file through the system picker (copied into the models directory)
@@ -968,6 +976,14 @@ class MainActivity : AppCompatActivity(), DemoView {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == PICK_FOLDER) {
             data?.data?.takeIf { resultCode == RESULT_OK }?.let { onFolderPicked(it) }
+            return
+        }
+        if (requestCode == PICK_READS_FOLDER) {
+            data?.data?.takeIf { resultCode == RESULT_OK }?.let { uri ->
+                runCatching { ReadsLibrary(this).choose(uri) }.onFailure { showError(getString(R.string.folder_access_failed, it.message ?: "")) }
+                Log.i(TAG, "saved reads: folder $uri")
+            }
+            savedReads.show()
             return
         }
         val uri = data?.data

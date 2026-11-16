@@ -90,9 +90,11 @@ class FlacWriter {
     if (_closed) throw StateError('FLAC writer is closed');
     if (_rate == null || _total == 0) throw StateError('no audio was rendered');
     if (_buffered > 0) _writeFrame();
-    final minBlockSize = _total % 4096 == 0 ? 4096 : _total % 4096;
+    // Variable-block streams advertise bounds, and the last block is excluded
+    // from the minimum. Keeping the bounds distinct also records this stream's
+    // variable-block strategy even when a short read contains only one frame.
     final blockSizes = _Bits()
-      ..put(minBlockSize, 16)
+      ..put(16, 16)
       ..put(4096, 16);
     _file.setPositionSync(8);
     _file.writeFromSync(blockSizes.take());

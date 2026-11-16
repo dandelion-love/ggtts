@@ -47,7 +47,7 @@ List<_Decoded> _decodeVerbatimFrames(Uint8List bytes) {
   final packed = info.getUint64(10, Endian.big);
   final total = packed & ((1 << 36) - 1);
   expect(maxBlock, 4096);
-  expect(minBlock, total % 4096 == 0 ? 4096 : total % 4096);
+  expect(minBlock, 16);
 
   final frames = <_Decoded>[];
   var offset = 42;
@@ -98,42 +98,55 @@ List<_Decoded> _decodeVerbatimFrames(Uint8List bytes) {
 
 void main() {
   test(
-    'short final frame uses sample-number headers without changing PCM',
+    'short final frames use valid variable-block bounds and preserve PCM',
     () async {
       final directory = await Directory.systemTemp.createTemp(
         'ggtts-flac-writer-',
       );
       addTearDown(() => directory.delete(recursive: true));
-      final file = File('${directory.path}/short-final-frame.flac');
-      const count =
-          23760; // Five complete blocks and a 3280-sample final block.
-      final pcm = Float32List.fromList(
-        List<double>.generate(
-          count,
-          (i) => ((i * 37) % 20001 - 10000) / 12000.0,
-        ),
-      );
-      final expected = pcm
-          .map((sample) => (sample.clamp(-1.0, 1.0) * 32767).round())
-          .toList();
+      for (final count in [1, 15, 16, 17, 4097, 4111, 23760]) {
+        final file = File('${directory.path}/$count.flac');
+        final pcm = Float32List.fromList(
+          List<double>.generate(
+            count,
+            (i) => ((i * 37) % 20001 - 10000) / 12000.0,
+          ),
+        );
+        final expected = pcm
+            .map((sample) => (sample.clamp(-1.0, 1.0) * 32767).round())
+            .toList();
 
-      final writer = FlacWriter(file);
-      writer.append(Pcm(Float32List.fromList(pcm.sublist(0, 7777)), 24000));
-      writer.append(Pcm(Float32List.fromList(pcm.sublist(7777, 19001)), 24000));
-      writer.append(Pcm(Float32List.fromList(pcm.sublist(19001)), 24000));
-      writer.finish();
+        final writer = FlacWriter(file);
+        final first = count ~/ 3;
+        final second = (count * 2) ~/ 3;
+        if (first > 0) {
+          writer.append(
+            Pcm(Float32List.fromList(pcm.sublist(0, first)), 24000),
+          );
+        }
+        if (second > first) {
+          writer.append(
+            Pcm(Float32List.fromList(pcm.sublist(first, second)), 24000),
+          );
+        }
+        if (count > second) {
+          writer.append(Pcm(Float32List.fromList(pcm.sublist(second)), 24000));
+        }
+        writer.finish();
 
-      final bytes = await file.readAsBytes();
-      final frames = _decodeVerbatimFrames(bytes);
-      expect(frames.map((frame) => frame.sampleStart).toList(), [
-        0,
-        4096,
-        8192,
-        12288,
-        16384,
-        20480,
-      ]);
-      expect(frames.expand((frame) => frame.samples).toList(), expected);
+        final bytes = await file.readAsBytes();
+        final frames = _decodeVerbatimFrames(bytes);
+        expect(
+          frames.map((frame) => frame.sampleStart).toList(),
+          List<int>.generate((count + 4095) ~/ 4096, (i) => i * 4096),
+          reason: 'sample-number headers for $count samples',
+        );
+        expect(
+          frames.expand((frame) => frame.samples).toList(),
+          expected,
+          reason: 'PCM for $count samples',
+        );
+      }
     },
   );
 }

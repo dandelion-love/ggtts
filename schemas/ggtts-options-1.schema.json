@@ -301,6 +301,12 @@
     "observe": {
       "additionalProperties": false,
       "dependentRequired": {
+        "layer_stats": [
+          "layer_stats_layers"
+        ],
+        "layer_stats_layers": [
+          "layer_stats"
+        ],
         "trace_level": [
           "trace"
         ]
@@ -363,6 +369,30 @@
           "type": "string",
           "x-ggtts-flags": [
             "--instruments"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "layer_stats": {
+          "description": "Write selected talker layer statistics to a new artifact.",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-flags": [
+            "--layer-stats"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "layer_stats_layers": {
+          "description": "Zero-based talker layers to capture, comma-separated.",
+          "items": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true,
+          "x-ggtts-flags": [
+            "--layer-stats-layers"
           ],
           "x-ggtts-phase": "render"
         },

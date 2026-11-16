@@ -488,6 +488,18 @@ pub const TABLE: &[Descriptor] = &[
         ..row("codes", SO, R, path(), "null")
     },
     Descriptor {
+        flags: &["--layer-stats"],
+        requires: Some("layer_stats_layers"),
+        help: "Write selected talker layer statistics to a new artifact.",
+        ..row("layer_stats", SO, R, path(), "null")
+    },
+    Descriptor {
+        flags: &["--layer-stats-layers"],
+        requires: Some("layer_stats"),
+        help: "Zero-based talker layers to capture, comma-separated.",
+        ..row("layer_stats_layers", SO, R, Kind::Layers, "null")
+    },
+    Descriptor {
         flags: &["--timing-report"],
         help: "A new file for the stage timing report.",
         ..row("timing_report", SO, R, path(), "null")
@@ -815,6 +827,12 @@ pub struct Observe {
     /// Where each chunk's kept codec tokens go (`ggtts-codes/1`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codes: Option<PathBuf>,
+    /// Destination for the same-render layer statistics artifact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layer_stats: Option<PathBuf>,
+    /// Zero-based layers to capture.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layer_stats_layers: Option<Vec<u32>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timing_report: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -84,6 +84,29 @@ use ggtts_core::stream::{Container, StreamWriter};
 use ggtts_core::text::read_text;
 use ggtts_core::trace::{emit_header, Event, Events, Header, JsonlEvents, NullEvents};
 
+/// Publish complete bytes without replacing an existing artifact or exposing a partial file.
+fn publish_layer_stats(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    for nonce in 0..1000u32 {
+        let tmp = parent.join(format!(".ggtts-layer-stats-{}-{nonce}.tmp", std::process::id()));
+        let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("--layer-stats: {e}")),
+        };
+        let written = file.write_all(bytes).and_then(|_| file.sync_all());
+        drop(file);
+        let result = written.and_then(|_| std::fs::hard_link(&tmp, path));
+        let _ = std::fs::remove_file(&tmp);
+        return result.map_err(|e| format!("--layer-stats {}: {e}", path.display()));
+    }
+    Err("--layer-stats: could not allocate a temporary file".into())
+}
+
 /// One `ggtts-codes/1` line: a chunk's kept draw and its codec tokens, frame-major (`codes[f * codebooks + c]`), with
 /// the `frames`, `codebooks` and `codes` keys the decode example reads (`examples/decode.rs`). `docs/codes.md`.
 fn write_codes_line(
@@ -605,6 +628,35 @@ fn render_with_models(
     stream_opener: impl FnOnce(&Options) -> Result<Option<StreamWriter<Box<dyn std::io::Write>>>, String>,
     resolve: impl FnOnce(&mut Options, &str, LogSettings) -> Result<Vec<ggtts_models::ModelFile>, String>,
 ) -> Result<u8, String> {
+    if let Some(path) = &a.observe.layer_stats {
+        if std::fs::symlink_metadata(path).is_ok() {
+            return Err("--layer-stats must be a new file".into());
+        }
+        let absolute = |p: &Path| -> Result<std::path::PathBuf, String> {
+            let parent = p
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            let name = p.file_name().ok_or("invalid output path")?;
+            Ok(std::fs::canonicalize(parent)
+                .map_err(|e| format!("output directory: {e}"))?
+                .join(name))
+        };
+        let target = absolute(path)?;
+        let other = [
+            a.output.out.as_deref(),
+            a.observe.trace.as_deref(),
+            a.observe.codes.as_deref(),
+            a.observe.timing_report.as_deref(),
+            a.observe.duration_report.as_deref(),
+            a.output.stream.as_deref().filter(|s| *s != "-").map(Path::new),
+        ];
+        for output in other.into_iter().flatten() {
+            if absolute(output)? == target {
+                return Err("--layer-stats must differ from other output paths".into());
+            }
+        }
+    }
     // The table refuses --trace-level without --trace.
     if a.observe.trace_level.is_some() && a.observe.trace.is_none() {
         return Err("--trace-level requires --trace".into());
@@ -787,6 +839,7 @@ fn render_with_models(
     let mut trace_stats = None;
     let mut stream_stats = None;
     let mut duration_chunks = None;
+    let mut layer_stats_records = None;
     // `--text` is a one-chunk plan at its seed and `--story` the chunks planned before loading; both render through
     // the same entry point, write the same trace (`chunk_begin`, the engine's `step`s, `chunk_end`, `end`) and stream
     // under the same levelling options. `--text` keeps its one draw, untrimmed and unlevelled, so its FLAC is the
@@ -853,6 +906,15 @@ fn render_with_models(
         let mut kept = DurationJudge;
         let judge: &mut dyn Judge = if text_mode { &mut kept } else { judge.as_mut() };
         let mut hooks = Hooks::new();
+        let stats = a
+            .observe
+            .layer_stats_layers
+            .as_ref()
+            .map(|layers| ggtts_core::layer_stats::LayerStats::new(layers.iter().map(|&n| n as usize).collect()))
+            .transpose()?;
+        if let Some(stats) = &stats {
+            hooks.add(Box::new(stats.clone()));
+        }
         let mut codes_out = a
             .observe
             .codes
@@ -874,7 +936,11 @@ fn render_with_models(
                 codes_error = Some(e.to_string());
             }
         };
-        let obs = &mut Observers::new(&mut events, &mut hooks).with_codes(&mut write_codes);
+        let mut observers = Observers::new(&mut events, &mut hooks).with_codes(&mut write_codes);
+        if let Some(stats) = &stats {
+            observers = observers.with_layer_stats(stats.clone());
+        }
+        let obs = &mut observers;
         let streaming = stream.is_some();
         // The pipeline levels the stream (`StreamMode::Levelled`); this sink only writes what it is handed.
         let mut sink = |p: StreamPiece<'_>| match stream.as_mut() {
@@ -893,6 +959,14 @@ fn render_with_models(
             RenderError::Sink(m) if text_mode => format!("--stream: {m}"),
             other => other.to_string(),
         })?;
+        drop(observers);
+        hooks.finish();
+        if !hooks.failures().is_empty() {
+            return Err(format!("--layer-stats: hook failure: {:?}", hooks.failures()));
+        }
+        if let Some(stats) = &stats {
+            layer_stats_records = Some(stats.records().map_err(|e| format!("--layer-stats: {e}"))?);
+        }
         if let Some(e) = codes_error {
             return Err(format!("--codes: {e}"));
         }
@@ -1074,6 +1148,23 @@ fn render_with_models(
         }
         written = Some(path);
     }
+    let publish_stats = || -> Result<(), String> {
+        if let (Some(path), Some(records)) = (&a.observe.layer_stats, &layer_stats_records) {
+            let doc = serde_json::json!({
+                "format": "ggtts-layer-stats/1", "complete": true,
+                "render": { "title": title, "audio": a.output.out, "trace": a.observe.trace, "codes": a.observe.codes },
+                "models": model_files, "engine": engine_info.family, "backend": engine_info.backend,
+                "settings": a, "dtype": "f32", "accumulation_dtype": "f64",
+                "boundary": "post-residual and steering, before final normalization",
+                "steps": "last prefill row at step 0; subsequent sampled steps including thinking and EOS",
+                "norm": "mean per-step L2 norm", "records": records
+            });
+            let mut bytes = serde_json::to_vec(&doc).map_err(|e| format!("--layer-stats: {e}"))?;
+            bytes.push(b'\n');
+            publish_layer_stats(path, &bytes)?;
+        }
+        Ok(())
+    };
     let write_duration = |path: &Path, data: &serde_json::Value| -> Result<(), String> {
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
@@ -1132,6 +1223,7 @@ fn render_with_models(
             write_duration(path, data)?;
         }
         write_timing(None)?;
+        publish_stats()?;
         return Ok(ggtts_instruments::runner::EXIT_OK);
     };
     let render_id = path
@@ -1220,6 +1312,9 @@ fn render_with_models(
         );
     }
     write_timing(Some(summary.overhead.total_ms))?;
+    if summary.complete() {
+        publish_stats()?;
+    }
     Ok(summary.exit_code())
 }
 
@@ -1319,6 +1414,22 @@ mod tests {
     use ggtts_core::profile::Profile;
 
     /// A command line as `ggtts-render` reads it, with no environment, refused in its own words.
+    #[test]
+    fn layer_stats_publication_never_replaces_or_leaves_partial_destination() {
+        let dir = std::env::temp_dir().join(format!("ggtts-stats-publish-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("stats.json");
+        std::fs::write(&dest, b"existing").unwrap();
+        assert!(publish_layer_stats(&dest, b"new").is_err());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"existing");
+        std::fs::remove_file(&dest).unwrap();
+        publish_layer_stats(&dest, b"complete").unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"complete");
+        assert!(publish_layer_stats(&dir.join("missing").join("stats"), b"x").is_err());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     fn parse<S: AsRef<str>>(args: &[S]) -> Result<Options, String> {
         let args: Vec<String> = args.iter().map(|s| s.as_ref().to_string()).collect();
         options_from(&args, &|_| None).map_err(|r| refusal_message(&r, &args))

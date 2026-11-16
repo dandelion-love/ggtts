@@ -175,15 +175,53 @@ def main():
             return p.stdout.splitlines()
         if "N/A" in pts(original) or "N/A" not in pts(planted):
             raise AssertionError("PTS control did not distinguish the planted final frame")
-        for name, data in (("good",good),("plant",bad)):
+        # Compile the actual Flutter writer body in an isolated Dart script. Only
+        # its ggtts.dart import is replaced by the same Pcm data shape, so no
+        # Flutter plugins or device are needed.
+        dart = os.environ.get("DART_BIN") or shutil.which("dart")
+        if not dart:
+            candidate = Path.home() / "work/flutter-sdk/bin/dart"
+            dart = str(candidate) if candidate.is_file() else None
+        if not dart:
+            raise RuntimeError("Dart SDK required for Flutter FLAC writer")
+        writer = (ROOT / "apps/flutter/lib/flac.dart").read_text(encoding="utf-8")
+        imported = "import 'ggtts.dart';"
+        if writer.count(imported) != 1:
+            raise AssertionError("Flutter writer import changed")
+        writer = writer.replace(imported, "")
+        writer += """
+class Pcm {
+  Pcm(this.samples, this.rate);
+  final Float32List samples;
+  final int rate;
+}
+void main(List<String> args) {
+  final writer = FlacWriter(File(args.single));
+  writer.append(Pcm(Float32List.fromList(List.generate(23760, (i) => (i % 101 - 50) / 100.0)), 24000));
+  writer.finish();
+}
+"""
+        dart_script = d/"flutter_writer.dart"
+        dart_script.write_text(writer, encoding="utf-8")
+        flutter_file = d/"flutter.flac"
+        subprocess.run([dart, str(dart_script), str(flutter_file)], check=True)
+        flutter_good = flutter_file.read_bytes()
+        flutter_bad = plant_fixed(flutter_good)
+        flutter_plant = d/"flutter-plant.flac"
+        flutter_plant.write_bytes(flutter_bad)
+        flutter_pcm = pcm(flutter_file)
+        if flutter_pcm != pcm(flutter_plant) or "N/A" in pts(flutter_file) or "N/A" not in pts(flutter_plant):
+            raise AssertionError("Flutter FLAC plant must preserve PCM and break final PTS")
+        print("Flutter PCM sha256", hashlib.sha256(flutter_pcm).hexdigest(), flush=True)
+        for name, data in (("good",good),("plant",bad),("flutter-good",flutter_good),("flutter-plant",flutter_bad)):
             page=d/(name+".html")
             uri="data:audio/flac;base64,"+base64.b64encode(data).decode("ascii")
             page.write_text("<!doctype html><audio src='"+uri+"'></audio>",encoding="utf-8")
             observed=browser_result(chrome,page,d/(name+"-profile"))
             print(name,observed,flush=True)
-            if name=="good" and observed.get("outcome")!="ended":
+            if name in ("good","flutter-good") and observed.get("outcome")!="ended":
                 raise AssertionError("fixed FLAC did not finish browser playback")
-            if name=="plant" and (observed.get("outcome") not in ("error","rejected") or "PTS is not defined" not in (observed.get("message") or "")):
+            if name in ("plant","flutter-plant") and (observed.get("outcome") not in ("error","rejected") or "PTS is not defined" not in (observed.get("message") or "")):
                 raise AssertionError("planted defect did not trigger the expected demux error")
 
 if __name__=="__main__":

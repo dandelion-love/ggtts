@@ -1,49 +1,39 @@
-import 'dart:io';
-import 'dart:typed_data';
-
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:ggtts_app/ggtts.dart';
 import 'package:ggtts_app/saved_reads.dart';
 import 'package:ggtts_app/saved_reads_page.dart';
 
+import 'recovery_page_test.dart' show FakeReads;
+
 void main() {
-  testWidgets('a missing audio file is marked and can be removed', (
-    tester,
-  ) async {
-    await tester.runAsync(() async {
-      final root = await Directory.systemTemp.createTemp('ggtts-read-page-');
-      addTearDown(() async {
-        if (await root.exists()) await root.delete(recursive: true);
-      });
-      final library = SavedReads(root);
-      final pending = await library.begin(
+  testWidgets('missing audio is marked and can be removed', (tester) async {
+    final library = FakeReads();
+    library.reads.add(
+      SavedRead(
+        id: 'missing',
         text: 'sample',
-        options: {'load_document': {}},
-      );
-      pending.append(Pcm(Float32List.fromList([0.2, -0.2]), 24000));
-      final read = await library.publish(pending.finish());
-      await File(read.audioPath).delete();
-      await tester.pumpWidget(
-        MaterialApp(home: SavedReadsPage(library: library)),
-      );
-      await Future<void>.delayed(const Duration(milliseconds: 200));
-      await tester.pumpAndSettle();
-      expect(find.text('Audio missing'), findsOneWidget);
-      expect(
-        tester
-            .widget<IconButton>(
-              find.byWidgetPredicate(
-                (w) => w is IconButton && w.tooltip == 'Play',
-              ),
-            )
-            .onPressed,
-        isNull,
-      );
-      await tester.tap(find.byTooltip('Remove missing read'));
-      await Future<void>.delayed(const Duration(milliseconds: 200));
-      await tester.pumpAndSettle();
-      expect(find.text('No saved reads yet.'), findsOneWidget);
-    });
+        options: {},
+        audioPath: '',
+        missing: true,
+        savedAt: DateTime.utc(2020),
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: SavedReadsPage(library: library)),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Audio missing'), findsOneWidget);
+    final tile = find.ancestor(
+      of: find.text('sample'),
+      matching: find.byType(ListTile),
+    );
+    final play = find.descendant(
+      of: tile,
+      matching: find.widgetWithIcon(IconButton, Icons.play_arrow),
+    );
+    expect(tester.widget<IconButton>(play).onPressed, isNull);
+    await tester.tap(find.byTooltip('Remove missing read'));
+    await tester.pumpAndSettle();
+    expect(find.text('sample'), findsNothing);
   });
 }

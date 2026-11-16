@@ -25,8 +25,17 @@ data class ReopenedFeedback(val input: PreparedFeedbackInput, val result: String
 class FeedbackSidecarExport(
     private val evidence: FileSavedEvidenceStore,
     private val results: FeedbackResultStore,
+    private val diagnostics: DiagnosticLog = DiagnosticLog(),
 ) {
     fun export(provider: FeedbackDocumentProvider, audio: File): ExportedFeedbackPair {
+        var stage = DiagnosticStage.EXPORT_PREPARE
+        var event = diagnostics.start(stage)
+        fun advance(next: DiagnosticStage) {
+            event.finish(DiagnosticOutcome.OK)
+            stage = next
+            event = diagnostics.start(stage)
+        }
+        try {
         val manifest = evidence.load(audio.path) ?: error("missing audio evidence")
         check(evidence.playbackComplete(audio.path)) { "playback is not confirmed" }
         val bytes = audio.readBytes()
@@ -38,6 +47,7 @@ class FeedbackSidecarExport(
         val id = UUID.randomUUID().toString()
         val audioName = "ggtts-" + id + ".wav"
         val metadataName = audioName + ".feedback.json"
+        advance(DiagnosticStage.EXPORT_STAGE)
         check(provider.find(audioName) == null && provider.find(metadataName) == null)
         val envelope = feedbackCanonical(mapOf(
             "format" to "ggtts-feedback-sidecar/1",
@@ -57,16 +67,28 @@ class FeedbackSidecarExport(
             metadataStage = provider.createStaging("." + id + ".feedback.tmp", "application/json")
             provider.write(metadataStage, envelope)
             check(provider.read(metadataStage).contentEquals(envelope)) { "staged sidecar differs" }
+            advance(DiagnosticStage.EXPORT_PUBLISH)
             audioPublished = provider.publish(audioStage, audioName)
             audioStage = null
             metadataPublished = provider.publish(metadataStage, metadataName)
             metadataStage = null
+            advance(DiagnosticStage.EXPORT_REOPEN)
             check(reopen(provider, audioName) != null) { "published pair does not validate" }
+            event.finish(DiagnosticOutcome.OK)
             return ExportedFeedbackPair(audioName, metadataName)
         } catch (t: Throwable) {
             listOfNotNull(metadataStage, audioStage, metadataPublished, audioPublished).forEach {
                 runCatching { provider.delete(it) }
             }
+            throw t
+        }
+        } catch (t: Throwable) {
+            event.finish(when {
+                t is InterruptedException -> DiagnosticOutcome.INTERRUPTED
+                stage == DiagnosticStage.EXPORT_PREPARE -> DiagnosticOutcome.UNAVAILABLE
+                stage == DiagnosticStage.EXPORT_REOPEN -> DiagnosticOutcome.INVALID
+                else -> DiagnosticOutcome.PROVIDER_FAILURE
+            })
             throw t
         }
     }
@@ -75,10 +97,12 @@ class FeedbackSidecarExport(
     fun reopen(provider: FeedbackDocumentProvider, audioName: String): String? = reopenPage(provider, audioName)?.result
 
     fun reopenPage(provider: FeedbackDocumentProvider, audioName: String): ReopenedFeedback? {
+        val event = diagnostics.start(DiagnosticStage.FEEDBACK_REOPEN)
+        var outcome = DiagnosticOutcome.INVALID
         return try {
         require(audioName.matches(Regex("^ggtts-[A-Za-z0-9-]+\\.wav$")))
-        val audioId = provider.find(audioName) ?: return null
-        val sideId = provider.find(audioName + ".feedback.json") ?: return null
+        val audioId = provider.find(audioName) ?: run { outcome = DiagnosticOutcome.UNAVAILABLE; return null }
+        val sideId = provider.find(audioName + ".feedback.json") ?: run { outcome = DiagnosticOutcome.UNAVAILABLE; return null }
         val raw = provider.read(sideId)
         require(raw.size <= 2_000_000)
         val json = raw.toString(Charsets.UTF_8)
@@ -94,8 +118,10 @@ class FeedbackSidecarExport(
         require(root["input_sha256"] == input.digest)
         val result = root["result"] as? String ?: error("result missing")
         input.validateResult(result)
+        outcome = DiagnosticOutcome.OK
         ReopenedFeedback(input, result)
         } catch (_: Exception) { null }
+        finally { event.finish(outcome) }
     }
 
     private fun inputFor(bytes: ByteArray, manifest: AudioBoundReadManifest): PreparedFeedbackInput {

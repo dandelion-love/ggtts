@@ -163,8 +163,8 @@ class SavedReadsSheet(
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
         buttons.addView(button("Delete") {
             library.delete(r).fold(
-                { Log.i(MainActivity.TAG, "saved reads: deleted ${r.name}"); show() },
-                { Log.w(MainActivity.TAG, "saved reads: ${r.name} not deleted: $it"); (activity as? DemoView)?.showError("Not deleted: ${it.message}") },
+                { Log.i(MainActivity.TAG, "saved_read_delete outcome=ok"); show() },
+                { Log.w(MainActivity.TAG, "saved_read_delete outcome=failure"); (activity as? DemoView)?.showError("Not deleted: ${it.message}") },
             )
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
         addView(buttons)
@@ -173,7 +173,8 @@ class SavedReadsSheet(
     private fun openFeedback(audio: File, sheet: BottomSheetDialog, tasks: FeedbackTaskSession, gate: FeedbackOpenGate) {
         val weakActivity = WeakReference(activity)
         val weakSheet = WeakReference(sheet)
-        tasks.submit({ FeedbackReadSelector().prepare(audio) }) { input ->
+        val diagnostics = DiagnosticLog(sink = { Log.i(MainActivity.TAG, it) })
+        tasks.submit({ FeedbackReadSelector(diagnostics = diagnostics).prepare(audio) }) { input ->
             val owner = weakActivity.get()
             if (owner == null || owner.isFinishing || owner.isDestroyed || weakSheet.get()?.isShowing != true)
                 return@submit
@@ -218,7 +219,8 @@ class SavedReadsSheet(
         val resultDir = File(activity.filesDir, "feedback-results")
         tasks.submit({
             runCatching {
-                FeedbackSidecarExport(FileSavedEvidenceStore(), FeedbackResultStore(resultDir))
+                FeedbackSidecarExport(FileSavedEvidenceStore(), FeedbackResultStore(resultDir),
+                    DiagnosticLog(sink = { Log.i(MainActivity.TAG, it) }))
                     .export(SafFeedbackDocumentProvider(resolver, folder), audio)
             }
         }) { result ->
@@ -244,7 +246,8 @@ class SavedReadsSheet(
                 val id = provider.find(read.name) ?: error("audio missing")
                 val listed = resolver.openInputStream(Uri.parse(read.uri))?.use { it.readBytes() } ?: error("audio unreadable")
                 check(provider.read(id).contentEquals(listed)) { "listed audio differs" }
-                val pair = FeedbackSidecarExport(FileSavedEvidenceStore(), FeedbackResultStore(resultDir))
+                val pair = FeedbackSidecarExport(FileSavedEvidenceStore(), FeedbackResultStore(resultDir),
+                    DiagnosticLog(sink = { Log.i(MainActivity.TAG, it) }))
                     .reopenPage(provider, read.name) ?: error("feedback unavailable")
                 pair
             }
@@ -303,7 +306,7 @@ class SavedReadsSheet(
             prepare()
             start()
         }
-        Log.i(MainActivity.TAG, "saved reads: playing ${r.name}")
+        Log.i(MainActivity.TAG, "saved_read_play outcome=start")
     }
 }
 

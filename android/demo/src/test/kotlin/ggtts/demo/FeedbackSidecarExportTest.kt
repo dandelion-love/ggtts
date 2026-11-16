@@ -129,4 +129,24 @@ class FeedbackSidecarExportTest {
         assertNotNull(export.reopen(provider, pair.audioName))
         assertArrayEquals(byteArrayOf(1, 2, 3), provider.entries.getValue("prior").bytes)
     }
+    @Test fun providerFailuresHaveFixedStageWithoutExceptionText() = fixture { audio, store, results ->
+        val logs = mutableListOf<String>()
+        val provider = Provider().apply { fail = "publish2" }
+        val export = FeedbackSidecarExport(store, results, DiagnosticLog(sink = { logs += it }))
+        assertTrue(runCatching { export.export(provider, audio) }.isFailure)
+        assertTrue(logs.toString(), logs.any { "stage=export_publish outcome=provider_failure" in it })
+        assertTrue(logs.toString(), logs.none { "planted publish" in it || audio.path in it })
+        assertTrue(logs.toString(), logs.all { "elapsed_ms=" in it })
+    }
+    @Test fun throwingDiagnosticSinkCannotChangeExportOrMaskProviderFailure() = fixture { audio, store, results ->
+        val provider = Provider()
+        val diagnostics = DiagnosticLog(sink = { throw IllegalStateException("diagnostic failure") })
+        val export = FeedbackSidecarExport(store, results, diagnostics)
+        val pair = export.export(provider, audio)
+        assertNotNull(export.reopen(provider, pair.audioName))
+        val failing = Provider().apply { fail = "publish2" }
+        val error = runCatching { export.export(failing, audio) }.exceptionOrNull()
+        assertEquals("planted publish", error?.message)
+        assertTrue(failing.entries.isEmpty())
+    }
 }

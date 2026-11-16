@@ -103,4 +103,20 @@ class EvidenceControllerTest {
             assertFalse(FileSavedEvidenceStore().playbackComplete(file.path))
         } finally { dir.deleteRecursively() }
     }
+    @Test fun throwingDiagnosticSinkCannotInterruptPlaybackOrCompletion() {
+        val dir = Files.createTempDirectory("controller-diagnostic").toFile()
+        try {
+            val file = dir.resolve("read.wav")
+            val audio = Audio(file.path)
+            val view = View()
+            val controller = DemoController(TtsBinding { Engine(true) }, view, audio,
+                background = { it.run() }, main = { it.run() }, evidenceStore = FileSavedEvidenceStore(),
+                log = { throw IllegalStateException("logging failure") },
+                diagnostics = DiagnosticLog(sink = { throw IllegalStateException("diagnostic failure") }))
+            controller.speak(LoadRequest("fake", null, null, null), "x", 7)
+            assertTrue(view.errors.toString(), view.errors.isEmpty())
+            assertEquals(2, audio.played.size)
+            assertTrue(FileSavedEvidenceStore().playbackComplete(file.path))
+        } finally { dir.deleteRecursively() }
+    }
 }

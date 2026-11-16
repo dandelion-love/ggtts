@@ -203,7 +203,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         } else {
             runCatching { File(cacheDir, CARD_FILE).writeText(s) }
                 .onSuccess { outState.putString(STATE_TEXT_FILE, CARD_FILE) }
-                .onFailure { Log.w(TAG, "the card's text (${s.length} characters) was not saved: $it") }
+                .onFailure { Log.w(TAG, "card_save outcome=failure") }
         }
     }
 
@@ -238,7 +238,7 @@ class MainActivity : AppCompatActivity(), DemoView {
                 return@TextToSpeech
             }
             val lang = tts.setLanguage(locale)
-            Log.i(TAG, "platform tts: engine ${tts.defaultEngine.let { "default $it" }}, setLanguage($locale) = $lang")
+            Log.i(TAG, "platform_tts outcome=language_selected")
             if (lang < TextToSpeech.LANG_AVAILABLE) {
                 showError(getString(R.string.tts_no_model, locale.toString(), lang, engine))
                 return@TextToSpeech
@@ -338,7 +338,7 @@ class MainActivity : AppCompatActivity(), DemoView {
     private fun color(@AttrRes role: Int) = MaterialColors.getColor(this, role, javaClass.simpleName)
 
     override fun showError(text: String) {
-        Log.w(TAG, "shown: $text")
+        Log.w(TAG, "ui_error outcome=shown")
         statusIsError = true
         status.visibility = View.VISIBLE
         status.setTextColor(color(androidx.appcompat.R.attr.colorError))
@@ -655,7 +655,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         }
         voiceNote.text = gaps
         voiceNote.visibility = if (gaps.isEmpty()) View.GONE else View.VISIBLE
-        Log.i(TAG, "voices: ${found.voices.map { it.label }}, incomplete: ${found.incomplete}")
+        Log.i(TAG, "voice_catalog outcome=loaded count=${found.voices.size}")
     }
 
     /** Sets the Advanced controls to the voice's files, which is all Speak reads. */
@@ -669,7 +669,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         pick(voice, v.voiceFile ?: none)
         speaker.setText(v.speaker ?: "")
         showVoice(v)
-        Log.i(TAG, "voice: ${v.label}")
+        Log.i(TAG, "voice_selection outcome=selected")
     }
 
     /** The voice card and the player's expected wait, for [v] (null: no complete voice). */
@@ -716,7 +716,7 @@ class MainActivity : AppCompatActivity(), DemoView {
                 Licences.notices(entries) { path -> zip.getEntry(path)?.let { e -> zip.getInputStream(e).readBytes().inputStream() } }
             }
         }.getOrElse {
-            Log.w(TAG, "licences: the APK could not be read: $it")
+            Log.w(TAG, "licences outcome=read_failure")
             sheet.addView(words(getString(R.string.notices_unavailable), M.style.TextAppearance_Material3_BodyMedium, androidx.appcompat.R.attr.colorError))
             emptyList()
         }
@@ -841,7 +841,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         when (incoming) {
             is Incoming.None -> return false
             is Incoming.Refused -> {
-                Log.i(TAG, "incoming refused: ${incoming.why}")
+                Log.i(TAG, "incoming outcome=refused")
                 showError(incoming.why)
             }
             is Incoming.Text -> showIncoming(incoming)
@@ -861,7 +861,7 @@ class MainActivity : AppCompatActivity(), DemoView {
                         when (read) {
                             is Incoming.Text -> showIncoming(read)
                             is Incoming.Refused -> {
-                                Log.i(TAG, "incoming file refused: ${read.why}")
+                                Log.i(TAG, "incoming_file outcome=refused")
                                 showError(read.why)
                             }
                             else -> {}
@@ -882,7 +882,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         text.setText(incoming.text)
         text.setSelection(0)
         val n = IncomingText.characters(incoming.text)
-        Log.i(TAG, "incoming ${incoming.source}: $n characters${if (replaced) ", replacing the card's text" else ""}")
+        Log.i(TAG, "incoming outcome=accepted chars=$n replaced=$replaced")
         showStatus(IncomingText.status(incoming.source, n, replaced, tr))
     }
 
@@ -898,7 +898,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         // intent, Speak included, so the error stays on screen and nothing speaks with the previous selection.
         val refused = ModelImport.refusedNames(listOf("model", "codec", "voice").map { extras.getString(it) })
         if (refused.isNotEmpty()) {
-            Log.w(TAG, "adb extras refused: $refused are not file names in the models directory; nothing applied")
+            Log.w(TAG, "adb_extras outcome=refused")
             showError(getString(R.string.refused_extras, refused.joinToString()))
             return
         }
@@ -939,7 +939,7 @@ class MainActivity : AppCompatActivity(), DemoView {
 
     private fun speakNow() {
         val request = currentRequest()
-        Log.i(TAG, "speak: $request")
+        Log.i(TAG, "render outcome=start")
         controller.speak(request, text.text.toString(), Ggtts.DEFAULT_SEED)
     }
 
@@ -962,7 +962,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         if (!music.available) { showError(getString(R.string.render_needs_music)); return }
         askForNotifications()
         val e = Queue.get(this).add(currentRequest(), line)
-        Log.i(TAG, "queue: added entry ${e.id} \"${e.title}\"")
+        Log.i(TAG, "queue outcome=added")
         RenderService.start(this)
         showStatus(getString(R.string.render_queued, e.title, Queue.get(this).pending, Storage.MUSIC_PATH))
     }
@@ -979,7 +979,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         if (requestCode == PICK_READS_FOLDER) {
             data?.data?.takeIf { resultCode == RESULT_OK }?.let { uri ->
                 runCatching { ReadsLibrary(this).choose(uri) }.onFailure { showError(getString(R.string.folder_access_failed, it.message ?: "")) }
-                Log.i(TAG, "saved reads: folder $uri")
+                Log.i(TAG, "saved_reads_folder outcome=selected")
             }
             savedReads.show()
             return
@@ -1010,7 +1010,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         }
         val input = contentResolver.openInputStream(uri) ?: throw ImportException(getString(R.string.import_unreadable))
         val out = input.use { ModelImport(modelsDir).importFile(name ?: "unnamed", size, it) }
-        Log.i(TAG, "imported $out (${out.length()} bytes)")
+        Log.i(TAG, "model_import outcome=ok bytes=${out.length()}")
         return out
     }
 
@@ -1027,7 +1027,7 @@ class MainActivity : AppCompatActivity(), DemoView {
             return
         }
         val n = folder.entries().size
-        Log.i(TAG, "models folder: $uri ($n files)")
+        Log.i(TAG, "models_folder outcome=selected count=$n")
         refreshFiles()
         showStatus(getString(R.string.folder_status, folder.describe() ?: uri.toString(), n))
     }
@@ -1062,7 +1062,7 @@ class MainActivity : AppCompatActivity(), DemoView {
             }
             handler.post {
                 result.fold({ uri ->
-                    Log.i(TAG, "saved read: $uri in ${Storage.MUSIC_PATH}")
+                    Log.i(TAG, "saved_read_export outcome=ok")
                     if (share) startActivity(MusicFolder.shareIntent(uri, getString(R.string.share_title)))
                     else showStatus(getString(R.string.saved_to, Storage.MUSIC_PATH))
                 }, { showError(getString(R.string.save_failed, it.message ?: "")) })
@@ -1080,7 +1080,7 @@ class MainActivity : AppCompatActivity(), DemoView {
             for (name in Storage.samplesToExport(samples, music.saved())) {
                 runCatching {
                     music.save(name) { out -> snapshot.open(name, ::openLocation).use { it.copyTo(out) } }
-                }.fold({ Log.i(TAG, "sample saved: $name to ${Storage.MUSIC_PATH}") }, { Log.w(TAG, "sample $name not saved: $it") })
+                }.fold({ Log.i(TAG, "sample_export outcome=ok") }, { Log.w(TAG, "sample_export outcome=failure") })
             }
         }
     }

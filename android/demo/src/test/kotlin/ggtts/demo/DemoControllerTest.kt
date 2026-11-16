@@ -260,4 +260,21 @@ class DemoControllerTest {
         c.speak(request.with(LoadRequest.LOAD, "engine", "qwen3-tts").with(LoadRequest.LOAD, "voice", null), "Four.", Ggtts.DEFAULT_SEED)
         assertEquals(3, binding.loads.size)
     }
+    @Test fun logNeverContainsPlantedTextPathsOptionsOrErrors() {
+        val secret = "PLANTED_PRIVATE_TEXT_PATH_917"
+        val logs = mutableListOf<String>()
+        val failure = GgttsException(Ggtts.ERR_ARG, secret, secret)
+        val failed = DemoController(FakeBinding(failure), view, audio,
+            background = { it.run() }, main = { it.run() }, log = { logs += it })
+        val request = LoadRequest("fake", "/" + secret, null, null)
+        failed.speak(request, secret, 4)
+        assertTrue("failure logged", logs.any { "outcome=binding_failure" in it })
+        assertTrue(logs.toString(), logs.none { secret in it })
+        logs.clear()
+        val successful = DemoController(FakeBinding(), view, audio,
+            background = { it.run() }, main = { it.run() }, log = { logs += it })
+        successful.speak(request, secret, 4)
+        assertTrue(logs.toString(), logs.any { "engine_load outcome=ok" in it })
+        assertTrue(logs.toString(), logs.none { secret in it })
+    }
 }

@@ -51,6 +51,18 @@ pub const NOT_OPTIONS: &[(Surface, &str, &str)] = &[
         "options",
         "the options document: every option, by its schema key",
     ),
+    (Surface::Kotlin, "handle", "the loaded engine handle"),
+    (
+        Surface::Kotlin,
+        "optionsJson",
+        "the options document: every option, by its schema key",
+    ),
+    (Surface::Kotlin, "seedGiven", "whether the caller supplied a seed"),
+    (
+        Surface::Kotlin,
+        "listener",
+        "the evidence stream's callback, not an option",
+    ),
     (Surface::C, "size", "the struct's own size, its version"),
     (Surface::C, "settings", "the struct the settings are in"),
     (Surface::C, "handle", "the engine handle"),
@@ -61,6 +73,7 @@ pub const NOT_OPTIONS: &[(Surface, &str, &str)] = &[
     ),
     (Surface::C, "pcm", "an out-parameter"),
     (Surface::C, "on_piece", "the stream's callback, not a value"),
+    (Surface::C, "callback", "the evidence stream's callback, not an option"),
     (Surface::Dart, "onPiece", "the stream's callback, not a value"),
     (Surface::Dart, "text", "the content to render, not an option"),
     (Surface::C, "user", "the callback's own pointer, passed through"),
@@ -225,6 +238,8 @@ pub fn c_names() -> Vec<String> {
     out.extend(names(between(&h, "int32_t ggtts_render(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_load_opts(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_render_opts(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_render_stream_evidence(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_render_document_evidence(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_capabilities(", ");")));
     out.extend(names(between(&h, "void ggtts_string_free(", ");")));
     out.sort();
@@ -240,6 +255,13 @@ pub fn kotlin_names() -> Vec<String> {
         out.extend(names(list));
     }
     out.extend(names(between(class, "fun render(", "): Pcm")));
+    // The evidence bridge is public to binding conformance even though its arguments are JNI plumbing, not options.
+    out.extend(
+        kotlin_entries(&kt)
+            .into_iter()
+            .filter(|entry| entry.item == "renderStreamEvidence")
+            .flat_map(|entry| entry.names),
+    );
     out.sort();
     out.dedup();
     out

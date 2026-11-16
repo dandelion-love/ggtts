@@ -41,10 +41,21 @@ fn each_surface_is_read_from_its_source() {
         "allow_download",
         "threads",
         "seed",
+        "callback",
     ] {
         assert!(has(Surface::C, n), "{n} not read from ggtts.h: {:?}", s[2].1);
     }
-    for n in ["engine", "cacheDir", "allowDownload", "instruction", "seed"] {
+    for n in [
+        "engine",
+        "cacheDir",
+        "allowDownload",
+        "instruction",
+        "seed",
+        "handle",
+        "optionsJson",
+        "seedGiven",
+        "listener",
+    ] {
         assert!(has(Surface::Kotlin, n), "{n} not read from Ggtts.kt: {:?}", s[3].1);
     }
     for n in ["handle", "text", "options", "onPiece"] {

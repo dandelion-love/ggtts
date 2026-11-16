@@ -12,6 +12,8 @@ c ggtts_load_with: engine, model, codec, voice, threads, settings, handle
 c ggtts_abi_version:
 c ggtts_render: handle, text, seed, pcm, len, rate
 c ggtts_render_stream: handle, text, seed, on_piece, user
+c ggtts_render_stream_evidence: handle, text, seed, callback, user
+c ggtts_render_document_evidence: handle, text, options_json, callback, user
 c ggtts_pcm_free: pcm, len
 c ggtts_free: handle
 c ggtts_last_error:
@@ -29,6 +31,7 @@ kotlin render: handle, text, seed, rateOut
 kotlin renderOpts: handle, text, optionsJson, seed, seedGiven, rateOut
 kotlin renderStream: handle, text, seed, listener
 kotlin renderStreamOpts: handle, text, optionsJson, seed, seedGiven, listener
+kotlin renderStreamEvidence: handle, text, optionsJson, seed, seedGiven, listener
 kotlin optionsSchema:
 kotlin capabilities: handle
 kotlin free: handle

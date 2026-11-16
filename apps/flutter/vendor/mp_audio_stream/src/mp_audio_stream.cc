@@ -49,14 +49,18 @@ public:
             ma_device_uninit(&_ctx->device);
             device_initialized = false;
         }
+        if (_ctx && _ctx->rb_initialized) {
+            ma_pcm_rb_uninit(&_ctx->rb);
+            _ctx->rb_initialized = false;
+        }
     }
     uint64_t queued() override { return _ctx && _ctx->rb_initialized ? ma_pcm_rb_available_read(&_ctx->rb) : 0; }
 };
 static ControlledDevice controlled_device;
 static GgttsAudioControl control(controlled_device);
 static GgttsAudioLifecycle lifecycle;
-int64_t ma_stream_pause() { std::lock_guard<std::mutex> lock(lifecycle.mutex()); return control.pause() ? 0 : -1; }
-int64_t ma_stream_resume_controlled() { std::lock_guard<std::mutex> lock(lifecycle.mutex()); return control.resume() ? 0 : -1; }
+int64_t ma_stream_pause() { std::lock_guard<std::mutex> lock(lifecycle.mutex()); return lifecycle.legacyAllowed() && control.pause() ? 0 : -1; }
+int64_t ma_stream_resume_controlled() { std::lock_guard<std::mutex> lock(lifecycle.mutex()); return lifecycle.legacyAllowed() && control.resume() ? 0 : -1; }
 int64_t ma_stream_stop_controlled() { return lifecycle.stop(control); }
 int64_t ma_stream_software_empty() { return control.softwareEmpty() ? 1 : 0; }
 int64_t ma_stream_control_state() { return static_cast<int64_t>(control.state()); }
@@ -151,7 +155,7 @@ void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uin
     }
 }
 
-int64_t ma_stream_push(float* buf, int64_t length) {
+static int64_t push_locked(float* buf, int64_t length) {
     return control.push([&]() -> int64_t {
 #ifdef MP_AUDIO_STREAM_DEBUGB
     printf("push: length:%lld available:%u\n", (long long)length, ma_pcm_rb_available_read(&_ctx->rb));
@@ -198,6 +202,7 @@ void ma_stream_stat_reset() {
 
 int64_t ma_stream_uninit_checked() {
     std::lock_guard<std::mutex> lock(lifecycle.mutex());
+    if (!lifecycle.legacyAllowed()) return -1;
     if (!_ctx || !device_initialized) return 0;
     return control.teardown() ? 0 : -1;
 }
@@ -205,9 +210,8 @@ int64_t ma_stream_uninit_checked() {
 // Preserve the upstream ABI; new callers use the checked variant.
 void ma_stream_uninit() { (void)ma_stream_uninit_checked(); }
 
-int64_t ma_stream_init(int64_t max_buffer_size, int64_t keep_buffer_size, int64_t channels, int64_t sample_rate, int64_t fade_on_exhaust)
+static int64_t init_locked(int64_t max_buffer_size, int64_t keep_buffer_size, int64_t channels, int64_t sample_rate, int64_t fade_on_exhaust)
 {
-    std::lock_guard<std::mutex> lock(lifecycle.mutex());
     // miniaudio takes 32-bit values, so reject the ones out of range
     if (channels < 1 || channels > MA_MAX_CHANNELS
         || sample_rate < 1 || sample_rate > UINT32_MAX
@@ -223,6 +227,7 @@ int64_t ma_stream_init(int64_t max_buffer_size, int64_t keep_buffer_size, int64_
         control.state() == GgttsAudioControl::State::paused) return -8;
     if (_ctx == NULL) {
         _ctx = (_ctx_t *)calloc(1,sizeof(_ctx_t));
+        if (!_ctx) return -6;
 
         _ctx->rb_initialized = false;
         _ctx->is_exhaust = false;
@@ -234,6 +239,7 @@ int64_t ma_stream_init(int64_t max_buffer_size, int64_t keep_buffer_size, int64_
         device_initialized = false;
     }
 
+    GgttsInitGuard init_guard([] { controlled_device.destroy(); });
     ma_device_config deviceConfig;
 
     deviceConfig = ma_device_config_init(ma_device_type_playback);
@@ -262,8 +268,6 @@ int64_t ma_stream_init(int64_t max_buffer_size, int64_t keep_buffer_size, int64_
 
     if (ma_pcm_rb_init(DEVICE_FORMAT, ch, (ma_uint32)max_buffer_size / ch, NULL, NULL, &_ctx->rb) != MA_SUCCESS) {
         printf("Failed to allocate buffer.\n");
-        ma_device_uninit(&_ctx->device);
-        device_initialized = false;
         return -6;
     }
     _ctx->rb_initialized = true;
@@ -278,11 +282,43 @@ int64_t ma_stream_init(int64_t max_buffer_size, int64_t keep_buffer_size, int64_
 
     if (ma_device_start(&_ctx->device) != MA_SUCCESS) {
         printf("Failed to start playback device.\n");
-        ma_device_uninit(&_ctx->device);
-        device_initialized = false;
         return -5;
     }
 
-    if (!control.begin()) { ma_device_uninit(&_ctx->device); device_initialized = false; return -8; }
+    if (!control.begin()) return -8;
+    init_guard.commit();
     return 0;
 }
+
+// Legacy admission is separate from session-aware reads.
+int64_t ma_stream_push(float* buf, int64_t length) {
+    std::lock_guard<std::mutex> lock(lifecycle.mutex());
+    if (!lifecycle.legacyAllowed()) return -3;
+    return push_locked(buf, length);
+}
+
+int64_t ma_stream_init(int64_t max_buffer_size, int64_t keep_buffer_size, int64_t channels, int64_t sample_rate, int64_t fade_on_exhaust) {
+    std::lock_guard<std::mutex> lock(lifecycle.mutex());
+    if (!lifecycle.legacyAllowed()) return -9;
+    return init_locked(max_buffer_size, keep_buffer_size, channels, sample_rate, fade_on_exhaust);
+}
+
+uint64_t ma_stream_session_new() { return lifecycle.reserve(); }
+int64_t ma_stream_session_init(uint64_t id, int64_t max_buffer_size, int64_t keep_buffer_size, int64_t channels, int64_t sample_rate, int64_t fade_on_exhaust) {
+    return lifecycle.initialize(id, [&] { return init_locked(max_buffer_size, keep_buffer_size, channels, sample_rate, fade_on_exhaust); });
+}
+int64_t ma_stream_session_pause(uint64_t id) { return lifecycle.invokeSession(id, [&] { return control.pause() ? 0 : -1; }); }
+int64_t ma_stream_session_resume(uint64_t id) { return lifecycle.invokeSession(id, [&] { return control.resume() ? 0 : -1; }); }
+int64_t ma_stream_session_stop(uint64_t id) { return lifecycle.stopSession(id, control); }
+int64_t ma_stream_session_uninit(uint64_t id) {
+    return lifecycle.release(id, [&] { return control.teardown() ? 0 : -1; });
+}
+
+int64_t ma_stream_session_push(uint64_t id, float* buf, int64_t length) {
+    return lifecycle.pushSession(id, [&] { return push_locked(buf, length); });
+}
+int64_t ma_stream_session_software_empty(uint64_t id) {
+    return lifecycle.invokeSession(id, [&] { return control.softwareEmpty() ? 1 : 0; });
+}
+
+int64_t ma_stream_session_state(uint64_t id) { return lifecycle.sessionState(id, control); }

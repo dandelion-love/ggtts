@@ -15,6 +15,22 @@ struct Fake : GgttsAudioControl::Backend {
 };
 
 int main() {
+    // Plant failure after both resources were created; the production guard
+    // must release both, while successful initialization keeps them.
+    bool device = false, ring = false;
+    auto initialize = [&](bool failAfterRing) {
+        GgttsInitGuard guard([&] { device = false; ring = false; });
+        device = true;
+        ring = true;
+        if (failAfterRing) return false;
+        guard.commit();
+        return true;
+    };
+    assert(!initialize(true));
+    assert(!device && !ring);
+    assert(initialize(false));
+    assert(device && ring);
+
     Fake f;
     GgttsAudioControl c(f);
     assert(!c.pause());
@@ -80,5 +96,62 @@ int main() {
     initializer.join();
     duringInit.join();
     assert(stopDone && c.state() == GgttsAudioControl::State::stopped);
+
+    // Session stop before initialization rejects admission without opening a
+    // device, and a stale stop cannot affect the next reservation.
+    Fake sessionBackend;
+    GgttsAudioControl sessionControl(sessionBackend);
+    GgttsAudioLifecycle sessions;
+    const auto first = sessions.reserve();
+    assert(first != 0);
+    assert(sessions.reserve() == 0);
+    assert(sessions.stopSession(first, sessionControl) == 0);
+    bool opened = false;
+    assert(sessions.initialize(first, [&] { opened = true; return 0; }) != 0);
+    assert(!opened);
+    assert(sessions.release(first, [&] { assert(false); return 0; }) == 0);
+    const auto second = sessions.reserve();
+    assert(second != 0 && second != first);
+    assert(sessions.stopSession(first, sessionControl) != 0);
+    assert(sessions.initialize(second, [&] { return sessionControl.begin() ? 0 : -1; }) == 0);
+    assert(sessions.stopSession(first, sessionControl) != 0);
+    assert(sessionControl.state() == GgttsAudioControl::State::running);
+    assert(sessions.invokeSession(second, [&] { return sessionControl.pause() ? 0 : -1; }) == 0);
+    assert(sessions.sessionState(second, sessionControl) == 2);
+    assert(sessions.pushSession(second, [&] { return sessionControl.push([] { return 0; }); }) == -2);
+    assert(sessions.invokeSession(second, [&] { return sessionControl.resume() ? 0 : -1; }) == 0);
+    assert(sessions.stopSession(second, sessionControl) == 0);
+    assert(sessions.pushSession(second, [&] { assert(false); return 0; }) == -3);
+    assert(sessions.release(second, [&] { return sessionControl.teardown() ? 0 : -1; }) == 0);
+
+    // Stop arriving while the session's initializer holds admission waits and
+    // then stops the just-opened device.
+    const auto third = sessions.reserve();
+    std::atomic<bool> sessionInitializing{false}, sessionAllow{false}, sessionStopAttempt{false};
+    std::thread sessionInit([&] {
+        assert(sessions.initialize(third, [&] {
+            sessionInitializing = true;
+            while (!sessionAllow.load()) std::this_thread::yield();
+            return sessionControl.begin() ? 0 : -1;
+        }) == 0);
+    });
+    while (!sessionInitializing.load()) std::this_thread::yield();
+    std::thread sessionStop([&] {
+        sessionStopAttempt = true;
+        assert(sessions.stopSession(third, sessionControl) == 0);
+    });
+    while (!sessionStopAttempt.load()) std::this_thread::yield();
+    sessionAllow = true;
+    sessionInit.join();
+    sessionStop.join();
+    assert(sessionControl.state() == GgttsAudioControl::State::stopped);
+    assert(sessions.release(third, [&] { return sessionControl.teardown() ? 0 : -1; }) == 0);
+    const auto fourth = sessions.reserve();
+    assert(sessions.initialize(fourth, [&] { return sessionControl.begin() ? 0 : -1; }) == 0);
+    sessionBackend.fail = true;
+    assert(sessions.release(fourth, [&] { return sessionControl.teardown() ? 0 : -1; }) == -1);
+    assert(sessionControl.state() == GgttsAudioControl::State::idle);
+    assert(sessions.sessionState(fourth, sessionControl) == -1);
+    assert(sessions.reserve() != 0);
 
 }

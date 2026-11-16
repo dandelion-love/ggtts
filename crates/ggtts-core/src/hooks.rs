@@ -351,9 +351,11 @@ mod tests {
         }
     }
 
+    type LayerObservations = std::rc::Rc<std::cell::RefCell<Vec<(usize, u32, bool, Vec<f32>)>>>;
+
     struct Layers {
         selected: Vec<usize>,
-        seen: std::rc::Rc<std::cell::RefCell<Vec<(usize, u32, bool, Vec<f32>)>>>,
+        seen: LayerObservations,
         panic: bool,
     }
     impl TensorHook for Layers {

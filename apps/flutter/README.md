@@ -20,7 +20,7 @@ apps/flutter/tool/build_app.sh android
 
 Linux needs Rust (the pinned toolchain), clang, ninja-build, pkg-config, GTK 3 and GStreamer development
 packages, liblzma-dev, and the GStreamer good and PulseAudio runtime plugins. Android additionally needs NDK
-27.2.12479018 (`ANDROID_NDK_HOME`), cargo-ndk, both Rust targets, a host libclang for bindgen, and JDK 17 or newer.
+27.2.12479018 (`ANDROID_NDK_HOME`), cargo-ndk, both Rust targets, a host libclang for bindgen, and JDK 21 or newer. Android lint uses Java 21 APIs, so Gradle checks its actual runtime and fails early on older JDKs. Set JAVA_HOME, the Flutter configured JDK, or org.gradle.java.home to JDK 21. JDK 21 is verified; newer versions are untested.
 The APK includes both native ABIs.
 
 On Windows x86_64, install Flutter's Windows desktop prerequisites, Rust's MSVC target, CMake and libclang, then:

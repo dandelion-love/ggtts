@@ -23,4 +23,6 @@ plugins {
     id("org.jetbrains.kotlin.android") version "2.4.20" apply false
 }
 
+check(Runtime.version().feature() >= 21) { "Flutter Android builds require JDK 21 or newer for Android lint; Gradle is running on Java ${Runtime.version()}. Set JAVA_HOME or org.gradle.java.home to JDK 21." }
+
 include(":app")

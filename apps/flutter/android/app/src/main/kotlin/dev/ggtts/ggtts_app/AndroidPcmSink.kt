@@ -2,6 +2,9 @@ package dev.ggtts.ggtts_app
 
 import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioRouting
+import android.os.Handler
+import android.os.Looper
 import android.media.AudioTrack
 
 /**
@@ -9,9 +12,11 @@ import android.media.AudioTrack
  * Route checks sample the active route only when queried: they do not detect
  * transient reroutes between calls, focus loss or prove acoustic output.
  */
-internal class AndroidPcmSink(rate: Int) : ControlledPcmSink {
+internal class AndroidPcmSink(rate: Int, onRouteChange: () -> Unit = {}) : ControlledPcmSink {
     private val track: AudioTrack
     private var route: Int? = null
+    private val routeBaseline = RouteBaseline()
+    private val routeListener: AudioRouting.OnRoutingChangedListener
 
     init {
         val minimum = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_FLOAT)
@@ -25,12 +30,18 @@ internal class AndroidPcmSink(rate: Int) : ControlledPcmSink {
             track.release()
             error("AudioTrack initialization failed")
         }
+        routeListener = AudioRouting.OnRoutingChangedListener {
+            if (!routeBaseline.initialEvent(track.routedDevice?.id)) onRouteChange()
+        }
+        track.addOnRoutingChangedListener(routeListener, Handler(Looper.getMainLooper()))
     }
 
     override fun play() { track.play() }
     override fun pause() { track.pause() }
-    override fun write(samples: FloatArray, offset: Int, count: Int): Int =
-        track.write(samples, offset, count, AudioTrack.WRITE_NON_BLOCKING)
+    override fun write(samples: FloatArray, offset: Int, count: Int): Int {
+        routeBaseline.beforeWrite()
+        return track.write(samples, offset, count, AudioTrack.WRITE_NON_BLOCKING)
+    }
 
     override fun head(): Long {
         val current = track.routedDevice?.id
@@ -44,5 +55,5 @@ internal class AndroidPcmSink(rate: Int) : ControlledPcmSink {
     }
 
     override fun flush() { track.flush() }
-    override fun release() { track.release() }
+    override fun release() { track.removeOnRoutingChangedListener(routeListener); track.release() }
 }

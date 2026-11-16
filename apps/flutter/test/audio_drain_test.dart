@@ -26,4 +26,51 @@ void main() {
       throwsA(isA<ReadStopped>()),
     );
   });
+  test('presentation drain waits beyond old grace for the downstream head', () {
+    var now = Duration.zero;
+    var polls = 0;
+    drainPresentation(
+      state: () => 1,
+      submitted: () => 24000,
+      head: () {
+        polls++;
+        return now < const Duration(seconds: 6) ? 0 : 24000;
+      },
+      now: () => now,
+      wait: (duration) {
+        now += duration;
+      },
+    );
+    expect(now, greaterThanOrEqualTo(const Duration(seconds: 6)));
+    expect(polls, greaterThan(1));
+  });
+
+  test('presentation drain refuses interruption and stalled output', () {
+    var now = Duration.zero;
+    expect(
+      () => drainPresentation(
+        state: () => 1,
+        submitted: () => 10,
+        head: () => 0,
+        now: () => now,
+        wait: (d) {
+          now += d;
+        },
+      ),
+      throwsA(isA<StateError>()),
+    );
+    expect(
+      () => drainPresentation(
+        state: () => -2,
+        submitted: () => 10,
+        head: () => 0,
+      ),
+      throwsA(isA<StateError>()),
+    );
+    expect(
+      () =>
+          drainPresentation(state: () => 3, submitted: () => 10, head: () => 0),
+      throwsA(isA<ReadStopped>()),
+    );
+  });
 }

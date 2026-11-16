@@ -7,6 +7,7 @@
 //!
 //! An engine also declares its [`Profile`]: the protocol numbers the story path renders its output with.
 
+use crate::cancel::{CancelOutcome, CancelSignal};
 use crate::capabilities::Capabilities;
 use crate::hooks::Hooks;
 use crate::profile::Profile;
@@ -153,6 +154,15 @@ pub trait Engine {
     }
     /// Text to codec tokens for one chunk.
     fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError>;
+    /// Opt-in generation with a one-shot signal. Engines that cannot poll
+    /// during generation return Unsupported without starting work.
+    fn generate_cancellable(
+        &mut self,
+        _req: &ChunkRequest<'_>,
+        _signal: &CancelSignal,
+    ) -> Result<CancelOutcome<Generated>, EngineError> {
+        Ok(CancelOutcome::Unsupported)
+    }
     /// [`generate`](Engine::generate), emitting a `step` event per frame into `events` when its level is above 0.
     /// The tokens must be identical to `generate`'s at every level: an instrument reads values the engine already
     /// has and never draws from the sampler's stream ([`check_trace_identity`](crate::trace::check_trace_identity)).

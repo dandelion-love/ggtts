@@ -13,7 +13,8 @@
  *   2  ggtts_load_with and ggtts_settings (a Qwen3-TTS speaker and style instruction), ggtts_abi_version
  *   3  ggtts_settings.device, .cache_dir and .allow_download (the device; the default model files)
  *   4  ggtts_load_opts and ggtts_render_opts (options documents); ggtts_settings is frozen at version 3
- *   5  ggtts_options_schema, ggtts_capabilities and ggtts_string_free, ggtts_last_error_key */
+ *   5  ggtts_options_schema, ggtts_capabilities and ggtts_string_free, ggtts_last_error_key
+ *   6  one-shot cancellation tokens and ggtts_render_opts_cancellable */
 #ifndef GGTTS_H
 #define GGTTS_H
 
@@ -24,7 +25,7 @@
 extern "C" {
 #endif
 
-#define GGTTS_ABI_VERSION 5
+#define GGTTS_ABI_VERSION 6
 
 #define GGTTS_OK 0
 #define GGTTS_ERR_ARG (-1)
@@ -117,6 +118,20 @@ int32_t ggtts_render_stream_evidence(uint64_t handle, const char *text, uint64_t
                                     ggtts_evidence_fn callback, void *user);
 int32_t ggtts_render_document_evidence(uint64_t handle, const char *text, const char *options_json,
                                       ggtts_evidence_fn callback, void *user);
+/* One-shot cancellation tokens are independent of the engine lock. Freeing
+ * the token prevents new lookups; an in-flight render retains its own clone.
+ * A stopped render returns GGTTS_ERR_STOPPED. Backends that cannot poll return
+ * GGTTS_ERR_ARG before generation. A current graph or external operation may
+ * finish before it observes cancellation; no fixed stop latency is promised.
+ * Qwen polls between frame and subtalker graphs; other engines currently refuse.
+ * Input preparation, prefill, active graphs and callbacks are not preempted.
+ * Pieces delivered before cancellation cannot be retracted. A callback already
+ * in progress may complete; no later piece is delivered after stop is observed. */
+int32_t ggtts_cancel_new(uint64_t *out);
+int32_t ggtts_cancel_signal(uint64_t token);
+int32_t ggtts_cancel_free(uint64_t token);
+int32_t ggtts_render_opts_cancellable(uint64_t handle, const char *text,
+    const char *options_json, uint64_t token, ggtts_piece_fn on_piece, void *user);
 void ggtts_pcm_free(float *pcm, size_t len);
 int32_t ggtts_free(uint64_t handle);
 const char *ggtts_last_error(void);

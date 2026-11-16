@@ -416,6 +416,42 @@ impl Engine for Qwen3Tts {
         })
     }
 
+    fn generate_cancellable(
+        &mut self,
+        req: &ChunkRequest<'_>,
+        signal: &ggtts_core::cancel::CancelSignal,
+    ) -> Result<ggtts_core::cancel::CancelOutcome<Generated>, EngineError> {
+        use ggtts_core::cancel::CancelOutcome;
+        if self.trace.is_some() {
+            return Ok(CancelOutcome::Unsupported);
+        }
+        match self.talker.generate_cancellable(
+            req.text,
+            req.instruction(),
+            &self.voice.speaker,
+            self.language_id,
+            req.seed,
+            self.voice.max_frames,
+            self.voice.sampling,
+            req.steer,
+            signal,
+        )? {
+            CancelOutcome::Stopped => Ok(CancelOutcome::Stopped),
+            CancelOutcome::Unsupported => Ok(CancelOutcome::Unsupported),
+            CancelOutcome::Completed(g) => {
+                let frames = g
+                    .codes
+                    .iter()
+                    .map(|&c| u16::try_from(c).map_err(|_| EngineError(format!("codec token {c} out of range"))))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(CancelOutcome::Completed(Generated {
+                    codes: Codes { codebooks: 16, frames },
+                    stop: g.stop,
+                }))
+            }
+        }
+    }
+
     fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
         if codes.codebooks != 16 {
             return Err(EngineError(format!(

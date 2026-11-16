@@ -231,17 +231,20 @@ fn the_header_reads_the_same_with_lf_and_crlf_endings() {
 }
 
 #[test]
-fn the_abi_version_is_5_in_the_library_and_the_header() {
-    assert_eq!(ggtts_abi_version(), 5);
-    assert_eq!(GGTTS_ABI_VERSION, 5);
+fn the_abi_version_is_6_in_the_library_and_the_header() {
+    assert_eq!(ggtts_abi_version(), 6);
+    assert_eq!(GGTTS_ABI_VERSION, 6);
     let header = include_str!("../include/ggtts.h");
-    assert_eq!(header_version(header), Some(5), "the header's version");
+    assert_eq!(header_version(header), Some(6), "the header's version");
     // Version 5's functions are declared as the library exports them.
     for decl in [
         "const char *ggtts_options_schema(void);",
         "int32_t ggtts_capabilities(uint64_t handle, char **json);",
         "void ggtts_string_free(char *s);",
         "const char *ggtts_last_error_key(void);",
+        "int32_t ggtts_cancel_new(uint64_t *out);",
+        "int32_t ggtts_cancel_signal(uint64_t token);",
+        "int32_t ggtts_cancel_free(uint64_t token);",
     ] {
         assert!(header_lines(header).contains(&decl), "the header declares {decl}");
     }

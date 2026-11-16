@@ -17,7 +17,6 @@ internal class PlaybackCoordinator(
     private var inner = 0L
     private var state = 0
     private var failed = false
-    private var routeReady = false
 
     @Synchronized fun reserve(): Long {
         if (id != 0L || next == 0L) return 0
@@ -25,7 +24,6 @@ internal class PlaybackCoordinator(
         next = if (next == Long.MAX_VALUE) 0 else next + 1
         state = 0
         failed = false
-        routeReady = false
         return id
     }
 
@@ -33,7 +31,7 @@ internal class PlaybackCoordinator(
         if (session != id || id == 0L || state != 0) return -1
         if (!focus.acquire { invalidate(session) }) return -1
         return try {
-            val created = ControlledPcmSession { r -> factory(r) { routeChanged(session) } }
+            val created = ControlledPcmSession { r -> factory(r) { invalidate(session) } }
             inner = created.open(rate)
             bridge = created
             state = 1
@@ -48,7 +46,6 @@ internal class PlaybackCoordinator(
     @Synchronized fun push(session: Long, samples: FloatArray): Int {
         if (!valid(session)) return -3
         if (state == 2) return -2
-        if (!routeReady) return 0
         return try { bridge!!.write(inner, samples) } catch (_: Throwable) { failed = true; -3 }
     }
 
@@ -88,15 +85,6 @@ internal class PlaybackCoordinator(
         val result = if (state != 3) stop(session) else 0
         id = 0
         return if (wasFailed) -1 else result
-    }
-
-    // The first route notification establishes an initial route before any
-    // write is accepted. Every later notification invalidates the session.
-    // A missing initial notification keeps writes backpressured until timeout.
-    @Synchronized private fun routeChanged(session: Long) {
-        if (session != id || id == 0L || failed) return
-        if (!routeReady && (state == 0 || state == 1)) routeReady = true
-        else invalidate(session)
     }
 
     @Synchronized fun interruptActive() { if (id != 0L) invalidate(id) }

@@ -6,7 +6,7 @@ from scripts.feedback_page import generate, validate_input, validate_result
 
 def source():
     return {"format":"ggtts-feedback-input/1","id":"test-1","items":[
-        {"id":"clip-1","text":"A中😀𠀀，文","audio":"data:audio/flac;base64,"+base64.b64encode(b"fLaCsynthetic").decode()}
+        {"id":"clip-1","text":"A中😀𠀀，文","audio":"data:audio/flac;base64,"+base64.b64encode(b"fLaC\x80\x00\x00\x22" + bytes(10) + ((24000 << 44) | 1).to_bytes(8,"big") + bytes(16)).decode()}
     ]}
 
 def result():
@@ -39,7 +39,7 @@ class ContractTest(unittest.TestCase):
                 validate_result(bad,source())
 
     def test_audio_external_invalid_and_non_flac_refused(self):
-        for audio in ("https://example.invalid/a.flac","data:audio/flac;base64,!!!","data:audio/flac;base64,QUJD"):
+        for audio in ("https://example.invalid/a.flac","data:audio/flac;base64,!!!","data:audio/flac;base64,QUJD","data:audio/flac;base64,ZkxhQw=="):
             bad=source(); bad["items"][0]["audio"]=audio
             with self.subTest(audio=audio), self.assertRaises(ValueError):
                 validate_input(bad)

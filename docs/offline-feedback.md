@@ -9,8 +9,8 @@ dots, underscores or hyphens. Input item IDs must be unique.
 
 An input has `format`, `id`, and a nonempty `items` array. Each item has
 `id`, nonempty Unicode scalar `text`, and `audio`, a
-`data:audio/flac;base64,...` URI. The generator checks base64 and the FLAC
-magic; it does not decode the audio or certify its integrity.
+`data:audio/flac;base64,...` URI. The generator checks base64 and a complete FLAC STREAMINFO header with
+nonzero sample rate and count; it does not decode the audio or certify its integrity.
 
 A result has `format`, the same page `id`, a page `note`, and one item
 for every input item. Each result item has `id`, `marks`, `rating`

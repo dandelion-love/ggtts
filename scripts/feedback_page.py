@@ -54,8 +54,11 @@ def validate_input(doc):
             data = base64.b64decode(uri[len(AUDIO):], validate=True)
         except (binascii.Error, ValueError) as exc:
             raise ValueError("invalid base64 audio") from exc
-        if not data.startswith(b"fLaC"):
-            raise ValueError("audio is not FLAC")
+        if len(data) < 42 or data[:4] != b"fLaC" or data[4] & 0x7f != 0 or data[5:8] != b"\x00\x00\x22":
+            raise ValueError("audio lacks a complete FLAC STREAMINFO header")
+        stream = int.from_bytes(data[18:26], "big")
+        if (stream >> 44) == 0 or (stream & ((1 << 36) - 1)) == 0:
+            raise ValueError("FLAC sample rate and sample count must be nonzero")
     return doc
 
 def validate_result(result, source):

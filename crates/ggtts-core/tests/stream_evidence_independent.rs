@@ -264,3 +264,103 @@ fn abort_and_mixed_rates_refuse_complete_evidence() {
     assert!(result.is_err(), "a changed sample rate cannot complete evidence");
     assert!(delivered < chunks.len());
 }
+
+/// The first (defective) draw is cancelled; the next would otherwise succeed.
+struct AbortFirst {
+    fake: ggtts_fake::FakeEngine,
+    decodes: usize,
+}
+impl ggtts_core::engine::Engine for AbortFirst {
+    fn info(&self) -> &ggtts_core::engine::EngineInfo {
+        self.fake.info()
+    }
+    fn profile(&self) -> &ggtts_core::profile::Profile {
+        self.fake.profile()
+    }
+    fn generate(
+        &mut self,
+        req: &ggtts_core::engine::ChunkRequest<'_>,
+    ) -> Result<ggtts_core::engine::Generated, ggtts_core::engine::EngineError> {
+        let mut g = self.fake.generate(req)?;
+        if self.fake.calls.len() == 1 {
+            g.stop = ggtts_core::engine::Stop::Abort;
+        }
+        Ok(g)
+    }
+    fn decode(
+        &mut self,
+        codes: &ggtts_core::engine::Codes,
+    ) -> Result<ggtts_core::engine::Pcm, ggtts_core::engine::EngineError> {
+        self.decodes += 1;
+        self.fake.decode(codes)
+    }
+}
+
+#[test]
+fn aborted_first_draw_is_not_retried_by_evidence_stream() {
+    let case = redraw_case();
+    let probe = case.engine();
+    let chunks = case.chunks(&probe);
+    let opts = case.opts(&probe);
+    let seeds = StorySeeds {
+        story_id: &case.story_id,
+        salt: &opts.seed_salt,
+    };
+    let mut engine = AbortFirst {
+        fake: case.engine(),
+        decodes: 0,
+    };
+    let mut events = NullEvents;
+    let mut hooks = Hooks::new();
+    let mut delivered = 0;
+    let mut sink = |_: StreamEvidencePiece<'_>| {
+        delivered += 1;
+        Ok(())
+    };
+    let result = render_plan(
+        &mut engine,
+        &chunks,
+        &seeds,
+        &mut DurationJudge,
+        &opts,
+        &mut Observers::new(&mut events, &mut hooks),
+        Output::StreamEvidence {
+            sink: &mut sink,
+            level: StreamMode::Raw,
+        },
+    );
+    assert!(result.is_err());
+    assert_eq!(engine.fake.calls.len(), 1, "cancelled draw must not be retried");
+    assert_eq!(engine.decodes, 0, "cancelled codes must not be decoded");
+    assert_eq!(delivered, 0);
+
+    // Control: the legacy stream still judges and redraws the aborted first draw.
+    let mut engine = AbortFirst {
+        fake: case.engine(),
+        decodes: 0,
+    };
+    let mut events = NullEvents;
+    let mut hooks = Hooks::new();
+    let mut delivered = 0;
+    let mut sink = |_: StreamPiece<'_>| {
+        delivered += 1;
+        Ok(())
+    };
+    let read = render_plan(
+        &mut engine,
+        &chunks,
+        &seeds,
+        &mut DurationJudge,
+        &opts,
+        &mut Observers::new(&mut events, &mut hooks),
+        Output::Stream {
+            sink: &mut sink,
+            level: StreamMode::Raw,
+        },
+    )
+    .unwrap();
+    assert_eq!(read.chunks[0].redraws, 1);
+    assert_eq!(read.chunks[0].stop, ggtts_core::engine::Stop::Eos);
+    assert!(engine.fake.calls.len() > 1 && engine.decodes > 0);
+    assert_eq!(delivered, chunks.len());
+}

@@ -97,7 +97,8 @@ void renderWorker(Map<String, Object?> request) {
 }
 
 class ReadPage extends StatefulWidget {
-  const ReadPage({super.key});
+  const ReadPage({super.key, this.prepare = inspectModel});
+  final Future<Map<String, Object?>> Function(String) prepare;
   @override
   State<ReadPage> createState() => _ReadPageState();
 }
@@ -150,7 +151,7 @@ class _ReadPageState extends State<ReadPage> {
       _status = 'Preparing model. Download may take several minutes…';
     });
     try {
-      final result = await inspectModel(await _cacheDir());
+      final result = await widget.prepare(await _cacheDir());
       if (!mounted) return;
       final caps = Map<String, Object?>.from(result['capabilities'] as Map);
       final schema = Map<String, Object?>.from(result['schema'] as Map);
@@ -278,6 +279,7 @@ class _ReadPageState extends State<ReadPage> {
               ),
               const SizedBox(height: 16),
               DropdownButtonFormField<String>(
+                key: const Key('voice'),
                 initialValue: speakerAvailable ? _speaker : null,
                 decoration: const InputDecoration(labelText: 'Voice'),
                 items: names
@@ -291,6 +293,7 @@ class _ReadPageState extends State<ReadPage> {
                     : null,
               ),
               TextField(
+                key: const Key('steering'),
                 controller: _steering,
                 enabled: !_busy && steeringAvailable,
                 decoration: const InputDecoration(

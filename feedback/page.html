@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; media-src data:; connect-src 'none'; img-src data:; base-uri 'none'; form-action 'none'">
+  <title>Listening feedback</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { max-width: 60rem; margin: auto; padding: 1rem; line-height: 1.5; }
+    h1 { font-size: 1.5rem; }
+    .item { border: 1px solid; border-radius: .5rem; margin: 1rem 0; padding: 1rem; }
+    .passage { font-size: 1.35rem; line-height: 2.5; overflow-wrap: anywhere; }
+    .character { font: inherit; padding: .12rem .16rem; border: 1px solid transparent; border-radius: .25rem; background: transparent; color: inherit; cursor: pointer; }
+    .character[aria-pressed="true"] { background: #ffe28a; color: #171300; text-decoration: underline wavy #a22500; }
+    .character:focus-visible, button:focus-visible, textarea:focus-visible, select:focus-visible { outline: 3px solid #3d83ff; outline-offset: 2px; }
+    label { display: block; margin: .7rem 0 .2rem; }
+    textarea { box-sizing: border-box; width: 100%; min-height: 4rem; font: inherit; }
+    button, select, input { font: inherit; }
+    button { min-height: 2.5rem; }
+    audio { display: block; max-width: 100%; margin: .5rem 0; }
+    #message { min-height: 1.5em; }
+    .error { color: #b71919; font-weight: bold; }
+    @media (prefers-color-scheme: dark) { .error { color: #ffac9e; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Listening feedback</h1>
+    <p>Play each clip. Select any CJK character that sounds wrong; select it again to remove the mark. Ratings do not change marks.</p>
+    <p id="message" role="status" aria-live="polite"></p>
+    <div id="items"></div>
+    <label for="read-note">Note about the whole read</label>
+    <textarea id="read-note"></textarea>
+    <p>
+      <button type="button" id="export">Export feedback</button>
+      <label for="import-file">Restore feedback from a JSON file</label>
+      <input id="import-file" type="file" accept="application/json,.json">
+    </p>
+  </main>
+  <!-- GGTTS_INPUT -->
+  <script>
+  'use strict';
+  (() => {
+    const inputNode = document.getElementById('feedback-input');
+    const message = document.getElementById('message');
+    const container = document.getElementById('items');
+    const note = document.getElementById('read-note');
+    const exportButton = document.getElementById('export');
+    const importFile = document.getElementById('import-file');
+    let input, state, storageKey;
+
+    function notify(text, error = false) {
+      message.textContent = text;
+      message.className = error ? 'error' : '';
+    }
+    function cjk(cp) {
+      return (cp >= 0x3400 && cp <= 0x4dbf) ||
+        (cp >= 0x4e00 && cp <= 0x9fff) ||
+        (cp >= 0xf900 && cp <= 0xfaff) ||
+        (cp >= 0x20000 && cp <= 0x2fa1f) ||
+        (cp >= 0x30000 && cp <= 0x323af);
+    }
+    function countCjk(text) {
+      return Array.from(text).filter(ch => cjk(ch.codePointAt(0))).length;
+    }
+    function validAudio(value) {
+      if (typeof value !== 'string' || !/^data:audio\\/flac;base64,[A-Za-z0-9+/]+={0,2}$/.test(value)) return false;
+      try {
+        const bytes = atob(value.slice(value.indexOf(',') + 1));
+        return bytes.length >= 42 && bytes.startsWith('fLaC') &&
+          (bytes.charCodeAt(4) & 0x7f) === 0 && bytes.charCodeAt(5) === 0 &&
+          bytes.charCodeAt(6) === 0 && bytes.charCodeAt(7) === 34 &&
+          ((bytes.charCodeAt(18) << 12) | (bytes.charCodeAt(19) << 4) | (bytes.charCodeAt(20) >> 4)) > 0 &&
+          ((bytes.charCodeAt(21) & 15) | bytes.charCodeAt(22) | bytes.charCodeAt(23) | bytes.charCodeAt(24) | bytes.charCodeAt(25)) !== 0;
+      } catch (_) { return false; }
+    }
+    const validId = id => typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id);
+    const exact = (obj, keys) => obj && typeof obj === 'object' && !Array.isArray(obj) &&
+      Object.keys(obj).length === keys.length && keys.every(key => Object.prototype.hasOwnProperty.call(obj, key));
+    const scalarText = text => typeof text === 'string' && text.length > 0 &&
+      Array.from(text).every(ch => { const cp = ch.codePointAt(0); return cp < 0xd800 || cp > 0xdfff; });
+    function validateInput(obj) {
+      if (!exact(obj, ['format', 'id', 'items']) ||
+          obj.format !== 'ggtts-feedback-input/1' || !validId(obj.id) ||
+          !Array.isArray(obj.items) || !obj.items.length) throw new Error('Invalid feedback input.');
+      const ids = new Set();
+      for (const item of obj.items) {
+        if (!exact(item, ['id', 'text', 'audio']) || !validId(item.id) || ids.has(item.id) ||
+            !scalarText(item.text) || !validAudio(item.audio)) throw new Error('Invalid feedback item.');
+        ids.add(item.id);
+      }
+    }
+    function initial() {
+      return { format: 'ggtts-feedback-result/1', id: input.id, note: '',
+        items: input.items.map(item => ({ id: item.id, marks: [], rating: 'unsure', note: '' })) };
+    }
+    function validateResult(result) {
+      if (!exact(result, ['format', 'id', 'note', 'items']) ||
+          result.format !== 'ggtts-feedback-result/1' || result.id !== input.id ||
+          typeof result.note !== 'string' ||
+          !Array.isArray(result.items) || result.items.length !== input.items.length)
+        throw new Error('Invalid feedback result.');
+      const ids = new Set();
+      for (const item of result.items) {
+        const original = input.items.find(source => source.id === item?.id);
+        if (!exact(item, ['id', 'marks', 'rating', 'note']) || !original || ids.has(item.id) || typeof item.note !== 'string' ||
+            !['accept', 'reject', 'unsure'].includes(item.rating) || !Array.isArray(item.marks))
+          throw new Error('Invalid feedback item result.');
+        const marks = new Set();
+        for (const index of item.marks) {
+          if (!Number.isSafeInteger(index) || index < 0 || index >= countCjk(original.text) || marks.has(index))
+            throw new Error('Invalid character index in feedback.');
+          marks.add(index);
+        }
+        ids.add(item.id);
+      }
+    }
+    // A draft is scoped to the complete input, not only its user-supplied ID.
+    // Two independent 32-bit accumulators keep the storage key compact; stored
+    // text and IDs below are also checked before restoring.
+    function fingerprint(obj) {
+      let a = 2166136261, b = 0x9e3779b9;
+      const text = JSON.stringify(obj);
+      for (let i = 0; i < text.length; i++) {
+        a = Math.imul(a ^ text.charCodeAt(i), 16777619);
+        b = Math.imul(b ^ text.charCodeAt(i), 2246822519);
+      }
+      return (a >>> 0).toString(16) + '-' + (b >>> 0).toString(16);
+    }
+    function draftIdentity() {
+      return input.items.map(item => ({ id: item.id, text: item.text, audioFingerprint: fingerprint(item.audio) }));
+    }
+    function persist() {
+      try {
+        localStorage.setItem(storageKey, JSON.stringify({ input: draftIdentity(), result: state }));
+        notify('Draft saved on this device.');
+      } catch (_) { notify('Draft could not be saved on this device. Export your feedback.', true); }
+    }
+    function render() {
+      container.replaceChildren();
+      note.value = state.note;
+      for (const original of input.items) {
+        const result = state.items.find(item => item.id === original.id);
+        const section = document.createElement('section');
+        section.className = 'item';
+        const title = document.createElement('h2');
+        title.textContent = 'Clip ' + (input.items.indexOf(original) + 1);
+        section.append(title);
+        const audio = document.createElement('audio');
+        audio.controls = true;
+        audio.preload = 'none';
+        audio.src = original.audio;
+        audio.setAttribute('aria-label', 'Play ' + title.textContent);
+        audio.addEventListener('error', () => notify('Audio could not be played.', true));
+        section.append(audio);
+        const passage = document.createElement('div');
+        passage.className = 'passage';
+        passage.setAttribute('aria-label', 'Text: select a CJK character to toggle its mark');
+        let index = 0;
+        for (const ch of Array.from(original.text)) {
+          if (!cjk(ch.codePointAt(0))) { passage.append(document.createTextNode(ch)); continue; }
+          const position = index++;
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'character';
+          button.textContent = ch;
+          const update = () => {
+            const marked = result.marks.includes(position);
+            button.setAttribute('aria-pressed', String(marked));
+            button.setAttribute('aria-label', ch + ', character ' + (position + 1) + (marked ? ', marked' : ', not marked'));
+          };
+          update();
+          button.addEventListener('click', () => {
+            const at = result.marks.indexOf(position);
+            if (at < 0) result.marks.push(position); else result.marks.splice(at, 1);
+            result.marks.sort((a, b) => a - b);
+            update(); count.textContent = result.marks.length + ' marked';
+            persist();
+          });
+          passage.append(button);
+        }
+        section.append(passage);
+        const count = document.createElement('p');
+        count.textContent = result.marks.length + ' marked';
+        count.setAttribute('aria-live', 'polite');
+        section.append(count);
+        const clear = document.createElement('button');
+        clear.type = 'button'; clear.textContent = 'Clear marks';
+        clear.addEventListener('click', () => { result.marks = []; persist(); render(); });
+        section.append(clear);
+        const ratingLabel = document.createElement('label');
+        ratingLabel.textContent = 'Rating';
+        const rating = document.createElement('select');
+        rating.setAttribute('aria-label', 'Rating for ' + title.textContent);
+        for (const value of ['unsure', 'accept', 'reject']) {
+          const option = document.createElement('option'); option.value = value; option.textContent = value;
+          rating.append(option);
+        }
+        rating.value = result.rating;
+        rating.addEventListener('change', () => { result.rating = rating.value; persist(); });
+        ratingLabel.append(rating); section.append(ratingLabel);
+        const itemLabel = document.createElement('label');
+        itemLabel.textContent = 'Note for ' + title.textContent;
+        const itemNote = document.createElement('textarea');
+        itemNote.value = result.note;
+        itemNote.addEventListener('input', () => { result.note = itemNote.value; persist(); });
+        itemLabel.append(itemNote); section.append(itemLabel);
+        container.append(section);
+      }
+    }
+    note.addEventListener('input', () => { state.note = note.value; persist(); });
+    exportButton.addEventListener('click', () => {
+      try {
+        validateResult(state);
+        const blob = new Blob([JSON.stringify(state, null, 2) + '\\n'], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url; link.download = 'feedback.json'; link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        notify('Feedback exported.');
+      } catch (e) { notify(e.message || 'Could not export feedback.', true); }
+    });
+    importFile.addEventListener('change', async () => {
+      try {
+        const file = importFile.files[0];
+        if (!file) return;
+        const result = JSON.parse(await file.text());
+        validateResult(result);
+        state = result;
+        persist(); render();
+      } catch (e) { notify(e.message || 'Could not read feedback.', true); }
+      finally { importFile.value = ''; }
+    });
+    try {
+      if (!inputNode) throw new Error('Feedback input is missing.');
+      input = JSON.parse(inputNode.textContent);
+      validateInput(input);
+      storageKey = 'ggtts-feedback-v1:' + fingerprint(input);
+      state = initial();
+      try {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const saved = JSON.parse(raw);
+          if (JSON.stringify(saved.input) !== JSON.stringify(draftIdentity())) throw new Error('Draft does not match this read.');
+          validateResult(saved.result); state = saved.result;
+          notify('Draft restored from this device.');
+        }
+      } catch (e) { notify('Draft could not be restored: ' + e.message, true); }
+      render();
+    } catch (e) {
+      notify(e.message || 'Invalid feedback input.', true);
+      exportButton.disabled = true; importFile.disabled = true; note.disabled = true;
+    }
+  })();
+  </script>
+</body>
+</html>

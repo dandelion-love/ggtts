@@ -175,6 +175,7 @@ class StreamPlayer(
         if (samples.isEmpty()) return
         val s = current.get() ?: return
         synchronized(s.lock) {
+            s.refused?.let { throw PlaybackFailed(it) }
             if (s.closing) {
                 s.failed = true
                 s.thread.interrupt()

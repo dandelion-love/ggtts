@@ -13,6 +13,8 @@ that a merge places under a released heading is caught.
 
 ### Fixed
 
+- Android demo reports an audio-device write failure at the next chunk instead of waiting for the read to finish.
+
 - **Prepared voice JSON passed as a file descriptor is recognized by content**, so Android picked files no longer
   need a `.json` filename. Non-seekable descriptors and non-object JSON are refused.
 

@@ -277,4 +277,56 @@ class DemoControllerTest {
         assertTrue(logs.toString(), logs.any { "engine_load outcome=ok" in it })
         assertTrue(logs.toString(), logs.none { secret in it })
     }
+    @Test
+    fun refusedPlaybackStopsAtTheNextChunkAndShowsTheDeviceError() {
+        val refused = java.util.concurrent.CountDownLatch(1)
+        val sink = object : PcmSink {
+            override fun play() {}
+            override fun write(samples: FloatArray, offset: Int, count: Int): Int {
+                return -6
+            }
+            override fun playbackHead() = 0L
+            override fun pause() {}
+            override fun flush() {}
+            override fun stop() {}
+            override fun release() { refused.countDown() }
+        }
+        val player = StreamPlayer({ sink })
+        var saved = false
+        val realAudio = object : AudioOut {
+            override fun begin(rate: Int) = player.begin(rate)
+            override fun play(samples: FloatArray) = player.play(samples)
+            override fun finish() = player.finish()
+            override fun stop() = player.stop()
+            override fun save(samples: FloatArray, rate: Int, engine: String): String {
+                saved = true
+                return "unexpected"
+            }
+        }
+        val engine = FakeEngine(chunks = 5) { i ->
+            if (i == 1) assertTrue(refused.await(2, java.util.concurrent.TimeUnit.SECONDS))
+        }
+        val c = DemoController(FakeBinding(engine = { engine }), view, realAudio,
+            background = { it.run() }, main = { it.run() })
+        c.speak(request, "Hello.", Ggtts.DEFAULT_SEED)
+        assertEquals(listOf("PlaybackFailed: the audio device refused a write (error -6)"), view.errors)
+        assertFalse(events.contains("render chunk 2"))
+        assertFalse(saved)
+        assertFalse(c.busy)
+    }
+
+    @Test
+    fun caughtInterruptedExceptionRestoresTheWorkerInterruptFlag() {
+        val observed = java.util.concurrent.atomic.AtomicBoolean(false)
+        val worker = Thread {
+            val c = controller(FakeBinding(engine = { throw InterruptedException("cancelled") }))
+            c.speak(request, "Hello.", Ggtts.DEFAULT_SEED)
+            observed.set(Thread.currentThread().isInterrupted)
+        }
+        worker.start()
+        worker.join(2000)
+        assertFalse(worker.isAlive)
+        assertTrue(observed.get())
+    }
+
 }

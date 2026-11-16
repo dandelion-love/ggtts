@@ -1,15 +1,26 @@
-/// Build only schema-defined options for the shared C ABI.
+import 'dart:convert';
+
+/// Combine saved options with the explicit action's cache, offline and voice choices.
+Map<String, Object?> composeLoadDocument(
+  Map<String, Object?> saved,
+  String cacheDir, {
+  bool offline = true,
+  String? speaker,
+}) {
+  final doc = Map<String, Object?>.from(jsonDecode(jsonEncode(saved)) as Map);
+  final load = Map<String, Object?>.from((doc['load'] as Map?) ?? {});
+  load.putIfAbsent('cache_dir', () => cacheDir);
+  load['offline'] = offline;
+  if (speaker != null && speaker.isNotEmpty) load['speaker'] = speaker;
+  doc['load'] = load;
+  return doc;
+}
+
 Map<String, Object?> loadOptions(
   String cacheDir, {
   bool offline = true,
   String? speaker,
-}) => {
-  'load': {
-    'offline': offline,
-    'cache_dir': cacheDir,
-    if (speaker != null && speaker.isNotEmpty) 'speaker': speaker,
-  },
-};
+}) => composeLoadDocument({}, cacheDir, offline: offline, speaker: speaker);
 
 Map<String, Object?> renderOptions({String? steering}) => {
   'render': {

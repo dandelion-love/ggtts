@@ -10,6 +10,10 @@ import 'package:path_provider/path_provider.dart';
 import 'ggtts.dart';
 import 'read_options.dart';
 import 'pcm_queue.dart';
+import 'settings_page.dart';
+import 'settings_store.dart';
+import 'saved_reads.dart';
+import 'saved_reads_page.dart';
 
 void main() => runApp(const ReadApp());
 
@@ -26,38 +30,49 @@ class ReadApp extends StatelessWidget {
 /// Kept as the offline default for callers and tests; downloads require an explicit preparation action.
 Map<String, Object?> loadDocument(String cacheDir) => loadOptions(cacheDir);
 
-Future<Map<String, Object?>> inspectModel(String cacheDir) => Isolate.run(() {
-  final engine = Ggtts(openGgtts());
-  final schema = engine.optionsSchema();
-  final handle = engine.load(loadOptions(cacheDir, offline: false));
-  try {
-    return {'schema': schema, 'capabilities': engine.capabilities(handle)};
-  } finally {
-    engine.free(handle);
-  }
-});
+Future<SettingsStore> settingsStore() async => SettingsStore(
+  File('${(await getApplicationSupportDirectory()).path}/options.json'),
+);
+
+Future<Map<String, Object?>> loadSavedSettings() async =>
+    (await settingsStore()).load();
+
+Future<Map<String, Object?>> inspectModel(Map<String, Object?> document) =>
+    Isolate.run(() {
+      final engine = Ggtts(openGgtts());
+      final schema = engine.optionsSchema();
+      final handle = engine.load(document);
+      try {
+        return {'schema': schema, 'capabilities': engine.capabilities(handle)};
+      } finally {
+        engine.free(handle);
+      }
+    });
 
 /// The native callback is synchronous on this worker; each piece is copied by the binding before sending it.
-void renderWorker(Map<String, Object?> request) {
+void renderWorker(Map<String, Object?> request) async {
   final port = request['port'] as SendPort;
   final audio = getAudioStream();
   var audioReady = false;
   int? sampleRate;
   PcmQueue? queue;
   var completed = false;
+  PendingRead? pending;
+  String? token;
   try {
+    pending = await SavedReads(Directory(request['library'] as String)).begin(
+      text: request['text'] as String,
+      options: Map<String, Object?>.from(request['options'] as Map),
+    );
     final engine = Ggtts(openGgtts());
     final handle = engine.load(
-      loadOptions(
-        request['cache'] as String,
-        speaker: request['speaker'] as String?,
-      ),
+      Map<String, Object?>.from(request['load'] as Map),
     );
     try {
       engine.renderStream(
         handle,
         request['text'] as String,
-        renderOptions(steering: request['steering'] as String?),
+        Map<String, Object?>.from(request['render'] as Map),
         (piece) {
           if (!audioReady) {
             if (audio.init(
@@ -77,6 +92,7 @@ void renderWorker(Map<String, Object?> request) {
           if (sampleRate != piece.rate) {
             throw StateError('Audio sample rate changed during the read.');
           }
+          pending!.append(piece);
           queue!.add(piece.samples);
           port.send({'samples': piece.samples.length, 'rate': piece.rate});
           return true;
@@ -87,17 +103,25 @@ void renderWorker(Map<String, Object?> request) {
     } finally {
       engine.free(handle);
     }
+    token = pending.finish();
     completed = true;
   } catch (error) {
+    await pending?.discard();
     port.send({'error': error.toString()});
   } finally {
     if (audioReady) audio.uninit();
   }
-  if (completed) port.send({'done': true});
+  if (completed) port.send({'done': true, 'token': token});
 }
 
 class ReadPage extends StatefulWidget {
-  const ReadPage({super.key});
+  const ReadPage({
+    super.key,
+    this.prepare = inspectModel,
+    this.loadSettings = loadSavedSettings,
+  });
+  final Future<Map<String, Object?>> Function(Map<String, Object?>) prepare;
+  final Future<Map<String, Object?>> Function() loadSettings;
   @override
   State<ReadPage> createState() => _ReadPageState();
 }
@@ -113,6 +137,9 @@ class _ReadPageState extends State<ReadPage> {
   String? _speaker;
   Map<String, Object?>? _schema;
   Map<String, Object?>? _caps;
+  Map<String, Object?> _settings = {};
+  SavedReads? _library;
+  String? _pendingToken;
 
   @override
   void initState() {
@@ -121,6 +148,12 @@ class _ReadPageState extends State<ReadPage> {
       Future.microtask(() async {
         await _prepare();
         if (mounted && _caps != null) await _speak();
+        if (const bool.fromEnvironment('GGTTS_SMOKE_SAVE') &&
+            mounted &&
+            _pendingToken != null) {
+          await _saveRead();
+          debugPrint('ggtts-read: saved smoke read');
+        }
         if (const bool.fromEnvironment('GGTTS_SMOKE_REPEAT')) {
           await Future<void>.delayed(const Duration(seconds: 5));
           if (mounted && _caps != null) await _speak();
@@ -150,7 +183,13 @@ class _ReadPageState extends State<ReadPage> {
       _status = 'Preparing model. Download may take several minutes…';
     });
     try {
-      final result = await inspectModel(await _cacheDir());
+      final settings = await widget.loadSettings();
+      final document = composeLoadDocument(
+        settings,
+        await _cacheDir(),
+        offline: false,
+      );
+      final result = await widget.prepare(document);
       if (!mounted) return;
       final caps = Map<String, Object?>.from(result['capabilities'] as Map);
       final schema = Map<String, Object?>.from(result['schema'] as Map);
@@ -160,6 +199,7 @@ class _ReadPageState extends State<ReadPage> {
       setState(() {
         _caps = caps;
         _schema = schema;
+        _settings = settings;
         _speaker = names.isEmpty ? null : names.first;
         _status = 'Model ready.';
         debugPrint('ggtts-read: model ready');
@@ -189,16 +229,28 @@ class _ReadPageState extends State<ReadPage> {
     try {
       final cache = await _cacheDir();
       if (!mounted) return;
+      final library = SavedReads(
+        Directory('${(await getApplicationSupportDirectory()).path}/reads'),
+      );
+      if (!mounted) return;
+      _library = library;
+      final load = composeLoadDocument(_settings, cache, speaker: speaker);
+      final render = renderOptions(steering: steering);
+      final options = <String, Object?>{
+        'load_document': load,
+        'render_document': render,
+      };
       final port = ReceivePort();
       _receive = port;
       final worker = await Isolate.spawn(
         renderWorker,
         <String, Object?>{
           'port': port.sendPort,
-          'cache': cache,
-          'speaker': speaker,
+          'load': load,
+          'render': render,
+          'options': options,
+          'library': library.root.path,
           'text': text,
-          'steering': steering,
         },
         onError: port.sendPort,
         onExit: port.sendPort,
@@ -216,12 +268,17 @@ class _ReadPageState extends State<ReadPage> {
         }
         final event = message;
         if (event['error'] != null) throw StateError(event['error']);
-        if (event['done'] == true) break;
+        if (event['done'] == true) {
+          _pendingToken = event['token'] as String;
+          break;
+        }
         debugPrint(
           'ggtts-read: received ${event['samples']} samples at ${event['rate']} Hz',
         );
       }
-      if (mounted) setState(() => _status = 'Read generated.');
+      if (mounted) {
+        setState(() => _status = 'Read complete. Save it or discard it.');
+      }
       debugPrint('ggtts-read: generation complete');
     } catch (error) {
       debugPrint('ggtts-read: read failed: $error');
@@ -237,6 +294,89 @@ class _ReadPageState extends State<ReadPage> {
       _worker?.kill(priority: Isolate.immediate);
       _worker = null;
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _saveRead() async {
+    if (_busy || _pendingToken == null) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await _library!.publish(_pendingToken!);
+      if (mounted) {
+        setState(() {
+          _pendingToken = null;
+          _status = 'Read saved.';
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _discardRead() async {
+    if (_busy || _pendingToken == null) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await _library!.discardPending(_pendingToken!);
+      if (mounted) {
+        setState(() {
+          _pendingToken = null;
+          _status = 'Read discarded.';
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _openReads() async {
+    try {
+      final library = SavedReads(
+        Directory('${(await getApplicationSupportDirectory()).path}/reads'),
+      );
+      if (mounted) {
+        await Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => SavedReadsPage(library: library)),
+        );
+      }
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
+    }
+  }
+
+  Future<void> _openSettings() async {
+    try {
+      final store = await settingsStore();
+      if (!mounted) return;
+      final changed = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => SettingsPage(
+            store: store,
+            devices:
+                (_caps?['devices'] as List?)?.whereType<String>().toList() ??
+                [],
+          ),
+        ),
+      );
+      if (changed == true && mounted) {
+        setState(() {
+          _caps = null;
+          _schema = null;
+          _status = 'Prepare the model with the new settings.';
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
     }
   }
 
@@ -263,7 +403,27 @@ class _ReadPageState extends State<ReadPage> {
         hasSchemaOption(_schema!, 'render', 'steer') &&
         _caps?['steering'] == true;
     return Scaffold(
-      appBar: AppBar(title: const Text('ggtts')),
+      appBar: AppBar(
+        title: const Text('ggtts'),
+        actions: [
+          IconButton(
+            tooltip: 'Saved reads',
+            onPressed: _busy || _pendingToken != null ? null : _openReads,
+            icon: const Icon(Icons.library_music),
+          ),
+          IconButton(
+            tooltip: 'Licences',
+            onPressed: () => Navigator.of(context)
+                .push(MaterialPageRoute(builder: (_) => const LicencePage())),
+            icon: const Icon(Icons.info_outline),
+          ),
+          IconButton(
+            tooltip: 'Settings',
+            onPressed: _busy ? null : _openSettings,
+            icon: const Icon(Icons.settings),
+          ),
+        ],
+      ),
       body: SingleChildScrollView(
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -278,6 +438,7 @@ class _ReadPageState extends State<ReadPage> {
               ),
               const SizedBox(height: 16),
               DropdownButtonFormField<String>(
+                key: const Key('voice'),
                 initialValue: speakerAvailable ? _speaker : null,
                 decoration: const InputDecoration(labelText: 'Voice'),
                 items: names
@@ -291,6 +452,7 @@ class _ReadPageState extends State<ReadPage> {
                     : null,
               ),
               TextField(
+                key: const Key('steering'),
                 controller: _steering,
                 enabled: !_busy && steeringAvailable,
                 decoration: const InputDecoration(
@@ -308,11 +470,25 @@ class _ReadPageState extends State<ReadPage> {
                 ),
               ),
               FilledButton(
-                onPressed: !_busy && _caps != null && _text.text.isNotEmpty
+                onPressed:
+                    !_busy &&
+                        _pendingToken == null &&
+                        _caps != null &&
+                        _text.text.isNotEmpty
                     ? _speak
                     : null,
                 child: const Text('Speak'),
               ),
+              if (_pendingToken != null) ...[
+                FilledButton(
+                  onPressed: _busy ? null : _saveRead,
+                  child: const Text('Save read'),
+                ),
+                TextButton(
+                  onPressed: _busy ? null : _discardRead,
+                  child: const Text('Discard read'),
+                ),
+              ],
               if (_busy) const LinearProgressIndicator(),
               Text(_status, key: const Key('status')),
               if (_error != null)
@@ -327,4 +503,18 @@ class _ReadPageState extends State<ReadPage> {
       ),
     );
   }
+}
+
+class LicencePage extends StatelessWidget {
+  const LicencePage({super.key});
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Licences')),
+    body: const Padding(
+      padding: EdgeInsets.all(16),
+      child: Text(
+        'Model and voice licence details are not available from this engine. Consult the source of each model or voice.',
+      ),
+    ),
+  );
 }

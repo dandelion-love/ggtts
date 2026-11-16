@@ -39,7 +39,12 @@ try { Object.defineProperty(window, "crypto", {value:undefined, configurable:tru
   check(audio?.src.startsWith('data:audio/flac;base64,'),'audio not inlined');
   if(audio){audio.preload='metadata';audio.load();await Promise.race([
    new Promise(r=>audio.addEventListener('loadedmetadata',r,{once:true})),new Promise(r=>setTimeout(r,1500))]);
-   check(Number.isFinite(audio.duration)&&audio.duration>0,'synthetic FLAC did not decode offline');}
+   check(Number.isFinite(audio.duration)&&audio.duration>0,'synthetic FLAC did not decode offline');
+   let started=false;audio.addEventListener('playing',()=>started=true,{once:true});
+   const ended=new Promise(r=>audio.addEventListener('ended',r,{once:true}));
+   try{await audio.play();await Promise.race([ended,new Promise(r=>setTimeout(r,2500))]);}
+   catch(e){errors.push('synthetic FLAC play() rejected: '+e.name);}
+   check(started&&audio.ended&&audio.currentTime>=0.1,'synthetic FLAC playback did not reach ended');}
   let blob=null;URL.createObjectURL=b=>{blob=b;return 'blob:feedback-test';};
   HTMLAnchorElement.prototype.click=function(){};
   document.getElementById('export').click();
@@ -111,8 +116,9 @@ def run(chrome, page, profile):
  pagepath=profile.parent/'feedback.html'
  pagepath.write_text(page,encoding='utf-8')
  cmd=[chrome,'--headless=new','--no-sandbox','--disable-gpu','--disable-background-networking',
-  '--disable-sync','--no-first-run','--host-resolver-rules=MAP * ~NOTFOUND',
-  f'--user-data-dir={profile}','--virtual-time-budget=5000','--dump-dom',pagepath.as_uri()]
+  '--disable-sync','--no-first-run','--autoplay-policy=no-user-gesture-required',
+  '--host-resolver-rules=MAP * ~NOTFOUND',
+  f'--user-data-dir={profile}','--virtual-time-budget=10000','--dump-dom',pagepath.as_uri()]
  p=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
  if p.returncode:raise RuntimeError(f'Chromium exit {p.returncode}: {p.stderr[-2500:]}')
  return p.stdout,p.stderr
@@ -122,7 +128,7 @@ def assert_pass(dom, attr='data-feedback-test'):
  if marker not in dom:
   key='data-feedback-errors="'
   detail=dom.split(key,1)[1].split('"',1)[0] if key in dom else 'result marker missing'
-  raise AssertionError(detail)
+  raise AssertionError(detail+'\nDOM tail: '+dom[-2000:])
 
 def main():
  ffmpeg=shutil.which('ffmpeg')
@@ -161,5 +167,5 @@ def main():
   dom,_=run(chrome,mutant,root/'mutant-profile')
   if 'data-feedback-test="FAIL"' not in dom or 'export did not create blob' not in dom:
    raise AssertionError('off-by-one CJK index plant escaped the browser oracle')
-  print('PASS offline Chromium: offline/CSP, no-WebCrypto boot, CJK scalar marks, rating independence, draft reload, export, invalid index, audio error, changed-input result/draft isolation, digest tamper; planted off-by-one index was detected')
+  print('PASS offline Chromium: decoded FLAC playback reached ended; offline/CSP, no-WebCrypto boot, CJK scalar marks, rating independence, draft reload, export, invalid index, audio error, changed-input result/draft isolation, digest tamper; planted off-by-one index was detected')
 if __name__=='__main__':main()

@@ -636,6 +636,132 @@ pub extern "system" fn Java_ggtts_Native_renderStreamOpts<'l>(
     )
 }
 
+/// Copy evidence into JVM-owned data before invoking the listener.
+extern "C" fn on_evidence(user: *mut c_void, evidence: *const crate::StreamEvidence) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let stream = unsafe { &mut *(user as *mut Stream) };
+        let e = unsafe { &*evidence };
+        let Ok(len) = i32::try_from(e.len) else {
+            throw(stream.env, GGTTS_ERR_ARG, "stream piece too large");
+            return 1;
+        };
+        let Ok(chunk) = i32::try_from(e.chunk) else {
+            throw(stream.env, GGTTS_ERR_ARG, "chunk index too large");
+            return 1;
+        };
+        let (Ok(start), Ok(end)) = (i64::try_from(e.start), i64::try_from(e.speech_end)) else {
+            throw(stream.env, GGTTS_ERR_ARG, "stream offset too large");
+            return 1;
+        };
+        let text = match std::str::from_utf8(unsafe { std::slice::from_raw_parts(e.text, e.text_len) }) {
+            Ok(t) => t,
+            Err(_) => {
+                throw(stream.env, GGTTS_ERR_ARG, "invalid evidence text");
+                return 1;
+            }
+        };
+        let text = match stream.env.new_string(text) {
+            Ok(t) => t,
+            Err(_) => return 1,
+        };
+        let arr = match stream.env.new_float_array(len) {
+            Ok(a) => a,
+            Err(_) => {
+                let _ = stream.env.delete_local_ref(text);
+                return 1;
+            }
+        };
+        let samples = unsafe { std::slice::from_raw_parts(e.samples, e.len) };
+        if stream.env.set_float_array_region(&arr, 0, samples).is_err() {
+            let _ = stream.env.delete_local_ref(arr);
+            let _ = stream.env.delete_local_ref(text);
+            return 1;
+        }
+        let result = stream
+            .env
+            .call_method(
+                stream.listener,
+                "onPiece",
+                "(ILjava/lang/String;JIIJJ[FI)Z",
+                &[
+                    JValue::Int(chunk),
+                    JValue::Object(&text),
+                    JValue::Long(e.seed as i64),
+                    JValue::Int(e.draw as i32),
+                    JValue::Int(e.stop as i32),
+                    JValue::Long(start),
+                    JValue::Long(end),
+                    JValue::Object(&arr),
+                    JValue::Int(e.rate as i32),
+                ],
+            )
+            .and_then(|v| v.z());
+        let _ = stream.env.delete_local_ref(arr);
+        let _ = stream.env.delete_local_ref(text);
+        match result {
+            Ok(true) if !pending(stream.env) => 0,
+            _ => 1,
+        }
+    }))
+    .unwrap_or(1)
+}
+
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_ggtts_Native_renderStreamEvidence<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    text: JString<'l>,
+    options_json: JString<'l>,
+    seed: jlong,
+    seed_given: jboolean,
+    listener: JObject<'l>,
+) -> jboolean {
+    jni_guard(
+        &mut env,
+        || 0,
+        |env| {
+            let Ok(Some(text)) = string(env, &text, "text") else {
+                throw(env, GGTTS_ERR_ARG, "text is null");
+                return 0;
+            };
+            let Ok(json) = string(env, &options_json, "optionsJson") else {
+                return 0;
+            };
+            if listener.is_null() {
+                throw(env, GGTTS_ERR_ARG, "listener is null");
+                return 0;
+            }
+            let code = {
+                let mut stream = Stream {
+                    env: &mut *env,
+                    listener: &listener,
+                };
+                let user = &mut stream as *mut Stream as *mut c_void;
+                crate::guard(|| {
+                    let mut doc = kotlin::document(json.as_deref(), given_seed(seed, seed_given), true)?;
+                    if json.is_none() {
+                        doc.output.stream = Some("raw".into());
+                        doc.marks
+                            .sources
+                            .insert("output.stream".into(), ggtts_core::options::Source::Document);
+                    }
+                    crate::render_evidence(handle as u64, &text, &doc, on_evidence, user).map(drop)
+                })
+            };
+            match code {
+                0 => 1,
+                crate::GGTTS_ERR_STOPPED => 0,
+                _ => {
+                    throw_last(env, code);
+                    0
+                }
+            }
+        },
+    )
+}
+
 /// `Native.optionsSchema`: the options schema as JSON ([`kotlin::options_schema`]).
 #[no_mangle]
 pub extern "system" fn Java_ggtts_Native_optionsSchema<'l>(mut env: JNIEnv<'l>, _class: JClass<'l>) -> JString<'l> {

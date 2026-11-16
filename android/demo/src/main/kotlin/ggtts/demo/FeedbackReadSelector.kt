@@ -1,0 +1,24 @@
+package ggtts.demo
+
+import java.io.File
+import java.security.MessageDigest
+
+/** A page may open only for a reopened, audio-bound read with confirmed playback-head consumption. */
+class FeedbackReadSelector(private val store: FileSavedEvidenceStore = FileSavedEvidenceStore()) {
+    /** Checks saved identity and completion only; does not encode clips or build a page. */
+    fun eligible(audio: File): Boolean = store.playbackComplete(audio.path)
+
+    fun prepare(audio: File): PreparedFeedbackInput? {
+        return try {
+        val manifest = store.load(audio.path) ?: return null
+        if (!store.playbackComplete(audio.path)) return null
+        val readHash = MessageDigest.getInstance("SHA-256").digest(manifest.readId.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        val page = FeedbackInputAdapter.fromWav(audio.readBytes(), manifest, "read-" + readHash)
+        if (store.load(audio.path) != manifest || !store.playbackComplete(audio.path)) return null
+        val input = PreparedFeedbackInput(page.canonicalJson)
+        check(input.digest == page.sha256)
+        input
+        } catch (_: Exception) { null }
+    }
+}

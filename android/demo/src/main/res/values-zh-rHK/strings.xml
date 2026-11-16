@@ -163,4 +163,10 @@
     <string name="incoming_source_opened">打開</string>
     <string name="file_unopened">打開唔到個檔案。</string>
     <string name="file_unopened_why">打開唔到個檔案：%1$s</string>
+    <string name="feedback_private_reads">具有播放記錄的私人朗讀</string>
+    <string name="feedback_checking">正在檢查回饋是否可用…</string>
+    <string name="feedback_open">回饋</string>
+    <string name="feedback_available">此已驗證朗讀可提供回饋。</string>
+    <string name="feedback_unavailable">無法提供回饋：此朗讀缺少有效的音訊或播放記錄。</string>
+    <string name="feedback_export_unavailable">匯出到音樂及較舊的朗讀未能提供回饋。</string>
 </resources>

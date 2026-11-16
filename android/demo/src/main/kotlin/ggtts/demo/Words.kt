@@ -164,6 +164,12 @@ object EnglishWords : Words {
         "incoming_source_opened" to "opened",
         "file_unopened" to "That file could not be opened.",
         "file_unopened_why" to "That file could not be opened: %1\$s",
+        "feedback_private_reads" to "Private reads with playback evidence",
+        "feedback_checking" to "Checking feedback availability...",
+        "feedback_open" to "Feedback",
+        "feedback_available" to "Feedback available for this verified read.",
+        "feedback_unavailable" to "Feedback unavailable: this read lacks valid saved audio or playback evidence.",
+        "feedback_export_unavailable" to "Feedback is unavailable for Music exports and older reads.",
     )
 
     override fun get(key: String, vararg args: Any?): String {

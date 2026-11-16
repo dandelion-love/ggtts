@@ -170,6 +170,7 @@ object Reader {
             },
             onSpoke = { VoiceStore(GgttsTtsService.prefs(app)).save(it) },
             cache = shared(app),
+            evidenceStore = FileSavedEvidenceStore(),
         )
         controller = c
         return c

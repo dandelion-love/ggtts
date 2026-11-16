@@ -1096,6 +1096,7 @@ class DeviceAudio(private val dir: File) : AudioOut {
     override fun begin(rate: Int) = player.begin(rate)
     override fun play(samples: FloatArray) = player.play(samples)
     override fun finish() = player.finish()
+    override val supportsPlaybackConfirmation: Boolean get() = true
     override fun finishConfirmed() = player.finishConfirmed()
     override fun stop() = player.stop()
     override fun pause() = player.pause()
@@ -1104,7 +1105,7 @@ class DeviceAudio(private val dir: File) : AudioOut {
 
     override fun save(samples: FloatArray, rate: Int, engine: String): String {
         dir.mkdirs()
-        val file = File(dir, "$engine.wav")
+        val file = Wav.uniqueFile(dir)
         file.writeBytes(Wav.encode(samples, rate))
         LastRead.wrote(file, engine)
         return file.path

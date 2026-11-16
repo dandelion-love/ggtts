@@ -262,7 +262,7 @@ private fun requireWellFormedUnicode(text: String) {
 }
 
 /** Minimal strict JSON reader for this small schema; avoids Android-only JSON runtime behavior in JVM tests. */
-private class JsonReader(private val source: String) {
+internal class JsonReader(private val source: String) {
     private var at = 0
 
     fun readDocument(): Any? {

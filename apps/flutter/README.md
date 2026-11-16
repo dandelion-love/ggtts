@@ -30,6 +30,8 @@ On Windows x86_64, install Flutter's Windows desktop prerequisites, Rust's MSVC 
 ```
 
 This builds the C library and bundles it beside the app executable. Set `LIBCLANG_PATH` if bindgen cannot find it.
+If MSBuild reports a path-length or FTK1011 error, build from a short checkout path; the native build was verified
+from a short drive mapping after a longer checkout failed.
 Initialize the repository's ggml submodule before building on any platform. Hosted Flutter packaging is opt-in via
 `GGTTS_FLUTTER_CI=enabled`; local builds are the evidence while hosted minutes are unavailable.
 

@@ -646,6 +646,31 @@ fn render_with_models(
             a.observe.duration_report.as_deref(),
             a.output.stream.as_deref().filter(|s| *s != "-").map(Path::new),
         ];
+        // Instruments may create or replace files anywhere in their report directory.
+        // Keep all render artifacts outside that tree, including a symlinked report path.
+        let report_root = if ggtts_instruments::options::flags(&a).any() {
+            let report = a
+                .observe
+                .report
+                .clone()
+                .unwrap_or_else(|| flac.with_extension("report"));
+            let resolved = match std::fs::canonicalize(&report) {
+                Ok(p) => p,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    let parent = report
+                        .parent()
+                        .filter(|p| !p.as_os_str().is_empty())
+                        .unwrap_or(Path::new("."));
+                    std::fs::canonicalize(parent)
+                        .map_err(|e| format!("report directory: {e}"))?
+                        .join(report.file_name().ok_or("invalid report directory")?)
+                }
+                Err(e) => return Err(format!("report directory: {e}")),
+            };
+            Some(resolved)
+        } else {
+            None
+        };
         let mut names = Vec::new();
         for output in paths.into_iter().flatten() {
             if std::fs::symlink_metadata(output).is_ok() {
@@ -662,6 +687,9 @@ fn render_with_models(
             let absolute = std::fs::canonicalize(parent)
                 .map_err(|e| format!("output directory: {e}"))?
                 .join(name);
+            if report_root.as_ref().is_some_and(|root| absolute.starts_with(root)) {
+                return Err("--layer-stats output paths must be outside the instrument report directory".into());
+            }
             if names.contains(&absolute) {
                 return Err("--layer-stats requires distinct output paths".into());
             }

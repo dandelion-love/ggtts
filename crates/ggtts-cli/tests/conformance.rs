@@ -1004,6 +1004,52 @@ fn layer_stats_refuses_existing_symlink_and_hardlink_outputs() {
     assert!(!dir.join("trace.jsonl").exists());
 }
 
+#[test]
+fn layer_stats_refuses_outputs_inside_instrument_report_directories() {
+    for (name, report, codes) in [
+        ("explicit", Some("reports"), "reports/duration.json"),
+        ("default", None, "o.report/duration.json"),
+    ] {
+        let dir = scratch(&format!("layer-report-{name}"));
+        let report_dir = dir.join(report.unwrap_or("o.report"));
+        std::fs::create_dir_all(&report_dir).unwrap();
+        let mut args = vec![
+            "--engine",
+            "fake",
+            "--text",
+            "hello",
+            "--out",
+            "o.flac",
+            "--trace",
+            "t.jsonl",
+            "--codes",
+            codes,
+            "--layer-stats",
+            "layers.json",
+            "--layer-stats-layers",
+            "0",
+            "--instrument",
+            "example",
+        ];
+        if let Some(report) = report {
+            args.extend(["--report", report]);
+        }
+        let out = Command::new(env!("CARGO_BIN_EXE_ggtts-render"))
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("outside the instrument report directory"),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!dir.join(codes).exists());
+        assert!(!dir.join("o.flac").exists());
+    }
+}
+
 fn render_probes() -> Vec<Probe> {
     let mut out = Vec::new();
     for mode in ["story", "text"] {

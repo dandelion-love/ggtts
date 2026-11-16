@@ -67,7 +67,8 @@ pub const GGTTS_ERR_BUSY: i32 = binding::ERR_BUSY;
 /// struct's `device`, `cache_dir` and `allow_download` fields; 4 added [`ggtts_load_opts`] and [`ggtts_render_opts`];
 /// 5 added [`ggtts_options_schema`], [`ggtts_capabilities`], [`ggtts_string_free`] and [`ggtts_last_error_key`].
 /// Version 6 adds one-shot cancellation tokens and cancellable stream rendering.
-pub const GGTTS_ABI_VERSION: u32 = 6;
+/// Version 7 adds synchronous load progress notices.
+pub const GGTTS_ABI_VERSION: u32 = 7;
 
 /// The settings [`ggtts_load_with`] takes, by pointer. **Frozen at version 3**: no field is ever added; a new option
 /// goes in an options document ([`ggtts_load_opts`], [`ggtts_render_opts`]). `size` is `sizeof(ggtts_settings)` as the caller's header
@@ -364,8 +365,9 @@ fn open_engine(
     voice: Option<&str>,
     threads: i32,
     settings: Settings<'_>,
-    wording: &binding::Wording,
+    reporting: (&binding::Wording, &mut dyn FnMut(&str)),
 ) -> Result<Held, Fail> {
+    let (wording, notice) = reporting;
     // The C-ABI refuses a setting the engine does not take before it reads the device; `binding::open` checks again.
     if engine != "qwen3-tts" {
         binding::refuse_settings(engine, settings.speaker, settings.instruction)?;
@@ -393,7 +395,7 @@ fn open_engine(
             tuning: settings.tuning,
         },
         wording,
-        &mut |_| {},
+        notice,
     )?;
     Ok(opened.held)
 }
@@ -495,7 +497,7 @@ unsafe fn load(
 /// value is a load document, checked whole against the engine before anything is read ([`ggtts_core::options::check`]);
 /// otherwise only a speaker or instruction the engine does not take is refused first, as the struct loads always have.
 fn load_options(o: &Options, default_files: bool, document: bool) -> Result<u64, Fail> {
-    let e = open_options(o, default_files, document)?;
+    let e = open_options(o, default_files, document, &mut |_| {})?;
     Ok(register(o, e))
 }
 
@@ -511,7 +513,7 @@ pub(crate) fn checked_document_engine(o: &Options) -> Result<String, Fail> {
 }
 
 /// [`load_options`]' first half: the engine an options value names, opened, not yet registered.
-fn open_options(o: &Options, default_files: bool, document: bool) -> Result<Held, Fail> {
+fn open_options(o: &Options, default_files: bool, document: bool, notice: &mut dyn FnMut(&str)) -> Result<Held, Fail> {
     let path = |p: &Option<PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned());
     let (model, codec, voice) = (path(&o.load.model), path(&o.load.codec), path(&o.load.voice));
     // "auto" is a document's engine only: a struct load names its engine, and "auto" is no engine there.
@@ -538,7 +540,7 @@ fn open_options(o: &Options, default_files: bool, document: bool) -> Result<Held
         voice.as_deref(),
         o.load.threads.unwrap_or(0),
         settings,
-        if document { &DOCUMENT_WORDING } else { &WORDING },
+        (if document { &DOCUMENT_WORDING } else { &WORDING }, notice),
     )
 }
 
@@ -575,10 +577,46 @@ pub unsafe extern "C" fn ggtts_load_opts(options_json: *const c_char, handle: *m
     })
 }
 
+/// Load with synchronous progress notices, valid only for the duration of each callback.
+/// # Safety
+/// Pointers follow ggtts_load_opts; callback and context must remain valid until return.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_load_opts_with_progress(
+    options_json: *const c_char,
+    handle: *mut u64,
+    callback: Option<unsafe extern "C" fn(*const c_char, *mut std::ffi::c_void)>,
+    context: *mut std::ffi::c_void,
+) -> i32 {
+    guard(|| {
+        if handle.is_null() {
+            return Err((GGTTS_ERR_ARG, "handle is NULL".into()));
+        }
+        let json = unsafe { arg(options_json, "options_json") }?;
+        let o = Options::from_json(json).map_err(refused)?;
+        binding::check_document(&o, true)?;
+        let mut notice = |message: &str| forward_load_notice(callback, context, message);
+        let e = open_options(&o, true, true, &mut notice)?;
+        unsafe { *handle = register_document(&o, e) };
+        Ok(())
+    })
+}
+
+fn forward_load_notice(
+    callback: Option<unsafe extern "C" fn(*const c_char, *mut c_void)>,
+    context: *mut c_void,
+    message: &str,
+) {
+    if let Some(cb) = callback {
+        if let Ok(text) = CString::new(message) {
+            unsafe { cb(text.as_ptr(), context) };
+        }
+    }
+}
+
 /// Load the engine a checked load document names and keep its render defaults with the handle: the body of
 /// [`ggtts_load_opts`], which the Kotlin binding's document load calls too.
 fn load_document(o: &Options) -> Result<u64, Fail> {
-    let e = open_options(o, true, true)?;
+    let e = open_options(o, true, true, &mut |_| {})?;
     Ok(register_document(o, e))
 }
 
@@ -1566,5 +1604,94 @@ mod cancellation_ffi_tests {
         );
         assert_eq!(ggtts_cancel_free(next), GGTTS_OK);
         assert_eq!(ggtts_free(handle), GGTTS_OK);
+    }
+}
+
+#[cfg(test)]
+mod load_progress_tests {
+    use super::*;
+    use std::ffi::CString;
+
+    unsafe extern "C" fn notice(_message: *const c_char, context: *mut c_void) {
+        unsafe { *(context as *mut usize) += 1 };
+    }
+
+    unsafe extern "C" fn collect(message: *const c_char, context: *mut c_void) {
+        let messages = unsafe { &mut *(context as *mut Vec<String>) };
+        messages.push(unsafe { CStr::from_ptr(message) }.to_str().unwrap().to_owned());
+    }
+
+    #[test]
+    fn actual_downloader_progress_reaches_c_callback() {
+        struct Slow;
+        struct SlowReader(bool);
+        impl std::io::Read for SlowReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.0 {
+                    return Ok(0);
+                }
+                std::thread::sleep(ggtts_models::PROGRESS_EVERY + std::time::Duration::from_millis(100));
+                self.0 = true;
+                buf[0] = b'a';
+                Ok(1)
+            }
+        }
+        impl ggtts_models::Fetch for Slow {
+            fn open(&self, _url: &str) -> Result<Box<dyn std::io::Read>, String> {
+                Ok(Box::new(SlowReader(false)))
+            }
+        }
+        let root = std::env::temp_dir().join(format!("ggtts-progress-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cache = ggtts_models::Cache::new(root.clone());
+        let pin = ggtts_models::Pinned {
+            role: "model",
+            file_name: "model.gguf",
+            url: "https://example.invalid/model",
+            size: 1,
+            sha256: "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
+            licence: "test",
+        };
+        let mut messages = Vec::<String>::new();
+        let context = (&mut messages as *mut Vec<String>).cast();
+        let mut report = |message: &str| forward_load_notice(Some(collect), context, message);
+        cache.download(&pin, &Slow, &mut report).unwrap();
+        assert!(
+            messages.iter().any(|message| message.contains("(100%)")),
+            "{messages:?}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fake_load_with_progress_preserves_success_and_error() {
+        let input = CString::new(r#"{"load":{"engine":"fake"}}"#).unwrap();
+        let mut handle = 0;
+        let mut calls = 0usize;
+        let rc = unsafe {
+            ggtts_load_opts_with_progress(
+                input.as_ptr(),
+                &mut handle,
+                Some(notice),
+                (&mut calls as *mut usize).cast(),
+            )
+        };
+        assert_eq!(rc, GGTTS_OK);
+        assert_ne!(handle, 0);
+        assert_eq!(calls, 0);
+        assert_eq!(ggtts_free(handle), GGTTS_OK);
+        let invalid = CString::new(r#"{"load":{"unknown":1}}"#).unwrap();
+        let mut untouched = 42;
+        let rc = unsafe {
+            ggtts_load_opts_with_progress(
+                invalid.as_ptr(),
+                &mut untouched,
+                Some(notice),
+                (&mut calls as *mut usize).cast(),
+            )
+        };
+        assert_eq!(rc, GGTTS_ERR_ARG);
+        assert_eq!(untouched, 42);
+        assert_eq!(calls, 0);
     }
 }

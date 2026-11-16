@@ -18,6 +18,19 @@ typedef _AbiVersionC = Uint32 Function();
 typedef _AbiVersionD = int Function();
 typedef _LoadOptsC = Int32 Function(Pointer<Utf8>, Pointer<Uint64>);
 typedef _LoadOptsD = int Function(Pointer<Utf8>, Pointer<Uint64>);
+typedef _ProgressC = Void Function(Pointer<Utf8>, Pointer<Void>);
+typedef _LoadProgressC = Int32 Function(
+  Pointer<Utf8>,
+  Pointer<Uint64>,
+  Pointer<NativeFunction<_ProgressC>>,
+  Pointer<Void>,
+);
+typedef _LoadProgressD = int Function(
+  Pointer<Utf8>,
+  Pointer<Uint64>,
+  Pointer<NativeFunction<_ProgressC>>,
+  Pointer<Void>,
+);
 typedef _PieceC = Int32 Function(Pointer<Void>, Pointer<Float>, Size, Uint32);
 typedef _RenderOptsC = Int32 Function(
   Uint64,
@@ -209,6 +222,42 @@ class Ggtts {
       _check(_loadOpts(doc, handle));
       return handle.value;
     });
+  }
+
+  /// Loads with synchronous progress notices. A notice is copied before the
+  /// native callback returns; it cannot cancel the load.
+  int loadWithProgress(
+    Map<String, Object?> options,
+    void Function(String) notice,
+  ) {
+    if (_abiVersion() < 7) {
+      throw UnsupportedError(
+        'Model preparation progress requires native ABI 7.',
+      );
+    }
+    final load = _lib.lookupFunction<_LoadProgressC, _LoadProgressD>(
+      'ggtts_load_opts_with_progress',
+    );
+    final callback = NativeCallable<_ProgressC>.isolateLocal((
+      Pointer<Utf8> text,
+      Pointer<Void> _,
+    ) {
+      try {
+        if (text != nullptr) notice(text.toDartString());
+      } catch (_) {
+        // Progress must not change the load outcome.
+      }
+    });
+    try {
+      return using((arena) {
+        final doc = jsonEncode(options).toNativeUtf8(allocator: arena);
+        final handle = arena<Uint64>();
+        _check(load(doc, handle, callback.nativeFunction, nullptr));
+        return handle.value;
+      });
+    } finally {
+      callback.close();
+    }
   }
 
   /// The options schema is library-owned static JSON; never free its pointer.

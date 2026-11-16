@@ -92,6 +92,11 @@ class GateTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ggtts_render_opts"):
             self.run_gate()
 
+    def test_missing_load_progress_export_refused(self):
+        self.exports.remove("ggtts_load_opts_with_progress")
+        with self.assertRaisesRegex(ValueError, "ggtts_load_opts_with_progress"):
+            self.run_gate()
+
     def test_fresh_input_missing_refused(self):
         (self.native / "x86_64" / "libggtts_ffi.so").unlink()
         with self.assertRaises(FileNotFoundError):

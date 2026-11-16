@@ -63,6 +63,9 @@ pub const NOT_OPTIONS: &[(Surface, &str, &str)] = &[
         "listener",
         "the evidence stream's callback, not an option",
     ),
+    (Surface::C, "callback", "a synchronous callback, not an option"),
+    (Surface::C, "context", "the callback context pointer"),
+    (Surface::Dart, "notice", "a synchronous load progress callback"),
     (Surface::C, "out", "the cancellation token out-parameter"),
     (
         Surface::C,
@@ -79,7 +82,6 @@ pub const NOT_OPTIONS: &[(Surface, &str, &str)] = &[
     ),
     (Surface::C, "pcm", "an out-parameter"),
     (Surface::C, "on_piece", "the stream's callback, not a value"),
-    (Surface::C, "callback", "the evidence stream's callback, not an option"),
     (Surface::Dart, "onPiece", "the stream's callback, not a value"),
     (
         Surface::Dart,
@@ -248,6 +250,7 @@ pub fn c_names() -> Vec<String> {
     out.extend(names(between(&h, "int32_t ggtts_load_with(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_render(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_load_opts(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_load_opts_with_progress(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_render_opts(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_cancel_new(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_cancel_signal(", ");")));

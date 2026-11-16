@@ -231,11 +231,11 @@ fn the_header_reads_the_same_with_lf_and_crlf_endings() {
 }
 
 #[test]
-fn the_abi_version_is_6_in_the_library_and_the_header() {
-    assert_eq!(ggtts_abi_version(), 6);
-    assert_eq!(GGTTS_ABI_VERSION, 6);
+fn the_abi_version_is_7_in_the_library_and_the_header() {
+    assert_eq!(ggtts_abi_version(), 7);
+    assert_eq!(GGTTS_ABI_VERSION, 7);
     let header = include_str!("../include/ggtts.h");
-    assert_eq!(header_version(header), Some(6), "the header's version");
+    assert_eq!(header_version(header), Some(7), "the header's version");
     // Version 5's functions are declared as the library exports them.
     for decl in [
         "const char *ggtts_options_schema(void);",

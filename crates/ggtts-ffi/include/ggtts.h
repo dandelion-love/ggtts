@@ -14,7 +14,8 @@
  *   3  ggtts_settings.device, .cache_dir and .allow_download (the device; the default model files)
  *   4  ggtts_load_opts and ggtts_render_opts (options documents); ggtts_settings is frozen at version 3
  *   5  ggtts_options_schema, ggtts_capabilities and ggtts_string_free, ggtts_last_error_key
- *   6  one-shot cancellation tokens and ggtts_render_opts_cancellable */
+ *   6  one-shot cancellation tokens and ggtts_render_opts_cancellable
+ *   7  ggtts_load_opts_with_progress */
 #ifndef GGTTS_H
 #define GGTTS_H
 
@@ -25,7 +26,7 @@
 extern "C" {
 #endif
 
-#define GGTTS_ABI_VERSION 6
+#define GGTTS_ABI_VERSION 7
 
 #define GGTTS_OK 0
 #define GGTTS_ERR_ARG (-1)
@@ -148,6 +149,12 @@ const char *ggtts_last_error(void);
  * model loads the engine's default files, downloading a missing one unless "offline" is true (the struct's
  * allow_download, negated). */
 int32_t ggtts_load_opts(const char *options_json, uint64_t *handle);
+
+/* Synchronous load notice. The message is valid only during the callback.
+ * The callback and context must remain valid until the load returns. */
+typedef void (*ggtts_load_progress_fn)(const char *message, void *context);
+int32_t ggtts_load_opts_with_progress(const char *options_json, uint64_t *handle,
+                                      ggtts_load_progress_fn callback, void *context);
 
 /* ggtts_render_opts: render text with a render document, laid over the load's render defaults; NULL is the empty
  * document. Without "output": {"stream": "raw"} it is a whole read: on_piece must be NULL, and pcm, len and rate get

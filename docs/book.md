@@ -481,3 +481,12 @@ another engine refused, and an output directory holding another book refused.
 `zip` (MIT) reads the container, with no default features: only stored and deflated entries, through `flate2`'s
 pure-Rust backend (`miniz_oxide`), so no C library is linked. `quick-xml` (MIT) parses the XML. Every crate they bring
 in is under a licence with an MIT option. `ggtts-book` is not yet in the release archives.
+
+## Feedback on a completed chapter
+
+Run `ggtts-book feedback CHAPTER_DIR --out PAGE.html` on a completed chapter
+directory to create an offline feedback page and its `PAGE.html.provenance.json`
+companion. The page uses slices of the verified, final levelled chapter FLAC.
+The command refuses existing destinations and chapters whose recorded spans,
+draws, stops, hashes, or audio do not verify. Older manifests lacking this
+evidence require a fresh render; missing evidence is not inferred.

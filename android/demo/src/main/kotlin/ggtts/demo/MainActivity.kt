@@ -70,8 +70,6 @@ import com.google.android.material.textfield.TextInputLayout
 import ggtts.Ggtts
 import com.google.android.material.R as M
 import java.io.File
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity(), DemoView {
@@ -1098,6 +1096,7 @@ class DeviceAudio(private val dir: File) : AudioOut {
     override fun begin(rate: Int) = player.begin(rate)
     override fun play(samples: FloatArray) = player.play(samples)
     override fun finish() = player.finish()
+    override fun finishConfirmed() = player.finishConfirmed()
     override fun stop() = player.stop()
     override fun pause() = player.pause()
     override fun resume() = player.resume()
@@ -1106,13 +1105,7 @@ class DeviceAudio(private val dir: File) : AudioOut {
     override fun save(samples: FloatArray, rate: Int, engine: String): String {
         dir.mkdirs()
         val file = File(dir, "$engine.wav")
-        val data = samples.size * 2
-        val b = ByteBuffer.allocate(44 + data).order(ByteOrder.LITTLE_ENDIAN)
-        b.put("RIFF".toByteArray()).putInt(36 + data).put("WAVEfmt ".toByteArray())
-        b.putInt(16).putShort(1).putShort(1).putInt(rate).putInt(rate * 2).putShort(2).putShort(16)
-        b.put("data".toByteArray()).putInt(data)
-        for (x in samples) b.putShort((x.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
-        file.writeBytes(b.array())
+        file.writeBytes(Wav.encode(samples, rate))
         LastRead.wrote(file, engine)
         return file.path
     }
@@ -1134,6 +1127,7 @@ private class TrackSink(rate: Int) : PcmSink {
     // Never a blocking write: one begun just after a Stop's pause would wait for good (see StreamPlayer).
     override fun write(samples: FloatArray, offset: Int, count: Int): Int =
         track.write(samples, offset, count, AudioTrack.WRITE_NON_BLOCKING)
+    override fun playbackHead(): Long = track.playbackHeadPosition.toLong() and 0xffffffffL
     override fun pause() = track.pause()
     override fun flush() = track.flush()
     override fun stop() = track.stop()

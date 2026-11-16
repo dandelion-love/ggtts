@@ -94,6 +94,29 @@ int32_t ggtts_load_with(const char *engine, const char *model, const char *codec
 uint32_t ggtts_abi_version(void);
 int32_t ggtts_render(uint64_t handle, const char *text, uint64_t seed, float **pcm, size_t *len, uint32_t *rate);
 int32_t ggtts_render_stream(uint64_t handle, const char *text, uint64_t seed, ggtts_piece_fn on_piece, void *user);
+/* Callback pointers are borrowed only during the callback. Text is UTF-8 and is
+ * not NUL-terminated. Speech is [start, speech_end); the delivered piece,
+ * including its trailing gap, is [start, start + len). Stop: 0 EOS, 1 cap.
+ * Evidence is provisional until the render returns GGTTS_OK; nonzero callback
+ * return stops the render with GGTTS_ERR_STOPPED. */
+typedef struct ggtts_stream_evidence {
+    size_t chunk;
+    const uint8_t *text;
+    size_t text_len;
+    uint64_t seed;
+    uint32_t draw;
+    uint32_t stop;
+    size_t start;
+    size_t speech_end;
+    const float *samples;
+    size_t len;
+    uint32_t rate;
+} ggtts_stream_evidence;
+typedef int32_t (*ggtts_evidence_fn)(void *user, const ggtts_stream_evidence *evidence);
+int32_t ggtts_render_stream_evidence(uint64_t handle, const char *text, uint64_t seed,
+                                    ggtts_evidence_fn callback, void *user);
+int32_t ggtts_render_document_evidence(uint64_t handle, const char *text, const char *options_json,
+                                      ggtts_evidence_fn callback, void *user);
 void ggtts_pcm_free(float *pcm, size_t len);
 int32_t ggtts_free(uint64_t handle);
 const char *ggtts_last_error(void);

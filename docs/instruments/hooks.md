@@ -122,3 +122,6 @@ against it, and a test checks that on every recorded fake-engine render (`crates
   accepts. `READS` is `["ggtts-trace/2", "ggtts-trace/1"]`, and
   `ggtts-trace/1` is dropped only at `/3`. A test holds `READS` to that shape.
 - Writers write only the current version.
+
+The kept draws' full codes (all 16 codebooks on Qwen3-TTS), for any render and without tracing, are written by
+`--codes FILE`: [docs/codes.md](../codes.md).

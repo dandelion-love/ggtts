@@ -15,6 +15,7 @@
         android:label="ggtts Text-to-Speech"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
+        android:localeConfig="@xml/locales_config"
         android:theme="@style/AppTheme">
         <!-- configChanges: a fold, unfold or rotation keeps the activity, so a render in progress reports to it. -->
         <activity
@@ -25,6 +26,23 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Text from other apps (Incoming.kt): shared text, the selection menu's "Read aloud", and a .txt opened
+                 with the app. Each only fills the text card; the user presses Read aloud. No permission is needed. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter android:label="Read aloud">
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" android:mimeType="text/plain" />
             </intent-filter>
         </activity>
         <!-- Keeps a read going when the screen is left, with a notification that has Stop. -->

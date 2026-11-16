@@ -334,13 +334,14 @@ pub fn document_refusal(key: &str, at_load: bool) -> Option<&'static str> {
         ("load", _) if at_load => return None,
         ("load", _) => "a load option: it is fixed when the engine loads, so give it in the load document",
         ("render", "text" | "story") => "the text is the render's own argument",
-        ("render", "seed") => "a binding's seed is the story seed's salt: give render.seed_salt",
+        ("render", "seed") if at_load => "a seed is per render: give it in the render document",
         ("render", "measure_timings") | ("observe", "timing_report" | "duration_report") => {
             "a binding returns the samples, not timings or reports"
         }
         ("observe", "log_level" | "log_format") => "a binding writes no log: its errors are its codes and messages",
         ("observe", "trace" | "trace_level") if at_load => "a trace is per render: give it in the render document",
         ("observe", "trace" | "trace_level") => return None,
+        ("observe", "codes") => "a binding hands the PCM to its caller and writes no file",
         ("observe", _) => "instruments are out-of-process programs the CLI runs on a finished file",
         ("output", "out" | "stream_format") => "a binding hands the PCM to its caller and writes no file",
         ("output", "stream" | "stream_raw" | "stream_level_seconds") if at_load => {
@@ -420,6 +421,34 @@ pub fn refuse_given_twice(o: &Options, given: &[(&str, &str)]) -> Result<(), Fai
     Ok(())
 }
 
+/// The options of a story's render an exact seed cannot be given with, and why.
+const EXACT_SEED_EXCLUDES: [(&str, &str); 3] = [
+    (
+        "render.seed_salt",
+        "render.seed renders one chunk at that seed, and render.seed_salt salts a story's seeds (the render call's \
+         seed argument is the salt): give one",
+    ),
+    (
+        "render.redraw",
+        "render.seed renders one draw and keeps it: redraws are a story's",
+    ),
+    (
+        "render.edge_s",
+        "render.seed keeps its one draw whole, untrimmed: an edge is a story's",
+    ),
+];
+
+/// What an exact seed (`render.seed`: one chunk, one draw, kept whole) cannot be given with, refused under
+/// `render.seed`: a story seed's salt (the call's own `seed` argument is one), redraws, and an edge to trim to.
+fn refuse_with_exact_seed(o: &Options) -> Result<(), Fail> {
+    for (key, message) in EXACT_SEED_EXCLUDES {
+        if o.marks.sources.contains_key(key) {
+            return Err(key_err("render.seed", format!("render.seed: {message}")));
+        }
+    }
+    Ok(())
+}
+
 /// The engine a load document names: `auto` is the model file's GGUF architecture, or `qwen3-tts` when it gives no
 /// model, as `ggtts-render` resolves it.
 pub fn document_engine(o: &Options) -> Result<String, Fail> {
@@ -474,9 +503,26 @@ impl LoadCache {
     }
 }
 
-/// A render document laid over a load's render defaults ([`render_defaults`]): what the document gives wins.
+/// A render document laid over a load's render defaults ([`render_defaults`]): what the document gives wins. A
+/// document that gives `render.seed` (one chunk at an exact seed) is laid over the defaults less those of a story's
+/// render that an exact draw has no use for (its seed salt, redraws and edge): a load document's defaults are for
+/// stories, and never refuse an exact seed. The render document's own are refused ([`render_document`]).
 pub fn layer_render(defaults: &Options, doc: Options) -> Result<Options, Fail> {
-    defaults.clone().layer(doc).map_err(refusal_err)
+    let mut defaults = defaults.clone();
+    if doc.render.seed.is_some() {
+        // Value and mark together, from the one list, so a key added to it cannot keep its value.
+        for (key, _) in EXACT_SEED_EXCLUDES {
+            let r = &mut defaults.render;
+            match key {
+                "render.seed_salt" => r.seed_salt = None,
+                "render.redraw" => r.redraw = None,
+                "render.edge_s" => r.edge_s = None,
+                other => unreachable!("{other} is in EXACT_SEED_EXCLUDES with no reset here"),
+            }
+            defaults.marks.sources.remove(key);
+        }
+    }
+    defaults.layer(doc).map_err(refusal_err)
 }
 
 /// A binding's render call as a render document: `options` (JSON; `None` is the empty document) read and checked
@@ -532,7 +578,15 @@ pub fn render_document(
     options: &Options,
     on_piece: Option<PieceSink<'_>>,
 ) -> Result<(Vec<f32>, u32), Fail> {
-    let chunks = plan(engine, text)?;
+    let exact_seed = options.render.seed;
+    let chunks = match exact_seed {
+        // One chunk at an exact seed, as `ggtts-render --text` renders it.
+        Some(_) => {
+            refuse_with_exact_seed(options)?;
+            ggtts_core::pipeline::exact::chunks(text).map_err(refusal_err)?
+        }
+        None => plan(engine, text)?,
+    };
     let mut o = options::check(options, &engine.capabilities())
         .map_err(refusal_err)?
         .options;
@@ -540,7 +594,10 @@ pub fn render_document(
     // silent, and a failure is the refusal of render.steer.
     crate::resolve_steer(&mut o, &mut |_| {}).map_err(refusal_err)?;
     o.read_steering().map_err(refusal_err)?;
-    let opts = o.render_options(engine.profile()).map_err(refusal_err)?;
+    let mut opts = o.render_options(engine.profile()).map_err(refusal_err)?;
+    if exact_seed.is_some() {
+        ggtts_core::pipeline::exact::options(&mut opts);
+    }
     let level = o.observe.trace_level.unwrap_or(1);
     let mut trace = match &o.observe.trace {
         Some(path) => Some(JsonlEvents::new(
@@ -561,15 +618,20 @@ pub fn render_document(
     }
     let mut hooks = Hooks::new();
     let mut obs = Observers::new(events, &mut hooks);
-    let seeds = StorySeeds {
+    let story = StorySeeds {
         story_id: STORY,
         salt: &opts.seed_salt,
+    };
+    let given = exact_seed.map(ggtts_core::pipeline::exact::seeds);
+    let seeds: &dyn ggtts_core::pipeline::SeedSource = match &given {
+        Some(g) => g,
+        None => &story,
     };
     let read = match on_piece {
         None => render_plan(
             engine,
             &chunks,
-            &seeds,
+            seeds,
             &mut DurationJudge,
             &opts,
             &mut obs,
@@ -587,7 +649,7 @@ pub fn render_document(
                 sink: &mut sink,
                 level: stream_mode(&o),
             };
-            render_plan(engine, &chunks, &seeds, &mut DurationJudge, &opts, &mut obs, output)
+            render_plan(engine, &chunks, seeds, &mut DurationJudge, &opts, &mut obs, output)
         }
     }
     .map_err(render_error)?;
@@ -664,6 +726,8 @@ pub struct Request<'a> {
     /// `None`: only the paths given are loaded (the C-ABI's version-2 struct and NULL settings). `Some`: a model or
     /// codec not given is the engine's pinned default, from the cache, as `ggtts-render` resolves it.
     pub models: Option<Models<'a>>,
+    /// The Qwen3-TTS sampler settings, frame cap and language (an options document's load section); default: none.
+    pub tuning: crate::Tuning,
 }
 
 /// A loaded engine, the speaker in effect (the one given, or the default model's default speaker; `None` for the
@@ -766,6 +830,7 @@ pub fn open(req: Request<'_>, wording: &Wording, notice: &mut dyn FnMut(&str)) -
         req.device,
         speaker.as_deref(),
         instruction,
+        &req.tuning,
         wording,
     )?;
     Ok(Opened { held, speaker, files })
@@ -875,6 +940,7 @@ fn load_real(
     device: Device,
     speaker: Option<&str>,
     instruction: Option<&str>,
+    tuning: &crate::Tuning,
     wording: &Wording,
 ) -> Result<Held, Fail> {
     match engine {
@@ -889,6 +955,7 @@ fn load_real(
             if let Some(s) = speaker {
                 v.speaker = s.to_string();
             }
+            tuning.apply(&mut v);
             // The library checks both settings while loading, before any text is rendered: an instruction the
             // checkpoint takes none of, then a speaker the model does not have (with the model's speakers).
             ggtts_qwen3_tts::engine::Qwen3Tts::load_for(model, codec, threads, v, instruction)
@@ -932,6 +999,7 @@ fn load_real(
     _: Device,
     _: Option<&str>,
     _: Option<&str>,
+    _: &crate::Tuning,
     _: &Wording,
 ) -> Result<Held, Fail> {
     Err(engine_err(format!(
@@ -1007,6 +1075,30 @@ mod planted {
 
 #[cfg(test)]
 mod tests {
+
+    /// Every key EXACT_SEED_EXCLUDES lists is reset, value and mark, when a render document gives render.seed: a key
+    /// added to the list without its reset in layer_render fails here, at test time, not in a user's render.
+    #[test]
+    fn every_excluded_default_is_reset_under_an_exact_seed() {
+        let defaults = render_defaults(
+            &Options::from_json(r#"{"render": {"seed_salt": "x", "redraw": 2, "edge_s": 0.3}}"#).unwrap(),
+        );
+        for (key, _) in EXACT_SEED_EXCLUDES {
+            assert!(defaults.marks.sources.contains_key(key), "the fixture sets {key}");
+        }
+        let doc = Options::from_render_json(r#"{"render": {"seed": 5}}"#).unwrap();
+        let o = layer_render(&defaults, doc).unwrap();
+        for (key, _) in EXACT_SEED_EXCLUDES {
+            assert!(!o.marks.sources.contains_key(key), "{key} is still marked");
+            let value = &o.to_json()["render"][&key["render.".len()..]];
+            assert!(value.is_null(), "{key} kept its value {value}");
+        }
+        assert_eq!(o.render.seed, Some(5));
+        // Without render.seed the defaults stand.
+        let story = layer_render(&defaults, Options::from_render_json("{}").unwrap()).unwrap();
+        assert_eq!(story.render.redraw, Some(2));
+    }
+
     use super::*;
 
     const TEXT: &str = "今日天氣好好，我哋去海邊行下。\n行完之後，去食飯。";
@@ -1034,6 +1126,7 @@ mod tests {
                 device: Device::Cpu,
                 threads: 0,
                 models: None,
+                tuning: Default::default(),
             },
             &wording(),
             &mut |_| {},

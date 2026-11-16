@@ -64,6 +64,30 @@ pub struct LoadArgs {
 /// Load the engine a load document names, with `Ggtts.load`'s parameters laid in: the handle, its render defaults
 /// kept as [`crate::ggtts_load_opts`] keeps them.
 pub fn load(json: &str, a: &LoadArgs) -> Result<u64, Fail> {
+    load_document(&merged(json, a)?)
+}
+
+/// `load_over`: [`load`] over an engine the caller supplies instead of one opened by name. The same path (the
+/// document and the arguments merged, the given-twice refusals, the document checked against the named engine's
+/// capabilities), and the handle registered with the load's cache settings and render defaults, so a render on it
+/// goes through [`render_opts`] as any other. For a Rust host's tests, such as the conformance test's probes of what
+/// Kotlin carries to an engine; not part of the Kotlin API.
+///
+/// What it does not check, since it opens nothing: the device string (a real load parses it before opening), and a
+/// speaker or instruction on an engine other than qwen3-tts (a real load refuses those before opening). A probe that
+/// needs either refusal loads through [`load`].
+#[doc(hidden)]
+pub fn load_over(json: &str, a: &LoadArgs, engine: Box<dyn ggtts_core::engine::Engine + Send>) -> Result<u64, Fail> {
+    let o = merged(json, a)?;
+    // The document check a real load makes; the engine it names is not opened, since `engine` stands in for it.
+    crate::checked_document_engine(&o)?;
+    let instruction = o.render.instruction.as_deref().filter(|s| !s.is_empty());
+    let held = binding::Held::checked(engine, instruction);
+    Ok(crate::register_document(&o, held))
+}
+
+/// A load document with Kotlin's arguments laid over it: what [`load`] opens.
+fn merged(json: &str, a: &LoadArgs) -> Result<Options, Fail> {
     let mut o = Options::from_json(json).map_err(refused)?;
     binding::check_document(&o, true)?;
     check(&o)?;
@@ -126,7 +150,7 @@ pub fn load(json: &str, a: &LoadArgs) -> Result<u64, Fail> {
         o.load.offline = !allow;
         mark(&mut o, "load.offline");
     }
-    load_document(&o)
+    Ok(o)
 }
 
 /// A render call's document ([`binding::render_request`]) with Kotlin's refusals. A salt nothing gives stays the C
@@ -186,6 +210,34 @@ mod tests {
 
     fn fake_doc(json: &str) -> u64 {
         load(json, &LoadArgs::default()).unwrap()
+    }
+
+    /// A document its engine cannot take is refused by `load` and by `load_over` alike, with the same key and
+    /// message: both run the one document check (`checked_document_engine`).
+    #[test]
+    fn load_and_load_over_refuse_a_document_alike() {
+        let over =
+            |doc: &str| keyed(|| load_over(doc, &LoadArgs::default(), Box::new(ggtts_fake::FakeEngine::default())));
+        let real = |doc: &str| keyed(|| load(doc, &LoadArgs::default()));
+        for (doc, key) in [
+            (
+                r#"{"load": {"engine": "fake"}, "render": {"steer": "s.safetensors"}}"#,
+                "render.steer",
+            ),
+            (
+                r#"{"load": {"engine": "fake"}, "render": {"instruction": "Speak slowly."}}"#,
+                "render.instruction",
+            ),
+        ] {
+            let (a, b) = (real(doc), over(doc));
+            let (a, b) = (a.expect_err(doc), b.expect_err(doc));
+            assert_eq!(a.1.as_deref(), Some(key), "{doc}: load refused {a:?}");
+            assert_eq!(a, b, "{doc}: load and load_over refuse differently");
+        }
+        // And a document the engine takes is not refused by either.
+        let ok = r#"{"load": {"engine": "fake"}}"#;
+        ggtts_free(real(ok).unwrap());
+        ggtts_free(over(ok).unwrap());
     }
 
     /// `ggtts_render` on a fresh `ggtts_load("fake")`: the samples the old Kotlin `render` gives.

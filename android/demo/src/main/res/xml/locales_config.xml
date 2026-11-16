@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The languages the demo's screen comes in: Android 13 and later list them in the app's language setting. English is
+     the default (res/values); Traditional Chinese (Hong Kong) is res/values-zh-rHK. -->
+<locale-config xmlns:android="http://schemas.android.com/apk/res/android">
+    <locale android:name="en" />
+    <locale android:name="zh-HK" />
+</locale-config>

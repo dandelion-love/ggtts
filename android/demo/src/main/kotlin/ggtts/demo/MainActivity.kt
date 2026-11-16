@@ -77,8 +77,12 @@ import java.util.concurrent.Executors
 class MainActivity : AppCompatActivity(), DemoView {
     companion object {
         const val TAG = "ggtts-demo"
+        /** The card's text across a re-creation (onSaveInstanceState), when it fits the saved state. */
+        private const val STATE_TEXT = "ggtts.demo.text"
+        /** The cache file holding the card's text when it is too long for the saved state ([Launch.MAX_SAVED_CHARS]). */
+        private const val STATE_TEXT_FILE = "ggtts.demo.text-file"
+        private const val CARD_FILE = "card-text.txt"
         private const val PICK = 1
-        private const val NONE = "(none)"
         val ENGINES = listOf("qwen3-tts", "kitten-tts-2")
         val LINES = mapOf("qwen3-tts" to "今日天氣好好。", "kitten-tts-2" to "Hello from ggtts, running on this phone.")
         val THREADS = listOf(2, 4, 6, 8)
@@ -86,6 +90,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         const val DEFAULT_THREADS = LoadRequest.DEFAULT_THREADS
         private const val REQUEST_NOTIFICATIONS = 2
         private const val PICK_FOLDER = 3
+        private const val PICK_READS_FOLDER = 4
     }
 
     // Storage (Storage.kt): the picked models folder, Music/ggtts/, and every model file listed from both.
@@ -108,7 +113,12 @@ class MainActivity : AppCompatActivity(), DemoView {
     private lateinit var threads: Spinner
     private lateinit var speak: MaterialButton
     private lateinit var stop: MaterialButton
+    private lateinit var pause: MaterialButton
     private lateinit var laterButton: MaterialButton
+    /** The ⋮ menu's Saved reads: this install's reads in Music/ggtts/, and an earlier install's once the folder is picked. */
+    private val savedReads by lazy {
+        SavedReadsSheet(this, ReadsLibrary(this)) { startActivityForResult(ReadsLibrary.pickIntent(), PICK_READS_FOLDER) }
+    }
     private lateinit var systemSpeak: MaterialButton
     private var platformTts: TextToSpeech? = null
     private var askedForNotifications = false
@@ -142,6 +152,19 @@ class MainActivity : AppCompatActivity(), DemoView {
     private var applied: Voice? = null
     private var sample: MediaPlayer? = null
 
+    /** The words the plain-Kotlin classes use on this screen: the app's string resources ([ResourceWords]). */
+    private val tr: Words by lazy { ResourceWords(this) }
+
+    /** The spinners' "no file" choice, in the screen's language (a value compared within one run). */
+    private val none: String by lazy { getString(R.string.none_choice) }
+
+    /** A voice's language ("Cantonese", "English", as [Voices] names them) in the screen's language. */
+    private fun languageName(language: String): String = when (language) {
+        "Cantonese" -> getString(R.string.language_cantonese)
+        "English" -> getString(R.string.language_english)
+        else -> language
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // Material You: the wallpaper's colours on Android 12 and later, the theme's own before. Edge to edge on every
         // version (Android 15 and later do it anyway); the screen keeps its content clear of the bars (layout()).
@@ -157,9 +180,33 @@ class MainActivity : AppCompatActivity(), DemoView {
         setContentView(layout())
         refreshFiles()
         Reader.screen = this
-        applyIntent(intent)
+        // A re-created screen (dark mode or the language changed, or the process restored from Recents) keeps what the
+        // user had in the card and does not take its intent again: that intent is still the original share or adb
+        // extras, and applying it again would put the shared text back over the user's edits, or press Speak again.
+        savedInstanceState?.let { saved ->
+            saved.getString(STATE_TEXT)
+                ?: saved.getString(STATE_TEXT_FILE)?.let { runCatching { File(cacheDir, it).readText() }.getOrNull() }
+        }?.let { text.setText(it) }
+        if (Launch.takesIntent(savedInstanceState, intent.flags)) applyIntent(intent)
         // A queue left by a process that died, or by the service's daily time running out, resumes now.
         RenderService.start(this)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        // The text field is built in code with no id, so the platform does not save it: the screen does. The saved
+        // state crosses the binder, so a long card (pasted or typed; nothing else limits it) goes to a cache file and
+        // only its name is saved: a Bundle over the binder limit would crash the app when the screen stops.
+        val s = text.text.toString()
+        if (Launch.fitsSavedState(s)) {
+            outState.putString(STATE_TEXT, s)
+            // A long card saved earlier is no longer the card: its file goes.
+            File(cacheDir, CARD_FILE).delete()
+        } else {
+            runCatching { File(cacheDir, CARD_FILE).writeText(s) }
+                .onSuccess { outState.putString(STATE_TEXT_FILE, CARD_FILE) }
+                .onFailure { Log.w(TAG, "the card's text (${s.length} characters) was not saved: $it") }
+        }
     }
 
     override fun onTrimMemory(level: Int) {
@@ -184,34 +231,34 @@ class MainActivity : AppCompatActivity(), DemoView {
         val line = text.text.toString()
         val t0 = System.nanoTime()
         fun ms() = (System.nanoTime() - t0) / 1_000_000
-        showStatus("Asking Android's TextToSpeech for engine $packageName...")
+        showStatus(getString(R.string.tts_asking, packageName))
         platformTts?.shutdown()
         lateinit var tts: TextToSpeech
         tts = TextToSpeech(this, { status ->
             if (status != TextToSpeech.SUCCESS) {
-                showError("Android's TextToSpeech could not start the ggtts engine (status $status)")
+                showError(getString(R.string.tts_could_not_start, status))
                 return@TextToSpeech
             }
             val lang = tts.setLanguage(locale)
             Log.i(TAG, "platform tts: engine ${tts.defaultEngine.let { "default $it" }}, setLanguage($locale) = $lang")
             if (lang < TextToSpeech.LANG_AVAILABLE) {
-                showError("ggtts has no model files for $locale yet (code $lang): press Speak with $engine first.")
+                showError(getString(R.string.tts_no_model, locale.toString(), lang, engine))
                 return@TextToSpeech
             }
             tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(id: String?) {
                     Log.i(TAG, "platform tts: utterance started after ${ms()} ms")
-                    handler.post { showStatus("Android's TTS is speaking through ggtts (started after ${ms() / 1000} s)...") }
+                    handler.post { showStatus(getString(R.string.tts_speaking, (ms() / 1000).toInt())) }
                 }
                 override fun onDone(id: String?) {
                     Log.i(TAG, "platform tts: utterance done after ${ms()} ms")
-                    handler.post { showStatus("Android's TTS spoke the line through ggtts in ${ms() / 1000} s.") }
+                    handler.post { showStatus(getString(R.string.tts_spoke, (ms() / 1000).toInt())) }
                 }
                 @Deprecated("Deprecated in Java")
                 override fun onError(id: String?) = onError(id, TextToSpeech.ERROR)
                 override fun onError(id: String?, code: Int) {
                     Log.w(TAG, "platform tts: utterance error $code after ${ms()} ms")
-                    handler.post { showError("Android's TTS reported error $code from ggtts.") }
+                    handler.post { showError(getString(R.string.tts_error, code)) }
                 }
             })
             tts.speak(line, TextToSpeech.QUEUE_FLUSH, null, "ggtts-check")
@@ -225,6 +272,8 @@ class MainActivity : AppCompatActivity(), DemoView {
         // The read and the loaded engine stay with the process (see Reader); only this screen goes.
         if (Reader.screen === this) Reader.screen = null
         worker.shutdown()
+        // The screen is closing for good (not re-created), so nothing will restore a long card's file: it goes.
+        if (isFinishing) File(cacheDir, CARD_FILE).delete()
         super.onDestroy()
     }
 
@@ -250,9 +299,25 @@ class MainActivity : AppCompatActivity(), DemoView {
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         importButton.isEnabled = !busy
         showReadActions(busy)
+        refreshPause()
+    }
+
+    /** The read as the media controls see it: none, playing or paused (MediaControls.state). */
+    private fun playerState() = MediaControls.state(controller.busy, controller.paused)
+
+    /** The screen's Pause or Play, from the read's state whatever changed it (this button, the notification, a headset). */
+    private fun refreshPause() {
+        if (!::pause.isInitialized) return
+        val state = playerState()
+        val label = MediaControls.screenLabel(state, tr)
+        pause.visibility = if (label == null) View.GONE else View.VISIBLE
+        if (label != null) pause.text = label
+        // TalkBack reads the word, not the symbols.
+        pause.contentDescription = MediaControls.toggleLabel(state)
     }
 
     override fun showStatus(text: String) {
+        refreshPause()
         lastStatus = text
         statusIsError = false
         status.visibility = View.VISIBLE
@@ -263,7 +328,7 @@ class MainActivity : AppCompatActivity(), DemoView {
     private fun renderStatus() {
         if (statusIsError) return
         val secs = if (busySince == 0L) -1 else (SystemClock.elapsedRealtime() - busySince) / 1000
-        status.text = if (secs < 0) lastStatus else "$lastStatus  ·  $secs s"
+        status.text = if (secs < 0) lastStatus else getString(R.string.status_elapsed, lastStatus, secs.toInt())
     }
 
     /** A Spinner's list: under the Material theme the platform's item layouts take the theme's text colours. */
@@ -312,14 +377,20 @@ class MainActivity : AppCompatActivity(), DemoView {
     private fun layout(): View {
         val pad = dp(16)
         fun label(s: String) = words(s, M.style.TextAppearance_Material3_BodyLarge).apply { setPadding(0, pad / 2, 0, 0) }
+        // A label that names [control] for TalkBack (labelFor): a spinner is announced as what it chooses, not only
+        // as the file it shows.
+        fun labelling(s: String, control: View) = label(s).apply {
+            if (control.id == View.NO_ID) control.id = View.generateViewId()
+            labelFor = control.id
+        }
         fun lp(w: Int = ViewGroup.LayoutParams.MATCH_PARENT, h: Int = ViewGroup.LayoutParams.WRAP_CONTENT, top: Int = 0) =
             LinearLayout.LayoutParams(w, h).apply { topMargin = top }
 
         // The header: what this is, and a ⋮ menu for everything that is not reading.
         val header = MaterialToolbar(this).apply {
-            title = "Read aloud"
+            title = getString(R.string.app_title)
             // What the app is for, before anything technical (About.kt; the full sentences are under About).
-            subtitle = About.HEADER_SUBTITLE
+            subtitle = About.tagline(tr)
             setTitleTextAppearance(context, M.style.TextAppearance_Material3_TitleLarge)
             setSubtitleTextAppearance(context, M.style.TextAppearance_Material3_BodyMedium)
             setSubtitleTextColor(color(M.attr.colorOnSurfaceVariant))
@@ -333,7 +404,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         voiceCard = MaterialCardView(this, null, M.attr.materialCardViewFilledStyle).apply {
             radius = dp(16).toFloat()
             isClickable = true; isFocusable = true
-            contentDescription = "Change the voice"
+            contentDescription = getString(R.string.change_voice_description)
             setOnClickListener { showVoiceSheet() }
         }
         val voiceRow = LinearLayout(this).apply {
@@ -347,7 +418,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         voiceDetail = secondary("")
         names.addView(voiceName); names.addView(voiceDetail)
         voiceRow.addView(names, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        voiceRow.addView(words("Change", M.style.TextAppearance_Material3_LabelLarge, androidx.appcompat.R.attr.colorPrimary))
+        voiceRow.addView(words(getString(R.string.change), M.style.TextAppearance_Material3_LabelLarge, androidx.appcompat.R.attr.colorPrimary))
         voiceCard.addView(voiceRow)
         col.addView(voiceCard, lp(top = dp(8)))
         voiceNote = secondary("")
@@ -355,8 +426,8 @@ class MainActivity : AppCompatActivity(), DemoView {
 
         // The text: the main surface, an outlined field with Paste, Clear and a count under it.
         val field = TextInputLayout(this, null, M.attr.textInputOutlinedStyle).apply {
-            hint = "What to read"
-            placeholderText = "Type or paste what to read aloud"
+            hint = getString(R.string.text_hint)
+            placeholderText = getString(R.string.text_placeholder)
             val r = dp(16).toFloat()
             setBoxCornerRadii(r, r, r, r)
         }
@@ -374,8 +445,8 @@ class MainActivity : AppCompatActivity(), DemoView {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(4), dp(4), dp(4), 0)
         }
-        tools.addView(Chip(this).apply { text = "Paste"; setOnClickListener { pasteText() } })
-        tools.addView(Chip(this).apply { text = "Clear"; setOnClickListener { this@MainActivity.text.setText("") } },
+        tools.addView(Chip(this).apply { text = getString(R.string.paste); setOnClickListener { pasteText() } })
+        tools.addView(Chip(this).apply { text = getString(R.string.clear); setOnClickListener { this@MainActivity.text.setText("") } },
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 .apply { leftMargin = dp(8) })
         count = secondary("", M.style.TextAppearance_Material3_BodySmall).apply { gravity = Gravity.END }
@@ -386,21 +457,21 @@ class MainActivity : AppCompatActivity(), DemoView {
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun afterTextChanged(s: Editable?) {
                 val n = s?.length ?: 0
-                count.text = if (n == 0) "" else "$n characters"
-                field.helperText = if (n == 0) About.EMPTY_TEXT_HINT else null
+                count.text = if (n == 0) "" else getString(R.string.characters, n)
+                field.helperText = if (n == 0) About.emptyTextHint(tr) else null
             }
         })
-        field.helperText = if (text.text.isNullOrEmpty()) About.EMPTY_TEXT_HINT else null
+        field.helperText = if (text.text.isNullOrEmpty()) About.emptyTextHint(tr) else null
 
         // About and Advanced: closed, opened from the ⋮ menu.
         fun heading(s: String) = words(s, M.style.TextAppearance_Material3_TitleLarge).apply { setPadding(0, dp(24), 0, 0) }
         about = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
-        about.addView(heading("About this app"))
-        about.addView(label(About.TAGLINE))
-        About.PURPOSE.forEach { about.addView(label(it)) }
-        about.addView(label("No model ships with this app. Model files are read from:\n${modelsDir.path}"))
+        about.addView(heading(getString(R.string.about_heading)))
+        about.addView(label(About.tagline(tr)))
+        About.purpose(tr).forEach { about.addView(label(it)) }
+        about.addView(label(getString(R.string.models_read_from, modelsDir.path)))
         adv = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
-        adv.addView(heading("Advanced"))
+        adv.addView(heading(getString(R.string.advanced)))
 
         engines = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
         ENGINES.forEachIndexed { i, name ->
@@ -413,31 +484,31 @@ class MainActivity : AppCompatActivity(), DemoView {
             text.setText(LINES[engine])
             cost.text = EngineCosts.describe(engine)
         }
-        adv.addView(label("Engine"))
+        adv.addView(label(getString(R.string.engine_label)))
         adv.addView(engines)
         adv.addView(cost)
         model = AppCompatSpinner(this); codec = AppCompatSpinner(this); voice = AppCompatSpinner(this)
-        adv.addView(label("Model (Qwen3-TTS talker, or Kitten-TTS 2 LM)")); adv.addView(model)
-        adv.addView(label("Codec (Qwen3-TTS 12 Hz codec, or Kitten-TTS 2 S3Gen)")); adv.addView(codec)
-        adv.addView(label("Voice file (Kitten-TTS 2 only: the prepared voice JSON)")); adv.addView(voice)
+        adv.addView(labelling(getString(R.string.model_label), model)); adv.addView(model)
+        adv.addView(labelling(getString(R.string.codec_label), codec)); adv.addView(codec)
+        adv.addView(labelling(getString(R.string.voice_file_label), voice)); adv.addView(voice)
         val speakerField = TextInputLayout(this, null, M.attr.textInputOutlinedStyle).apply {
-            hint = "Speaker (Qwen3-TTS only, for example hk_voice_343)"
-            placeholderText = "the model's default"
+            hint = getString(R.string.speaker_hint)
+            placeholderText = getString(R.string.speaker_placeholder)
         }
         speaker = TextInputEditText(speakerField.context).apply { setSingleLine() }
         speakerField.addView(speaker)
         adv.addView(speakerField, lp(top = pad))
         threads = AppCompatSpinner(this).apply {
-            adapter = choices(THREADS.map { "$it threads" })
+            adapter = choices(THREADS.map { getString(R.string.threads_choice, it) })
             setSelection(THREADS.indexOf(DEFAULT_THREADS))
         }
-        adv.addView(label("CPU threads")); adv.addView(threads)
+        adv.addView(labelling(getString(R.string.cpu_threads), threads)); adv.addView(threads)
         importButton = MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
-            text = "Import a model file..."; setOnClickListener { pickFile() }
+            text = getString(R.string.import_model_file); setOnClickListener { pickFile() }
         }
         adv.addView(importButton, lp(top = pad / 2))
         systemSpeak = MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
-            text = "Speak through Android's TTS (ggtts as the engine)"
+            text = getString(R.string.speak_through_android)
         }
         systemSpeak.setOnClickListener { speakThroughAndroid() }
         adv.addView(systemSpeak)
@@ -446,16 +517,21 @@ class MainActivity : AppCompatActivity(), DemoView {
 
         val scroll = NestedScrollView(this).apply { addView(col) }
         // The ⋮ menu: everything that is not reading. The two section items say whether they open or close.
-        header.menu.add(0, 1, 0, "Import a voice file…")
-        header.menu.add(0, 4, 1, "Choose a models folder…")
-        val aboutItem = header.menu.add(0, 2, 2, "About this app")
-        val advItem = header.menu.add(0, 3, 3, "Advanced")
+        // Item ids are MenuIds' names, never numbers: two items with one id open each other's action (MenuIdsTest).
+        header.menu.add(0, MenuIds.IMPORT, 0, getString(R.string.menu_import_voice))
+        header.menu.add(0, MenuIds.MODELS_FOLDER, 1, getString(R.string.menu_models_folder))
+        header.menu.add(0, MenuIds.SAVED_READS, 2, getString(R.string.menu_saved_reads))
+        val aboutItem = header.menu.add(0, MenuIds.ABOUT, 3, getString(R.string.about_heading))
+        val advItem = header.menu.add(0, MenuIds.ADVANCED, 4, getString(R.string.advanced))
+        header.menu.add(0, MenuIds.LICENCES, 5, getString(R.string.menu_licences))
         header.setOnMenuItemClickListener { item: MenuItem ->
             when (item.itemId) {
-                1 -> pickFile()
-                2 -> aboutItem.title = if (toggleSection(scroll, about)) "Hide About" else "About this app"
-                3 -> advItem.title = if (toggleSection(scroll, adv)) "Hide Advanced" else "Advanced"
-                4 -> chooseFolder()
+                MenuIds.IMPORT -> pickFile()
+                MenuIds.ABOUT -> aboutItem.title = getString(if (toggleSection(scroll, about)) R.string.hide_about else R.string.about_heading)
+                MenuIds.ADVANCED -> advItem.title = getString(if (toggleSection(scroll, adv)) R.string.hide_advanced else R.string.advanced)
+                MenuIds.MODELS_FOLDER -> chooseFolder()
+                MenuIds.SAVED_READS -> savedReads.show()
+                MenuIds.LICENCES -> showLicences()
             }
             true
         }
@@ -477,7 +553,8 @@ class MainActivity : AppCompatActivity(), DemoView {
         }
         footer.addView(progress)
         speak = MaterialButton(this).apply {
-            text = "▶  Read aloud"
+            text = getString(R.string.read_aloud_button)
+            contentDescription = getString(R.string.read_aloud_label)
             textSize = 18f
         }
         speak.setOnClickListener {
@@ -485,18 +562,31 @@ class MainActivity : AppCompatActivity(), DemoView {
             speakNow()
         }
         stop = MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
-            text = "■  Stop"; visibility = View.GONE; isEnabled = false
+            text = getString(R.string.stop_button); visibility = View.GONE; isEnabled = false
+            contentDescription = getString(R.string.stop_label)
             textSize = 18f
         }
         stop.setOnClickListener { controller.stop() }
+        // Pause or Play beside Stop while a read runs: the same toggle as the notification and the media session
+        // (MediaControls), so a pause from the headset turns this button into Play too.
+        pause = MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
+            visibility = View.GONE; textSize = 18f
+        }
+        pause.setOnClickListener {
+            MediaControls.toggleAction(playerState())?.let { MediaControls.apply(it, controller) }
+            refreshPause()
+        }
+        val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        controls.addView(pause, LinearLayout.LayoutParams(0, dp(56), 1f).apply { rightMargin = dp(8) })
+        controls.addView(stop, LinearLayout.LayoutParams(0, dp(56), 1f))
         footer.addView(speak, lp(h = dp(56), top = dp(10)))
         // Render for later: the passage goes to a background queue and to Music/ggtts/, without playing (#416).
         laterButton = MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
-            text = "Render for later"
+            text = getString(R.string.render_for_later)
             setOnClickListener { renderLater() }
         }
         footer.addView(laterButton, lp(top = dp(4)))
-        footer.addView(stop, lp(h = dp(56), top = dp(10)))
+        footer.addView(controls, lp(top = dp(10)))
         footer.addView(readActionsRow(), lp(top = dp(8)))
 
         engines.check(100)
@@ -543,10 +633,10 @@ class MainActivity : AppCompatActivity(), DemoView {
         catalog = Catalog.merge(Catalog.appEntries(modelsDir), folder.entries())
         exportSamples()
         val listed = catalog.names
-        val steps = About.gettingStarted(listed.size)
-        gettingStarted.text = if (steps.isEmpty()) "" else "To start:\n" + steps.joinToString("\n")
+        val steps = About.gettingStarted(listed.size, tr)
+        gettingStarted.text = if (steps.isEmpty()) "" else getString(R.string.to_start, steps.joinToString("\n"))
         gettingStarted.visibility = if (steps.isEmpty()) View.GONE else View.VISIBLE
-        val files = listOf(NONE) + listed
+        val files = listOf(none) + listed
         for (s in listOf(model, codec, voice)) {
             val keep = s.selectedItem as String?
             s.adapter = choices(files)
@@ -562,7 +652,9 @@ class MainActivity : AppCompatActivity(), DemoView {
         val keep = applied?.let { a -> found.voices.firstOrNull { it.label == a.label } }
         // Applied here, so adb extras applied after this still win.
         (keep ?: found.first)?.let { if (keep == null) applyVoice(it) else showVoice(it) } ?: showVoice(null)
-        val gaps = found.incomplete.joinToString("\n") { "Not complete yet: ${it.name} needs ${it.missing}." }
+        val gaps = found.incomplete.joinToString("\n") {
+            getString(R.string.not_complete, it.name, EnglishWords.keyOf(it.missing)?.let { k -> tr.get(k) } ?: it.missing)
+        }
         voiceNote.text = gaps
         voiceNote.visibility = if (gaps.isEmpty()) View.GONE else View.VISIBLE
         Log.i(TAG, "voices: ${found.voices.map { it.label }}, incomplete: ${found.incomplete}")
@@ -576,7 +668,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         engines.check(100 + ENGINES.indexOf(v.engine))
         pick(model, v.model)
         pick(codec, v.codec)
-        pick(voice, v.voiceFile ?: NONE)
+        pick(voice, v.voiceFile ?: none)
         speaker.setText(v.speaker ?: "")
         showVoice(v)
         Log.i(TAG, "voice: ${v.label}")
@@ -587,18 +679,62 @@ class MainActivity : AppCompatActivity(), DemoView {
         voiceCard.isEnabled = found.voices.isNotEmpty()
         if (v == null) {
             voiceBadge.text = "?"
-            voiceName.text = "No voice yet"
-            voiceDetail.text = "Import a voice's model files from the ⋮ menu"
+            voiceName.text = getString(R.string.no_voice)
+            voiceDetail.text = getString(R.string.no_voice_detail)
             estimate.text = ""
             return
         }
         voiceBadge.text = badge(v)
         voiceName.text = v.name
-        voiceDetail.text = "${v.language} · ${Voices.ENGINE_NAMES[v.engine] ?: v.engine}"
-        estimate.text = EngineCosts.BY_ENGINE[v.engine]?.let { "First sound in about ${it.firstAudioS} s on a Galaxy Z Fold5" } ?: ""
+        voiceDetail.text = getString(R.string.voice_detail, languageName(v.language), Voices.ENGINE_NAMES[v.engine] ?: v.engine)
+        estimate.text = EngineCosts.BY_ENGINE[v.engine]?.let { getString(R.string.first_sound_estimate, EngineCosts.firstAudio(v.engine, tr)) } ?: ""
     }
 
     private fun badge(v: Voice) = when (v.language) { "Cantonese" -> "粵"; "English" -> "EN"; else -> v.language.take(2) }
+
+    /**
+     * Licences and privacy: what the app collects (nothing; held to the manifest by LicencesTest), whose the voices
+     * are, where the icon's glyph comes from, and every notice the AAR carries, read from this APK (Licences).
+     */
+    private fun showLicences() {
+        val dialog = BottomSheetDialog(this)
+        val sheet = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), 0, dp(16), dp(24))
+        }
+        sheet.addView(BottomSheetDragHandleView(this))
+        sheet.addView(words(getString(R.string.licences_title), M.style.TextAppearance_Material3_TitleLarge))
+        fun section(heading: String, body: String) {
+            sheet.addView(words(heading, M.style.TextAppearance_Material3_TitleMedium).apply { setPadding(0, dp(16), 0, dp(4)) })
+            sheet.addView(words(body, M.style.TextAppearance_Material3_BodyMedium))
+        }
+        section(getString(R.string.privacy_heading), getString(R.string.privacy_statement))
+        section(getString(R.string.model_note_heading), getString(R.string.model_note) + "\n\n" + getString(R.string.icon_note))
+        section(getString(R.string.notices_heading), getString(R.string.notices_intro))
+        // The APK is read for its notices; if it will not open, the sheet still opens and says so.
+        val notices = runCatching {
+            java.util.zip.ZipFile(applicationInfo.sourceDir).use { zip ->
+                val entries = zip.entries().asSequence().map { it.name }.toList()
+                Licences.notices(entries) { path -> zip.getEntry(path)?.let { e -> zip.getInputStream(e).readBytes().inputStream() } }
+            }
+        }.getOrElse {
+            Log.w(TAG, "licences: the APK could not be read: $it")
+            sheet.addView(words(getString(R.string.notices_unavailable), M.style.TextAppearance_Material3_BodyMedium, androidx.appcompat.R.attr.colorError))
+            emptyList()
+        }
+        for (n in notices) {
+            sheet.addView(words(n.name, M.style.TextAppearance_Material3_TitleSmall).apply { setPadding(0, dp(12), 0, dp(4)) })
+            sheet.addView(
+                if (n.text != null) secondary(n.text, M.style.TextAppearance_Material3_BodySmall).apply { setTextIsSelectable(true) }
+                else words(getString(R.string.notice_missing, n.name), M.style.TextAppearance_Material3_BodyMedium, androidx.appcompat.R.attr.colorError),
+            )
+        }
+        Log.i(TAG, "licences: ${notices.size} notices, ${notices.count { it.text == null }} missing")
+        dialog.setContentView(NestedScrollView(this).apply { addView(sheet) })
+        dialog.behavior.state = com.google.android.material.bottomsheet.BottomSheetBehavior.STATE_EXPANDED
+        dialog.behavior.skipCollapsed = true
+        dialog.show()
+    }
 
     /** The voices as a sheet of cards from the bottom: tap one to choose it; a sample plays without a render. */
     private fun showVoiceSheet() {
@@ -610,9 +746,9 @@ class MainActivity : AppCompatActivity(), DemoView {
         }
         sheet.addView(BottomSheetDragHandleView(this))
         val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.BOTTOM }
-        head.addView(words("Choose a voice", M.style.TextAppearance_Material3_TitleLarge),
+        head.addView(words(getString(R.string.choose_voice), M.style.TextAppearance_Material3_TitleLarge),
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        head.addView(secondary("All run offline", M.style.TextAppearance_Material3_BodySmall))
+        head.addView(secondary(getString(R.string.all_offline), M.style.TextAppearance_Material3_BodySmall))
         sheet.addView(head)
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         for (v in found.voices) {
@@ -630,14 +766,15 @@ class MainActivity : AppCompatActivity(), DemoView {
             row.addView(badgeView(filled = false).apply { text = badge(v) }, LinearLayout.LayoutParams(dp(40), dp(40)))
             val lines = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(8), 0) }
             lines.addView(words(v.name, M.style.TextAppearance_Material3_TitleMedium))
-            lines.addView(secondary("${v.language} · ${Voices.ENGINE_NAMES[v.engine] ?: v.engine}"))
+            lines.addView(secondary(getString(R.string.voice_detail, languageName(v.language), Voices.ENGINE_NAMES[v.engine] ?: v.engine)))
             EngineCosts.BY_ENGINE[v.engine]?.let {
-                lines.addView(secondary("%.1f GB · first sound %s s".format(it.downloadGb, it.firstAudioS),
+                lines.addView(secondary(getString(R.string.voice_size, it.downloadGb, EngineCosts.firstAudio(v.engine, tr)),
                     M.style.TextAppearance_Material3_BodySmall))
             }
             row.addView(lines, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             row.addView(Chip(this).apply {
-                text = if (v.sample != null) "▶ Sample" else "No sample"
+                text = getString(if (v.sample != null) R.string.sample else R.string.no_sample)
+                if (v.sample != null) contentDescription = getString(R.string.play_sample, v.name)
                 isEnabled = v.sample != null
                 setOnClickListener { playSample(v) }
             })
@@ -647,12 +784,14 @@ class MainActivity : AppCompatActivity(), DemoView {
         }
         sheet.addView(list)
         sheet.addView(MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
-            text = "+  Add a voice from a file"
+            text = getString(R.string.add_voice)
             setOnClickListener { dialog.dismiss(); pickFile() }
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             .apply { topMargin = dp(12) })
         // The sheet scrolls itself (it is a NestedScrollView's child), and opens fully: it is short.
         dialog.setContentView(NestedScrollView(this).apply { addView(sheet) })
+        // The area around the sheet closes it; Material gives it no label, so TalkBack would say only "button".
+        dialog.findViewById<View>(M.id.touch_outside)?.contentDescription = getString(R.string.close_sheet)
         dialog.behavior.state = com.google.android.material.bottomsheet.BottomSheetBehavior.STATE_EXPANDED
         dialog.behavior.skipCollapsed = true
         dialog.show()
@@ -681,7 +820,76 @@ class MainActivity : AppCompatActivity(), DemoView {
         s.setSelection(i)
     }
 
+    /**
+     * Text another app handed over (Incoming.kt): shared, picked from the selection menu, or a .txt opened with the
+     * app. It fills the text card and nothing else: no read starts until the user presses Read aloud. Returns whether
+     * the intent was such a hand-over, so the debug build's adb extras (which can press Speak) are not read from it.
+     */
+    private fun takeIncoming(intent: Intent): Boolean {
+        val stream = if (Build.VERSION.SDK_INT >= 33) {
+            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION") intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+        }
+        val incoming = IncomingText.parse(
+            intent.action,
+            intent.type ?: intent.data?.let { contentResolver.getType(it) },
+            sendText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT),
+            processText = intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT),
+            stream = stream?.toString(),
+            data = intent.data?.toString(),
+            w = tr,
+        )
+        when (incoming) {
+            is Incoming.None -> return false
+            is Incoming.Refused -> {
+                Log.i(TAG, "incoming refused: ${incoming.why}")
+                showError(incoming.why)
+            }
+            is Incoming.Text -> showIncoming(incoming)
+            is Incoming.File -> {
+                // Off the main thread: a provider may be slow. The file is capped at IncomingText.MAX_FILE_BYTES.
+                val uri = Uri.parse(incoming.uri)
+                Thread {
+                    val read = try {
+                        contentResolver.openInputStream(uri)?.let { IncomingText.readFile(it, tr) }
+                            ?: Incoming.Refused(getString(R.string.file_unopened))
+                    } catch (e: Exception) {
+                        Incoming.Refused(getString(R.string.file_unopened_why, e.message))
+                    }
+                    runOnUiThread {
+                        // The screen may have been closed while the file was read: then there is nothing to fill.
+                        if (isDestroyed) return@runOnUiThread
+                        when (read) {
+                            is Incoming.Text -> showIncoming(read)
+                            is Incoming.Refused -> {
+                                Log.i(TAG, "incoming file refused: ${read.why}")
+                                showError(read.why)
+                            }
+                            else -> {}
+                        }
+                    }
+                }.start()
+            }
+        }
+        return true
+    }
+
+    /**
+     * Put [incoming]'s text in the card, and say where it came from, how long it is, whether it replaced what the card
+     * held, and that Read aloud starts it.
+     */
+    private fun showIncoming(incoming: Incoming.Text) {
+        val replaced = text.text.toString().let { it.isNotBlank() && it != incoming.text && it !in EXAMPLES.values }
+        text.setText(incoming.text)
+        text.setSelection(0)
+        val n = IncomingText.characters(incoming.text)
+        Log.i(TAG, "incoming ${incoming.source}: $n characters${if (replaced) ", replacing the card's text" else ""}")
+        showStatus(IncomingText.status(incoming.source, n, replaced, tr))
+    }
+
     private fun applyIntent(intent: Intent?) {
+        if (intent != null && takeIncoming(intent)) return
         // The scripted extras (file names in the models directory, and Speak pressed for you) are for testing a debug
         // build from adb. Another app can send this exported activity an intent too, so a release build ignores them,
         // and a debug build takes only names of files already in the models directory (pick).
@@ -693,7 +901,7 @@ class MainActivity : AppCompatActivity(), DemoView {
         val refused = ModelImport.refusedNames(listOf("model", "codec", "voice").map { extras.getString(it) })
         if (refused.isNotEmpty()) {
             Log.w(TAG, "adb extras refused: $refused are not file names in the models directory; nothing applied")
-            showError("Refused ${refused.joinToString()}: scripted model files must be names in the models directory, not paths. Nothing was applied.")
+            showError(getString(R.string.refused_extras, refused.joinToString()))
             return
         }
         extras.getString("engine")?.let { e -> ENGINES.indexOf(e).takeIf { it >= 0 }?.let { engines.check(100 + it) } }
@@ -712,7 +920,7 @@ class MainActivity : AppCompatActivity(), DemoView {
 
     private fun path(s: Spinner): String? {
         val name = s.selectedItem as String? ?: return null
-        if (name == NONE) return null
+        if (name == none) return null
         // A listed name is wherever it is (the app directory, or the picked folder as a content URI); a name that is
         // not listed (an adb extra for a file not there) stays a path in the app directory, for the binding's error.
         return catalog.location(name) ?: File(modelsDir, name).path
@@ -752,13 +960,13 @@ class MainActivity : AppCompatActivity(), DemoView {
     /** Queue the text to render in the background, saved to Music/ggtts/ as FLAC, without playing (RenderService). */
     private fun renderLater() {
         val line = text.text.toString()
-        if (line.isBlank()) { showError("Nothing to render: type or paste a passage first."); return }
-        if (!music.available) { showError("Rendering for later saves to Music, which needs Android 10 or later."); return }
+        if (line.isBlank()) { showError(getString(R.string.render_nothing)); return }
+        if (!music.available) { showError(getString(R.string.render_needs_music)); return }
         askForNotifications()
         val e = Queue.get(this).add(currentRequest(), line)
         Log.i(TAG, "queue: added entry ${e.id} \"${e.title}\"")
         RenderService.start(this)
-        showStatus("Queued \"${e.title}\" to render for later (${Queue.get(this).pending} waiting). It goes to ${Storage.MUSIC_PATH}.")
+        showStatus(getString(R.string.render_queued, e.title, Queue.get(this).pending, Storage.MUSIC_PATH))
     }
 
     // ---- importing a file through the system picker (copied into the models directory)
@@ -770,17 +978,25 @@ class MainActivity : AppCompatActivity(), DemoView {
             data?.data?.takeIf { resultCode == RESULT_OK }?.let { onFolderPicked(it) }
             return
         }
+        if (requestCode == PICK_READS_FOLDER) {
+            data?.data?.takeIf { resultCode == RESULT_OK }?.let { uri ->
+                runCatching { ReadsLibrary(this).choose(uri) }.onFailure { showError(getString(R.string.folder_access_failed, it.message ?: "")) }
+                Log.i(TAG, "saved reads: folder $uri")
+            }
+            savedReads.show()
+            return
+        }
         val uri = data?.data
         if (requestCode != PICK || resultCode != RESULT_OK || uri == null) return
         setBusy(true)
-        showStatus("Copying...")
+        showStatus(getString(R.string.copying))
         worker.execute {
             val result = runCatching { copyIn(uri) }
             handler.post {
                 setBusy(false)
                 refreshFiles()
-                result.fold({ showStatus("Imported ${it.name} (${it.length() / 1_000_000} MB)") },
-                    { showError("Import failed: ${it.message}") })
+                result.fold({ showStatus(getString(R.string.imported, it.name, (it.length() / 1_000_000).toInt())) },
+                    { showError(getString(R.string.import_failed, it.message ?: "")) })
             }
         }
     }
@@ -794,7 +1010,7 @@ class MainActivity : AppCompatActivity(), DemoView {
                 size = if (it.isNull(1)) null else it.getLong(1)
             }
         }
-        val input = contentResolver.openInputStream(uri) ?: throw ImportException("the picked file cannot be read")
+        val input = contentResolver.openInputStream(uri) ?: throw ImportException(getString(R.string.import_unreadable))
         val out = input.use { ModelImport(modelsDir).importFile(name ?: "unnamed", size, it) }
         Log.i(TAG, "imported $out (${out.length()} bytes)")
         return out
@@ -809,23 +1025,23 @@ class MainActivity : AppCompatActivity(), DemoView {
 
     private fun onFolderPicked(uri: Uri) {
         runCatching { folder.choose(uri) }.onFailure {
-            showError("Could not keep access to that folder: ${it.message}")
+            showError(getString(R.string.folder_access_failed, it.message ?: ""))
             return
         }
         val n = folder.entries().size
         Log.i(TAG, "models folder: $uri ($n files)")
         refreshFiles()
-        showStatus("Models folder: ${folder.describe() ?: uri}. $n file(s) there, read in place; its voices are listed.")
+        showStatus(getString(R.string.folder_status, folder.describe() ?: uri.toString(), n))
     }
 
     /** Save and Share for the last finished read, under the player. */
     private fun readActionsRow(): View {
         readActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; visibility = View.GONE }
         readActions.addView(MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
-            text = "Save to Music"; setOnClickListener { saveRead(share = false) }
+            text = getString(R.string.save_to_music); setOnClickListener { saveRead(share = false) }
         })
         readActions.addView(MaterialButton(this, null, M.attr.materialButtonOutlinedStyle).apply {
-            text = "Share"; setOnClickListener { saveRead(share = true) }
+            text = getString(R.string.share); setOnClickListener { saveRead(share = true) }
         }, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
         return readActions
@@ -849,9 +1065,9 @@ class MainActivity : AppCompatActivity(), DemoView {
             handler.post {
                 result.fold({ uri ->
                     Log.i(TAG, "saved read: $uri in ${Storage.MUSIC_PATH}")
-                    if (share) startActivity(MusicFolder.shareIntent(uri))
-                    else showStatus("Saved to ${Storage.MUSIC_PATH} (the Files app, and over USB).")
-                }, { showError("Could not save the read: ${it.message}") })
+                    if (share) startActivity(MusicFolder.shareIntent(uri, getString(R.string.share_title)))
+                    else showStatus(getString(R.string.saved_to, Storage.MUSIC_PATH))
+                }, { showError(getString(R.string.save_failed, it.message ?: "")) })
             }
         }
     }
@@ -883,6 +1099,9 @@ class DeviceAudio(private val dir: File) : AudioOut {
     override fun play(samples: FloatArray) = player.play(samples)
     override fun finish() = player.finish()
     override fun stop() = player.stop()
+    override fun pause() = player.pause()
+    override fun resume() = player.resume()
+    override val paused: Boolean get() = player.paused
 
     override fun save(samples: FloatArray, rate: Int, engine: String): String {
         dir.mkdirs()

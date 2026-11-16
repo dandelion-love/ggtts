@@ -85,12 +85,22 @@ fn err(msg: impl Into<String>) -> EngineError {
 
 /// The sampler settings. The defaults are the reference CLI's (`src/qwen3_tts.h:36-60`): the GGUF's own
 /// `generation.*` keys are not read by the reference, so they are not read here.
+///
+/// The code predictor (the sub-talker, codebooks 1 to 15) samples with the talker's temperature, top-k and top-p and
+/// no repetition penalty, as the reference does, unless a `subtalker_*` setting is given: the reference has no such
+/// setting, so each one unset is the talker's.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sampling {
     pub temperature: f32,
     pub top_k: i32,
     pub top_p: f32,
     pub repetition_penalty: f32,
+    /// The code predictor's temperature; `None` is the talker's.
+    pub subtalker_temperature: Option<f32>,
+    /// The code predictor's top-k; `None` is the talker's.
+    pub subtalker_top_k: Option<i32>,
+    /// The code predictor's top-p; `None` is the talker's.
+    pub subtalker_top_p: Option<f32>,
 }
 
 impl Default for Sampling {
@@ -100,14 +110,19 @@ impl Default for Sampling {
             top_k: 50,
             top_p: 1.0,
             repetition_penalty: 1.05,
+            subtalker_temperature: None,
+            subtalker_top_k: None,
+            subtalker_top_p: None,
         }
     }
 }
 
 impl Sampling {
-    /// Refuses settings this engine will not run. A temperature at or below zero means greedy decoding (`argmax`)
-    /// for the talker and the code predictor alike, and on this model greedy decoding does not terminate: it runs
-    /// to the frame cap. Neither is a temperature that is not a finite number.
+    /// Refuses settings this engine will not run. A temperature at or below zero means greedy decoding (`argmax`),
+    /// and on this model greedy decoding does not terminate: the talker runs to the frame cap, and so does a greedy
+    /// code predictor, whose codes then never let the talker stop. Neither is a temperature that is not a finite
+    /// number. A top-k below zero, a top-p that is not a finite number at least zero, and a repetition penalty that
+    /// is not a finite number above zero are refused too: the reference would divide by it or index with it.
     pub fn check(&self) -> Result<(), EngineError> {
         if !(self.temperature.is_finite() && self.temperature > 0.0) {
             return Err(err(format!(
@@ -116,7 +131,54 @@ impl Sampling {
                 self.temperature
             )));
         }
+        if let Some(t) = self.subtalker_temperature.filter(|t| !(t.is_finite() && *t > 0.0)) {
+            return Err(err(format!(
+                "sub-talker sampling temperature {t} refused: it must be above 0, since greedy decoding of the \
+                 sub-talker does not terminate on this model"
+            )));
+        }
+        for (name, k) in [("top-k", Some(self.top_k)), ("sub-talker top-k", self.subtalker_top_k)] {
+            if let Some(k) = k.filter(|k| *k < 0) {
+                return Err(err(format!("{name} {k} refused: it must be 0 (off) or more")));
+            }
+        }
+        // Top-k 1 keeps only the most likely token: greedy decoding by another name, whatever the temperature.
+        if self.top_k == 1 {
+            return Err(err(
+                "top-k 1 refused: it keeps only the most likely token, which is greedy decoding, and greedy decoding \
+                 does not terminate on this model",
+            ));
+        }
+        if self.subtalker_top_k == Some(1) {
+            return Err(err(
+                "sub-talker top-k 1 refused: it keeps only the most likely token, which is greedy decoding, and \
+                 greedy decoding of the sub-talker does not terminate on this model",
+            ));
+        }
+        for (name, p) in [("top-p", Some(self.top_p)), ("sub-talker top-p", self.subtalker_top_p)] {
+            if let Some(p) = p.filter(|p| !(p.is_finite() && *p >= 0.0)) {
+                return Err(err(format!("{name} {p} refused: it must be a number, 0 or more")));
+            }
+        }
+        if !(self.repetition_penalty.is_finite() && self.repetition_penalty > 0.0) {
+            return Err(err(format!(
+                "repetition penalty {} refused: it must be above 0",
+                self.repetition_penalty
+            )));
+        }
         Ok(())
+    }
+
+    /// What the code predictor samples with: the `subtalker_*` settings where given, else the talker's, and no
+    /// repetition penalty.
+    pub fn subtalker(&self) -> Sampling {
+        Sampling {
+            temperature: self.subtalker_temperature.unwrap_or(self.temperature),
+            top_k: self.subtalker_top_k.unwrap_or(self.top_k),
+            top_p: self.subtalker_top_p.unwrap_or(self.top_p),
+            repetition_penalty: 1.0,
+            ..Sampling::default()
+        }
     }
 }
 
@@ -1788,14 +1850,7 @@ impl Talker {
                 },
             )?
         };
-        out[0] = sample_top_k_p(
-            &mut logits,
-            Sampling {
-                repetition_penalty: 1.0,
-                ..sampling
-            },
-            rng,
-        );
+        out[0] = sample_top_k_p(&mut logits, sampling.subtalker(), rng);
 
         for step in 1..out.len() {
             let n_past = step as i32 + 1;
@@ -1836,14 +1891,7 @@ impl Talker {
                     },
                 )?
             };
-            out[step] = sample_top_k_p(
-                &mut logits,
-                Sampling {
-                    repetition_penalty: 1.0,
-                    ..sampling
-                },
-                rng,
-            );
+            out[step] = sample_top_k_p(&mut logits, sampling.subtalker(), rng);
         }
         Ok(out)
     }

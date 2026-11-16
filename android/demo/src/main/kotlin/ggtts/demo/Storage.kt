@@ -234,7 +234,7 @@ class MusicFolder(context: Context) {
      * given; returns its content URI (shareable as it is). It is pending (hidden) until written, and removed if the
      * write fails, so nothing half-written is ever listed.
      */
-    fun save(name: String, mime: String = Storage.WAV_MIME, title: String? = null, write: (OutputStream) -> Unit): Uri {
+    fun save(name: String, mime: String = Storage.WAV_MIME, title: String? = null, publish: ((() -> Unit) -> Boolean) = { it(); true }, write: (OutputStream) -> Unit): Uri {
         check(available) { "saving to Music needs Android 10 or later" }
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
@@ -246,7 +246,11 @@ class MusicFolder(context: Context) {
         val uri = resolver.insert(collection, values) ?: throw FileNotFoundException("MediaStore refused $name")
         try {
             (resolver.openOutputStream(uri) ?: throw FileNotFoundException("cannot write $name")).use(write)
-            resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+            if (!publish {
+                check(resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null) == 1) {
+                    "could not publish $name"
+                }
+            }) throw SaveCancelled()
             return uri
         } catch (e: Exception) {
             resolver.delete(uri, null, null)
@@ -291,11 +295,15 @@ class MusicFolder(context: Context) {
     }
 
     companion object {
-        /** A chooser that shares [uri] (audio) with the app the user picks, which may read it and nothing else. */
-        fun shareIntent(uri: Uri): Intent = Intent.createChooser(
-            Intent(Intent.ACTION_SEND).setType(Storage.WAV_MIME).putExtra(Intent.EXTRA_STREAM, uri)
+        /**
+         * A chooser that shares [uri] (audio of [mime], a content URI, never a path) with the app the user picks, which
+         * is granted read access to that one item and nothing else. [title] is the chooser's title, in the phone's
+         * language.
+         */
+        fun shareIntent(uri: Uri, title: String, mime: String = Storage.WAV_MIME): Intent = Intent.createChooser(
+            Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_STREAM, uri)
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
-            "Share the read",
+            title,
         )
     }
 }

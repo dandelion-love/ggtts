@@ -77,8 +77,8 @@ class RenderQueueTest {
 
     private class Sink : ReadSink {
         val saved = mutableListOf<Triple<String, String, ByteArray>>()
-        override fun save(name: String, title: String, flac: ByteArray): String {
-            saved += Triple(name, title, flac)
+        override fun save(name: String, title: String, flac: ByteArray, publish: (() -> Unit) -> Boolean): String {
+            if (!publish { saved += Triple(name, title, flac) }) throw SaveCancelled()
             return "content://media/${saved.size}"
         }
     }
@@ -138,9 +138,9 @@ class RenderQueueTest {
         q.add(request, "fine")
         var first = true
         val saved = mutableListOf<String>()
-        val sink = ReadSink { name, _, _ ->
+        val sink = ReadSink { name, _, _, publish ->
             if (first) { first = false; throw java.io.IOException("No space left on device") }
-            saved += name
+            if (!publish { saved += name }) throw SaveCancelled()
             "content://media/1"
         }
         val w = QueueWorker(q, EngineCache(TtsBinding { Engine(2) }), sink, seed = 1, now = { 1_700_000_000_000L })
@@ -170,6 +170,17 @@ class RenderQueueTest {
         assertTrue(RenderStops.stopped(o.reason, q.pending), "Nothing half-made was saved" in RenderStops.stopped(o.reason, q.pending))
     }
 
+    @Test
+    fun stopMessagesUseWordsAndPassTheWaitingCount() {
+        val words = Words { key, args -> "$key:${args.joinToString()}" }
+        assertEquals("stopping:", RenderStops.stopping(RenderStops.Reason.PERSON, words))
+        assertEquals("render_stopping_memory:", RenderStops.stopping(RenderStops.Reason.MEMORY, words))
+        assertEquals("render_stopped_person_empty:", RenderStops.stopped(RenderStops.Reason.PERSON, 0, words))
+        assertEquals("render_stopped_person_waiting:2", RenderStops.stopped(RenderStops.Reason.PERSON, 2, words))
+        assertEquals("render_stopped_memory_empty:", RenderStops.stopped(RenderStops.Reason.MEMORY, 0, words))
+        assertEquals("render_stopped_memory_waiting:3", RenderStops.stopped(RenderStops.Reason.MEMORY, 3, words))
+    }
+
     // ---- #418: stopping cleanly
 
     /**
@@ -191,8 +202,41 @@ class RenderQueueTest {
         val said = RenderStops.stopped(o.reason, q.pending)
         assertTrue(said, "low on memory" in said && "2 waiting" in said)
         assertTrue("low on memory" in RenderStops.stopping(RenderStops.Reason.MEMORY))
-        // The entry renders in full on the next step: a stop is never a failure.
-        assertTrue(w.step() is QueueWorker.Outcome.Done)
+        // A fresh worker resumes the entry: a stop is never a failure.
+        assertTrue(worker(q, sink, TtsBinding { Engine(5) }).step() is QueueWorker.Outcome.Done)
+    }
+
+    @Test
+    fun aStopBeforeOrBetweenStepsDoesNotStartAnotherEntry() {
+        for (between in listOf(false, true)) {
+            val q = RenderQueue(Store())
+            val sink = Sink()
+            q.add(request, "first")
+            if (between) q.add(request, "second")
+            val w = worker(q, sink, TtsBinding { Engine(1) })
+            if (between) assertTrue(w.step() is QueueWorker.Outcome.Done)
+            w.stop(RenderStops.Reason.MEMORY)
+            assertEquals(RenderStops.Reason.MEMORY, (w.step() as QueueWorker.Outcome.Halted).reason)
+            assertEquals(1, q.pending)
+            assertEquals(if (between) 1 else 0, sink.saved.size)
+        }
+    }
+
+    @Test
+    fun aStopDuringSaveCancelsPublicationAndRequeues() {
+        val q = RenderQueue(Store())
+        q.add(request, "first")
+        var published = false
+        lateinit var w: QueueWorker
+        val sink = ReadSink { _, _, _, publish ->
+            w.stop()
+            if (!publish { published = true }) throw SaveCancelled()
+            "content://media/1"
+        }
+        w = QueueWorker(q, EngineCache(TtsBinding { Engine(1) }), sink, seed = 1)
+        assertTrue(w.step() is QueueWorker.Outcome.Stopped)
+        assertTrue(!published)
+        assertEquals(RenderQueue.State.WAITING, q.all.single().state)
     }
 
     /**

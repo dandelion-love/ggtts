@@ -3,6 +3,7 @@
   "observe": {
     "trace": "read.trace.jsonl",
     "trace_level": 2,
+    "codes": "read.codes.jsonl",
     "timing_report": "timing.json",
     "duration_report": "durations.json",
     "log_level": "debug",

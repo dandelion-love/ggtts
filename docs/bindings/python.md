@@ -265,7 +265,9 @@ needs no new keyword. A document is a dict, or the same as a JSON string. It is 
   `ggtts-render --trace` writes it). A stream through a document is levelled as `ggtts-render --stream` levels it: held until the first `output.stream_level_seconds` of audio (5 s unless given) set one gain, then each piece at that gain.
   `{"output": {"stream": "raw"}}` (or `"stream_raw": true`) hands the pieces over before the level step instead,
   as a stream with no `options` does. `render` refuses `output.stream`: stream with `render_stream` or `stream`.
-* **Refused:** a `load` key in a render document, `render.seed` (use `seed_salt`), `render.text` and `render.story`,
+* **One chunk at an exact seed:** `{"render": {"seed": S}}`. `render.seed` renders the text as one chunk at exactly that seed, drawn once and kept whole (no planning, judge, redraw, trim or level), as `ggtts-render --text TEXT --seed S` renders it: the same model, speaker, device and threads give the same samples, without a process, a model load or a hash per chunk. It cannot be given with `seed_salt` (the render call's own seed argument is one), `redraw` or `edge_s`, and an empty text is refused under `render.text`. For example,
+  `tts.render("多謝晒", options={"render": {"seed": 20260905}})`.
+* **Refused:** a `load` key in a render document, `render.text` and `render.story`,
   `render.judge`, `render.measure_timings`, the reports and logging, `output.out` and `output.stream_format`,
   instruments, and the book options.
 * **Given twice:** a value given both as an argument (`speaker=`, `instruction=`, `device=`, `threads=`, `offline=`,

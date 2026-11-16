@@ -398,11 +398,11 @@ laid over the load's defaults. NULL is the empty document.
   level step, as it always has, because an exported function never changes its behaviour.
 * **What a render document takes:**
   * `render`: `seed_salt` (`ggtts_render`'s seed, as a string), `instruction`, `steer` with `steer_scale` and
-    `steer_layers`, `redraw` and `edge_s`.
+    `steer_layers`, `redraw` and `edge_s`; or `seed`: `render.seed` renders the text as one chunk at exactly that seed, drawn once and kept whole (no planning, judge, redraw, trim or level), as `ggtts-render --text TEXT --seed S` renders it: the same model, speaker, device and threads give the same samples, without a process, a model load or a hash per chunk. It cannot be given with `seed_salt` (the render call's own seed argument is one), `redraw` or `edge_s`, and an empty text is refused under `render.text`.
   * `observe`: `trace` with `trace_level`, a trace file as `ggtts-render --trace` writes it.
 * **What it refuses:**
   * any `load` key (they are fixed when the engine loads);
-  * `render.text`, `render.story` and `render.seed`: the text is the argument, and the seed is `seed_salt`;
+  * `render.text` and `render.story`: the text is the argument;
   * `render.measure_timings`, the reports and logging: the C ABI returns PCM, not timings or files;
   * `output.out` and `output.stream_format`;
   * the book options;
@@ -507,12 +507,13 @@ Version 5 lets a binding read these from the library, so it ships no schema file
   ```json
   {"format": "ggtts-capabilities/1", "family": "qwen3-tts", "instruction": true, "no_instruction_why": null,
    "steering": true, "speakers": true, "speaker_names": ["..."], "devices": ["cpu", "cuda"],
-   "hooks": {"p_stop": true, "logits": true}, "step_events": true, "full_head": false}
+   "hooks": {"p_stop": true, "logits": true}, "step_events": true, "full_head": false, "sampler": true}
   ```
 
   `speaker_names` lists the loaded model's speakers, and is empty for an engine without them. A checkpoint that takes
   no instruction says why in `no_instruction_why`. `full_head` is true for an engine that can compute its whole output
-  head (Kitten-TTS 2, `load.kitten_full_head`). The fields are the engine's own capabilities, the ones an options
+  head (Kitten-TTS 2, `load.kitten_full_head`), and `sampler` for one that takes the sampler settings, frame cap and
+  language (Qwen3-TTS, `load.temperature` and the rest). The fields are the engine's own capabilities, the ones an options
   document is checked against. A freed or unknown handle is `GGTTS_ERR_HANDLE`, and `json` is NULL on any error.
 * **`ggtts_last_error_key()`** is the schema key of the option the thread's last call refused, when that call returned
   `GGTTS_ERR_ARG` for one option. Steering on an engine that cannot steer gives `"render.steer"`, and an unknown key

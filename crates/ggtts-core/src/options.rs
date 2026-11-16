@@ -111,6 +111,8 @@ pub enum Kind {
     Texts,
     /// A list of layer indices, none twice and at least one; a flag spelling takes `23,24,25`.
     Layers,
+    /// A list of finite numbers, at least one; a flag spelling takes `7.9,9.8,10.6`.
+    Numbers,
 }
 
 /// One option: one row of the table.
@@ -151,6 +153,23 @@ impl Descriptor {
 }
 
 const NONE: &[&str] = &[];
+
+/// The languages `load.language` takes: the reference CLI's `-l` short names (`src/main.cpp:679-689`).
+pub const LANGUAGES: &[&str] = &["auto", "en", "ru", "zh", "ja", "ko", "de", "fr", "es", "it", "pt"];
+
+/// The Qwen3-TTS sampler settings, frame cap and language, by schema key: what an engine without
+/// [`Capabilities::sampler`] refuses.
+pub const SAMPLER: [&str; 9] = [
+    "load.temperature",
+    "load.top_k",
+    "load.top_p",
+    "load.repetition_penalty",
+    "load.subtalker_temperature",
+    "load.subtalker_top_k",
+    "load.subtalker_top_p",
+    "load.max_frames",
+    "load.language",
+];
 
 const fn row(name: &'static str, section: Section, phase: Phase, kind: Kind, default: &'static str) -> Descriptor {
     Descriptor {
@@ -283,6 +302,85 @@ pub const TABLE: &[Descriptor] = &[
                sampler settings. A diagnostic; the bindings' engine reads GGTTS_KITTEN_FULL_HEAD=1 itself.",
         ..row("kitten_full_head", SL, L, Kind::Bool, "false")
     },
+    Descriptor {
+        flags: &["--temperature"],
+        help: "Qwen3-TTS only: the talker's sampling temperature, above 0 (greedy decoding does not terminate on this \
+               model); unset is 0.9, the reference CLI's.",
+        ..row("temperature", SL, L, Kind::Number { min: None }, "null")
+    },
+    Descriptor {
+        flags: &["--top-k"],
+        help: "Qwen3-TTS only: the talker's top-k, 0 for off; 1 is greedy decoding, refused since it does not \
+               terminate on this model; unset is 50, the reference CLI's.",
+        ..row(
+            "top_k",
+            SL,
+            L,
+            Kind::Int {
+                min: 0,
+                max: i32::MAX as i64,
+            },
+            "null",
+        )
+    },
+    Descriptor {
+        flags: &["--top-p"],
+        help: "Qwen3-TTS only: the talker's top-p; 0 and 1.0 are off; unset is 1.0, the reference CLI's.",
+        ..row("top_p", SL, L, Kind::Number { min: Some(0.0) }, "null")
+    },
+    Descriptor {
+        flags: &["--repetition-penalty"],
+        help: "Qwen3-TTS only: the talker's repetition penalty on codebook 0, above 0; unset is 1.05, the reference \
+               CLI's.",
+        ..row("repetition_penalty", SL, L, Kind::Number { min: None }, "null")
+    },
+    Descriptor {
+        flags: &["--subtalker-temperature"],
+        help: "Qwen3-TTS only: the sub-talker's (code predictor's) temperature, above 0 (greedy decoding of the \
+               sub-talker does not terminate on this model); unset is the talker's, as in the reference CLI.",
+        ..row("subtalker_temperature", SL, L, Kind::Number { min: None }, "null")
+    },
+    Descriptor {
+        flags: &["--subtalker-top-k"],
+        help: "Qwen3-TTS only: the sub-talker's top-k, 0 for off; 1 is greedy decoding, refused since it does not \
+               terminate; unset is the talker's.",
+        ..row(
+            "subtalker_top_k",
+            SL,
+            L,
+            Kind::Int {
+                min: 0,
+                max: i32::MAX as i64,
+            },
+            "null",
+        )
+    },
+    Descriptor {
+        flags: &["--subtalker-top-p"],
+        help: "Qwen3-TTS only: the sub-talker's top-p; 0 and 1.0 are off; unset is the talker's.",
+        ..row("subtalker_top_p", SL, L, Kind::Number { min: Some(0.0) }, "null")
+    },
+    Descriptor {
+        flags: &["--max-frames"],
+        help: "Qwen3-TTS only: the frame cap of one chunk (12.5 frames a second); unset is 1200, as ggtts has always \
+               rendered.",
+        ..row(
+            "max_frames",
+            SL,
+            L,
+            Kind::Int {
+                min: 1,
+                max: i32::MAX as i64,
+            },
+            "null",
+        )
+    },
+    Descriptor {
+        flags: &["--language"],
+        help: "Qwen3-TTS only: the language token the talker is prompted with, as the reference CLI's -l takes it \
+               (auto prompts with none); unset is zh.",
+        ..row("language", SL, L, Kind::Choice(LANGUAGES), "null")
+    },
     // ── render ──
     Descriptor {
         flags: &["--text", "-t"],
@@ -303,6 +401,7 @@ pub const TABLE: &[Descriptor] = &[
         ..row("seed", SR, R, Kind::Seed, "null")
     },
     Descriptor {
+        flags: &["--seed-salt"],
         python: &["seed"],
         c: &["seed"],
         kotlin: &["seed"],
@@ -335,6 +434,13 @@ pub const TABLE: &[Descriptor] = &[
         ..row("steer_layers", SR, R, Kind::Layers, "null")
     },
     Descriptor {
+        flags: &["--steer-scales"],
+        requires: Some("steer_layers"),
+        help: "One scale per layer of --steer-layers, in its order: layer L is pushed by its scale times the file's \
+               vector there. For a file of unit-length directions, the push lengths. Not with --steer-scale.",
+        ..row("steer_scales", SR, R, Kind::Numbers, "null")
+    },
+    Descriptor {
         flags: &["--redraw"],
         help: "Redraws allowed for a chunk the judge rejects; unset is the engine profile's.",
         ..row(
@@ -355,6 +461,7 @@ pub const TABLE: &[Descriptor] = &[
         ..row("judge", SR, R, named(), "null")
     },
     Descriptor {
+        flags: &["--edge-s"],
         help: "Seconds of silence kept at each edge of a chunk; unset is the engine profile's.",
         ..row("edge_s", SR, R, seconds(), "null")
     },
@@ -373,6 +480,12 @@ pub const TABLE: &[Descriptor] = &[
         requires: Some("trace"),
         help: "1 or 2 (2 adds every codebook); unset is 1.",
         ..row("trace_level", SO, R, Kind::Int { min: 1, max: 2 }, "null")
+    },
+    Descriptor {
+        flags: &["--codes"],
+        help: "Where every chunk's kept codec tokens go (ggtts-codes/1 JSON lines: frames x codebooks, as the \
+               decoder reads them). Writing them changes no sample.",
+        ..row("codes", SO, R, path(), "null")
     },
     Descriptor {
         flags: &["--timing-report"],
@@ -545,7 +658,7 @@ fn is_false(b: &bool) -> bool {
 }
 
 /// The load section: what opens an engine. `ggtts_load::Request` is this type.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Load {
     pub engine: String,
@@ -574,6 +687,56 @@ pub struct Load {
     /// Kitten-TTS 2 computes its whole output head (`GGTTS_KITTEN_FULL_HEAD`).
     #[serde(skip_serializing_if = "is_false")]
     pub kitten_full_head: bool,
+    /// Qwen3-TTS's talker temperature; 0.9 when not given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    /// Qwen3-TTS's talker top-k (0 is off); 50 when not given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<i32>,
+    /// Qwen3-TTS's talker top-p; 1.0 when not given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
+    /// Qwen3-TTS's repetition penalty on codebook 0; 1.05 when not given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repetition_penalty: Option<f64>,
+    /// Qwen3-TTS's sub-talker temperature; the talker's when not given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subtalker_temperature: Option<f64>,
+    /// Qwen3-TTS's sub-talker top-k; the talker's when not given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subtalker_top_k: Option<i32>,
+    /// Qwen3-TTS's sub-talker top-p; the talker's when not given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subtalker_top_p: Option<f64>,
+    /// Qwen3-TTS's frame cap per chunk; 1200 when not given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_frames: Option<i32>,
+    /// Qwen3-TTS's prompt language ([`LANGUAGES`]); `zh` when not given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+}
+
+impl Load {
+    /// The sampler settings, frame cap and language given, by their name in the section, as JSON: what
+    /// [`record`] writes as `sampling`. Empty when none is given.
+    pub fn sampling(&self) -> Map<String, Value> {
+        let mut m = Map::new();
+        let mut put = |k: &str, v: Option<Value>| {
+            if let Some(v) = v {
+                m.insert(k.to_string(), v);
+            }
+        };
+        put("temperature", self.temperature.map(Value::from));
+        put("top_k", self.top_k.map(Value::from));
+        put("top_p", self.top_p.map(Value::from));
+        put("repetition_penalty", self.repetition_penalty.map(Value::from));
+        put("subtalker_temperature", self.subtalker_temperature.map(Value::from));
+        put("subtalker_top_k", self.subtalker_top_k.map(Value::from));
+        put("subtalker_top_p", self.subtalker_top_p.map(Value::from));
+        put("max_frames", self.max_frames.map(Value::from));
+        put("language", self.language.clone().map(Value::from));
+        m
+    }
 }
 
 impl Default for Load {
@@ -589,6 +752,15 @@ impl Default for Load {
             offline: false,
             cache_dir: None,
             kitten_full_head: false,
+            temperature: None,
+            top_k: None,
+            top_p: None,
+            repetition_penalty: None,
+            subtalker_temperature: None,
+            subtalker_top_k: None,
+            subtalker_top_p: None,
+            max_frames: None,
+            language: None,
         }
     }
 }
@@ -615,6 +787,9 @@ pub struct Render {
     pub steer_scale: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub steer_layers: Option<Vec<u32>>,
+    /// One scale per layer of [`steer_layers`](Self::steer_layers); not with [`steer_scale`](Self::steer_scale).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steer_scales: Option<Vec<f64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redraw: Option<u32>,
     /// The ASR judge's spec (`ggtts_instruments::judge`); unset is the duration judge alone.
@@ -637,6 +812,9 @@ pub struct Observe {
     pub trace: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_level: Option<u8>,
+    /// Where each chunk's kept codec tokens go (`ggtts-codes/1`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codes: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timing_report: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -758,7 +936,7 @@ pub struct Refusal {
 }
 
 impl Refusal {
-    fn new(key: impl Into<String>, message: impl Into<String>) -> Self {
+    pub(crate) fn new(key: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             key: key.into(),
             message: message.into(),
@@ -789,6 +967,7 @@ fn describe(kind: Kind) -> String {
         Kind::Choice(list) => format!("one of {}", list.join(", ")),
         Kind::Texts => "a list of strings".into(),
         Kind::Layers => "a list of layer indices, at least one and none twice".into(),
+        Kind::Numbers => "a list of finite numbers, at least one".into(),
     }
 }
 
@@ -809,6 +988,9 @@ fn check_value(d: &Descriptor, v: &Value) -> Result<(), Refusal> {
                 && layers.iter().all(|&l| l <= u64::from(u32::MAX))
                 && layers.iter().enumerate().all(|(i, l)| !layers[..i].contains(l))
         }),
+        Kind::Numbers => v
+            .as_array()
+            .is_some_and(|a| !a.is_empty() && a.iter().all(|x| x.as_f64().is_some_and(f64::is_finite))),
     };
     if ok {
         Ok(())
@@ -833,6 +1015,12 @@ fn from_text(d: &Descriptor, s: &str) -> Result<Value, Refusal> {
         Kind::Text { .. } | Kind::Path | Kind::Choice(_) | Kind::Texts => Value::String(s.into()),
         Kind::Layers => crate::steer::parse_layers(s)
             .map_err(|e| Refusal::new(d.key(), e.0))?
+            .into(),
+        // A NaN or an infinity in the list becomes null, which `check_value` refuses by name.
+        Kind::Numbers => s
+            .split(',')
+            .map(|p| p.trim().parse::<f64>().map(Value::from).map_err(|_| bad()))
+            .collect::<Result<Vec<Value>, _>>()?
             .into(),
     };
     if d.kind == Kind::Texts {
@@ -1056,13 +1244,43 @@ impl Options {
             self.render.steering = None;
             return Ok(());
         };
+        let r = &self.render;
+        if let Some(scales) = &r.steer_scales {
+            // Refused before the file is read: these need no file to be wrong.
+            if r.steer_scale.is_some() {
+                return Err(Refusal::new(
+                    "render.steer_scales",
+                    "render.steer_scale and render.steer_scales are both given: one scale for every layer, or one \
+                     per layer, never both",
+                ));
+            }
+            let Some(layers) = &r.steer_layers else {
+                return Err(Refusal::new(
+                    "render.steer_scales",
+                    "needs render.steer_layers: one scale per layer, in its order",
+                ));
+            };
+            if layers.len() != scales.len() {
+                return Err(Refusal::new(
+                    "render.steer_scales",
+                    format!(
+                        "{} scales for the {} layers of render.steer_layers: give one per layer",
+                        scales.len(),
+                        layers.len()
+                    ),
+                ));
+            }
+        }
         let file = SteerFile::read(path).map_err(|e| Refusal::new("render.steer", e.0))?;
-        let steering = file
-            .select(
-                self.render.steer_layers.as_deref(),
-                self.render.steer_scale.unwrap_or(1.0),
-            )
-            .map_err(|e| Refusal::new("render.steer", e.0))?;
+        let r = &self.render;
+        let steering = match (&r.steer_scales, &r.steer_layers) {
+            (Some(scales), Some(layers)) => file
+                .select_scaled(layers, scales)
+                .map_err(|e| Refusal::new("render.steer_scales", e.0))?,
+            _ => file
+                .select(r.steer_layers.as_deref(), r.steer_scale.unwrap_or(1.0))
+                .map_err(|e| Refusal::new("render.steer", e.0))?,
+        };
         self.render.steering = Some(steering);
         Ok(())
     }
@@ -1122,7 +1340,58 @@ fn lacking(o: &Options, caps: &Capabilities) -> Vec<&'static str> {
     if o.load.kitten_full_head && !caps.full_head {
         out.push("load.kitten_full_head");
     }
+    if !caps.sampler {
+        let given = o.load.sampling();
+        out.extend(SAMPLER.iter().filter(|k| given.contains_key(&k["load.".len()..])));
+    }
     out
+}
+
+/// The sampler setting of `o` an engine that takes them (`caps.sampler`) still will not run, refused under its key:
+/// a temperature at or below zero, or a top-k of 1 (greedy decoding, which does not terminate on Qwen3-TTS, talker or
+/// sub-talker),
+/// and a repetition penalty at or below zero, which the sampler divides by.
+fn sampler_refusal(o: &Options, caps: &Capabilities) -> Option<Refusal> {
+    let l = &o.load;
+    let family = &caps.family;
+    let greedy = |key: &str, what: &str, t: f64| {
+        Refusal::new(
+            key,
+            format!(
+                "{t} refused: it must be above 0, since greedy decoding {what}does not terminate on the {family} \
+                 engine"
+            ),
+        )
+    };
+    if let Some(t) = l.temperature.filter(|t| *t <= 0.0) {
+        return Some(greedy("load.temperature", "", t));
+    }
+    if let Some(t) = l.subtalker_temperature.filter(|t| *t <= 0.0) {
+        return Some(greedy("load.subtalker_temperature", "of the sub-talker ", t));
+    }
+    // Top-k 1 keeps only the most likely token: greedy decoding, whatever the temperature.
+    let top_one = |key: &str, what: &str| {
+        Refusal::new(
+            key,
+            format!(
+                "1 refused: it keeps only the most likely token, which is greedy decoding, and greedy decoding {what}\
+                 does not terminate on the {family} engine"
+            ),
+        )
+    };
+    if l.top_k == Some(1) {
+        return Some(top_one("load.top_k", ""));
+    }
+    if l.subtalker_top_k == Some(1) {
+        return Some(top_one("load.subtalker_top_k", "of the sub-talker "));
+    }
+    if let Some(p) = l.repetition_penalty.filter(|p| *p <= 0.0) {
+        return Some(Refusal::new(
+            "load.repetition_penalty",
+            format!("{p} refused: it must be above 0, since the sampler divides by it"),
+        ));
+    }
+    None
 }
 
 /// Checks `options` against what an engine supports (`caps`), before anything is loaded or rendered. An option the
@@ -1132,6 +1401,11 @@ fn lacking(o: &Options, caps: &Capabilities) -> Vec<&'static str> {
 pub fn check(options: &Options, caps: &Capabilities) -> Result<Checked, Refusal> {
     let mut o = options.clone();
     let mut warnings = Vec::new();
+    if caps.sampler {
+        if let Some(r) = sampler_refusal(options, caps) {
+            return Err(r);
+        }
+    }
     for key in lacking(options, caps) {
         let d = descriptor(key).expect("a lacking key is a row");
         if o.marks.sources.get(key) != Some(&Source::Environment) {
@@ -1167,7 +1441,8 @@ pub fn check(options: &Options, caps: &Capabilities) -> Result<Checked, Refusal>
 
 /// The provenance record of a render with `options` on the engine `info` describes: the engine, backend and parity;
 /// the instruction (when not empty) and the steering record, as the trace header and every report write them; the
-/// seed keys given; the speaker given; `kitten_full_head` when it is on; the device; the trace level (0 untraced);
+/// seed keys given; the speaker given; `kitten_full_head` when it is on; `sampling`, the Qwen3-TTS sampler settings,
+/// frame cap and language given ([`Load::sampling`]), when any is; the device; the trace level (0 untraced);
 /// and the environment values the engine ignored. A steering file not yet read is recorded by its path.
 pub fn record(options: &Options, info: &EngineInfo) -> Value {
     let mut m = Map::new();
@@ -1202,6 +1477,10 @@ pub fn record(options: &Options, info: &EngineInfo) -> Value {
     if options.load.kitten_full_head {
         m.insert("kitten_full_head".into(), true.into());
     }
+    let sampling = options.load.sampling();
+    if !sampling.is_empty() {
+        m.insert("sampling".into(), Value::Object(sampling));
+    }
     m.insert(
         "device".into(),
         options.load.device.clone().unwrap_or_else(|| "cpu".into()).into(),
@@ -1226,7 +1505,7 @@ pub fn record(options: &Options, info: &EngineInfo) -> Value {
 
 /// The fields of a [`record`] that every `ggtts-render` report (timing, duration, each instrument's inputs) and its
 /// trace header carry beside the model files: what the render was asked to do differently.
-pub const REPORTED: [&str; 3] = ["instruction", "steer", "kitten_full_head"];
+pub const REPORTED: [&str; 4] = ["instruction", "steer", "kitten_full_head", "sampling"];
 
 /// The [`REPORTED`] fields of `record`, those it has. A report writes these, so it cannot disagree with the record.
 pub fn reported(record: &Value) -> Map<String, Value> {
@@ -1256,6 +1535,7 @@ fn kind_schema(kind: Kind) -> Map<String, Value> {
             "minItems": 1,
             "uniqueItems": true
         }),
+        Kind::Numbers => json!({"type": "array", "items": {"type": "number"}, "minItems": 1}),
     };
     match v {
         Value::Object(m) => m,

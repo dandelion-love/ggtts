@@ -1,5 +1,6 @@
 // Streaming playback apart from Android: one output device per stream, owned by a player thread, so rendering the
-// next chunk never waits for playback and Stop is safe at any moment from any thread.
+// next chunk never waits for playback and Stop is safe at any moment from any thread. Pause holds the device with what
+// it has buffered and keeps every queued piece; Resume plays on from there.
 package ggtts.demo
 
 import java.util.concurrent.LinkedBlockingQueue
@@ -55,15 +56,21 @@ class StreamPlayer(
     private val end = FloatArray(0)
     private val current = AtomicReference<Stream?>(null)
 
+    /** Whether playback is held ([pause]). It outlives a stream: a pause before the first piece holds the next one. */
+    @Volatile
+    var paused = false
+        private set
+
     /**
      * A new stream at [rate] Hz begins; a stream still playing is stopped first. If the device cannot start (its
      * `play` throws, or the player thread cannot start), the device is released and the throw passes to the caller.
      */
     fun begin(rate: Int) {
-        stop()
+        cut()
         val s = Stream(newSink(rate))
         try {
             s.sink.play()
+            if (paused) s.sink.pause()
             s.thread = Thread({ run(s) }, "ggtts-player")
             current.set(s)
             s.thread.start()
@@ -99,6 +106,8 @@ class StreamPlayer(
                     if (n == 0) Thread.sleep(waitMs) else at += n
                 }
             }
+            // Held: the stream is not over while the device still has what it was given to play.
+            while (paused && !s.cut) Thread.sleep(waitMs)
             if (!s.cut) Thread.sleep(drainMs)
         } catch (_: InterruptedException) {
         } finally {
@@ -123,8 +132,34 @@ class StreamPlayer(
         s.refused?.let { throw PlaybackFailed(it) }
     }
 
-    /** Drop what is queued and stop playing now, without waiting for the player thread. Safe from any thread. */
+    /**
+     * Hold playback: the device pauses with what it has buffered, pieces still arrive and wait in the queue (rendering
+     * goes on), and the stream does not end until [resume] or [stop]. Safe from any thread.
+     */
+    fun pause() {
+        paused = true
+        val s = current.get() ?: return
+        synchronized(s.lock) { if (!s.released) runCatching { s.sink.pause() } }
+    }
+
+    /** Play on from where [pause] held it, nothing skipped. Safe from any thread. */
+    fun resume() {
+        paused = false
+        val s = current.get() ?: return
+        synchronized(s.lock) { if (!s.released) runCatching { s.sink.play() } }
+    }
+
+    /**
+     * Drop what is queued and stop playing now, without waiting for the player thread, and end a pause. Safe from any
+     * thread.
+     */
     fun stop() {
+        paused = false
+        cut()
+    }
+
+    /** The stream playing now, if any, cut off; a pause stays (a new stream begun after it starts held). */
+    private fun cut() {
         val s = current.getAndSet(null) ?: return
         s.cut = true
         s.queue.clear()

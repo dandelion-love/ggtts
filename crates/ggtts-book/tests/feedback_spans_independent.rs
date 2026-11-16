@@ -235,3 +235,106 @@ fn feedback_page_contains_exact_final_pcm_and_rejects_incomplete_evidence() {
     assert!(!bad_page.exists());
     std::fs::remove_dir_all(dir).ok();
 }
+
+struct RedrawEngine {
+    fake: FakeEngine,
+    draw: u32,
+    chars: usize,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<(u32, u32, u64)>>>,
+}
+impl Engine for RedrawEngine {
+    fn info(&self) -> &EngineInfo {
+        self.fake.info()
+    }
+    fn profile(&self) -> &Profile {
+        self.fake.profile()
+    }
+    fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
+        self.draw = req.draw;
+        self.chars = ggtts_core::audio::judge_chars(req.text);
+        self.seen.lock().unwrap().push((req.chunk, req.draw, req.seed));
+        self.fake.generate(req)
+    }
+    fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
+        let mut pcm = self.fake.decode(codes)?;
+        let duration = if self.draw == 0 { 1.2 } else { 0.3 };
+        let n = (duration * self.chars as f64 * f64::from(pcm.sample_rate)) as usize;
+        pcm.samples = (0..n)
+            .map(|i| (0.3 * (std::f64::consts::TAU * 220.0 * i as f64 / f64::from(pcm.sample_rate)).sin()) as f32)
+            .collect();
+        Ok(pcm)
+    }
+}
+
+#[test]
+fn rejected_first_draw_keeps_second_seed_and_feedback_audio() {
+    use ggtts_book::render::{feedback_chapter, render_command_options, LoadedEngine};
+    let book_path = nested().write_temp("independent-feedback-redraw");
+    let out = book_path.parent().unwrap().join("out");
+    let args = vec![
+        book_path.to_string_lossy().into_owned(),
+        "--out".into(),
+        out.to_string_lossy().into_owned(),
+        "--engine".into(),
+        "fake".into(),
+        "--redraw".into(),
+        "1".into(),
+    ];
+    let (path, options) = ggtts_book::options::parse("render", &args, &|_| None).unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let engine = RedrawEngine {
+        fake: FakeEngine::default(),
+        draw: 0,
+        chars: 0,
+        seen: seen.clone(),
+    };
+    render_command_options(&path, &options, || {
+        Ok(LoadedEngine {
+            engine: Box::new(engine),
+            files: vec![],
+            speaker: None,
+        })
+    })
+    .unwrap();
+    let book = Book::read(nested().bytes()).unwrap();
+    let plans = plan_book(&PROFILE, &book, DEFAULT_SEED_ROOT).unwrap();
+    let (index, (chapter, plan)) = book
+        .chapters
+        .iter()
+        .zip(&plans)
+        .enumerate()
+        .find(|(_, (c, p))| !c.skippable && !p.chunks.is_empty())
+        .unwrap();
+    let chapter_dir = out.join(ggtts_book::render::chapter_stem(index, chapter));
+    let body = Manifest::read_body(&chapter_dir).unwrap();
+    let chapter_path = out.join(body["chapter_file"]["file"].as_str().unwrap());
+    let (_, chapter_pcm) = decoded(&chapter_path);
+    let page = out.join("redraw.html");
+    feedback_chapter(&chapter_dir, &page).unwrap();
+    let provenance: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out.join("redraw.html.provenance.json")).unwrap()).unwrap();
+    let html = std::fs::read_to_string(&page).unwrap();
+    let marker = "<script id=\"feedback-input\" type=\"application/json\">";
+    let input: serde_json::Value =
+        serde_json::from_str(html.split_once(marker).unwrap().1.split_once("</script>").unwrap().0).unwrap();
+    let requests = seen.lock().unwrap();
+    for (i, record) in provenance["chunks"].as_array().unwrap().iter().enumerate() {
+        let seed = u64::from(plan.seed_at(i, 1));
+        assert_eq!(record["draw"], 1);
+        assert_eq!(record["seed"], seed);
+        assert!(requests.contains(&(i as u32, 0, u64::from(plan.seed_at(i, 0)))));
+        assert!(requests.contains(&(i as u32, 1, seed)));
+        assert_eq!(body["chunks"][i]["draws"], 2);
+        let uri = input["items"][i]["audio"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("data:audio/flac;base64,")
+            .unwrap();
+        let mut reader = claxon::FlacReader::new(std::io::Cursor::new(unbase64(uri))).unwrap();
+        let pcm: Vec<i16> = reader.samples().map(|s| s.unwrap() as i16).collect();
+        let start = record["start"].as_u64().unwrap() as usize;
+        let end = record["end"].as_u64().unwrap() as usize;
+        assert_eq!(pcm, chapter_pcm[start..end]);
+    }
+    std::fs::remove_dir_all(book_path.parent().unwrap()).ok();
+}

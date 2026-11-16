@@ -72,12 +72,34 @@ pub struct Step<'a> {
     pub logits: Option<&'a [f32]>,
 }
 
+/// A selected talker layer at one sampled step, borrowed only for the callback.
+/// Step zero is the final prefill row; later steps are decode rows. The producer
+/// identifies EOS explicitly, and supplies values after residual and steering,
+/// before final normalization. Values are f32; hooks must copy anything retained.
+#[derive(Debug, Clone, Copy)]
+pub struct LayerStep<'a> {
+    pub chunk: u32,
+    pub draw: u32,
+    pub seed: u64,
+    pub frame: u32,
+    pub token: u32,
+    pub is_eos: bool,
+    pub layer: usize,
+    pub values: &'a [f32],
+}
+
 /// An in-process instrument.
 pub trait TensorHook {
     /// A short name, for its failures.
     fn name(&self) -> &str;
     /// What it reads. The engine exports nothing it does not ask for.
     fn wants(&self) -> Wants;
+    /// Zero-based talker layer indices requested; read once at registration.
+    fn layers(&self) -> Vec<usize> {
+        Vec::new()
+    }
+    /// Called for each requested layer and sampled step. Borrowed values expire on return.
+    fn layer(&mut self, _s: &LayerStep<'_>) {}
     /// Called once per generated frame, after the frame's token is drawn and before the next step.
     fn step(&mut self, s: &Step<'_>);
     /// Called once when the render is done. An error is recorded as the hook's failure.
@@ -96,6 +118,7 @@ pub struct HookFailure {
 struct Slot {
     hook: Box<dyn TensorHook>,
     wants: Wants,
+    layers: Vec<usize>,
     alive: bool,
 }
 
@@ -131,9 +154,13 @@ impl Hooks {
     /// Register a hook. Its wants are read once, here.
     pub fn add(&mut self, hook: Box<dyn TensorHook>) {
         let wants = hook.wants();
+        let mut layers = hook.layers();
+        layers.sort_unstable();
+        layers.dedup();
         self.slots.push(Slot {
             hook,
             wants,
+            layers,
             alive: true,
         });
     }
@@ -148,6 +175,43 @@ impl Hooks {
             .iter()
             .filter(|s| s.alive)
             .fold(Wants::NONE, |w, s| w.union(s.wants))
+    }
+
+    /// Sorted, deduplicated union of selected layers for live hooks.
+    pub fn layers(&self) -> Vec<usize> {
+        let mut layers: Vec<_> = self
+            .slots
+            .iter()
+            .filter(|s| s.alive)
+            .flat_map(|s| s.layers.iter().copied())
+            .collect();
+        layers.sort_unstable();
+        layers.dedup();
+        layers
+    }
+
+    /// Deliver one selected layer to interested hooks. A panicking hook is
+    /// disabled and its failure recorded, as for the ordinary step callback.
+    pub fn layer(&mut self, s: &LayerStep<'_>) {
+        for slot in self
+            .slots
+            .iter_mut()
+            .filter(|x| x.alive && x.layers.binary_search(&s.layer).is_ok())
+        {
+            if let Err(p) = catch_unwind(AssertUnwindSafe(|| slot.hook.layer(s))) {
+                slot.alive = false;
+                self.failures.push(HookFailure {
+                    hook: slot.hook.name().to_string(),
+                    message: format!(
+                        "panicked at chunk {} frame {} layer {}: {}",
+                        s.chunk,
+                        s.frame,
+                        s.layer,
+                        panic_text(&*p)
+                    ),
+                });
+            }
+        }
     }
 
     /// Hand `s` to every running hook that wants something it carries. A hook that panics is switched off and its
@@ -285,6 +349,70 @@ mod tests {
             p_stop_semantics: None,
             logits: None,
         }
+    }
+
+    struct Layers {
+        selected: Vec<usize>,
+        seen: std::rc::Rc<std::cell::RefCell<Vec<(usize, u32, bool, Vec<f32>)>>>,
+        panic: bool,
+    }
+    impl TensorHook for Layers {
+        fn name(&self) -> &str {
+            "layers"
+        }
+        fn wants(&self) -> Wants {
+            Wants::NONE
+        }
+        fn layers(&self) -> Vec<usize> {
+            self.selected.clone()
+        }
+        fn step(&mut self, _: &Step<'_>) {}
+        fn layer(&mut self, s: &LayerStep<'_>) {
+            assert!(!self.panic, "planted hook panic");
+            self.seen
+                .borrow_mut()
+                .push((s.layer, s.frame, s.is_eos, s.values.to_vec()));
+        }
+    }
+
+    #[test]
+    fn layer_union_dispatch_and_failure_isolation() {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut h = Hooks::new();
+        assert!(h.layers().is_empty());
+        h.add(Box::new(Layers {
+            selected: vec![3, 1, 3],
+            seen: seen.clone(),
+            panic: false,
+        }));
+        h.add(Box::new(Layers {
+            selected: vec![2, 1],
+            seen: seen.clone(),
+            panic: true,
+        }));
+        assert_eq!(h.layers(), vec![1, 2, 3]);
+        let mut s = LayerStep {
+            chunk: 4,
+            draw: 5,
+            seed: 6,
+            frame: 0,
+            token: 7,
+            is_eos: false,
+            layer: 1,
+            values: &[1.0, 2.0],
+        };
+        h.layer(&s);
+        assert_eq!(h.failures().len(), 1);
+        assert_eq!(h.layers(), vec![1, 3]);
+        s.layer = 3;
+        s.frame = 1;
+        s.is_eos = true;
+        s.values = &[3.0];
+        h.layer(&s);
+        assert_eq!(
+            *seen.borrow(),
+            vec![(1, 0, false, vec![1.0, 2.0]), (3, 1, true, vec![3.0])]
+        );
     }
 
     #[test]

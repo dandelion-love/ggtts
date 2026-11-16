@@ -32,13 +32,15 @@ class MediaStoreRecoveryInstrumentationTest {
     private val fixture: File get() = File(instrumentation.context.filesDir, "queue-recovery-fixture-$runId.json")
 
     private fun writeFixture(document: JSONObject) {
+        val parent = fixture.parentFile ?: throw AssertionError("fixture has no parent directory")
+        assertTrue("could not create isolated fixture directory", parent.isDirectory || parent.mkdirs())
         val part = File(fixture.path + ".part")
         FileOutputStream(part).use { stream ->
             stream.write(document.toString().toByteArray(Charsets.UTF_8))
             stream.fd.sync()
         }
         android.system.Os.rename(part.absolutePath, fixture.absolutePath)
-        val dirFd = android.system.Os.open(fixture.parentFile!!.absolutePath, android.system.OsConstants.O_RDONLY, 0)
+        val dirFd = android.system.Os.open(parent.absolutePath, android.system.OsConstants.O_RDONLY, 0)
         try { android.system.Os.fsync(dirFd) } finally { android.system.Os.close(dirFd) }
     }
 

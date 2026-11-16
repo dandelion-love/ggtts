@@ -35,13 +35,43 @@ run_phase() {
     fi
 }
 
-install_if_absent_or_identical() {
+assert_no_stale_test_state() {
+    local package="$1" files
+    if [ -z "$("$adb" -s "$ANDROID_SERIAL" shell pm path "$package" 2>/dev/null || true)" ]; then
+        return 0
+    fi
+    case "$package" in
+        "$target_package")
+            files=$("$adb" -s "$ANDROID_SERIAL" shell run-as "$package" sh -c "if [ -d files ]; then find files -maxdepth 1 -type f \( -name 'queue-recovery-*.txt' -o -name 'queue-recovery-*.txt.part' \) -print; fi") || {
+                echo "cannot inspect isolated recovery journals; refusing APK update for $package" >&2
+                return 1
+            }
+            ;;
+        "$test_package")
+            files=$("$adb" -s "$ANDROID_SERIAL" shell run-as "$package" sh -c "if [ -d files ]; then find files -maxdepth 1 -type f -name 'queue-recovery-fixture-*.json*' -print; fi") || {
+                echo "cannot inspect isolated fixture ledger; refusing APK update for $package" >&2
+                return 1
+            }
+            ;;
+        *)
+            echo "refusing to inspect or update non-test package $package" >&2
+            return 1
+            ;;
+    esac
+    files=$(tr -d '\r' <<<"$files")
+    if [ -n "$files" ]; then
+        echo "refusing APK update: unresolved test state remains in $package: $files" >&2
+        return 1
+    fi
+}
+
+install_isolated_test_apk() {
     local apk="$1" package="$2" local_hash remote_paths remote_path remote_hash
+    case "$package" in "$target_package"|"$test_package") ;; *) echo "refusing update outside isolated test packages: $package" >&2; return 1 ;; esac
     local_hash=$(sha256sum "$apk" | awk '{print $1}')
-    remote_paths=$("$adb" -s "$ANDROID_SERIAL" shell pm path "$package" 2>/dev/null | sed -n 's/^package://p' | tr -d '
-' || true)
+    remote_paths=$("$adb" -s "$ANDROID_SERIAL" shell pm path "$package" 2>/dev/null | sed -n 's/^package://p' | tr -d '\r' || true)
     if [ -z "$remote_paths" ]; then
-        "$adb" -s "$ANDROID_SERIAL" install "$apk"
+        "$adb" -s "$ANDROID_SERIAL" install -t "$apk"
         return
     fi
     if [ "$(wc -l <<<"$remote_paths")" -ne 1 ]; then
@@ -49,13 +79,13 @@ install_if_absent_or_identical() {
         return 1
     fi
     remote_path=$(head -n 1 <<<"$remote_paths")
-    remote_hash=$("$adb" -s "$ANDROID_SERIAL" shell sha256sum "$remote_path" | awk '{print $1}' | tr -d '
-')
-    if [ "$remote_hash" != "$local_hash" ]; then
-        echo "refusing to replace installed $package because its APK differs" >&2
-        return 1
+    remote_hash=$("$adb" -s "$ANDROID_SERIAL" shell sha256sum "$remote_path" | awk '{print $1}' | tr -d '\r')
+    if [ "$remote_hash" = "$local_hash" ]; then
+        echo "$package already has the exact APK; leaving it untouched"
+        return 0
     fi
-    echo "$package already has the exact APK; leaving it untouched"
+    echo "updating only isolated test package $package; app data is preserved"
+    "$adb" -s "$ANDROID_SERIAL" install -r -t "$apk"
 }
 
 cleanup() {
@@ -108,8 +138,10 @@ if grep -E 'ResumedActivity|topResumedActivity|mResumedActivity' <<<"$activities
     exit 1
 fi
 
-install_if_absent_or_identical "$app" "$target_package"
-install_if_absent_or_identical "$test_apk" "$test_package"
+assert_no_stale_test_state "$target_package"
+assert_no_stale_test_state "$test_package"
+install_isolated_test_apk "$app" "$target_package"
+install_isolated_test_apk "$test_apk" "$test_package"
 trap on_exit EXIT
 run_phase preparePublishedPendingMissingAndUnrelatedPending
 "$adb" -s "$ANDROID_SERIAL" shell am force-stop "$target_package"

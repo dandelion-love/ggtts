@@ -54,14 +54,20 @@ Future<Map<String, Object?>> inspectModel(Map<String, Object?> document) =>
 
 /// Controls are executed outside the UI and rendering isolates. The token and
 /// reservation are unique to this read, so late messages cannot affect another.
-void controlWorker(SendPort parent) {
+void controlWorker(SendPort parent) => _controlWorker(parent, true);
+void controlWorkerWithoutCancellation(SendPort parent) =>
+    _controlWorker(parent, false);
+
+void _controlWorker(SendPort parent, bool cancellable) {
   final commands = ReceivePort();
   AudioSession? audio;
   CancellationApi? cancellation;
   int? token;
   try {
-    cancellation = CancellationApi(openGgtts());
-    token = cancellation.create();
+    if (cancellable) {
+      cancellation = CancellationApi(openGgtts());
+      token = cancellation.create();
+    }
     audio = AudioSession.reserve();
     if (audio == null) throw StateError('Audio output is already in use.');
     parent.send({'port': commands.sendPort, 'audio': audio.id, 'token': token});
@@ -89,6 +95,11 @@ void controlWorker(SendPort parent) {
         case 'stop':
           Object? cancelError;
           try {
+            if (cancel == null || cancelToken == null) {
+              throw UnsupportedError(
+                'Cancellation is unavailable for this engine.',
+              );
+            }
             cancel.signal(cancelToken);
           } catch (error) {
             cancelError = error;
@@ -108,7 +119,7 @@ void controlWorker(SendPort parent) {
             cleanupError = error;
           }
           try {
-            cancel.free(cancelToken);
+            if (cancel != null && cancelToken != null) cancel.free(cancelToken);
           } catch (error) {
             cleanupError ??= error;
           }
@@ -154,6 +165,12 @@ void renderWorker(Map<String, Object?> request) async {
         Map<String, Object?>.from(request['load'] as Map),
       );
       try {
+        final cancellable = request['cancellable'] == true;
+        if (cancellable && engine.capabilities(handle)['cancellable'] != true) {
+          throw UnsupportedError(
+            'Loaded engine does not support cancellation.',
+          );
+        }
         engine.renderStream(
           handle,
           request['text'] as String,
@@ -176,7 +193,7 @@ void renderWorker(Map<String, Object?> request) async {
             queue!.add(piece.samples);
             return true;
           },
-          cancellationToken: request['token'] as int,
+          cancellationToken: cancellable ? request['token'] as int : null,
         );
         if (audioReady) {
           drainAudio(state: audio.state, softwareEmpty: audio.softwareEmpty);
@@ -204,13 +221,13 @@ class ReadPage extends StatefulWidget {
     super.key,
     this.prepare = inspectModel,
     this.loadSettings = loadSavedSettings,
-    this.controlEntry = controlWorker,
+    this.controlEntry,
     this.renderEntry = renderWorker,
     this.readDirectory,
   });
   final Future<Map<String, Object?>> Function(Map<String, Object?>) prepare;
   final Future<Map<String, Object?>> Function() loadSettings;
-  final void Function(SendPort) controlEntry;
+  final void Function(SendPort)? controlEntry;
   final void Function(Map<String, Object?>) renderEntry;
   final Future<Directory> Function()? readDirectory;
   @override
@@ -223,6 +240,7 @@ class _ReadPageState extends State<ReadPage> {
   SendPort? _control;
   ReadControlGate _gate = ReadControlGate();
   bool _audioReady = false;
+  bool _cancellable = false;
   bool _paused = false;
   bool _controlPending = false;
   bool _busy = false;
@@ -336,11 +354,13 @@ class _ReadPageState extends State<ReadPage> {
         'render_document': render,
       };
       _gate = ReadControlGate();
+      _cancellable = _caps?['cancellable'] == true;
       _audioReady = false;
       _paused = false;
       final controlEvents = ReceivePort();
       await Isolate.spawn(
-        widget.controlEntry,
+        widget.controlEntry ??
+            (_cancellable ? controlWorker : controlWorkerWithoutCancellation),
         controlEvents.sendPort,
         onError: controlEvents.sendPort,
         onExit: controlEvents.sendPort,
@@ -366,11 +386,12 @@ class _ReadPageState extends State<ReadPage> {
             'text': text,
             'audio': initial['audio'],
             'token': initial['token'],
+            'cancellable': _cancellable,
           },
           onError: port.sendPort,
           onExit: port.sendPort,
         );
-        if (_gate.stopRequested || !mounted) {
+        if (_cancellable && (_gate.stopRequested || !mounted)) {
           _gate.requestStop();
           await controlCommand(control, 'stop');
         }
@@ -447,7 +468,7 @@ class _ReadPageState extends State<ReadPage> {
   }
 
   void _stopRead({bool updateUi = true}) {
-    if (!_gate.requestStop()) return;
+    if (!_cancellable || !_gate.requestStop()) return;
     if (mounted && updateUi) setState(() => _status = 'Stopping...');
     final control = _control;
     if (control != null) {
@@ -661,12 +682,15 @@ class _ReadPageState extends State<ReadPage> {
                 child: const Text('Speak'),
               ),
               if (_busy && _control != null) ...[
-                TextButton(
-                  onPressed: _gate.stopRequested || _gate.terminal
-                      ? null
-                      : () => _stopRead(),
-                  child: const Text('Stop'),
-                ),
+                if (!_cancellable)
+                  const Text('Stop is unavailable for this engine.'),
+                if (_cancellable)
+                  TextButton(
+                    onPressed: _gate.stopRequested || _gate.terminal
+                        ? null
+                        : () => _stopRead(),
+                    child: const Text('Stop'),
+                  ),
                 TextButton(
                   onPressed:
                       _audioReady &&

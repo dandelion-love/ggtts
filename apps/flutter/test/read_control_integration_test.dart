@@ -72,6 +72,24 @@ void main() {
     await harness.close();
   });
 
+  testWidgets('legacy or unsupported engine hides stop and can render', (
+    tester,
+  ) async {
+    final harness = await Harness.start(tester, cancellable: false);
+    await harness.speak();
+    await harness.waitFor('worker');
+    expect(find.text('Stop'), findsNothing);
+    expect(find.text('Stop is unavailable for this engine.'), findsOneWidget);
+    harness.worker!.send('done');
+    await harness.waitFor('close');
+    await harness.waitButton('Discard read');
+    expect(
+      find.text('Audio submitted. Save the read or discard it.'),
+      findsOneWidget,
+    );
+    await harness.close();
+  });
+
   testWidgets('unsupported cancellable backend is shown and releases control', (
     tester,
   ) async {
@@ -99,6 +117,7 @@ class Harness {
   static Future<Harness> start(
     WidgetTester tester, {
     bool holdClose = false,
+    bool cancellable = true,
   }) async {
     final root = Directory.systemTemp.createTempSync('ggtts-read-test-');
     final inbox = ReceivePort();
@@ -124,7 +143,7 @@ class Harness {
         home: ReadPage(
           prepare: (_) async => {
             'schema': <String, Object?>{},
-            'capabilities': <String, Object?>{},
+            'capabilities': <String, Object?>{'cancellable': cancellable},
           },
           loadSettings: () async => {},
           readDirectory: () async => root,

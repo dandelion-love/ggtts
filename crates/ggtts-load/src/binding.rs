@@ -574,11 +574,34 @@ pub type PieceSink<'a> = &'a mut dyn FnMut(&[f32], u32) -> bool;
 /// rendered, and so is steering it cannot read. `observe.trace` writes the event stream, as `ggtts-render` does.
 /// With only `render.seed_salt` and `render.instruction` set, this is [`render`] (and with `on_piece` and
 /// `output.stream` `"raw"`, [`render_stream`]) sample for sample.
+/// Callback receives borrowed evidence for the duration of the call; false stops the render.
+pub type EvidenceSink<'a> = &'a mut dyn FnMut(ggtts_core::pipeline::StreamEvidencePiece<'_>) -> bool;
+
 pub fn render_document(
     engine: &mut dyn Engine,
     text: &str,
     options: &Options,
     on_piece: Option<PieceSink<'_>>,
+) -> Result<(Vec<f32>, u32), Fail> {
+    render_document_inner(engine, text, options, on_piece, None)
+}
+
+/// Render using the evidence stream; evidence is provisional until this call succeeds.
+pub fn render_document_evidence(
+    engine: &mut dyn Engine,
+    text: &str,
+    options: &Options,
+    sink: EvidenceSink<'_>,
+) -> Result<(Vec<f32>, u32), Fail> {
+    render_document_inner(engine, text, options, None, Some(sink))
+}
+
+fn render_document_inner(
+    engine: &mut dyn Engine,
+    text: &str,
+    options: &Options,
+    on_piece: Option<PieceSink<'_>>,
+    evidence: Option<EvidenceSink<'_>>,
 ) -> Result<(Vec<f32>, u32), Fail> {
     let exact_seed = options.render.seed;
     let chunks = match exact_seed {
@@ -629,8 +652,22 @@ pub fn render_document(
         Some(g) => g,
         None => &story,
     };
-    let read = match on_piece {
-        None => render_plan(
+    let read = match (on_piece, evidence) {
+        (None, Some(f)) => {
+            let mut sink = |p: ggtts_core::pipeline::StreamEvidencePiece<'_>| {
+                if f(p) {
+                    Ok(())
+                } else {
+                    Err(STOPPED.to_string())
+                }
+            };
+            let output = Output::StreamEvidence {
+                sink: &mut sink,
+                level: stream_mode(&o),
+            };
+            render_plan(engine, &chunks, seeds, &mut DurationJudge, &opts, &mut obs, output)
+        }
+        (None, None) => render_plan(
             engine,
             &chunks,
             seeds,
@@ -639,7 +676,7 @@ pub fn render_document(
             &mut obs,
             Output::Whole,
         ),
-        Some(f) => {
+        (Some(f), None) => {
             let mut sink = |p: StreamPiece<'_>| {
                 if f(p.samples, p.sample_rate) {
                     Ok(())
@@ -653,6 +690,7 @@ pub fn render_document(
             };
             render_plan(engine, &chunks, seeds, &mut DurationJudge, &opts, &mut obs, output)
         }
+        (Some(_), Some(_)) => unreachable!("only one stream sink"),
     }
     .map_err(render_error)?;
     if let Some(w) = trace {

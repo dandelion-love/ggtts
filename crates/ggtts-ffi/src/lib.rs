@@ -648,6 +648,111 @@ pub unsafe extern "C" fn ggtts_render_stream(
     })
 }
 
+/// Borrowed callback data. Text is UTF-8, not NUL terminated; all pointers expire on return.
+#[repr(C)]
+pub struct StreamEvidence {
+    pub chunk: usize,
+    pub text: *const u8,
+    pub text_len: usize,
+    pub seed: u64,
+    pub draw: u32,
+    pub stop: u32,
+    pub start: usize,
+    pub speech_end: usize,
+    pub samples: *const f32,
+    pub len: usize,
+    pub rate: u32,
+}
+pub type EvidenceFn = extern "C" fn(user: *mut c_void, evidence: *const StreamEvidence) -> i32;
+
+/// Stream raw pieces with kept identity. Evidence is provisional until successful return.
+/// # Safety
+/// text and callback must be valid; user is passed through unchanged.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_render_stream_evidence(
+    handle: u64,
+    text: *const c_char,
+    seed: u64,
+    callback: Option<EvidenceFn>,
+    user: *mut c_void,
+) -> i32 {
+    guard(|| {
+        let text = unsafe { arg(text, "text") }?;
+        let callback = callback.ok_or((GGTTS_ERR_ARG, "callback is NULL".to_string()))?;
+        let mut doc = seed_document(seed);
+        doc.output.stream = Some("raw".into());
+        doc.marks.sources.insert("output.stream".into(), Source::Document);
+        render_evidence(handle, text, &doc, callback, user).map(drop)
+    })
+}
+
+/// Stream using an options document; NULL denotes an empty document.
+/// # Safety
+/// text and callback must be valid; options_json is NULL or valid; user passes through.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_render_document_evidence(
+    handle: u64,
+    text: *const c_char,
+    options_json: *const c_char,
+    callback: Option<EvidenceFn>,
+    user: *mut c_void,
+) -> i32 {
+    guard(|| {
+        let text = unsafe { arg(text, "text") }?;
+        let callback = callback.ok_or((GGTTS_ERR_ARG, "callback is NULL".to_string()))?;
+        let doc = match unsafe { opt_arg(options_json, "options_json") }? {
+            None => Options::default(),
+            Some(json) => Options::from_render_json(json).map_err(refused)?,
+        };
+        binding::check_document(&doc, false)?;
+        render_evidence(handle, text, &doc, callback, user).map(drop)
+    })
+}
+
+fn render_evidence(
+    handle: u64,
+    text: &str,
+    doc: &Options,
+    callback: EvidenceFn,
+    user: *mut c_void,
+) -> Result<(Vec<f32>, u32), Fail> {
+    let base = defaults().get_or_insert_with(HashMap::new).get(&handle).cloned();
+    let mut o = match base {
+        Some(b) => binding::layer_render(&b, doc.clone())?,
+        None => doc.clone(),
+    };
+    if let Some(cache) = load_cache().get_or_insert_with(HashMap::new).get(&handle) {
+        cache.apply(&mut o);
+    }
+    with_engine(handle, |engine, instruction| {
+        if o.render.instruction.is_none() {
+            o.render.instruction = instruction.map(String::from);
+        }
+        let mut sink = |p: ggtts_core::pipeline::StreamEvidencePiece<'_>| {
+            let stop = match p.stop {
+                ggtts_core::engine::Stop::Eos => 0,
+                ggtts_core::engine::Stop::Cap => 1,
+                ggtts_core::engine::Stop::Abort => 2,
+            };
+            let evidence = StreamEvidence {
+                chunk: p.chunk,
+                text: p.text.as_ptr(),
+                text_len: p.text.len(),
+                seed: p.seed,
+                draw: p.draw,
+                stop,
+                start: p.start,
+                speech_end: p.speech_end,
+                samples: p.samples.as_ptr(),
+                len: p.samples.len(),
+                rate: p.sample_rate,
+            };
+            callback(user, &evidence) == 0
+        };
+        binding::render_document_evidence(engine, text, &o, &mut sink)
+    })
+}
+
 /// The render document `seed` means on the struct functions: the story seed's salt, marked as given so it is laid
 /// over a load document's defaults as a document's would be.
 fn seed_document(seed: u64) -> Options {

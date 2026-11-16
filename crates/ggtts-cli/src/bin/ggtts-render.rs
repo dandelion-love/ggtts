@@ -203,7 +203,7 @@ const USAGE: &str = "usage: ggtts-render [--model M.gguf] [--codec C.gguf] [--of
 [--engine auto|qwen3-tts|kitten-tts-2|fake] [--threads N (capped at the CPUs allowed)] [--device cpu|cuda] [--trace FILE [--trace-level 1|2]] [--codes FILE] [--feedback-page FILE] [--voice REF] [--kitten-full-head] [--speaker NAME] [--instruction TEXT] \
 [--temperature X] [--top-k N] [--top-p X] [--repetition-penalty X] [--subtalker-temperature X] [--subtalker-top-k N] \
 [--subtalker-top-p X] [--max-frames N] [--language auto|en|ru|zh|ja|ko|de|fr|es|it|pt] \
-[--steer FILE [--steer-scale X] [--steer-layers LIST [--steer-scales LIST]]] \
+[--steer FILE [--steer-scale X] [--steer-layers LIST [--steer-scales LIST]]] [--layer-stats FILE [--layer-stats-layers LIST]] \
 [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE [--seed-salt S] [--edge-s X] [--redraw N [--judge asr-qwen,model=DIR]]) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
 [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID] \
@@ -1652,8 +1652,12 @@ mod tests {
             // What it requires, and what that requires in turn (`steer_scales` needs `steer_layers`, which needs
             // `steer`), each with a value of its own kind.
             let mut needed = Vec::new();
+            let mut seen = BTreeSet::from([d.name]);
             let mut at = d.requires;
             while let Some(r) = at {
+                if !seen.insert(r) {
+                    break;
+                }
                 let n = options::TABLE
                     .iter()
                     .find(|n| n.section == d.section && n.name == r)

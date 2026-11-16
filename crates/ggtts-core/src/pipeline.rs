@@ -323,12 +323,17 @@ pub enum StreamMode {
 /// A stream's sink: takes each piece in order, and an error stops the render.
 pub type Sink<'a> = &'a mut dyn FnMut(StreamPiece<'_>) -> Result<(), String>;
 
+/// Receives a kept draw and its delivered samples; an error stops the render.
+pub type EvidenceSink<'a> = &'a mut dyn FnMut(StreamEvidencePiece<'_>) -> Result<(), String>;
+
 /// Where a read goes besides the returned [`Read`].
 pub enum Output<'a> {
     /// Only the returned read.
     Whole,
     /// Each piece to `sink` as soon as its chunk is kept (and, levelled, as soon as the hold allows).
     Stream { sink: Sink<'a>, level: StreamMode },
+    /// Stream with kept draw identity, rejecting aborts and mixed or zero rates.
+    StreamEvidence { sink: EvidenceSink<'a>, level: StreamMode },
 }
 
 /// What a streamed read's level step did, in [`Read::stream`].
@@ -450,6 +455,22 @@ pub struct StreamPiece<'a> {
     pub sample_rate: u32,
 }
 
+/// Kept identity for an exact delivered piece. Samples include the gap after
+/// speech; speech occupies [start, speech_end). Borrowed data lives only during
+/// the callback. Evidence is complete only when the render succeeds.
+#[derive(Debug, Clone, Copy)]
+pub struct StreamEvidencePiece<'a> {
+    pub chunk: usize,
+    pub text: &'a str,
+    pub seed: u64,
+    pub draw: u32,
+    pub stop: Stop,
+    pub start: usize,
+    pub speech_end: usize,
+    pub samples: &'a [f32],
+    pub sample_rate: u32,
+}
+
 /// [`render_story_traced`], handing each raw [`StreamPiece`] to `sink` as soon as its chunk is kept, before the next
 /// chunk is generated. The read it returns is the batch read: identical with any sink that accepts every piece.
 /// A sink that returns an error stops the render before the next chunk is generated, as
@@ -492,6 +513,21 @@ pub fn render_chunk(
     opts: &RenderOptions,
     obs: &mut Observers<'_>,
 ) -> Result<KeptChunk, RenderError> {
+    render_chunk_inner(engine, text, index, seeds, judge, opts, obs, false)
+}
+
+// Shares render_chunk inputs; evidence streaming additionally refuses aborted draws.
+#[allow(clippy::too_many_arguments)]
+fn render_chunk_inner(
+    engine: &mut dyn Engine,
+    text: &str,
+    index: usize,
+    seeds: &dyn SeedSource,
+    judge: &mut dyn Judge,
+    opts: &RenderOptions,
+    obs: &mut Observers<'_>,
+    stop_on_abort: bool,
+) -> Result<KeptChunk, RenderError> {
     if !obs.hooks.layers().is_empty() && !engine.supports_layer_hooks() {
         return Err(EngineError(format!(
             "the {} engine does not support talker layer hooks",
@@ -529,6 +565,9 @@ pub fn render_chunk(
         }
         let stage_start = (tracing || timings.is_some()).then(std::time::Instant::now);
         let generated = engine.generate_hooked(&req, events, obs.hooks)?;
+        if stop_on_abort && generated.stop == Stop::Abort {
+            return Err(EngineError("aborted draw cannot provide complete stream evidence".into()).into());
+        }
         stage_end(
             stage_start,
             "generate",
@@ -687,14 +726,16 @@ pub fn render_plan(
     let profile = *engine.profile();
     let mut stream = match output {
         Output::Whole => None,
-        Output::Stream { sink, level } => Some(Streamer::new(sink, level, &profile)),
+        Output::Stream { sink, level } => Some(Streamer::new(StreamSink::Plain(sink), level, &profile)),
+        Output::StreamEvidence { sink, level } => Some(Streamer::new(StreamSink::Evidence(sink), level, &profile)),
     };
     let n = chunks.len();
     let mut samples: Vec<f32> = Vec::new();
     let mut sample_rate = 0;
     let mut records = Vec::with_capacity(chunks.len());
     for (i, c) in chunks.iter().enumerate() {
-        let kept = render_chunk(engine, &c.text, i, seeds, judge, opts, obs)?;
+        let stop_on_abort = stream.as_ref().is_some_and(|s| s.evidence());
+        let kept = render_chunk_inner(engine, &c.text, i, seeds, judge, opts, obs, stop_on_abort)?;
         total_frames += kept.frames();
         if let (Some(t), Some(k)) = (timings.as_mut(), kept.timings) {
             t.generate_ns += k.generate_ns;
@@ -703,6 +744,19 @@ pub fn render_plan(
         }
         if i == 0 {
             sample_rate = kept.sample_rate;
+        }
+        let (first, last) = (kept.first().judgement, *kept.kept());
+        if stream.as_ref().is_some_and(|s| s.evidence()) {
+            if kept.sample_rate != sample_rate || sample_rate == 0 {
+                return Err(RenderError::Engine(EngineError(
+                    "stream evidence requires one nonzero sample rate".into(),
+                )));
+            }
+            if last.stop == Stop::Abort {
+                return Err(RenderError::Engine(EngineError(
+                    "aborted draw cannot provide complete stream evidence".into(),
+                )));
+            }
         }
         // Join as each chunk is kept: the chunk, then its gap unless it is the last.
         let start = samples.len();
@@ -713,7 +767,19 @@ pub fn render_plan(
             samples.resize(samples.len() + gap, 0.0);
         }
         if let Some(s) = stream.as_mut() {
-            s.push(i, start, &samples[start..], sample_rate)?;
+            s.push(
+                PieceIdentity {
+                    chunk: i,
+                    text: c.text.clone(),
+                    seed: last.seed,
+                    draw: last.draw,
+                    stop: last.stop,
+                    start,
+                    speech_end: span.1,
+                },
+                &samples[start..],
+                sample_rate,
+            )?;
         }
         if tracing {
             obs.events.emit(Event::Emit {
@@ -722,7 +788,6 @@ pub fn render_plan(
                 samples: samples.len() - start,
             });
         }
-        let (first, last) = (kept.first().judgement, *kept.kept());
         records.push(ChunkRecord {
             i,
             text: c.text.clone(),
@@ -772,17 +837,28 @@ pub fn render_plan(
 }
 
 /// The stream side of [`render_plan`]: the sink, and the leveller with the pieces it holds.
+enum StreamSink<'a> {
+    Plain(Sink<'a>),
+    Evidence(EvidenceSink<'a>),
+}
+struct PieceIdentity {
+    chunk: usize,
+    text: String,
+    seed: u64,
+    draw: u32,
+    stop: Stop,
+    start: usize,
+    speech_end: usize,
+}
 struct Streamer<'a> {
-    sink: Sink<'a>,
+    sink: StreamSink<'a>,
     mode: StreamMode,
     leveller: Option<StreamLevel>,
-    /// `(chunk, start)` of each piece the leveller holds, in order: it releases them whole and in the same order.
-    held: std::collections::VecDeque<(usize, usize)>,
+    held: std::collections::VecDeque<PieceIdentity>,
     level_ns: u128,
 }
-
 impl<'a> Streamer<'a> {
-    fn new(sink: Sink<'a>, mode: StreamMode, profile: &Profile) -> Self {
+    fn new(sink: StreamSink<'a>, mode: StreamMode, profile: &Profile) -> Self {
         let leveller = match mode {
             StreamMode::Raw => None,
             StreamMode::Levelled { hold_s } => Some(StreamLevel::new(profile, hold_s)),
@@ -795,41 +871,51 @@ impl<'a> Streamer<'a> {
             level_ns: 0,
         }
     }
-
-    fn push(&mut self, chunk: usize, start: usize, samples: &[f32], sample_rate: u32) -> Result<(), RenderError> {
-        let Some(lv) = self.leveller.as_mut() else {
-            return (self.sink)(StreamPiece {
-                chunk,
-                start,
+    fn evidence(&self) -> bool {
+        matches!(self.sink, StreamSink::Evidence(_))
+    }
+    fn deliver(&mut self, id: &PieceIdentity, samples: &[f32], sample_rate: u32) -> Result<(), RenderError> {
+        match &mut self.sink {
+            StreamSink::Plain(sink) => sink(StreamPiece {
+                chunk: id.chunk,
+                start: id.start,
                 samples,
                 sample_rate,
-            })
-            .map_err(RenderError::Sink);
+            }),
+            StreamSink::Evidence(sink) => sink(StreamEvidencePiece {
+                chunk: id.chunk,
+                text: &id.text,
+                seed: id.seed,
+                draw: id.draw,
+                stop: id.stop,
+                start: id.start,
+                speech_end: id.speech_end,
+                samples,
+                sample_rate,
+            }),
+        }
+        .map_err(RenderError::Sink)
+    }
+    fn push(&mut self, id: PieceIdentity, samples: &[f32], sample_rate: u32) -> Result<(), RenderError> {
+        let Some(lv) = self.leveller.as_mut() else {
+            return self.deliver(&id, samples, sample_rate);
         };
         let started = std::time::Instant::now();
         let ready = lv.push(samples, sample_rate);
         self.level_ns += started.elapsed().as_nanos();
-        self.held.push_back((chunk, start));
+        self.held.push_back(id);
         self.release(ready, sample_rate)
     }
-
     fn release(&mut self, ready: Vec<Vec<f32>>, sample_rate: u32) -> Result<(), RenderError> {
         for piece in ready {
-            let (chunk, start) = self
+            let id = self
                 .held
                 .pop_front()
                 .expect("the leveller releases only pieces it holds");
-            (self.sink)(StreamPiece {
-                chunk,
-                start,
-                samples: &piece,
-                sample_rate,
-            })
-            .map_err(RenderError::Sink)?;
+            self.deliver(&id, &piece, sample_rate)?;
         }
         Ok(())
     }
-
     fn finish(mut self, sample_rate: u32) -> Result<StreamReport, RenderError> {
         if let Some(lv) = self.leveller.as_mut() {
             let started = std::time::Instant::now();

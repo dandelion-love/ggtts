@@ -51,6 +51,18 @@ pub const NOT_OPTIONS: &[(Surface, &str, &str)] = &[
         "options",
         "the options document: every option, by its schema key",
     ),
+    (Surface::Kotlin, "handle", "the loaded engine handle"),
+    (
+        Surface::Kotlin,
+        "optionsJson",
+        "the options document: every option, by its schema key",
+    ),
+    (Surface::Kotlin, "seedGiven", "whether the caller supplied a seed"),
+    (
+        Surface::Kotlin,
+        "listener",
+        "the evidence stream's callback, not an option",
+    ),
     (Surface::C, "size", "the struct's own size, its version"),
     (Surface::C, "settings", "the struct the settings are in"),
     (Surface::C, "handle", "the engine handle"),
@@ -61,6 +73,9 @@ pub const NOT_OPTIONS: &[(Surface, &str, &str)] = &[
     ),
     (Surface::C, "pcm", "an out-parameter"),
     (Surface::C, "on_piece", "the stream's callback, not a value"),
+    (Surface::C, "callback", "the evidence stream's callback, not an option"),
+    (Surface::Dart, "onPiece", "the stream's callback, not a value"),
+    (Surface::Dart, "text", "the content to render, not an option"),
     (Surface::C, "user", "the callback's own pointer, passed through"),
     (Surface::C, "len", "an out-parameter"),
     (Surface::C, "rate", "an out-parameter"),
@@ -223,6 +238,8 @@ pub fn c_names() -> Vec<String> {
     out.extend(names(between(&h, "int32_t ggtts_render(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_load_opts(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_render_opts(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_render_stream_evidence(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_render_document_evidence(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_capabilities(", ");")));
     out.extend(names(between(&h, "void ggtts_string_free(", ");")));
     out.sort();
@@ -238,6 +255,23 @@ pub fn kotlin_names() -> Vec<String> {
         out.extend(names(list));
     }
     out.extend(names(between(class, "fun render(", "): Pcm")));
+    // The evidence bridge is public to binding conformance even though its arguments are JNI plumbing, not options.
+    out.extend(
+        kotlin_entries(&kt)
+            .into_iter()
+            .filter(|entry| entry.item == "renderStreamEvidence")
+            .flat_map(|entry| entry.names),
+    );
+    out.sort();
+    out.dedup();
+    out
+}
+
+pub fn dart_names() -> Vec<String> {
+    let mut out: Vec<String> = dart_entries(&read("apps/flutter/lib/ggtts.dart"))
+        .into_iter()
+        .flat_map(|entry| entry.names)
+        .collect();
     out.sort();
     out.dedup();
     out
@@ -249,6 +283,7 @@ pub fn surfaces() -> Vec<(Surface, Vec<String>)> {
         (Surface::Python, python_names()),
         (Surface::C, c_names()),
         (Surface::Kotlin, kotlin_names()),
+        (Surface::Dart, dart_names()),
     ]
 }
 
@@ -370,6 +405,24 @@ pub fn kotlin_entries(kt: &str) -> Vec<Entry> {
         .collect()
 }
 
+/// The closing parenthesis for an opening parenthesis, accounting for nested callback types.
+fn matching_paren_close(src: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (offset, c) in src[open..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The public constructor and methods of the Dart Ggtts binding, in source order.
 pub fn dart_entries(src: &str) -> Vec<Entry> {
     let class = between(src, "class Ggtts {", "\n}\n");
@@ -384,13 +437,13 @@ pub fn dart_entries(src: &str) -> Vec<Entry> {
             continue;
         }
         let Some(open) = decl.find('(') else { continue };
-        while !decl[open + 1..].contains(')') {
+        while matching_paren_close(&decl, open).is_none() {
             let Some(next) = lines.next() else {
                 panic!("unclosed Dart declaration: {decl}")
             };
             decl.push_str(next.trim());
         }
-        let close = decl[open + 1..].find(')').unwrap() + open + 1;
+        let close = matching_paren_close(&decl, open).unwrap();
         let item = param_name(&decl[..open]);
         if item.starts_with('_') {
             continue;
@@ -402,6 +455,14 @@ pub fn dart_entries(src: &str) -> Vec<Entry> {
         });
     }
     out
+}
+
+#[test]
+fn dart_reader_keeps_nested_callback_types_inside_parameter() {
+    let src = "class Ggtts {\n  void renderStream(\n    int handle,\n    String text,\n    Map<String, Object?>? options,\n    bool Function(Pcm) onPiece,\n  ) {}\n}\n";
+    let entries = dart_entries(src);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].line(), "dart renderStream: handle, text, options, onPiece");
 }
 
 #[test]

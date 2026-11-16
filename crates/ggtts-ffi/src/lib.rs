@@ -1476,6 +1476,9 @@ mod cancellation_ffi_tests {
         fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
             self.inner.decode(codes)
         }
+        fn supports_cancellation(&self) -> bool {
+            true
+        }
         fn generate_cancellable(
             &mut self,
             req: &ChunkRequest<'_>,
@@ -1516,6 +1519,12 @@ mod cancellation_ffi_tests {
                 None,
             ),
         );
+        let mut statement = std::ptr::null_mut();
+        assert_eq!(unsafe { ggtts_capabilities(handle, &mut statement) }, GGTTS_OK);
+        let json: serde_json::Value =
+            serde_json::from_str(unsafe { CStr::from_ptr(statement) }.to_str().unwrap()).unwrap();
+        assert_eq!(json["cancellable"], true);
+        unsafe { ggtts_string_free(statement) };
         let mut token = 0;
         assert_eq!(unsafe { ggtts_cancel_new(&mut token) }, GGTTS_OK);
         let worker = std::thread::spawn(move || {

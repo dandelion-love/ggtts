@@ -154,6 +154,10 @@ pub trait Engine {
     }
     /// Text to codec tokens for one chunk.
     fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError>;
+    /// Whether this loaded engine can poll a cancellation signal during generation.
+    fn supports_cancellation(&self) -> bool {
+        false
+    }
     /// Opt-in generation with a one-shot signal. Engines that cannot poll
     /// during generation return Unsupported without starting work.
     fn generate_cancellable(

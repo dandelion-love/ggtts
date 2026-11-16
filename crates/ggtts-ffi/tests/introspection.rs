@@ -50,6 +50,7 @@ fn key() -> Option<String> {
 fn expected(caps: &Capabilities, speakers: &[String]) -> Value {
     json!({
         "format": "ggtts-capabilities/1",
+        "cancellable": false,
         "family": caps.family,
         "instruction": caps.instruction,
         "no_instruction_why": caps.no_instruction_why,
@@ -246,7 +247,9 @@ fn a_qwen3_tts_models_capabilities_and_speakers() {
     caps.instruction = statement["instruction"].as_bool().unwrap();
     caps.no_instruction_why = statement["no_instruction_why"].as_str().map(str::to_string);
     assert_eq!(caps.instruction, caps.no_instruction_why.is_none(), "{statement}");
-    assert_eq!(statement, expected(&caps, &speakers));
+    let mut expected_statement = expected(&caps, &speakers);
+    expected_statement["cancellable"] = json!(true);
+    assert_eq!(statement, expected_statement);
     println!("qwen3-tts statement: {statement}");
     assert_eq!(ggtts_free(h), GGTTS_OK);
 }

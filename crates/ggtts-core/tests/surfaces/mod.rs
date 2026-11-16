@@ -27,6 +27,7 @@ pub enum Surface {
     Python,
     C,
     Kotlin,
+    Dart,
 }
 
 /// Spellings that are not options: commands, callbacks, out-parameters and handles.
@@ -73,12 +74,14 @@ pub fn spellings(d: &Descriptor, s: Surface) -> &'static [&'static str] {
         Surface::Python => d.python,
         Surface::C => d.c,
         Surface::Kotlin => d.kotlin,
+        Surface::Dart => d.c,
     }
 }
 
 /// Whether `name` on `surface` is spelled by a row of `table` or listed as not an option.
 pub fn known(table: &[Descriptor], surface: Surface, name: &str) -> bool {
-    NOT_OPTIONS.iter().any(|(s, n, _)| *s == surface && *n == name)
+    (surface == Surface::Dart && ["lib", "handle", "options"].contains(&name))
+        || NOT_OPTIONS.iter().any(|(s, n, _)| *s == surface && *n == name)
         || table.iter().any(|d| spellings(d, surface).contains(&name))
 }
 
@@ -264,6 +267,7 @@ impl Entry {
             Surface::Python => "python",
             Surface::C => "c",
             Surface::Kotlin => "kotlin",
+            Surface::Dart => "dart",
         };
         if self.names.is_empty() {
             format!("{s} {}:", self.item)
@@ -366,10 +370,60 @@ pub fn kotlin_entries(kt: &str) -> Vec<Entry> {
         .collect()
 }
 
-/// The three binding surfaces as they are in the tree.
+/// The public constructor and methods of the Dart Ggtts binding, in source order.
+pub fn dart_entries(src: &str) -> Vec<Entry> {
+    let class = between(src, "class Ggtts {", "\n}\n");
+    let mut out = Vec::new();
+    let mut lines = class.lines().peekable();
+    while let Some(line) = lines.next() {
+        if !line.starts_with("  ") || line.starts_with("   ") {
+            continue;
+        }
+        let mut decl = line.trim().to_string();
+        if decl.starts_with("//") || decl.starts_with("final ") {
+            continue;
+        }
+        let Some(open) = decl.find('(') else { continue };
+        while !decl[open + 1..].contains(')') {
+            let Some(next) = lines.next() else {
+                panic!("unclosed Dart declaration: {decl}")
+            };
+            decl.push_str(next.trim());
+        }
+        let close = decl[open + 1..].find(')').unwrap() + open + 1;
+        let item = param_name(&decl[..open]);
+        if item.starts_with('_') {
+            continue;
+        }
+        out.push(Entry {
+            surface: Surface::Dart,
+            item,
+            names: names(&decl[open + 1..close]),
+        });
+    }
+    out
+}
+
+#[test]
+fn dart_reader_finds_new_public_calls_and_parameters() {
+    let src = read("apps/flutter/lib/ggtts.dart");
+    let before = dart_entries(&src);
+    let planted = src.replacen(
+        "class Ggtts {",
+        "class Ggtts {\n  int added(int handle, String text) => 0;",
+        1,
+    );
+    assert_ne!(src, planted);
+    let after = dart_entries(&planted);
+    assert_eq!(after.len(), before.len() + 1);
+    assert!(after.iter().any(|e| e.line() == "dart added: handle, text"));
+}
+
+/// The binding surfaces as they are in the tree.
 pub fn binding_entries() -> Vec<Entry> {
     let mut out = pyo3_entries(&read("crates/ggtts-py/src/python.rs"));
     out.extend(header_entries(&read("crates/ggtts-ffi/include/ggtts.h")));
     out.extend(kotlin_entries(&read("android/ggtts/src/main/kotlin/ggtts/Ggtts.kt")));
+    out.extend(dart_entries(&read("apps/flutter/lib/ggtts.dart")));
     out
 }

@@ -45,12 +45,11 @@ object Flac {
         out.write(vh.bytes())
         out.write(comment)
 
-        var index = 0L
         var at = 0
         while (at < samples.size) {
             val n = minOf(BLOCK, samples.size - at)
             val h = Bits()
-            h.put(0x3ffe, 14); h.put(0, 1); h.put(0, 1)
+            h.put(0x3ffe, 14); h.put(0, 1); h.put(1, 1) // variable-block: header carries the first sample offset
             val sizeCode = if (n == BLOCK) 0b1100 else 0b0111
             h.put(sizeCode.toLong(), 4)
             h.put(0, 4) // sample rate from STREAMINFO
@@ -59,7 +58,7 @@ object Flac {
             h.put(0, 1)
             val frame = ByteArrayOutputStream()
             frame.write(h.bytes())
-            frame.write(utf8Number(index))
+            frame.write(utf8Number(at.toLong()))
             if (sizeCode == 0b0111) { frame.write((n - 1) shr 8); frame.write((n - 1) and 0xff) }
             frame.write(crc8(frame.toByteArray()).toInt())
             frame.write(0b0000_0010) // pad bit, VERBATIM subframe, no wasted bits
@@ -71,7 +70,6 @@ object Flac {
             frame.write(crc shr 8); frame.write(crc and 0xff)
             out.write(frame.toByteArray())
             at += n
-            index++
         }
         return out.toByteArray()
     }

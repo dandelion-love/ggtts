@@ -142,6 +142,10 @@ pub trait Engine {
     fn capabilities(&self) -> Capabilities {
         Capabilities::none(&self.info().family)
     }
+    /// Whether this engine supports selected talker-layer hooks.
+    fn supports_layer_hooks(&self) -> bool {
+        false
+    }
     /// The named speakers the loaded model has, as a speaker setting names them; empty for an engine or model with
     /// none (the default). [`crate::capabilities::statement`] reports them.
     fn speakers(&self) -> Vec<String> {
@@ -168,7 +172,7 @@ pub trait Engine {
         events: &mut dyn Events,
         hooks: &mut Hooks,
     ) -> Result<Generated, EngineError> {
-        if hooks.wants().any() {
+        if hooks.wants().any() || !hooks.layers().is_empty() {
             return Err(EngineError(format!(
                 "the {} engine exports nothing to tensor hooks",
                 self.info().family

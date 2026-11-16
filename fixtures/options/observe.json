@@ -4,6 +4,8 @@
     "trace": "read.trace.jsonl",
     "trace_level": 2,
     "codes": "read.codes.jsonl",
+    "layer_stats": "read.layers.json",
+    "layer_stats_layers": [0, 1],
     "timing_report": "timing.json",
     "duration_report": "durations.json",
     "log_level": "debug",

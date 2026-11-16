@@ -226,6 +226,12 @@ impl Engine for FakeEngine {
     ) -> Result<Generated, EngineError> {
         refuse_instruction(req, &self.info.family)?;
         ggtts_core::steer::refuse_steer(req, &self.info.family)?;
+        if !hooks.layers().is_empty() {
+            return Err(EngineError(format!(
+                "the {} engine does not support talker layer hooks",
+                self.info.family
+            )));
+        }
         let wants = hooks.wants();
         let text = req.text.to_string();
         let k = *self.draws.get(&text).unwrap_or(&0);

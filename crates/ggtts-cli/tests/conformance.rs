@@ -76,6 +76,7 @@ const STEER: &[&str] = &[
 ];
 const TRACE: &[&str] = &["observe.trace", "observe.trace_level"];
 const CODES: &[&str] = &["observe.codes"];
+const LAYER_STATS: &[&str] = &["observe.layer_stats", "observe.layer_stats_layers"];
 const REPORTS: &[&str] = &["observe.timing_report", "observe.duration_report"];
 const LOG: &[&str] = &["observe.log_level", "observe.log_format"];
 const INSTRUMENTS: &[&str] = &[
@@ -153,6 +154,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.seed_salt", "render.edge_s"], Carried),
             (TRACE, Carried),
             (CODES, Carried),
+            (LAYER_STATS, Carried),
             (REPORTS, Carried),
             (LOG, Carried),
             (INSTRUMENTS, Carried),
@@ -184,6 +186,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.edge_s"], Gap(180)),
             (TRACE, Carried),
             (CODES, Carried),
+            (LAYER_STATS, Carried),
             (REPORTS, Carried),
             (LOG, Carried),
             (INSTRUMENTS, Carried),
@@ -209,6 +212,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.measure_timings"], Refused(BOOK_TIMINGS)),
             (TRACE, Carried),
             (CODES, Refused(BOOK_CODES)),
+            (LAYER_STATS, Refused("a book writes no layer statistics artifact")),
             (REPORTS, Refused(BOOK_REPORTS)),
             (LOG, Refused(BOOK_LOG)),
             (INSTRUMENTS, Carried),
@@ -232,6 +236,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Carried),
             (CODES, Refused(NO_FILE)),
+            (LAYER_STATS, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
@@ -269,6 +274,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Carried),
             (CODES, Refused(NO_FILE)),
+            (LAYER_STATS, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
@@ -312,6 +318,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Refused(ANDROID_TRACE)),
             (CODES, Refused(NO_FILE)),
+            (LAYER_STATS, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
@@ -357,6 +364,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Refused(ANDROID_TRACE)),
             (CODES, Refused(NO_FILE)),
+            (LAYER_STATS, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
@@ -389,6 +397,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (STEER, Refused(PARITY_TOOL)),
             (TRACE, Refused(PARITY_TOOL)),
             (CODES, Refused(PARITY_TOOL)),
+            (LAYER_STATS, Refused(PARITY_TOOL)),
             (REPORTS, Refused(PARITY_TOOL)),
             (LOG, Refused(PARITY_TOOL)),
             (INSTRUMENTS, Refused(PARITY_TOOL)),
@@ -831,6 +840,216 @@ fn sampler_documents() -> Vec<(String, String)> {
 /// A probe: the front end, the option key, and what it saw.
 type Probe = (&'static str, String, Seen);
 
+#[test]
+fn layer_stats_requires_distinct_durable_artifacts() {
+    let missing = render(
+        "layer-stats-missing",
+        "text",
+        &["--layer-stats", "layers.json", "--layer-stats-layers", "0"],
+    );
+    assert!(
+        !missing.ok && missing.stderr.contains("requires --out, --trace and --codes"),
+        "{}",
+        missing.stderr
+    );
+    let collision = render(
+        "layer-stats-collision",
+        "text",
+        &[
+            "--layer-stats",
+            "layers.json",
+            "--layer-stats-layers",
+            "0",
+            "--trace",
+            "same.jsonl",
+            "--codes",
+            "same.jsonl",
+        ],
+    );
+    assert!(
+        !collision.ok && collision.stderr.contains("distinct output paths"),
+        "{}",
+        collision.stderr
+    );
+}
+
+#[test]
+fn layer_stats_refuses_flac_extension_and_stream_collisions_before_writes() {
+    let extension = render(
+        "layer-extension",
+        "text",
+        &[
+            "--out",
+            "audio.wav",
+            "--trace",
+            "audio.flac",
+            "--codes",
+            "c.jsonl",
+            "--layer-stats",
+            "layers.json",
+            "--layer-stats-layers",
+            "0",
+        ],
+    );
+    assert!(
+        !extension.ok && extension.stderr.contains("distinct output paths"),
+        "{}",
+        extension.stderr
+    );
+    assert!(!extension.dir.join("audio.flac").exists());
+    let stats = render(
+        "layer-extension-stats",
+        "text",
+        &[
+            "--out",
+            "audio.wav",
+            "--trace",
+            "t.jsonl",
+            "--codes",
+            "c.jsonl",
+            "--layer-stats",
+            "audio.flac",
+            "--layer-stats-layers",
+            "0",
+        ],
+    );
+    assert!(
+        !stats.ok && stats.stderr.contains("distinct output paths"),
+        "{}",
+        stats.stderr
+    );
+    assert!(!stats.dir.join("audio.flac").exists());
+    let stream = render(
+        "layer-stream",
+        "text",
+        &[
+            "--out",
+            "audio.wav",
+            "--trace",
+            "t.jsonl",
+            "--codes",
+            "c.jsonl",
+            "--stream",
+            "t.jsonl",
+            "--layer-stats",
+            "layers.json",
+            "--layer-stats-layers",
+            "0",
+        ],
+    );
+    assert!(
+        !stream.ok && stream.stderr.contains("distinct output paths"),
+        "{}",
+        stream.stderr
+    );
+    assert!(!stream.dir.join("t.jsonl").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn layer_stats_refuses_existing_symlink_and_hardlink_outputs() {
+    use std::os::unix::fs::symlink;
+    let dir = scratch("layer-existing-alias");
+    std::fs::write(dir.join("source"), b"preserve").unwrap();
+    symlink("source", dir.join("trace.jsonl")).unwrap();
+    std::fs::hard_link(dir.join("source"), dir.join("codes.jsonl")).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_ggtts-render"))
+        .current_dir(&dir)
+        .args([
+            "--engine",
+            "fake",
+            "--text",
+            "hello",
+            "--out",
+            "o.flac",
+            "--trace",
+            "trace.jsonl",
+            "--codes",
+            "codes.jsonl",
+            "--layer-stats",
+            "layers.json",
+            "--layer-stats-layers",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("already exists"));
+    assert_eq!(std::fs::read(dir.join("source")).unwrap(), b"preserve");
+    assert!(!dir.join("o.flac").exists());
+    std::fs::remove_file(dir.join("trace.jsonl")).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_ggtts-render"))
+        .current_dir(&dir)
+        .args([
+            "--engine",
+            "fake",
+            "--text",
+            "hello",
+            "--out",
+            "o.flac",
+            "--trace",
+            "trace.jsonl",
+            "--codes",
+            "codes.jsonl",
+            "--layer-stats",
+            "layers.json",
+            "--layer-stats-layers",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("already exists"));
+    assert_eq!(std::fs::read(dir.join("source")).unwrap(), b"preserve");
+    assert!(!dir.join("trace.jsonl").exists());
+}
+
+#[test]
+fn layer_stats_refuses_outputs_inside_instrument_report_directories() {
+    for (name, report, codes) in [
+        ("explicit", Some("reports"), "reports/duration.json"),
+        ("default", None, "o.report/duration.json"),
+    ] {
+        let dir = scratch(&format!("layer-report-{name}"));
+        let report_dir = dir.join(report.unwrap_or("o.report"));
+        std::fs::create_dir_all(&report_dir).unwrap();
+        let mut args = vec![
+            "--engine",
+            "fake",
+            "--text",
+            "hello",
+            "--out",
+            "o.flac",
+            "--trace",
+            "t.jsonl",
+            "--codes",
+            codes,
+            "--layer-stats",
+            "layers.json",
+            "--layer-stats-layers",
+            "0",
+            "--instrument",
+            "example",
+        ];
+        if let Some(report) = report {
+            args.extend(["--report", report]);
+        }
+        let out = Command::new(env!("CARGO_BIN_EXE_ggtts-render"))
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("outside the instrument report directory"),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!dir.join(codes).exists());
+        assert!(!dir.join("o.flac").exists());
+    }
+}
+
 fn render_probes() -> Vec<Probe> {
     let mut out = Vec::new();
     for mode in ["story", "text"] {
@@ -861,6 +1080,24 @@ fn render_probes() -> Vec<Probe> {
         push("observe.trace", by_file(&r, "t.jsonl", "--trace"));
         let r = render(&p("codes"), mode, &["--codes", "c.jsonl"]);
         push("observe.codes", by_file(&r, "c.jsonl", "--codes"));
+        // The fake engine refuses layer hooks; reaching that refusal proves both options reached the render.
+        let r = render(
+            &p("layer-stats"),
+            mode,
+            &[
+                "--layer-stats",
+                "layers.json",
+                "--layer-stats-layers",
+                "0",
+                "--trace",
+                "t.jsonl",
+                "--codes",
+                "c.jsonl",
+            ],
+        );
+        let seen = by_engine_refusal(&r, "does not support talker layer hooks");
+        push("observe.layer_stats", seen);
+        push("observe.layer_stats_layers", seen);
         let r = render(&p("level"), mode, &["--trace", "t.jsonl", "--trace-level", "2"]);
         let header = std::fs::read_to_string(r.dir.join("t.jsonl")).unwrap_or_default();
         push(
@@ -1234,6 +1471,10 @@ fn c_abi_document_probes(plain: usize) -> Vec<Probe> {
         ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
         ("observe.log_format", r#"{"observe": {"log_format": "json"}}"#),
         ("observe.codes", r#"{"observe": {"codes": "c.jsonl"}}"#),
+        (
+            "observe.layer_stats",
+            r#"{"observe": {"layer_stats": "layers.json", "layer_stats_layers": [0]}}"#,
+        ),
         ("output.out", r#"{"output": {"out": "o.flac"}}"#),
         ("render.judge", r#"{"render": {"judge": "asr-qwen,model=m"}}"#),
     ] {
@@ -1399,6 +1640,10 @@ fn python_probes() -> Vec<Probe> {
         ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
         ("observe.log_format", r#"{"observe": {"log_format": "json"}}"#),
         ("observe.codes", r#"{"observe": {"codes": "c.jsonl"}}"#),
+        (
+            "observe.layer_stats",
+            r#"{"observe": {"layer_stats": "layers.json", "layer_stats_layers": [0]}}"#,
+        ),
         ("output.out", r#"{"output": {"out": "o.flac"}}"#),
         ("render.judge", r#"{"render": {"judge": "asr-qwen,model=m"}}"#),
     ] {

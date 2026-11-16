@@ -22,6 +22,7 @@ pub mod fdpath;
 pub mod flac;
 pub mod gguf_meta;
 pub mod hooks;
+pub mod layer_stats;
 pub mod logging;
 pub mod numeric;
 pub mod options;

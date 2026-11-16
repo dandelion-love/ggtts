@@ -341,7 +341,9 @@ pub fn document_refusal(key: &str, at_load: bool) -> Option<&'static str> {
         ("observe", "log_level" | "log_format") => "a binding writes no log: its errors are its codes and messages",
         ("observe", "trace" | "trace_level") if at_load => "a trace is per render: give it in the render document",
         ("observe", "trace" | "trace_level") => return None,
-        ("observe", "codes") => "a binding hands the PCM to its caller and writes no file",
+        ("observe", "codes" | "layer_stats" | "layer_stats_layers") => {
+            "a binding hands the PCM to its caller and writes no file"
+        }
         ("observe", _) => "instruments are out-of-process programs the CLI runs on a finished file",
         ("output", "out" | "stream_format") => "a binding hands the PCM to its caller and writes no file",
         ("output", "stream" | "stream_raw" | "stream_level_seconds") if at_load => {

@@ -2,13 +2,14 @@
 //! [`generate`](Engine::generate), the codec decoder for [`decode`](Engine::decode), and the
 //! `story-v1/qwen3-tts` profile.
 
+use std::cell::RefCell;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use ggtts_core::capabilities::Capabilities;
 use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm};
-use ggtts_core::hooks::{Hooks, Step, StopTrace, TensorHook, Wants};
+use ggtts_core::hooks::{Hooks, LayerStep, Step, StopTrace, TensorHook, Wants};
 use ggtts_core::profile::Profile;
 use ggtts_core::steer::Steering;
 use ggtts_core::trace::{Event, Events, NullEvents};
@@ -330,6 +331,10 @@ impl Engine for Qwen3Tts {
         Some("qwen-sampler-weights/1")
     }
 
+    fn supports_layer_hooks(&self) -> bool {
+        true
+    }
+
     fn profile(&self) -> &Profile {
         &PROFILE
     }
@@ -350,6 +355,8 @@ impl Engine for Qwen3Tts {
     ) -> Result<Generated, EngineError> {
         let tracing = events.level() > 0;
         let wants = wants_of(hooks, self.trace.is_some() || tracing);
+        let layers = hooks.layers();
+        let hooks = RefCell::new(hooks);
         let trace = &mut self.trace;
         let mut on_step = |frame, token, p_stop, logits: Option<&[f32]>| {
             if tracing {
@@ -367,9 +374,23 @@ impl Engine for Qwen3Tts {
                     });
                 }
             }
-            deliver(req, trace, hooks, frame, token, p_stop, logits);
+            deliver(req, trace, &mut *hooks.borrow_mut(), frame, token, p_stop, logits);
         };
-        let g = self.talker.generate_steered(
+        let mut on_layer = |frame: i32, token: i32, layer: usize, is_eos: bool, values: &[f32]| {
+            let step = LayerStep {
+                chunk: req.chunk,
+                draw: req.draw,
+                seed: req.seed,
+                frame: frame as u32,
+                token: token as u32,
+                is_eos,
+                layer,
+                values,
+            };
+            hooks.borrow_mut().layer(&step);
+        };
+        let layer_callback = (!layers.is_empty()).then_some(&mut on_layer as &mut _);
+        let g = self.talker.generate_steered_with_layers(
             req.text,
             req.instruction(),
             &self.voice.speaker,
@@ -378,6 +399,8 @@ impl Engine for Qwen3Tts {
             self.voice.max_frames,
             self.voice.sampling,
             req.steer,
+            &layers,
+            layer_callback,
             wants.any().then_some((wants, &mut on_step as &mut _)),
             None,
         )?;

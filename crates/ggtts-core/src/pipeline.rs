@@ -286,6 +286,7 @@ pub struct Observers<'a> {
     /// Handed each chunk's kept draw and its codec tokens, as the engine generated them and the decoder read them,
     /// once the chunk is kept: the chunk's index, the kept draw and its codes. It reads only, so no sample changes.
     pub codes: Option<CodesObserver<'a>>,
+    pub layer_stats: Option<crate::layer_stats::LayerStats>,
 }
 
 impl<'a> Observers<'a> {
@@ -294,7 +295,13 @@ impl<'a> Observers<'a> {
             events,
             hooks,
             codes: None,
+            layer_stats: None,
         }
+    }
+
+    pub fn with_layer_stats(mut self, stats: crate::layer_stats::LayerStats) -> Self {
+        self.layer_stats = Some(stats);
+        self
     }
 
     /// The same observers, also handing each kept draw's codes to `codes`.
@@ -485,6 +492,13 @@ pub fn render_chunk(
     opts: &RenderOptions,
     obs: &mut Observers<'_>,
 ) -> Result<KeptChunk, RenderError> {
+    if !obs.hooks.layers().is_empty() && !engine.supports_layer_hooks() {
+        return Err(EngineError(format!(
+            "the {} engine does not support talker layer hooks",
+            engine.info().family
+        ))
+        .into());
+    }
     let events = &mut *obs.events;
     let tracing = events.level() > 0;
     let mut timings = opts.measure_timings.then(StageTimings::default);
@@ -574,6 +588,14 @@ pub fn render_chunk(
             stop: generated.stop,
         });
         let clean = j.verdict.is_none();
+        if let Some(stats) = &obs.layer_stats {
+            if !obs.hooks.failures().is_empty() {
+                return Err(EngineError("layer hook failed".into()).into());
+            }
+            stats
+                .end_draw(req.chunk, k, seed, generated.stop, clean || k == opts.redraw)
+                .map_err(|e| RenderError::Engine(EngineError(e)))?;
+        }
         kept = Some((pcm, generated.codes));
         if clean {
             break;
@@ -648,6 +670,9 @@ pub fn render_plan(
     obs: &mut Observers<'_>,
     output: Output<'_>,
 ) -> Result<Read, RenderError> {
+    if let Some(stats) = &obs.layer_stats {
+        stats.begin().map_err(|e| RenderError::Engine(EngineError(e)))?;
+    }
     let tracing = obs.events.level() > 0;
     let mut total_frames: u64 = 0;
     let mut timings = opts.measure_timings.then(StageTimings::default);
@@ -731,6 +756,9 @@ pub fn render_plan(
             frames: total_frames,
             seconds: samples.len() as f64 / f64::from(sample_rate),
         });
+    }
+    if let Some(stats) = &obs.layer_stats {
+        stats.complete().map_err(|e| RenderError::Engine(EngineError(e)))?;
     }
     Ok(Read {
         chunks: records,

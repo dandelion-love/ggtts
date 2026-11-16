@@ -168,6 +168,10 @@ impl Read {
 /// Why a story could not be rendered.
 #[derive(Debug)]
 pub enum RenderError {
+    /// An explicit cancellation was observed; no partial draw is delivered.
+    Stopped,
+    /// The engine or requested observation mode cannot honor cancellation.
+    CancelUnsupported,
     /// The plan has no chunks.
     Empty,
     Engine(EngineError),
@@ -185,6 +189,8 @@ pub enum RenderError {
 impl std::fmt::Display for RenderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            RenderError::Stopped => write!(f, "render stopped"),
+            RenderError::CancelUnsupported => write!(f, "cancellable generation is unsupported"),
             RenderError::Empty => write!(f, "the story has no chunk to render"),
             RenderError::Engine(e) => write!(f, "engine: {e}"),
             RenderError::Sink(e) => write!(f, "stream: {e}"),
@@ -287,6 +293,7 @@ pub struct Observers<'a> {
     /// once the chunk is kept: the chunk's index, the kept draw and its codes. It reads only, so no sample changes.
     pub codes: Option<CodesObserver<'a>>,
     pub layer_stats: Option<crate::layer_stats::LayerStats>,
+    pub cancel: Option<&'a crate::cancel::CancelSignal>,
 }
 
 impl<'a> Observers<'a> {
@@ -296,7 +303,14 @@ impl<'a> Observers<'a> {
             hooks,
             codes: None,
             layer_stats: None,
+            cancel: None,
         }
+    }
+
+    /// Use one explicit per-render signal for cancellable generation.
+    pub fn with_cancel(mut self, signal: &'a crate::cancel::CancelSignal) -> Self {
+        self.cancel = Some(signal);
+        self
     }
 
     pub fn with_layer_stats(mut self, stats: crate::layer_stats::LayerStats) -> Self {
@@ -535,6 +549,7 @@ fn render_chunk_inner(
         ))
         .into());
     }
+    let cancel = obs.cancel;
     let events = &mut *obs.events;
     let tracing = events.level() > 0;
     let mut timings = opts.measure_timings.then(StageTimings::default);
@@ -564,7 +579,24 @@ fn render_chunk_inner(
             });
         }
         let stage_start = (tracing || timings.is_some()).then(std::time::Instant::now);
-        let generated = engine.generate_hooked(&req, events, obs.hooks)?;
+        let generated = if let Some(signal) = cancel {
+            if signal.is_cancelled() {
+                return Err(RenderError::Stopped);
+            }
+            if tracing || !obs.hooks.is_empty() {
+                return Err(RenderError::CancelUnsupported);
+            }
+            match engine.generate_cancellable(&req, signal)? {
+                crate::cancel::CancelOutcome::Completed(generated) => generated,
+                crate::cancel::CancelOutcome::Stopped => return Err(RenderError::Stopped),
+                crate::cancel::CancelOutcome::Unsupported => return Err(RenderError::CancelUnsupported),
+            }
+        } else {
+            engine.generate_hooked(&req, events, obs.hooks)?
+        };
+        if cancel.is_some_and(|signal| signal.is_cancelled()) {
+            return Err(RenderError::Stopped);
+        }
         if stop_on_abort && generated.stop == Stop::Abort {
             return Err(EngineError("aborted draw cannot provide complete stream evidence".into()).into());
         }
@@ -577,6 +609,9 @@ fn render_chunk_inner(
         );
         let stage_start = (tracing || timings.is_some()).then(std::time::Instant::now);
         let pcm = engine.decode(&generated.codes)?;
+        if cancel.is_some_and(|signal| signal.is_cancelled()) {
+            return Err(RenderError::Stopped);
+        }
         stage_end(
             stage_start,
             "decode",
@@ -586,6 +621,9 @@ fn render_chunk_inner(
         );
         let stage_start = (tracing || timings.is_some()).then(std::time::Instant::now);
         let j = judge.judge(&profile, &pcm.samples, pcm.sample_rate, text);
+        if cancel.is_some_and(|signal| signal.is_cancelled()) {
+            return Err(RenderError::Stopped);
+        }
         let reading = judge.take_reading();
         if let Some(e) = judge.fault() {
             return Err(RenderError::Judge(e));
@@ -635,12 +673,18 @@ fn render_chunk_inner(
                 .end_draw(req.chunk, k, seed, generated.stop, clean || k == opts.redraw)
                 .map_err(|e| RenderError::Engine(EngineError(e)))?;
         }
+        if cancel.is_some_and(|signal| signal.is_cancelled()) {
+            return Err(RenderError::Stopped);
+        }
         kept = Some((pcm, generated.codes));
         if clean {
             break;
         }
     }
     let (pcm, codes) = kept.expect("at least one draw");
+    if cancel.is_some_and(|signal| signal.is_cancelled()) {
+        return Err(RenderError::Stopped);
+    }
     if let Some(observe) = obs.codes.as_mut() {
         observe(index, draws.last().expect("at least one draw"), &codes);
     }
@@ -766,6 +810,9 @@ pub fn render_plan(
             let gap = gap_samples(&profile, &c.punct, c.last_in_para, sample_rate);
             samples.resize(samples.len() + gap, 0.0);
         }
+        if obs.cancel.is_some_and(|signal| signal.is_cancelled()) {
+            return Err(RenderError::Stopped);
+        }
         if let Some(s) = stream.as_mut() {
             s.push(
                 PieceIdentity {
@@ -804,6 +851,9 @@ pub fn render_plan(
         });
     }
     // A read shorter than the hold leaves here, levelled over all of it.
+    if obs.cancel.is_some_and(|signal| signal.is_cancelled()) {
+        return Err(RenderError::Stopped);
+    }
     let stream = stream.map(|s| s.finish(sample_rate)).transpose()?;
 
     let gain = if opts.level {

@@ -66,7 +66,8 @@ pub const GGTTS_ERR_BUSY: i32 = binding::ERR_BUSY;
 /// The C-ABI's version: 1 was the surface before [`ggtts_load_with`]; 2 added it and [`GgttsSettings`]; 3 added the
 /// struct's `device`, `cache_dir` and `allow_download` fields; 4 added [`ggtts_load_opts`] and [`ggtts_render_opts`];
 /// 5 added [`ggtts_options_schema`], [`ggtts_capabilities`], [`ggtts_string_free`] and [`ggtts_last_error_key`].
-pub const GGTTS_ABI_VERSION: u32 = 5;
+/// Version 6 adds one-shot cancellation tokens and cancellable stream rendering.
+pub const GGTTS_ABI_VERSION: u32 = 6;
 
 /// The settings [`ggtts_load_with`] takes, by pointer. **Frozen at version 3**: no field is ever added; a new option
 /// goes in an options document ([`ggtts_load_opts`], [`ggtts_render_opts`]). `size` is `sizeof(ggtts_settings)` as the caller's header
@@ -858,6 +859,98 @@ pub unsafe extern "C" fn ggtts_render_opts(
     })
 }
 
+/// Allocate a one-shot cancellation token. The returned ID is never reused.
+///
+/// # Safety
+/// out must point to writable u64 storage.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_cancel_new(out: *mut u64) -> i32 {
+    guard(|| {
+        if out.is_null() {
+            return Err((GGTTS_ERR_ARG, "cancel output is NULL".into()));
+        }
+        let id = cancel_registry()
+            .create()
+            .ok_or((GGTTS_ERR_ARG, "cancel IDs exhausted".into()))?;
+        unsafe {
+            *out = id;
+        }
+        Ok(())
+    })
+}
+
+static CANCEL_REGISTRY: OnceLock<ggtts_core::cancel::CancelRegistry> = OnceLock::new();
+fn cancel_registry() -> &'static ggtts_core::cancel::CancelRegistry {
+    CANCEL_REGISTRY.get_or_init(Default::default)
+}
+
+/// Signal cancellation without acquiring an engine's render lock.
+#[no_mangle]
+pub extern "C" fn ggtts_cancel_signal(id: u64) -> i32 {
+    guard(|| {
+        if cancel_registry().cancel(id) {
+            Ok(())
+        } else {
+            Err((GGTTS_ERR_HANDLE, "unknown cancellation token".into()))
+        }
+    })
+}
+
+/// Remove a token. An in-flight render retains its own signal clone.
+#[no_mangle]
+pub extern "C" fn ggtts_cancel_free(id: u64) -> i32 {
+    guard(|| {
+        if cancel_registry().remove(id) {
+            Ok(())
+        } else {
+            Err((GGTTS_ERR_HANDLE, "unknown cancellation token".into()))
+        }
+    })
+}
+
+/// Stream a render document with an explicit cancellation token.
+/// Unsupported engines refuse before generation; cancellation is ERR_STOPPED.
+///
+/// # Safety
+/// Strings must be valid NUL-terminated pointers; callback must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_render_opts_cancellable(
+    handle: u64,
+    text: *const c_char,
+    options_json: *const c_char,
+    cancel_id: u64,
+    on_piece: Option<PieceFn>,
+    user: *mut c_void,
+) -> i32 {
+    guard(|| {
+        let signal = cancel_registry()
+            .get(cancel_id)
+            .ok_or((GGTTS_ERR_HANDLE, "unknown cancellation token".into()))?;
+        let text = unsafe { arg(text, "text") }?;
+        let doc = match unsafe { opt_arg(options_json, "options_json") }? {
+            None => Options::default(),
+            Some(json) => Options::from_render_json(json).map_err(refused)?,
+        };
+        binding::check_document(&doc, false)?;
+        let callback = on_piece.ok_or((GGTTS_ERR_ARG, "stream callback is NULL".into()))?;
+        let base = defaults().get_or_insert_with(HashMap::new).get(&handle).cloned();
+        let mut o = match base {
+            Some(base) => binding::layer_render(&base, doc)?,
+            None => doc,
+        };
+        if let Some(cache) = load_cache().get_or_insert_with(HashMap::new).get(&handle) {
+            cache.apply(&mut o);
+        }
+        with_engine(handle, |engine, instruction| {
+            if o.render.instruction.is_none() {
+                o.render.instruction = instruction.map(String::from);
+            }
+            let mut sink = |samples: &[f32], rate: u32| callback(user, samples.as_ptr(), samples.len(), rate) == 0;
+            binding::render_document_cancellable(engine, text, &o, &mut sink, &signal).map(|_| ())
+        })
+    })
+}
+
 /// Free a buffer [`ggtts_render`] returned.
 ///
 /// # Safety
@@ -1352,5 +1445,113 @@ mod default_model_tests {
         let (code, msg) = unsafe { Settings::from_c(&bad) }.unwrap_err();
         assert_eq!(code, GGTTS_ERR_ARG);
         assert_eq!(msg, "settings.allow_download must be 0 or 1, not 2");
+    }
+}
+
+#[cfg(test)]
+mod cancellation_ffi_tests {
+    use super::*;
+    use ggtts_core::cancel::{CancelOutcome, CancelSignal};
+    use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm};
+    use ggtts_core::profile::Profile;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    struct Blocking {
+        inner: ggtts_fake::FakeEngine,
+        started: mpsc::Sender<()>,
+        first: bool,
+    }
+
+    impl Engine for Blocking {
+        fn info(&self) -> &EngineInfo {
+            self.inner.info()
+        }
+        fn profile(&self) -> &Profile {
+            self.inner.profile()
+        }
+        fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
+            self.inner.generate(req)
+        }
+        fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
+            self.inner.decode(codes)
+        }
+        fn generate_cancellable(
+            &mut self,
+            req: &ChunkRequest<'_>,
+            signal: &CancelSignal,
+        ) -> Result<CancelOutcome<Generated>, EngineError> {
+            if self.first {
+                self.first = false;
+                self.started.send(()).unwrap();
+                while !signal.is_cancelled() {
+                    std::thread::yield_now();
+                }
+                Ok(CancelOutcome::Stopped)
+            } else {
+                self.inner.generate(req).map(CancelOutcome::Completed)
+            }
+        }
+    }
+
+    extern "C" fn accept(_: *mut c_void, _: *const f32, _: usize, _: u32) -> i32 {
+        0
+    }
+
+    #[test]
+    fn ffi_signal_interrupts_busy_generation_and_next_render_is_independent() {
+        let (started, waiting) = mpsc::channel();
+        let handle = register(
+            &Options::default(),
+            Held::checked(
+                Box::new(Blocking {
+                    inner: ggtts_fake::FakeEngine::default(),
+                    started,
+                    first: true,
+                }),
+                None,
+            ),
+        );
+        let mut token = 0;
+        assert_eq!(unsafe { ggtts_cancel_new(&mut token) }, GGTTS_OK);
+        let worker = std::thread::spawn(move || {
+            let text = CString::new("test.").unwrap();
+            unsafe {
+                ggtts_render_opts_cancellable(
+                    handle,
+                    text.as_ptr(),
+                    std::ptr::null(),
+                    token,
+                    Some(accept),
+                    std::ptr::null_mut(),
+                )
+            }
+        });
+        waiting
+            .recv_timeout(Duration::from_secs(5))
+            .expect("render did not start");
+        assert_eq!(ggtts_cancel_signal(token), GGTTS_OK);
+        assert_eq!(ggtts_cancel_free(token), GGTTS_OK);
+        assert_eq!(worker.join().unwrap(), GGTTS_ERR_STOPPED);
+
+        let mut next = 0;
+        assert_eq!(unsafe { ggtts_cancel_new(&mut next) }, GGTTS_OK);
+        assert_ne!(token, next);
+        let text = CString::new("test.").unwrap();
+        assert_eq!(
+            unsafe {
+                ggtts_render_opts_cancellable(
+                    handle,
+                    text.as_ptr(),
+                    std::ptr::null(),
+                    next,
+                    Some(accept),
+                    std::ptr::null_mut(),
+                )
+            },
+            GGTTS_OK
+        );
+        assert_eq!(ggtts_cancel_free(next), GGTTS_OK);
+        assert_eq!(ggtts_free(handle), GGTTS_OK);
     }
 }

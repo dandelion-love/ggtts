@@ -1004,10 +1004,81 @@ impl Talker {
         sampling: Sampling,
         steer: Option<&Steering>,
         layer_indices: &[usize],
+        on_layer: Option<&mut LayerHook<'_>>,
+        on_step: Option<(Wants, &mut StepHook<'_>)>,
+        on_frame: Option<&mut FrameHook<'_>>,
+    ) -> Result<Generation, EngineError> {
+        match self.generate_steered_inner(
+            text,
+            instruction,
+            speaker,
+            language_id,
+            seed,
+            max_len,
+            sampling,
+            steer,
+            layer_indices,
+            on_layer,
+            on_step,
+            on_frame,
+            None,
+        )? {
+            ggtts_core::cancel::CancelOutcome::Completed(result) => Ok(result),
+            _ => unreachable!("uncancellable generation cannot stop or be unsupported"),
+        }
+    }
+
+    /// Polls between graphs and frames; an active graph must return first.
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate_cancellable(
+        &mut self,
+        text: &str,
+        instruction: Option<&str>,
+        speaker: &str,
+        language_id: i32,
+        seed: u64,
+        max_len: i32,
+        sampling: Sampling,
+        steer: Option<&Steering>,
+        signal: &ggtts_core::cancel::CancelSignal,
+    ) -> Result<ggtts_core::cancel::CancelOutcome<Generation>, EngineError> {
+        self.generate_steered_inner(
+            text,
+            instruction,
+            speaker,
+            language_id,
+            seed,
+            max_len,
+            sampling,
+            steer,
+            &[],
+            None,
+            None,
+            None,
+            Some(signal),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn generate_steered_inner(
+        &mut self,
+        text: &str,
+        instruction: Option<&str>,
+        speaker: &str,
+        language_id: i32,
+        seed: u64,
+        max_len: i32,
+        sampling: Sampling,
+        steer: Option<&Steering>,
+        layer_indices: &[usize],
         mut on_layer: Option<&mut LayerHook<'_>>,
         mut on_step: Option<(Wants, &mut StepHook<'_>)>,
         mut on_frame: Option<&mut FrameHook<'_>>,
-    ) -> Result<Generation, EngineError> {
+        cancel: Option<&ggtts_core::cancel::CancelSignal>,
+    ) -> Result<ggtts_core::cancel::CancelOutcome<Generation>, EngineError> {
+        if cancel.is_some_and(|signal| signal.is_cancelled()) {
+            return Ok(ggtts_core::cancel::CancelOutcome::Stopped);
+        }
         sampling.check()?;
         if !layer_indices.is_empty() && on_layer.is_none() {
             return Err(err("talker layer outputs were requested without a layer callback"));
@@ -1033,10 +1104,10 @@ impl Talker {
             return Err(err("need at least 4 text tokens"));
         }
         if max_len <= 0 {
-            return Ok(Generation {
+            return Ok(ggtts_core::cancel::CancelOutcome::Completed(Generation {
                 codes: Vec::new(),
                 stop: Stop::Cap,
-            });
+            }));
         }
 
         // The prompt (`build_prefill_graph`, non-ICL branch).
@@ -1139,6 +1210,9 @@ impl Talker {
         let mut frame_codes = vec![0i32; c.n_codebooks as usize];
         let mut stop = Stop::Cap;
         for frame in 0..max_len {
+            if cancel.is_some_and(|signal| signal.is_cancelled()) {
+                return Ok(ggtts_core::cancel::CancelOutcome::Stopped);
+            }
             for i in suppress_start..c.codec_vocab_size {
                 if i != c.codec_eos_id {
                     logits[i as usize] = f32::NEG_INFINITY;
@@ -1197,7 +1271,12 @@ impl Talker {
             let thinking = next >= c.codec_think_id && next <= c.codec_think_eos_id;
             frame_codes[0] = next;
             history.push(next);
-            let rest = self.predict_codes(&hidden, next, sampling, &mut rng)?;
+            let Some(rest) = self.predict_codes(&hidden, next, sampling, &mut rng, cancel)? else {
+                return Ok(ggtts_core::cancel::CancelOutcome::Stopped);
+            };
+            if cancel.is_some_and(|signal| signal.is_cancelled()) {
+                return Ok(ggtts_core::cancel::CancelOutcome::Stopped);
+            }
             frame_codes[1..].copy_from_slice(&rest);
             if !thinking {
                 out.extend_from_slice(&frame_codes);
@@ -1223,7 +1302,13 @@ impl Talker {
             layer_outputs = outputs;
             n_past += 1;
         }
-        Ok(Generation { codes: out, stop })
+        if cancel.is_some_and(|signal| signal.is_cancelled()) {
+            return Ok(ggtts_core::cancel::CancelOutcome::Stopped);
+        }
+        Ok(ggtts_core::cancel::CancelOutcome::Completed(Generation {
+            codes: out,
+            stop,
+        }))
     }
 
     fn new_cache(&self, ty: g::ggml_type, ne: [i64; 3], n_layers: usize, n_ctx: i64) -> Result<Cache, EngineError> {
@@ -1978,7 +2063,11 @@ impl Talker {
         cb0: i32,
         sampling: Sampling,
         rng: &mut Philox,
-    ) -> Result<Vec<i32>, EngineError> {
+        cancel: Option<&ggtts_core::cancel::CancelSignal>,
+    ) -> Result<Option<Vec<i32>>, EngineError> {
+        if cancel.is_some_and(|signal| signal.is_cancelled()) {
+            return Ok(None);
+        }
         let c = self.config.clone();
         let h = c.hidden_size as i64;
         let vocab = c.cp_vocab_size as usize;
@@ -2034,6 +2123,9 @@ impl Talker {
         out[0] = sample_top_k_p(&mut logits, sampling.subtalker(), rng);
 
         for step in 1..out.len() {
+            if cancel.is_some_and(|signal| signal.is_cancelled()) {
+                return Ok(None);
+            }
             let n_past = step as i32 + 1;
             // SAFETY: as in talker_prefill.
             let mut logits = unsafe {
@@ -2074,7 +2166,10 @@ impl Talker {
             };
             out[step] = sample_top_k_p(&mut logits, sampling.subtalker(), rng);
         }
-        Ok(out)
+        if cancel.is_some_and(|signal| signal.is_cancelled()) {
+            return Ok(None);
+        }
+        Ok(Some(out))
     }
 }
 

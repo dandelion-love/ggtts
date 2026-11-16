@@ -20,7 +20,7 @@ import java.security.MessageDigest
 import java.util.UUID
 
 /**
- * Two-invocation MediaStore crash test. Run prepare, force-stop ggtts.demo, then run recover and cleanup.
+ * Two-invocation MediaStore crash test. Run prepare, force-stop the isolated ggtts.demo.recovery target, then recover and cleanup.
  * All audio is a generated tone; queue journals and media rows have random names and are deleted by exact URI.
  */
 @RunWith(AndroidJUnit4::class)
@@ -48,7 +48,7 @@ class MediaStoreRecoveryInstrumentationTest {
         assertFalse("refusing to overwrite an existing test fixture", fixture.exists())
         val target = instrumentation.targetContext.applicationContext
         val activityManager = target.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        assertFalse("close the app and wait for its render service to stop before the test",
+        assertFalse("isolated recovery app must have no active render service before the test",
             activityManager.getRunningServices(Int.MAX_VALUE).any { it.service?.className == RenderService::class.java.name })
         val resolver = target.contentResolver
         val collection = MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
@@ -143,7 +143,7 @@ class MediaStoreRecoveryInstrumentationTest {
         }
     }
 
-    /** Run only after testPrepare... returned and the host force-stopped ggtts.demo. */
+    /** Run only after testPrepare... returned and the host force-stopped the isolated recovery target. */
     @Test fun recoverAfterForceStopWithoutDuplicates() {
         assertTrue("pending-row inclusion requires Android 11+", Build.VERSION.SDK_INT >= 30)
         assertTrue("run the preparation phase first", fixture.isFile)

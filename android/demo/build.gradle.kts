@@ -6,19 +6,21 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val recoveryTestBuild = providers.gradleProperty("ggtts.recoveryTest").orNull == "true"
+
 android {
     namespace = "ggtts.demo"
     compileSdk = 35
     ndkVersion = "27.2.12479018"
 
     defaultConfig {
-        applicationId = "ggtts.demo"
+        applicationId = if (recoveryTestBuild) "ggtts.demo.recovery" else "ggtts.demo"
         minSdk = 24
         targetSdk = 35
         versionCode = 1
         versionName = "0.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        testApplicationId = "ggtts.demo.recoverytest"
+        testApplicationId = if (recoveryTestBuild) "ggtts.demo.recovery.test" else "ggtts.demo.recoverytest"
         ndk { abiFilters += "arm64-v8a" }
     }
 

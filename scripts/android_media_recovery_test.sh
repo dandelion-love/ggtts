@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # On-device MediaStore recovery validation. Requires an explicitly leased, idle device:
-#   ANDROID_HOME=... ANDROID_SERIAL=<serial> scripts/android_media_recovery_test.sh
-# It force-stops ggtts.demo between phases. Close ggtts first; do not run during a read or queue job.
-# It never clears app data and installs only missing packages; a different installed APK is refused.
+#   Build with -Pggtts.recoveryTest=true, then set ANDROID_HOME and ANDROID_SERIAL before running.
+# It force-stops only the isolated ggtts.demo.recovery target between phases.
+# It never installs, force-stops, or clears data for ggtts.demo; mismatched test APKs are refused.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 if [ -z "${ANDROID_HOME:-}" ]; then echo "set ANDROID_HOME" >&2; exit 2; fi
 if [ -z "${ANDROID_SERIAL:-}" ]; then echo "set ANDROID_SERIAL to the leased device serial; no implicit device selection" >&2; exit 2; fi
 adb="$ANDROID_HOME/platform-tools/adb"
+aapt="$ANDROID_HOME/build-tools/35.0.0/aapt"
 app="$root/android/demo/build/outputs/apk/debug/demo-debug.apk"
 test_apk="$root/android/demo/build/outputs/apk/androidTest/debug/demo-debug-androidTest.apk"
-test_package="ggtts.demo.recoverytest"
+target_package="ggtts.demo.recovery"
+test_package="ggtts.demo.recovery.test"
 component="$test_package/androidx.test.runner.AndroidJUnitRunner"
 class="ggtts.demo.MediaStoreRecoveryInstrumentationTest"
 fixture_id=$(tr -d '-' < /proc/sys/kernel/random/uuid)
@@ -70,26 +72,47 @@ on_exit() {
     fi
     exit "$original"
 }
-trap on_exit EXIT
 
-test -f "$app" || { echo "build the debug app first: $app" >&2; exit 1; }
-test -f "$test_apk" || { echo "build the test APK first: $test_apk" >&2; exit 1; }
+test -f "$app" || { echo "build the isolated debug app first with -Pggtts.recoveryTest=true: $app" >&2; exit 1; }
+test -f "$test_apk" || { echo "build the isolated test APK first with -Pggtts.recoveryTest=true: $test_apk" >&2; exit 1; }
+test -x "$aapt" || { echo "Android build-tools 35.0.0 aapt is required to verify package identities: $aapt" >&2; exit 1; }
 
-services=$("$adb" -s "$ANDROID_SERIAL" shell dumpsys activity services ggtts.demo 2>&1)
-if grep -q 'ggtts.demo/.RenderService' <<<"$services"; then
-    echo "refusing to continue while ggtts RenderService is active" >&2
+app_id=$("$aapt" dump badging "$app" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -n 1)
+test_id=$("$aapt" dump badging "$test_apk" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -n 1)
+if [ "$app_id" != "$target_package" ]; then
+    echo "refusing install: app APK package is '$app_id', expected '$target_package'" >&2
+    exit 1
+fi
+if [ "$test_id" != "$test_package" ]; then
+    echo "refusing install: test APK package is '$test_id', expected '$test_package'" >&2
+    exit 1
+fi
+instrumentation_manifest=$("$aapt" dump xmltree "$test_apk" AndroidManifest.xml)
+if ! grep -F "android:targetPackage(0x01010021)=\"$target_package\" " <<<"$instrumentation_manifest" >/dev/null; then
+    echo "refusing install: instrumentation target is not '$target_package'" >&2
+    exit 1
+fi
+if ! grep -F 'android:name(0x01010003)="androidx.test.runner.AndroidJUnitRunner"' <<<"$instrumentation_manifest" >/dev/null; then
+    echo "refusing install: test APK does not declare the expected AndroidJUnitRunner" >&2
+    exit 1
+fi
+
+services=$("$adb" -s "$ANDROID_SERIAL" shell dumpsys activity services "$target_package" 2>&1)
+if grep -q "$target_package/.RenderService" <<<"$services"; then
+    echo "refusing to continue while isolated recovery RenderService is active" >&2
     exit 1
 fi
 activities=$("$adb" -s "$ANDROID_SERIAL" shell dumpsys activity activities 2>&1)
-if grep -E 'ResumedActivity|topResumedActivity|mResumedActivity' <<<"$activities" | grep -q 'ggtts.demo/'; then
-    echo "refusing to continue while ggtts is visible" >&2
+if grep -E 'ResumedActivity|topResumedActivity|mResumedActivity' <<<"$activities" | grep -q "$target_package/"; then
+    echo "refusing to continue while isolated recovery app is visible" >&2
     exit 1
 fi
 
-install_if_absent_or_identical "$app" ggtts.demo
+install_if_absent_or_identical "$app" "$target_package"
 install_if_absent_or_identical "$test_apk" "$test_package"
+trap on_exit EXIT
 run_phase preparePublishedPendingMissingAndUnrelatedPending
-"$adb" -s "$ANDROID_SERIAL" shell am force-stop ggtts.demo
+"$adb" -s "$ANDROID_SERIAL" shell am force-stop "$target_package"
 run_phase recoverAfterForceStopWithoutDuplicates
 cleanup
 trap - EXIT

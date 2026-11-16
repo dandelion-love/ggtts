@@ -129,6 +129,10 @@ static void write_frames(float* out, ma_uint32 frame_count, ma_uint32 read_frame
     }
 }
 
+#ifdef GGTTS_TEST_OBSERVE_CALLBACK
+extern "C" void ggtts_test_observe(const float*, unsigned);
+#endif
+
 void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frame_count)
 {
 #ifdef MP_AUDIO_STREAM_DEBUG
@@ -148,6 +152,9 @@ void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uin
     ma_uint32 read_frames = rb_read(out, frame_count);
     // fade in the read frames, and fade out the rest if any
     write_frames(out, frame_count, read_frames);
+#ifdef GGTTS_TEST_OBSERVE_CALLBACK
+    ggtts_test_observe(out, read_frames * _ctx->channels);
+#endif
 
     if (read_frames < frame_count) {
         _ctx->is_exhaust = true;

@@ -29,6 +29,10 @@ android {
         versionName = flutter.versionName
     }
 
+    testOptions.unitTests.all {
+        it.systemProperty("ggtts.repoRoot", rootProject.projectDir.parentFile.parentFile.parentFile.absolutePath)
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.
@@ -46,4 +50,9 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
 }

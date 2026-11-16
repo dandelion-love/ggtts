@@ -21,6 +21,11 @@ class MainActivity : FlutterActivity() {
     private var active = false
     private var closeActive: (() -> Unit)? = null
 
+    override fun onStop() {
+        AndroidPlaybackBridge.interruptActive()
+        super.onStop()
+    }
+
     override fun onDestroy() {
         modelPicker.close()
         closeActive?.invoke()
@@ -34,6 +39,7 @@ class MainActivity : FlutterActivity() {
                 if (call.method != "pick") result.notImplemented()
                 else modelPicker.pick(call.argument<String>("kind"), result)
             }
+        AndroidPlaybackBridge.configure(applicationContext)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "ggtts/shared_feedback")
             .setMethodCallHandler { call, result ->
                 if (call.method != "open") { result.notImplemented(); return@setMethodCallHandler }

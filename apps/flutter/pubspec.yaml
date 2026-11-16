@@ -37,6 +37,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   crypto: ^3.0.7
   ffi: ^2.2.0
+  jni: ^1.1.2
   audioplayers: ^6.8.1
   path_provider: ^2.1.6
   mp_audio_stream:

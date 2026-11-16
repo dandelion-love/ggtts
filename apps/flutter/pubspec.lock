@@ -302,7 +302,7 @@ packages:
     source: hosted
     version: "0.20.3"
   jni:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: jni
       sha256: "2e91e6087291affd10b31b6c872f3e3ac7dc5d93b51b5ba485d930c8f08bde6c"

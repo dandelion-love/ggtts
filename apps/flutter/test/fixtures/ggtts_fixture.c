@@ -2,10 +2,15 @@
 #include <stdlib.h>
 #include <string.h>
 typedef int32_t (*piece_fn)(void *, const float *, size_t, uint32_t);
-uint32_t ggtts_abi_version(void) { return 6; }
+uint32_t ggtts_abi_version(void) { return 7; }
 const char *ggtts_options_schema(void) { return "{\"schema\":\"fixture\"}"; }
 const char *ggtts_last_error(void) { return "stopped"; }
 int32_t ggtts_load_opts(const char *doc, uint64_t *h) { (void)doc; *h = 7; return 0; }
+int32_t ggtts_load_opts_with_progress(const char *doc, uint64_t *h,
+    void (*progress)(const char *, void *), void *ctx) {
+  if (progress) { char text[] = "fixture: 1 of 2 MB (50%), 1.0 MB/s"; progress(text, ctx); memset(text, 0, sizeof(text)); }
+  return ggtts_load_opts(doc, h);
+}
 int32_t ggtts_free(uint64_t h) { (void)h; return 0; }
 void ggtts_pcm_free(float *pcm, size_t n) { (void)n; free(pcm); }
 void ggtts_string_free(char *s) { free(s); }

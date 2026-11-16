@@ -1,8 +1,46 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:ggtts_app/main.dart';
 
 void main() {
+  testWidgets('shows numeric download progress without private notices', (
+    tester,
+  ) async {
+    final done = Completer<Map<String, Object?>>();
+    late void Function(String) notice;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ReadPage(
+          loadSettings: () async => {},
+          prepareWithProgress: (_, onProgress) {
+            notice = onProgress;
+            return done.future;
+          },
+        ),
+      ),
+    );
+    await tester.tap(find.text('Prepare model (download if needed)'));
+    await tester.pump();
+    notice('downloading https://secret.invalid into /private/path');
+    await tester.pump();
+    expect(find.textContaining('secret.invalid'), findsNothing);
+    expect(find.textContaining('/private/path'), findsNothing);
+    notice('model.gguf: 50 of 100 MB (50%), 1.0 MB/s');
+    await tester.pump();
+    expect(
+      find.text('Downloading: 50 of 100 MB (50%), 1.0 MB/s'),
+      findsOneWidget,
+    );
+    done.complete({
+      'schema': <String, Object?>{},
+      'capabilities': <String, Object?>{},
+    });
+    await tester.pumpAndSettle();
+    expect(find.text('Model ready.'), findsOneWidget);
+  });
+
   testWidgets(
     'model capabilities populate voices and disable unavailable steering',
     (tester) async {

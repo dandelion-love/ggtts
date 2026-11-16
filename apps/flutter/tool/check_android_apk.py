@@ -9,7 +9,7 @@ import zipfile
 
 ABIS = {"arm64-v8a": 183, "x86_64": 62}
 REQUIRED = frozenset({
-    "ggtts_abi_version", "ggtts_load_opts", "ggtts_render_opts", "ggtts_pcm_free",
+    "ggtts_abi_version", "ggtts_load_opts", "ggtts_load_opts_with_progress", "ggtts_render_opts", "ggtts_pcm_free",
     "ggtts_free", "ggtts_last_error", "ggtts_options_schema", "ggtts_capabilities",
     "ggtts_string_free",
 })

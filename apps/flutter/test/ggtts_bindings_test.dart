@@ -39,6 +39,34 @@ void main() {
     });
   });
 
+  test(
+    'load progress copies transient native messages and cannot alter load',
+    () {
+      final messages = <String>[];
+      final handle = ggtts.loadWithProgress({}, (notice) {
+        messages.add(notice);
+        throw StateError('sink failed');
+      });
+      expect(handle, 7);
+      expect(messages, ['fixture: 1 of 2 MB (50%), 1.0 MB/s']);
+    },
+  );
+
+  test('old native ABI refuses progress before symbol lookup', () {
+    final source = File('test/fixtures/ggtts_fixture.c')
+        .readAsStringSync()
+        .replaceFirst('return 7;', 'return 6;');
+    final path = '${temp.path}/old.c';
+    final lib = '${temp.path}/old.so';
+    File(path).writeAsStringSync(source);
+    expect(
+      Process.runSync('cc', ['-shared', '-fPIC', path, '-o', lib]).exitCode,
+      0,
+    );
+    final old = Ggtts(DynamicLibrary.open(lib));
+    expect(() => old.loadWithProgress({}, (_) {}), throwsUnsupportedError);
+  });
+
   test('copies each synchronous piece before native buffer reuse', () {
     final pieces = <Pcm>[];
     ggtts.renderStream(7, 'text', null, (piece) {

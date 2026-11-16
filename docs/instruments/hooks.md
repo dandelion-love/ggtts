@@ -100,8 +100,8 @@ its backend, build and seed.
 - **Tensor tier.** A hook receives shared references, so safe Rust cannot write through them; that is a convention,
   not a proof. What enforces read-only is the identity check: the same requests with and without the hook must give
   identical tokens and audio, and a planted hook that writes one value must turn it red (#32, #34). A tensor hook
-  runs in the engine's process and thread, so it has no timeout or crash boundary: a panic, hang or abort in a hook
-  is the render's (#30 documents and tests each).
+  runs in the engine's process and thread, so it has no timeout or crash boundary. A panic is caught and recorded;
+  a hang or abort affects the render (#30 documents and tests each).
 - **Level 0 computes nothing.** With tracing off the sink is `NullEvents`, and neither the pipeline nor an engine
   computes an instrument value.
 
@@ -125,3 +125,26 @@ against it, and a test checks that on every recorded fake-engine render (`crates
 
 The kept draws' full codes (all 16 codebooks on Qwen3-TTS), for any render and without tracing, are written by
 `--codes FILE`: [docs/codes.md](../codes.md).
+
+## Qwen talker layer capture
+
+A Rust tensor hook can request zero-based talker layer indices. For each selected
+layer, it receives the block output after the residual addition and any steering
+addition, before final normalization. Step 0 is the final prefill position;
+subsequent steps use the decode position. Callbacks include thinking steps and
+the EOS step when EOS is sampled. Hook requests are unioned and out-of-range
+indices are refused.
+
+The callback receives borrowed f32 values. They are valid only during that
+callback: copy or aggregate them before returning. The graph marks selected
+outputs for retention and reads them into host vectors after graph computation,
+before resetting the scheduler and freeing the graph context. With no selected
+layers, this path marks and reads no layer outputs. Hook panics are recorded in
+`Hooks::failures` and disable the affected hook; callers must finish hooks and
+check failures before treating their observations as complete.
+
+The CPU capture path has been exercised for identity and alignment; its
+performance overhead has not been measured. The same backend tensor-read API is
+used for CUDA, but layer capture on CUDA has not been run or validated. Its
+device transfer and synchronization behavior and overhead are unmeasured; do
+not infer CUDA identity or performance from the CPU results.

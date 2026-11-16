@@ -1,6 +1,8 @@
 #![cfg(feature = "ggml")]
 //! CPU identity and selection checks; set GGTTS_TWO_LAYER_TALKER to a two-layer fixture.
+//! Set GGTTS_DEVICE=cuda to run the same test on CUDA (compiled with the cuda feature).
 use ggtts_core::steer::{write_safetensors, SteerFile, Steering};
+use ggtts_qwen3_tts::cpu::Device;
 use ggtts_qwen3_tts::talker::{language_id, Generation, Sampling, Talker};
 const SEED: u64 = 20260905;
 const STEPS: i32 = 4;
@@ -30,7 +32,9 @@ fn run(t: &mut Talker, layers: &[usize], steer: Option<&Steering>) -> (Generatio
 #[ignore = "requires GGTTS_TWO_LAYER_TALKER synthetic two-layer fixture"]
 fn selected_layers_match_individual_captures_without_changing_generation() {
     let path = std::env::var("GGTTS_TWO_LAYER_TALKER").expect("set GGTTS_TWO_LAYER_TALKER");
-    let mut talker = Talker::load(std::path::Path::new(&path), 4).unwrap();
+    let device_name = std::env::var("GGTTS_DEVICE").unwrap_or_else(|_| "cpu".into());
+    let device = Device::parse(&device_name).expect("GGTTS_DEVICE must be cpu or cuda");
+    let mut talker = Talker::load_on(std::path::Path::new(&path), 4, device).unwrap();
     #[cfg(feature = "plant")]
     if let Ok(name) = std::env::var("GGTTS_LAYER_TEST_PLANT") {
         use ggtts_qwen3_tts::talker::Plant;
@@ -43,18 +47,13 @@ fn selected_layers_match_individual_captures_without_changing_generation() {
             other => panic!("unknown test plant: {other}"),
         };
         let reference = if name == "omit-eos" {
-            let mut eos = Talker::load_planted(
-                std::path::Path::new(&path),
-                4,
-                Default::default(),
-                Plant::ForceEosAfterFirstDecode,
-            )
-            .unwrap();
+            let mut eos =
+                Talker::load_planted(std::path::Path::new(&path), 4, device, Plant::ForceEosAfterFirstDecode).unwrap();
             run(&mut eos, &[0, 1], None)
         } else {
             run(&mut talker, &[0, 1], None)
         };
-        let mut subject = Talker::load_planted(std::path::Path::new(&path), 4, Default::default(), plant).unwrap();
+        let mut subject = Talker::load_planted(std::path::Path::new(&path), 4, device, plant).unwrap();
         let observed = run(&mut subject, &[0, 1], None);
         assert_eq!(observed.0, reference.0, "capture changed generated codes or stop");
         assert_eq!(observed.1, reference.1, "capture records differ from reference");
@@ -99,40 +98,25 @@ fn selected_layers_match_individual_captures_without_changing_generation() {
     #[cfg(feature = "plant")]
     {
         use ggtts_qwen3_tts::talker::Plant;
-        let mut planted = Talker::load_planted(
-            std::path::Path::new(&path),
-            4,
-            Default::default(),
-            Plant::LayerCaptureShift,
-        )
-        .unwrap();
+        let mut planted =
+            Talker::load_planted(std::path::Path::new(&path), 4, device, Plant::LayerCaptureShift).unwrap();
         let (_, shifted) = run(&mut planted, &[0, 1], None);
         assert_ne!(rows, shifted, "layer/step shift plant must be detected");
         for plant in [Plant::LayerCaptureWrongPrefillRow, Plant::LayerCaptureMissingExport] {
-            let mut bad = Talker::load_planted(std::path::Path::new(&path), 4, Default::default(), plant).unwrap();
+            let mut bad = Talker::load_planted(std::path::Path::new(&path), 4, device, plant).unwrap();
             let (_, observed) = run(&mut bad, &[0, 1], None);
             assert_ne!(rows, observed, "planted capture defect must be detected: {plant:?}");
         }
-        let mut eos = Talker::load_planted(
-            std::path::Path::new(&path),
-            4,
-            Default::default(),
-            Plant::ForceEosAfterFirstDecode,
-        )
-        .unwrap();
+        let mut eos =
+            Talker::load_planted(std::path::Path::new(&path), 4, device, Plant::ForceEosAfterFirstDecode).unwrap();
         let (_, complete) = run(&mut eos, &[0, 1], None);
         assert_eq!(
             complete.iter().filter(|r| r.3).count(),
             2,
             "EOS must be captured once per layer"
         );
-        let mut omitted = Talker::load_planted(
-            std::path::Path::new(&path),
-            4,
-            Default::default(),
-            Plant::LayerCaptureOmitEos,
-        )
-        .unwrap();
+        let mut omitted =
+            Talker::load_planted(std::path::Path::new(&path), 4, device, Plant::LayerCaptureOmitEos).unwrap();
         let (_, bad) = run(&mut omitted, &[0, 1], None);
         assert_ne!(complete, bad, "omitted EOS must be detected");
         assert_eq!(bad.iter().filter(|r| r.3).count(), 0);

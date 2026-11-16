@@ -46,3 +46,20 @@ EXPORT int64_t ma_stream_control_state(void);
 
 // Always releases the device; returns -1 when its explicit stop failed.
 EXPORT int64_t ma_stream_uninit_checked(void);
+
+// Reserve before asynchronous work. Zero means busy/exhausted. Every later
+// operation names that reservation; release it even after cancellation.
+// Stop waits for in-progress device initialization holding the admission lock;
+// it does not preempt that native operation.
+EXPORT uint64_t ma_stream_session_new(void);
+EXPORT int64_t ma_stream_session_init(uint64_t id, int64_t max_buffer_size, int64_t keep_buffer_size, int64_t channels, int64_t sample_rate, int64_t fade_on_exhaust);
+EXPORT int64_t ma_stream_session_pause(uint64_t id);
+EXPORT int64_t ma_stream_session_resume(uint64_t id);
+EXPORT int64_t ma_stream_session_stop(uint64_t id);
+EXPORT int64_t ma_stream_session_uninit(uint64_t id);
+
+EXPORT int64_t ma_stream_session_push(uint64_t id, float *buf, int64_t length);
+EXPORT int64_t ma_stream_session_software_empty(uint64_t id);
+
+// -1 invalid, 0 reserved, 1 running, 2 paused, 3 stopped.
+EXPORT int64_t ma_stream_session_state(uint64_t id);

@@ -64,6 +64,76 @@ fn flac_samples(bytes: Vec<u8>) -> (u32, Vec<i16>) {
     (rate, samples)
 }
 
+fn encode_base64(bytes: &[u8]) -> String {
+    const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        out.push(A[((n >> 18) & 63) as usize] as char);
+        out.push(A[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            A[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            A[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+fn rejected_draw_flac(opts: &RenderOptions) -> Vec<u8> {
+    let seeds = StorySeeds {
+        story_id: STORY_ID,
+        salt: &opts.seed_salt,
+    };
+    let mut engine = FakeEngine::new(HashMap::from([(FIRST.to_string(), vec![1.2])]), HashMap::new());
+    let req = ChunkRequest {
+        text: FIRST,
+        seed: seeds.seed(0, FIRST, 0),
+        chunk: 0,
+        draw: 0,
+        instruction: None,
+        steer: None,
+    };
+    let generated = engine.generate(&req).unwrap();
+    let decoded = engine.decode(&generated.codes).unwrap();
+    let trim = trim_edges_f32(engine.profile(), &decoded.samples, decoded.sample_rate, opts.edge_s);
+    let pcm: Vec<i16> = decoded.samples[trim.start_sample..trim.end_sample]
+        .iter()
+        .map(|&x| to_i16(x))
+        .collect();
+    encode_flac(&pcm, decoded.sample_rate).unwrap()
+}
+
+fn assert_page_matches_output(
+    read: &ggtts_core::pipeline::Read,
+    bundle: &ggtts_core::feedback::FeedbackBundle,
+    output: &[i16],
+) {
+    for (i, chunk) in read.chunks.iter().enumerate() {
+        let uri = bundle.input["items"][i]["audio"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("data:audio/flac;base64,")
+            .unwrap();
+        let (_, clip) = flac_samples(decode_base64(uri));
+        let record = &bundle.provenance["chunks"][i];
+        let start = record["start"].as_u64().unwrap() as usize;
+        let end = record["end"].as_u64().unwrap() as usize;
+        assert_eq!((start, end), chunk.span, "provenance span for chunk {i}");
+        assert!(
+            clip == output[start..end],
+            "page chunk {i} must match final output span"
+        );
+    }
+}
+
 #[test]
 fn redrawn_chunks_are_kept_and_match_final_levelled_output_spans() {
     let (_engine, opts, read) = rendered();
@@ -162,4 +232,15 @@ fn missing_or_conflicting_read_evidence_is_refused() {
         from_read(&no_samples, "render-read", json!({"engine":"fake"})).is_err(),
         "missing final samples"
     );
+}
+
+#[test]
+#[should_panic(expected = "page chunk 0 must match final output span")]
+fn sample_identity_oracle_fails_when_rejected_draw_replaces_kept_audio() {
+    let (_engine, opts, read) = rendered();
+    let mut planted = from_read(&read, "render-read", json!({"engine":"fake"})).unwrap();
+    let rejected = rejected_draw_flac(&opts);
+    planted.input["items"][0]["audio"] = format!("data:audio/flac;base64,{}", encode_base64(&rejected)).into();
+    let output: Vec<i16> = read.samples.iter().map(|&x| to_i16(x)).collect();
+    assert_page_matches_output(&read, &planted, &output);
 }

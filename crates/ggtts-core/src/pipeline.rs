@@ -670,6 +670,9 @@ pub fn render_plan(
     obs: &mut Observers<'_>,
     output: Output<'_>,
 ) -> Result<Read, RenderError> {
+    if let Some(stats) = &obs.layer_stats {
+        stats.begin().map_err(|e| RenderError::Engine(EngineError(e)))?;
+    }
     let tracing = obs.events.level() > 0;
     let mut total_frames: u64 = 0;
     let mut timings = opts.measure_timings.then(StageTimings::default);
@@ -753,6 +756,9 @@ pub fn render_plan(
             frames: total_frames,
             seconds: samples.len() as f64 / f64::from(sample_rate),
         });
+    }
+    if let Some(stats) = &obs.layer_stats {
+        stats.complete().map_err(|e| RenderError::Engine(EngineError(e)))?;
     }
     Ok(Read {
         chunks: records,

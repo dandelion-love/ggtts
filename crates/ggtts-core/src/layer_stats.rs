@@ -29,12 +29,15 @@ struct Active {
     key: (u32, u32, u64),
     layers: BTreeMap<usize, Acc>,
     steps: u64,
+    token: u32,
+    step_eos: Option<bool>,
 }
 struct State {
     selected: Vec<usize>,
     active: Option<Active>,
     records: Vec<LayerRecord>,
     error: Option<String>,
+    complete: bool,
 }
 /// Cloneable hook and pipeline handle. Only one draw's activation sums are retained.
 #[derive(Clone)]
@@ -51,6 +54,7 @@ impl LayerStats {
             active: None,
             records: Vec::new(),
             error: None,
+            complete: false,
         }))))
     }
     /// Retrieve records only after a successful render and after checking hook failures.
@@ -59,10 +63,30 @@ impl LayerStats {
         if let Some(e) = &s.error {
             return Err(e.clone());
         }
-        if s.active.is_some() {
+        if s.active.is_some() || !s.complete {
             return Err("incomplete layer capture".into());
         }
         Ok(s.records.clone())
+    }
+    pub(crate) fn begin(&self) -> Result<(), String> {
+        let mut s = self.0.borrow_mut();
+        if s.complete || !s.records.is_empty() || s.active.is_some() || s.error.is_some() {
+            s.complete = false;
+            s.error = Some("layer stats cannot be reused for another render".into());
+            return Err("layer stats cannot be reused for another render".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn complete(&self) -> Result<(), String> {
+        let mut s = self.0.borrow_mut();
+        if let Some(e) = &s.error {
+            return Err(e.clone());
+        }
+        if s.active.is_some() {
+            return Err("incomplete layer capture".into());
+        }
+        s.complete = true;
+        Ok(())
     }
     pub(crate) fn end_draw(&self, chunk: u32, draw: u32, seed: u64, stop: Stop, keep: bool) -> Result<(), String> {
         let mut s = self.0.borrow_mut();
@@ -105,7 +129,7 @@ impl LayerStats {
                 chunk,
                 draw,
                 seed,
-                stop: if stop == Stop::Eos { "eos" } else { "cap" },
+                stop: stop.as_str(),
                 layers,
             });
         }
@@ -136,6 +160,8 @@ impl TensorHook for LayerStats {
                 key,
                 layers: BTreeMap::new(),
                 steps: 0,
+                token: 0,
+                step_eos: None,
             });
         }
         let a = s.active.as_mut().unwrap();
@@ -144,6 +170,8 @@ impl TensorHook for LayerStats {
             return;
         }
         a.steps += 1;
+        a.token = step.token;
+        a.step_eos = None;
     }
     fn layer(&mut self, step: &LayerStep<'_>) {
         let mut s = self.0.borrow_mut();
@@ -156,6 +184,8 @@ impl TensorHook for LayerStats {
                 key,
                 layers: BTreeMap::new(),
                 steps: 0,
+                token: 0,
+                step_eos: None,
             });
         }
         let a = s.active.as_mut().unwrap();
@@ -163,6 +193,15 @@ impl TensorHook for LayerStats {
             s.error = Some("overlapping layer draws".into());
             return;
         }
+        if a.steps == 0
+            || step.frame as u64 + 1 != a.steps
+            || step.token != a.token
+            || a.step_eos.is_some_and(|e| e != step.is_eos)
+        {
+            s.error = Some("layer step token, position or EOS mismatch".into());
+            return;
+        }
+        a.step_eos = Some(step.is_eos);
         let entry = a.layers.entry(step.layer).or_insert_with(|| Acc {
             count: 0,
             sum: vec![0.; step.values.len()],
@@ -240,6 +279,7 @@ mod tests {
             step(&mut x, 1, frame as u32, 1, v);
         }
         x.end_draw(0, 1, 11, Stop::Cap, true).unwrap();
+        x.complete().unwrap();
         let records = x.records().unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].draw, 1);
@@ -258,6 +298,46 @@ mod tests {
         step(&mut y, 0, 0, 0, &[1.]);
         tick(&mut y, 0, 1);
         assert!(y.end_draw(0, 0, 10, Stop::Cap, true).is_err());
+        assert!(y.records().is_err());
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    fn deliver(token: u32, eos0: bool, eos1: bool) -> LayerStats {
+        let mut x = LayerStats::new(vec![0, 1]).unwrap();
+        x.step(&Step {
+            chunk: 0,
+            draw: 0,
+            seed: 1,
+            frame: 0,
+            token: 5,
+            p_stop: Some(0.),
+            p_stop_semantics: None,
+            logits: None,
+        });
+        for (layer, eos) in [(0, eos0), (1, eos1)] {
+            x.layer(&LayerStep {
+                chunk: 0,
+                draw: 0,
+                seed: 1,
+                frame: 0,
+                token,
+                layer,
+                is_eos: eos,
+                values: &[1.],
+            });
+        }
+        x
+    }
+    #[test]
+    fn token_and_eos_disagreement_remain_incomplete() {
+        let x = deliver(6, false, false);
+        assert!(x.end_draw(0, 0, 1, Stop::Cap, true).is_err());
+        assert!(x.records().is_err());
+        let y = deliver(5, false, true);
+        assert!(y.end_draw(0, 0, 1, Stop::Eos, true).is_err());
         assert!(y.records().is_err());
     }
 }

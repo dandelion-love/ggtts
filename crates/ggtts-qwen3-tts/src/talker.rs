@@ -31,6 +31,9 @@ use crate::gguf::{set_name, Gguf, Weights};
 use crate::instruct;
 use crate::tokenizer::Tokenizer;
 
+// Codec logits, hidden state, and selected layer outputs.
+type TalkerOutput = (Vec<f32>, Vec<f32>, Vec<(usize, Vec<f32>)>);
+
 type T = *mut g::ggml_tensor;
 type Ctx = *mut g::ggml_context;
 
@@ -1633,7 +1636,7 @@ impl Talker {
         n_tokens: i64,
         steer: &[(usize, Vec<f32>)],
         layer_indices: &[usize],
-    ) -> Result<(Vec<f32>, Vec<f32>, Vec<(usize, Vec<f32>)>), EngineError> {
+    ) -> Result<TalkerOutput, EngineError> {
         self.talker_prefill_rows(embd, n_tokens, steer, false, layer_indices)
     }
 
@@ -1645,7 +1648,7 @@ impl Talker {
         steer: &[(usize, Vec<f32>)],
         all_rows: bool,
         layer_indices: &[usize],
-    ) -> Result<(Vec<f32>, Vec<f32>, Vec<(usize, Vec<f32>)>), EngineError> {
+    ) -> Result<TalkerOutput, EngineError> {
         let h = self.config.hidden_size as i64;
         let vocab = self.config.codec_vocab_size as usize;
         let n_kv_pad = self.n_kv_pad(0, n_tokens);
@@ -1809,7 +1812,7 @@ impl Talker {
         n_past: i64,
         steer: &[(usize, Vec<f32>)],
         layer_indices: &[usize],
-    ) -> Result<(Vec<f32>, Vec<f32>, Vec<(usize, Vec<f32>)>), EngineError> {
+    ) -> Result<TalkerOutput, EngineError> {
         let h = self.config.hidden_size as i64;
         let vocab = self.config.codec_vocab_size as usize;
         let ncb = self.config.n_codebooks as i64;

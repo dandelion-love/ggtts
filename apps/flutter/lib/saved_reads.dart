@@ -94,6 +94,17 @@ class SavedReads {
   Future<bool> _regularFile(String path) async =>
       await _type(path) == FileSystemEntityType.file;
 
+  Future<bool> _ready(String path) async {
+    if (!await _regularFile(path)) return false;
+    try {
+      return await File(path).readAsString() == 'ready';
+    } on FileSystemException {
+      return false;
+    } on FormatException {
+      return false;
+    }
+  }
+
   Future<Map<String, dynamic>> _metadata(String path, String id) async {
     if (!await _regularFile(path)) {
       throw FormatException('metadata unavailable');
@@ -120,7 +131,7 @@ class SavedReads {
       final match = pattern.firstMatch(name);
       if (match == null) continue;
       final token = match.group(1)!;
-      if (!await _regularFile('${entity.path}${Platform.pathSeparator}ready')) {
+      if (!await _ready('${entity.path}${Platform.pathSeparator}ready')) {
         continue;
       }
       try {
@@ -164,7 +175,7 @@ class SavedReads {
       throw StateError('pending read is not complete');
     }
     await _requireDirectory(staging.path);
-    if (!await _regularFile('${staging.path}${Platform.pathSeparator}ready')) {
+    if (!await _ready('${staging.path}${Platform.pathSeparator}ready')) {
       throw StateError('pending read is not complete');
     }
     final metadata = await _metadata(
@@ -296,8 +307,12 @@ class PendingRead {
   String finish() {
     if (_finished || _done) throw StateError('read is already finished');
     _writer.finish();
-    File('${_staging.path}${Platform.pathSeparator}ready')
-        .writeAsStringSync('ready', flush: true);
+    final marker = File('${_staging.path}${Platform.pathSeparator}ready');
+    final temporary = File(
+      '${_staging.path}${Platform.pathSeparator}.ready.tmp',
+    );
+    temporary.writeAsStringSync('ready', flush: true);
+    temporary.renameSync(marker.path);
     _finished = true;
     return _id;
   }

@@ -38,7 +38,8 @@ dependencies:
   ffi: ^2.2.0
   audioplayers: ^6.8.1
   path_provider: ^2.1.6
-  mp_audio_stream: 0.3.0
+  mp_audio_stream:
+    path: vendor/mp_audio_stream
 
 dev_dependencies:
   flutter_test:

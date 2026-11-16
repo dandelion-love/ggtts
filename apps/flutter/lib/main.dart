@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'ggtts.dart';
 import 'read_options.dart';
+import 'read_worker_outcome.dart';
 import 'pcm_queue.dart';
 import 'settings_page.dart';
 import 'settings_store.dart';
@@ -56,62 +57,62 @@ void renderWorker(Map<String, Object?> request) async {
   var audioReady = false;
   int? sampleRate;
   PcmQueue? queue;
-  var completed = false;
   PendingRead? pending;
-  String? token;
-  try {
-    pending = await SavedReads(Directory(request['library'] as String)).begin(
-      text: request['text'] as String,
-      options: Map<String, Object?>.from(request['options'] as Map),
-    );
-    final engine = Ggtts(openGgtts());
-    final handle = engine.load(
-      Map<String, Object?>.from(request['load'] as Map),
-    );
-    try {
-      engine.renderStream(
-        handle,
-        request['text'] as String,
-        Map<String, Object?>.from(request['render'] as Map),
-        (piece) {
-          if (!audioReady) {
-            if (audio.init(
-                  sampleRate: piece.rate,
-                  channels: 1,
-                  bufferMilliSec: 5000,
-                  waitingBufferMilliSec: 0,
-                ) !=
-                0) {
-              throw StateError('Could not initialize audio playback.');
-            }
-            audioReady = true;
-            sampleRate = piece.rate;
-            queue = PcmQueue(audio.push);
-            audio.resume();
-          }
-          if (sampleRate != piece.rate) {
-            throw StateError('Audio sample rate changed during the read.');
-          }
-          pending!.append(piece);
-          queue!.add(piece.samples);
-          port.send({'samples': piece.samples.length, 'rate': piece.rate});
-          return true;
-        },
+  await runReadOutcome(
+    generate: () async {
+      pending = await SavedReads(Directory(request['library'] as String)).begin(
+        text: request['text'] as String,
+        options: Map<String, Object?>.from(request['options'] as Map),
       );
-      // At most five seconds remains in the native ring after the last write.
-      if (audioReady) sleep(const Duration(milliseconds: 5100));
-    } finally {
-      engine.free(handle);
-    }
-    token = pending.finish();
-    completed = true;
-  } catch (error) {
-    await pending?.discard();
-    port.send({'error': error.toString()});
-  } finally {
-    if (audioReady) audio.uninit();
-  }
-  if (completed) port.send({'done': true, 'token': token});
+      final engine = Ggtts(openGgtts());
+      final handle = engine.load(
+        Map<String, Object?>.from(request['load'] as Map),
+      );
+      try {
+        engine.renderStream(
+          handle,
+          request['text'] as String,
+          Map<String, Object?>.from(request['render'] as Map),
+          (piece) {
+            if (!audioReady) {
+              if (audio.init(
+                    sampleRate: piece.rate,
+                    channels: 1,
+                    bufferMilliSec: 5000,
+                    waitingBufferMilliSec: 0,
+                  ) !=
+                  0) {
+                throw StateError('Could not initialize audio playback.');
+              }
+              audioReady = true;
+              sampleRate = piece.rate;
+              queue = PcmQueue(audio.push);
+              audio.resume();
+            }
+            if (sampleRate != piece.rate) {
+              throw StateError('Audio sample rate changed during the read.');
+            }
+            pending!.append(piece);
+            queue!.add(piece.samples);
+            port.send({'samples': piece.samples.length, 'rate': piece.rate});
+            return true;
+          },
+        );
+        // At most five seconds remains in the native ring after the last write.
+        if (audioReady) sleep(const Duration(milliseconds: 5100));
+      } finally {
+        engine.free(handle);
+      }
+    },
+    cleanup: () {
+      if (audioReady) audio.uninit();
+    },
+    finish: () => pending!.finish(),
+    discard: () async {
+      await pending?.discard();
+    },
+    send: port.send,
+  );
 }
 
 class ReadPage extends StatefulWidget {

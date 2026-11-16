@@ -242,4 +242,31 @@ void main() {
       );
     }
   }, skip: !Platform.isLinux ? 'ffmpeg verification runs on Linux' : false);
+  test(
+    'partial ready markers and temporary markers never permit recovery',
+    () async {
+      final pending = await library.begin(text: 'partial', options: {});
+      pending.append(Pcm(Float32List.fromList([0.1]), 24000));
+      final stage = temp.listSync().whereType<Directory>().single;
+      final name = stage.uri.pathSegments.where((part) => part.isNotEmpty).last;
+      final token = name.substring(1, name.length - 4);
+      final tmp = File('${stage.path}/.ready.tmp');
+      final ready = File('${stage.path}/ready');
+      await tmp.writeAsString('ready');
+      expect(await library.completedPending(), isEmpty);
+      await expectLater(library.publish(token), throwsStateError);
+      await ready.writeAsString('rea');
+      expect(await library.completedPending(), isEmpty);
+      await expectLater(library.publish(token), throwsStateError);
+      await ready.writeAsBytes([0xff, 0xfe]);
+      final healthy = await library.begin(text: 'healthy', options: {});
+      healthy.append(Pcm(Float32List.fromList([0.2]), 24000));
+      final healthyToken = healthy.finish();
+      expect((await library.completedPending()).map((p) => p.token), [
+        healthyToken,
+      ]);
+      await expectLater(library.publish(token), throwsStateError);
+      await pending.discard();
+    },
+  );
 }

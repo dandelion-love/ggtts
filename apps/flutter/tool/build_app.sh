@@ -4,11 +4,13 @@ set -euo pipefail
 app=$(cd "$(dirname "$0")/.." && pwd)
 case "${1:-}" in
   linux)
+    "$app/tool/test_audio_control.sh"
     "$app/tool/build_native.sh" linux
     cd "$app"
     flutter build linux --release
     ;;
   android)
+    "$app/tool/test_audio_control.sh"
     "$app/tool/build_native.sh" android
     cd "$app"
     flutter build apk --release --target-platform android-arm64,android-x64

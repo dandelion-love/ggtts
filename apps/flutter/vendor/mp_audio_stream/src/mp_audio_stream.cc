@@ -3,6 +3,22 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "./miniaudio/miniaudio.h"
 
+#ifdef GGTTS_TEST_ANDROID_FALLBACK
+// Test-only fake device boundary; production always calls miniaudio directly.
+extern "C" ma_result ggtts_test_ma_device_init(ma_context*, const ma_device_config*, ma_device*);
+extern "C" ma_result ggtts_test_ma_device_start(ma_device*);
+extern "C" ma_result ggtts_test_ma_device_stop(ma_device*);
+extern "C" void ggtts_test_ma_device_uninit(ma_device*);
+extern "C" ma_result ggtts_test_ma_context_init(const ma_backend*, ma_uint32, const ma_context_config*, ma_context*);
+extern "C" ma_result ggtts_test_ma_context_uninit(ma_context*);
+#define ma_device_init ggtts_test_ma_device_init
+#define ma_device_start ggtts_test_ma_device_start
+#define ma_device_stop ggtts_test_ma_device_stop
+#define ma_device_uninit ggtts_test_ma_device_uninit
+#define ma_context_init ggtts_test_ma_context_init
+#define ma_context_uninit ggtts_test_ma_context_uninit
+#endif
+
 #include "mp_audio_stream.h"
 #include "ggtts_audio_control.h"
 #include <mutex>
@@ -38,6 +54,10 @@ typedef struct {
 
 _ctx_t * _ctx = NULL;
 static bool device_initialized = false;
+#if defined(__ANDROID__) || defined(GGTTS_TEST_ANDROID_FALLBACK)
+static ma_context opensl_context;
+static bool opensl_context_initialized = false;
+#endif
 
 class ControlledDevice : public GgttsAudioControl::Backend {
 public:
@@ -49,6 +69,12 @@ public:
             ma_device_uninit(&_ctx->device);
             device_initialized = false;
         }
+#if defined(__ANDROID__) || defined(GGTTS_TEST_ANDROID_FALLBACK)
+        if (opensl_context_initialized) {
+            ma_context_uninit(&opensl_context);
+            opensl_context_initialized = false;
+        }
+#endif
         if (_ctx && _ctx->rb_initialized) {
             ma_pcm_rb_uninit(&_ctx->rb);
             _ctx->rb_initialized = false;
@@ -242,8 +268,7 @@ static int64_t init_locked(int64_t max_buffer_size, int64_t keep_buffer_size, in
         _ctx->exhaust_count = 0;
         _ctx->full_count = 0;
     } else if (device_initialized) {
-        ma_device_uninit(&_ctx->device);
-        device_initialized = false;
+        controlled_device.destroy();
     }
 
     GgttsInitGuard init_guard([] { controlled_device.destroy(); });
@@ -287,8 +312,31 @@ static int64_t init_locked(int64_t max_buffer_size, int64_t keep_buffer_size, in
     _ctx->decay = expf(-1.0f / (FADE_SEC * (float)rate));
     _ctx->fade = fade_on_exhaust != 0;
 
-    if (ma_device_start(&_ctx->device) != MA_SUCCESS) {
-        printf("Failed to start playback device.\n");
+    ma_result start_result = ma_device_start(&_ctx->device);
+#if defined(__ANDROID__) || defined(GGTTS_TEST_ANDROID_FALLBACK)
+    if (start_result != MA_SUCCESS && _ctx->device.pContext->backend == ma_backend_aaudio) {
+        fprintf(stderr, "AAudio start failed (%d); trying OpenSL ES.\n", (int)start_result);
+        ma_device_uninit(&_ctx->device);
+        device_initialized = false;
+        const ma_backend backend = ma_backend_opensl;
+        ma_result fallback_result = ma_context_init(&backend, 1, NULL, &opensl_context);
+        if (fallback_result == MA_SUCCESS) {
+            opensl_context_initialized = true;
+            fallback_result = ma_device_init(&opensl_context, &deviceConfig, &_ctx->device);
+            if (fallback_result == MA_SUCCESS) {
+                device_initialized = true;
+                fallback_result = ma_device_start(&_ctx->device);
+            }
+        }
+        if (fallback_result != MA_SUCCESS) {
+            fprintf(stderr, "OpenSL ES fallback failed (%d).\n", (int)fallback_result);
+            return -5;
+        }
+        start_result = MA_SUCCESS;
+    }
+#endif
+    if (start_result != MA_SUCCESS) {
+        fprintf(stderr, "Failed to start playback device (%d).\n", (int)start_result);
         return -5;
     }
 

@@ -10,6 +10,9 @@ trap 'rm -f "$test_bin" "$shared_lib"' EXIT
 "$test_bin"
 echo "audio control tests passed"
 
+# Exercise Android fallback through the real session wrapper with fake devices.
+bash "$app/tool/test_audio_android_fallback_fake.sh"
+
 "${CXX:-c++}" -std=c++17 -fPIC -shared -pthread \
   "$app/vendor/mp_audio_stream/src/mp_audio_stream.cc" -o "$shared_lib" -ldl -lm
 python3 "$app/vendor/mp_audio_stream/ggtts_tests/session_wrapper_test.py" "$shared_lib"

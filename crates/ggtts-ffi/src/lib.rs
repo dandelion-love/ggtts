@@ -566,6 +566,14 @@ pub(crate) fn checked_document_engine(o: &Options) -> Result<String, Fail> {
     Ok(engine)
 }
 
+/// Map a document's cache and offline policy to the shared resolver.
+fn document_models<'a>(options: &Options, cache_dir: Option<&'a str>) -> Models<'a> {
+    Models {
+        cache_dir,
+        allow_download: !options.load.offline,
+    }
+}
+
 /// [`load_options`]' first half: the engine an options value names, opened, not yet registered.
 fn open_options(
     o: &Options,
@@ -587,10 +595,7 @@ fn open_options(
         speaker: o.load.speaker.as_deref().filter(|s| !s.is_empty()),
         instruction: o.render.instruction.as_deref().filter(|s| !s.is_empty()),
         device: o.load.device.as_deref(),
-        models: default_files.then_some(Models {
-            cache_dir: cache_dir.as_deref(),
-            allow_download: !o.load.offline,
-        }),
+        models: default_files.then(|| document_models(o, cache_dir.as_deref())),
         tuning: ggtts_load::Tuning::of(&o.load),
     };
     open_engine(
@@ -1494,6 +1499,23 @@ mod default_model_tests {
         assert_eq!(files.codec, PathBuf::from("my-codec.gguf"));
         assert_eq!(files.speaker, Some("hk_voice_343"));
         assert!(fetch.0.borrow().is_empty(), "fetched {:?}", fetch.0.borrow());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The options document used by Flutter reaches the shared resolver with
+    /// the same offline bit. A recording fetcher plants a detectable network attempt.
+    #[test]
+    fn document_offline_refuses_missing_default_before_fetch() {
+        let root = empty_cache("document-offline");
+        let fetch = Recording::default();
+        for (offline, expected_calls) in [(true, 0), (false, 1)] {
+            let json = format!(r#"{{"load":{{"offline":{offline}}}}}"#);
+            let options = Options::from_json(&json).unwrap();
+            let models = document_models(&options, Some(root.to_str().unwrap()));
+            let result = default_files(None, None, models, true, &fetch);
+            assert!(result.is_err());
+            assert_eq!(fetch.0.borrow().len(), expected_calls);
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 

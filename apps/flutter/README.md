@@ -43,8 +43,9 @@ validated for routing and interruption ordering.
 
 ## Model files
 
-The explicit **Prepare model** action may download the default model when it is missing; reading uses the cache
-offline. When a pinned model is downloading, preparation shows its downloaded amount, percentage and rate.
+The explicit **Prepare model** action may download the default model when it is missing. Choose **Prepare offline**
+to use selected or cached files without downloading; missing files are reported and can be downloaded with the other
+action. Reading uses the cache offline. When a pinned model is downloading, preparation shows its downloaded amount, percentage and rate.
 This requires native ABI 8; rebuild the packaged engine when updating the app. Stop requests cooperative cancellation; a blocked network call or model load may delay stopping. A fully verified file may remain cached if publication wins a cancellation race. In Settings, choose an engine and select model, codec and prepared-voice files, or enter app-readable paths.
 On Linux and Windows the picker returns a filesystem path. On Android the system picker imports a private copy, with
 an 8 GiB model/codec limit and a 64 MiB voice limit. It checks the GGUF signature or JSON object prefix; the engine

@@ -3,8 +3,16 @@
 The C library is `libggtts_ffi` with the header `ggtts.h`. It loads a text-to-speech engine, turns UTF-8 text into
 mono 32-bit float samples, and hands them to you. Any language that can call C can use it.
 
-This page covers the C ABI as of version 3 (`GGTTS_ABI_VERSION 3`). [All bindings](README.md) compares it with
+This page covers the C ABI, including the cancellation functions added in version 6. [All bindings](README.md) compares it with
 Kotlin and Python.
+
+## Cancellation
+
+ABI 6 adds one-shot cancellation tokens to the C API. Create a token, pass it to
+`ggtts_render_opts_cancellable`, signal it from another thread, and free it when no longer needed. See
+`ggtts.h` for lifetime, backend support, and callback timing. A token is a live control handle, not a render
+option. The Python and Kotlin bindings do not currently expose this cancellation API; their render calls
+cannot be stopped through these bindings.
 
 ## Get it
 

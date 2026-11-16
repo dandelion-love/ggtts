@@ -14,6 +14,7 @@ import 'settings_page.dart';
 import 'settings_store.dart';
 import 'saved_reads.dart';
 import 'saved_reads_page.dart';
+import 'listening_page.dart';
 
 void main() => runApp(const ReadApp());
 
@@ -406,6 +407,15 @@ class _ReadPageState extends State<ReadPage> {
       appBar: AppBar(
         title: const Text('ggtts'),
         actions: [
+          IconButton(
+            tooltip: 'Listening sessions',
+            onPressed: _busy
+                ? null
+                : () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const ListeningPage()),
+                  ),
+            icon: const Icon(Icons.headphones),
+          ),
           IconButton(
             tooltip: 'Saved reads',
             onPressed: _busy || _pendingToken != null ? null : _openReads,

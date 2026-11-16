@@ -4,7 +4,7 @@ import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:crypto/crypto.dart';
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart' show rootBundle, MethodChannel;
 import 'package:material_ui/material_ui.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -21,11 +21,13 @@ class ListeningPage extends StatefulWidget {
     this.queue,
     this.play,
     this.feedbackDirectory,
+    this.mobilePlatform,
   });
   final SourceFactory? sourceFactory;
   final ListeningQueue? queue;
   final AudioPlay? play;
   final Future<Directory> Function()? feedbackDirectory;
+  final bool? mobilePlatform;
   @override
   State<ListeningPage> createState() => _ListeningPageState();
 }
@@ -43,6 +45,8 @@ class _ListeningPageState extends State<ListeningPage> {
   AudioPlayer? _player;
   FeedbackBinding? _binding;
   String? _pagePath;
+  String? _canonicalInput;
+  static const _mobileHost = MethodChannel('ggtts/shared_feedback');
   String? _username;
   String? _status;
   bool _busy = false;
@@ -161,6 +165,7 @@ class _ListeningPageState extends State<ListeningPage> {
     final state = File('${dir.path}/feedback-${_stateName(clip)}.json');
     FeedbackBinding? binding;
     String? pagePath;
+    String? canonicalInput;
     if (await state.exists()) {
       try {
         final doc = jsonDecode(await state.readAsString()) as Map;
@@ -179,6 +184,7 @@ class _ListeningPageState extends State<ListeningPage> {
           {'clip': FeedbackClip(clip.id, clip.text, doc['audio_sha256'])},
         );
         pagePath = doc['page_path'];
+        canonicalInput = doc['canonical'];
       } catch (_) {
         throw ListeningException(
           'Saved feedback binding is invalid; cannot reopen it.',
@@ -190,6 +196,7 @@ class _ListeningPageState extends State<ListeningPage> {
         _clip = clip;
         _binding = binding;
         _pagePath = pagePath;
+        _canonicalInput = canonicalInput;
         _imported = false;
         if (binding != null) {
           _status = 'Reopened the saved feedback page binding.';
@@ -199,7 +206,7 @@ class _ListeningPageState extends State<ListeningPage> {
   });
 
   Future<void> _prepare() => _run(() async {
-    if (Platform.isAndroid || Platform.isIOS) {
+    if (Platform.isIOS) {
       throw ListeningException(
         'Opening shared feedback files is not supported on this device yet.',
       );
@@ -267,11 +274,33 @@ class _ListeningPageState extends State<ListeningPage> {
     if (mounted) {
       setState(() {
         _binding = binding;
+        _canonicalInput = utf8.decode(canonical);
         _pagePath = file.path;
         _imported = false;
         _result.clear();
         _status =
             'Open the saved page, export feedback, then paste the JSON below.';
+      });
+    }
+  });
+
+  Future<void> _openMobile() => _run(() async {
+    final result = await _mobileHost.invokeMethod<String>('open', {
+      'input': _canonicalInput,
+      'digest': _binding!.inputSha256,
+    });
+    if (result == null) return;
+    try {
+      mapSharedFeedback(_binding!, jsonDecode(result));
+    } on FormatException {
+      throw ListeningException(
+        'Feedback does not match this page or is invalid.',
+      );
+    }
+    if (mounted) {
+      setState(() {
+        _result.text = result;
+        _status = 'Feedback ready. Submit to send it to the source.';
       });
     }
   });
@@ -348,6 +377,7 @@ class _ListeningPageState extends State<ListeningPage> {
   void _clearPage() {
     _binding = null;
     _pagePath = null;
+    _canonicalInput = null;
     _result.clear();
     _imported = false;
   }
@@ -467,10 +497,17 @@ class _ListeningPageState extends State<ListeningPage> {
                   child: const Text('Prepare shared feedback page'),
                 ),
                 if (_pagePath != null) ...[
-                  const Text(
-                    'Open this file in a browser. Export feedback and paste the JSON below.',
-                  ),
-                  SelectableText(_pagePath!),
+                  if (widget.mobilePlatform ?? Platform.isAndroid)
+                    FilledButton(
+                      onPressed: _busy ? null : _openMobile,
+                      child: const Text('Open feedback page'),
+                    )
+                  else ...[
+                    const Text(
+                      'Open this file in a browser. Export feedback and paste the JSON below.',
+                    ),
+                    SelectableText(_pagePath!),
+                  ],
                   TextField(
                     key: const Key('shared-feedback-result'),
                     controller: _result,

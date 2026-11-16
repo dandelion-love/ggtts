@@ -1,8 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:ggtts_app/listening_page.dart';
 import 'package:ggtts_app/listening_source.dart';
@@ -185,4 +185,99 @@ void main() {
     expect(queue.items, isEmpty);
     expect(source.keys[0], source.keys[1]);
   });
+  testWidgets(
+    'mobile host cancel and invalid result fail closed; valid result queues',
+    (tester) async {
+      final dir = Directory.systemTemp.createTempSync('feedback-mobile-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final source = SharedSource();
+      final queue = MemoryQueue();
+      const channel = MethodChannel('ggtts/shared_feedback');
+      var count = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            final args = Map<String, dynamic>.from(call.arguments as Map);
+            expect(args['input'], isNot(contains('signed?secret')));
+            expect(args['input'], isNot(contains('secret')));
+            final input = jsonDecode(args['input'] as String) as Map;
+            count++;
+            if (count == 1) return null;
+            return jsonEncode({
+              'format': 'ggtts-feedback-result/1',
+              'id': input['id'],
+              'input_sha256': count == 2 ? 'b' * 64 : args['digest'],
+              'note': 'read',
+              'items': [
+                {
+                  'id': 'clip',
+                  'marks': [1],
+                  'rating': 'accept',
+                  'note': 'item',
+                },
+              ],
+            });
+          });
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ListeningPage(
+            sourceFactory: (_) => source,
+            queue: queue,
+            feedbackDirectory: () async => dir,
+            mobilePlatform: true,
+          ),
+        ),
+      );
+      await tester.enterText(
+        find.byKey(const Key('listening-source')),
+        'https://listener.example',
+      );
+      await tester.enterText(
+        find.byKey(const Key('listening-user')),
+        'listener',
+      );
+      await tester.enterText(
+        find.byKey(const Key('listening-password')),
+        'secret',
+      );
+      await tester.tap(find.text('Sign in'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Assigned'));
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await tester.tap(find.text('A中😀𠀀，文'));
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      });
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await tester.tap(find.text('Prepare shared feedback page'));
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      });
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Open feedback page'));
+      await tester.pumpAndSettle();
+      expect(queue.items, isEmpty);
+      await tester.tap(find.text('Open feedback page'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Feedback does not match this page or is invalid.'),
+        findsOneWidget,
+      );
+      expect(queue.items, isEmpty);
+      await tester.tap(find.text('Open feedback page'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Feedback ready. Submit to send it to the source.'),
+        findsOneWidget,
+      );
+      await tester.ensureVisible(find.text('Submit feedback'));
+      await tester.tap(find.text('Submit feedback'));
+      await tester.pumpAndSettle();
+      expect(queue.items, hasLength(1));
+      expect((source.bodies.single['marks'] as List).single['start'], 3);
+    },
+  );
 }

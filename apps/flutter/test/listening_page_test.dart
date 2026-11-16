@@ -94,6 +94,19 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('A\u{1F600}B'));
       await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('character-1')));
+      await tester.enterText(find.byType(TextField).last, 'keep this note');
+      await tester.tap(find.text('All clips'));
+      await tester.pumpAndSettle();
+      expect(find.text('Discard unsent marks?'), findsOneWidget);
+      await tester.tap(find.text('Keep editing'));
+      await tester.pumpAndSettle();
+      expect(find.text('keep this note'), findsOneWidget);
+      await tester.tap(find.byTooltip('Sign out'));
+      await tester.pumpAndSettle();
+      expect(find.text('Discard unsent marks?'), findsOneWidget);
+      await tester.tap(find.text('Keep editing'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Play clip'));
       await tester.pumpAndSettle();
       expect(played, isTrue);
@@ -101,12 +114,11 @@ void main() {
         find.text('Audio link expired; refreshed and playing.'),
         findsOneWidget,
       );
-      await tester.tap(find.byKey(const Key('character-1')));
       await tester.ensureVisible(find.text('Submit marks'));
       await tester.tap(find.text('Submit marks'));
       await tester.pumpAndSettle();
       expect(
-        find.text('Upload failed. Marks are queued; use Retry pending.'),
+        find.text('offline Marks are queued; use Retry pending when ready.'),
         findsOneWidget,
       );
       final stored = jsonEncode(await queue.read());

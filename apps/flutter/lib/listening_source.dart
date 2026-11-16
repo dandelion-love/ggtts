@@ -43,8 +43,9 @@ class ListeningSession {
 }
 
 class ListeningException implements Exception {
-  ListeningException(this.message);
+  ListeningException(this.message, {this.automaticRetry = true});
   final String message;
+  final bool automaticRetry;
   @override
   String toString() => message;
 }
@@ -127,6 +128,7 @@ class HttpListeningSource implements ListeningSource {
     if (status < 200 || status >= 300) {
       throw ListeningException(
         'The source could not complete the request (HTTP $status).',
+        automaticRetry: status == 408 || status == 429 || status >= 500,
       );
     }
   }
@@ -246,12 +248,20 @@ class ListeningQueue {
     await write(items);
   }
 
-  Future<int> retry(ListeningSource source, String user) async {
+  Future<int> retry(
+    ListeningSource source,
+    String user, {
+    bool automatic = false,
+  }) async {
     final items = await read();
     var sent = 0;
     lastError = null;
     for (final item in List<Map<String, dynamic>>.from(items)) {
       if (item['source'] != source.identity || item['user'] != user) continue;
+      if (automatic && item['manual_only'] == true) {
+        lastError = 'The source rejected these marks. Review access or submission before retrying.';
+        break;
+      }
       try {
         await source.submit(
           item['session'] as String,
@@ -265,6 +275,10 @@ class ListeningQueue {
         lastError = e is ListeningException
             ? e.message
             : 'Upload failed. Try again.';
+        if (e is ListeningException && !e.automaticRetry) {
+          item['manual_only'] = true;
+          await write(items);
+        }
         break;
       }
     }

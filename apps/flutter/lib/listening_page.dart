@@ -38,6 +38,7 @@ class _ListeningPageState extends State<ListeningPage> {
   String? _status;
   String? _signedInUser;
   String? _pendingKey;
+  bool _allowPop = false;
 
   @override
   void dispose() {
@@ -88,7 +89,7 @@ class _ListeningPageState extends State<ListeningPage> {
           ),
         );
     final sessions = await source.sessions();
-    final retried = await queue.retry(source, username);
+    final retried = await queue.retry(source, username, automatic: true);
     final pending = (await queue.read())
         .where((x) => x['source'] == source.identity && x['user'] == username)
         .toList();
@@ -102,7 +103,7 @@ class _ListeningPageState extends State<ListeningPage> {
       _clip = null;
       _pendingKey = pending.isEmpty ? null : pending.first['key'] as String;
       _status = pending.isNotEmpty
-          ? 'Marks are queued. Use Retry pending.'
+          ? '${queue.lastError ?? 'Marks are queued.'} Use Retry pending when ready.'
           : (retried > 0
                 ? 'Uploaded $retried pending submission(s).'
                 : 'Signed in.');
@@ -153,11 +154,13 @@ class _ListeningPageState extends State<ListeningPage> {
       if (!remains) {
         _marks.clear();
         _note.clear();
+        _verdict = 'unsure';
+        _markVerdict = 'reject';
       }
       _status = remains
           ? (_queue!.lastError?.contains('Sign-in expired') == true
                 ? 'Sign-in expired. Sign out and sign in again; marks remain queued.'
-                : 'Upload failed. Marks are queued; use Retry pending.')
+                : '${_queue!.lastError ?? 'Upload failed.'} Marks are queued; use Retry pending when ready.')
           : 'Marks uploaded ($sent pending submission(s) sent).';
     });
   });
@@ -172,18 +175,82 @@ class _ListeningPageState extends State<ListeningPage> {
     if (mounted) {
       setState(() {
         _pendingKey = remaining == 0 ? null : _pendingKey;
-        if (remaining == 0) {
-          _marks.clear();
-          _note.clear();
-        }
         _status = remaining == 0
-            ? 'Pending marks uploaded.'
+            ? 'Pending marks uploaded. Any current draft is still here.'
             : (_queue!.lastError?.contains('Sign-in expired') == true
                   ? 'Sign-in expired. Sign out and sign in again; marks remain queued.'
-                  : 'Uploaded $sent; $remaining still queued. Retry when connected.');
+                  : '${_queue!.lastError ?? 'Upload failed.'} Uploaded $sent; $remaining still queued. Retry when ready.');
       });
     }
   });
+
+  bool get _hasDraft =>
+      _clip != null &&
+      (_marks.isNotEmpty ||
+          _note.text.isNotEmpty ||
+          _verdict != 'unsure' ||
+          _markVerdict != 'reject');
+
+  Future<bool> _confirmDiscard() async {
+    if (!_hasDraft) return true;
+    return await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Discard unsent marks?'),
+            content: const Text(
+              'Your current marks, verdict and note have not been submitted.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Keep editing'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Discard'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+  Future<void> _leaveClip() async {
+    if (await _confirmDiscard() && mounted) {
+      setState(() {
+        _clip = null;
+        _marks.clear();
+        _note.clear();
+        _verdict = 'unsure';
+        _markVerdict = 'reject';
+      });
+    }
+  }
+
+  Future<void> _signOut() async {
+    if (!await _confirmDiscard() || !mounted) return;
+    setState(() {
+      _source = null;
+      _sessions = null;
+      _session = null;
+      _clip = null;
+      _signedInUser = null;
+      _pendingKey = null;
+      _marks.clear();
+      _note.clear();
+      _verdict = 'unsure';
+      _markVerdict = 'reject';
+      _status = 'Signed out. Pending marks remain queued.';
+    });
+  }
+
+  Future<void> _leavePage() async {
+    if (_busy || !await _confirmDiscard() || !mounted) return;
+    setState(() => _allowPop = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) Navigator.of(context).pop();
+    });
+  }
 
   Widget _selector(String label, String value, ValueChanged<String?> changed) =>
       DropdownButtonFormField<String>(
@@ -198,164 +265,163 @@ class _ListeningPageState extends State<ListeningPage> {
       );
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Text('Listening sessions'),
-      actions: [
-        if (_source != null)
-          IconButton(
-            tooltip: 'Sign out',
-            onPressed: _busy
-                ? null
-                : () => setState(() {
-                    _source = null;
-                    _sessions = null;
-                    _session = null;
-                    _clip = null;
-                    _signedInUser = null;
-                    _pendingKey = null;
-                    _marks.clear();
-                    _note.clear();
-                    _status = 'Signed out. Pending marks remain queued.';
-                  }),
-            icon: const Icon(Icons.logout),
-          ),
-        if (_source != null)
-          IconButton(
-            tooltip: 'Retry pending',
-            onPressed: _busy ? null : _retry,
-            icon: const Icon(Icons.sync),
-          ),
-      ],
-    ),
-    body: SingleChildScrollView(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (_source == null) ...[
-              TextField(
-                key: const Key('listening-source'),
-                controller: _url,
-                decoration: const InputDecoration(labelText: 'Source URL'),
-              ),
-              TextField(
-                key: const Key('listening-user'),
-                controller: _user,
-                decoration: const InputDecoration(labelText: 'Username'),
-              ),
-              TextField(
-                key: const Key('listening-password'),
-                controller: _password,
-                obscureText: true,
-                decoration: const InputDecoration(labelText: 'Password'),
-              ),
-              FilledButton(
-                onPressed: _busy ? null : _signIn,
-                child: const Text('Sign in'),
-              ),
-            ] else if (_session == null) ...[
-              const Text(
-                'Assigned sessions',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-              if (_sessions!.isEmpty) const Text('No sessions assigned.'),
-              for (final session in _sessions!)
-                ListTile(
-                  title: Text(session.title),
-                  onTap: _busy
-                      ? null
-                      : () => setState(() {
-                          _session = session;
-                          _clip = null;
-                        }),
+  Widget build(BuildContext context) => PopScope(
+    canPop: _allowPop || (!_busy && !_hasDraft),
+    onPopInvokedWithResult: (didPop, _) {
+      if (!didPop) _leavePage();
+    },
+    child: Scaffold(
+      appBar: AppBar(
+        title: const Text('Listening sessions'),
+        actions: [
+          if (_source != null)
+            IconButton(
+              tooltip: 'Sign out',
+              onPressed: _busy ? null : _signOut,
+              icon: const Icon(Icons.logout),
+            ),
+          if (_source != null)
+            IconButton(
+              tooltip: 'Retry pending',
+              onPressed: _busy ? null : _retry,
+              icon: const Icon(Icons.sync),
+            ),
+        ],
+      ),
+      body: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (_source == null) ...[
+                TextField(
+                  key: const Key('listening-source'),
+                  controller: _url,
+                  decoration: const InputDecoration(labelText: 'Source URL'),
                 ),
-            ] else if (_clip == null) ...[
-              TextButton(
-                onPressed: _busy ? null : () => setState(() => _session = null),
-                child: const Text('All sessions'),
-              ),
-              Text(
-                _session!.title,
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-              for (final clip in _session!.clips)
-                ListTile(
-                  title: Text(clip.text),
-                  onTap: _busy
-                      ? null
-                      : () => setState(() {
-                          _clip = clip;
-                          _marks.clear();
-                          _note.clear();
-                          _verdict = 'unsure';
-                        }),
+                TextField(
+                  key: const Key('listening-user'),
+                  controller: _user,
+                  decoration: const InputDecoration(labelText: 'Username'),
                 ),
-            ] else ...[
-              TextButton(
-                onPressed: _busy ? null : () => setState(() => _clip = null),
-                child: const Text('All clips'),
-              ),
-              FilledButton.icon(
-                onPressed: _busy ? null : _play,
-                icon: const Icon(Icons.play_arrow),
-                label: const Text('Play clip'),
-              ),
-              const Text('Tap characters to mark them.'),
-              Wrap(
-                children: [
-                  for (final entry
-                      in _clip!.text.runes.toList().asMap().entries)
-                    InkWell(
-                      key: ValueKey('character-${entry.key}'),
-                      onTap: _busy
-                          ? null
-                          : () => setState(() {
-                              if (!_marks.add(entry.key)) {
-                                _marks.remove(entry.key);
-                              }
-                            }),
-                      child: Container(
-                        padding: const EdgeInsets.all(3),
-                        color: _marks.contains(entry.key)
-                            ? Theme.of(context).colorScheme.primaryContainer
-                            : null,
-                        child: Text(
-                          String.fromCharCode(entry.value),
-                          style: const TextStyle(fontSize: 22),
+                TextField(
+                  key: const Key('listening-password'),
+                  controller: _password,
+                  obscureText: true,
+                  decoration: const InputDecoration(labelText: 'Password'),
+                ),
+                FilledButton(
+                  onPressed: _busy ? null : _signIn,
+                  child: const Text('Sign in'),
+                ),
+              ] else if (_session == null) ...[
+                const Text(
+                  'Assigned sessions',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                if (_sessions!.isEmpty) const Text('No sessions assigned.'),
+                for (final session in _sessions!)
+                  ListTile(
+                    title: Text(session.title),
+                    onTap: _busy
+                        ? null
+                        : () => setState(() {
+                            _session = session;
+                            _clip = null;
+                          }),
+                  ),
+              ] else if (_clip == null) ...[
+                TextButton(
+                  onPressed: _busy
+                      ? null
+                      : () => setState(() => _session = null),
+                  child: const Text('All sessions'),
+                ),
+                Text(
+                  _session!.title,
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                for (final clip in _session!.clips)
+                  ListTile(
+                    title: Text(clip.text),
+                    onTap: _busy
+                        ? null
+                        : () => setState(() {
+                            _clip = clip;
+                            _marks.clear();
+                            _note.clear();
+                            _verdict = 'unsure';
+                          }),
+                  ),
+              ] else ...[
+                TextButton(
+                  onPressed: _busy ? null : _leaveClip,
+                  child: const Text('All clips'),
+                ),
+                FilledButton.icon(
+                  onPressed: _busy ? null : _play,
+                  icon: const Icon(Icons.play_arrow),
+                  label: const Text('Play clip'),
+                ),
+                const Text('Tap characters to mark them.'),
+                Wrap(
+                  children: [
+                    for (final entry
+                        in _clip!.text.runes.toList().asMap().entries)
+                      InkWell(
+                        key: ValueKey('character-${entry.key}'),
+                        onTap: _busy
+                            ? null
+                            : () => setState(() {
+                                if (!_marks.add(entry.key)) {
+                                  _marks.remove(entry.key);
+                                }
+                              }),
+                        child: Container(
+                          padding: const EdgeInsets.all(3),
+                          color: _marks.contains(entry.key)
+                              ? Theme.of(context).colorScheme.primaryContainer
+                              : null,
+                          child: Text(
+                            String.fromCharCode(entry.value),
+                            style: const TextStyle(fontSize: 22),
+                          ),
                         ),
                       ),
-                    ),
-                ],
-              ),
-              _selector(
-                'Clip verdict',
-                _verdict,
-                (v) => setState(() => _verdict = v!),
-              ),
-              _selector(
-                'Marked character verdict',
-                _markVerdict,
-                (v) => setState(() => _markVerdict = v!),
-              ),
-              TextField(
-                controller: _note,
-                maxLength: 4000,
-                decoration: const InputDecoration(labelText: 'Note (optional)'),
-              ),
-              FilledButton(
-                onPressed: _busy || _pendingKey != null ? null : _submit,
-                child: const Text('Submit marks'),
-              ),
+                  ],
+                ),
+                _selector(
+                  'Clip verdict',
+                  _verdict,
+                  (v) => setState(() => _verdict = v!),
+                ),
+                _selector(
+                  'Marked character verdict',
+                  _markVerdict,
+                  (v) => setState(() => _markVerdict = v!),
+                ),
+                TextField(
+                  controller: _note,
+                  onChanged: (_) => setState(() {}),
+                  maxLength: 4000,
+                  decoration: const InputDecoration(
+                    labelText: 'Note (optional)',
+                  ),
+                ),
+                FilledButton(
+                  onPressed: _busy || _pendingKey != null ? null : _submit,
+                  child: const Text('Submit marks'),
+                ),
+              ],
+              if (_busy) const LinearProgressIndicator(),
+              if (_status != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(_status!),
+                ),
             ],
-            if (_busy) const LinearProgressIndicator(),
-            if (_status != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 12),
-                child: Text(_status!),
-              ),
-          ],
+          ),
         ),
       ),
     ),

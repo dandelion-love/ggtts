@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ggtts.dev/schemas/ggtts-listening-source-1.schema.json",
+  "title": "ggtts listening source API v1",
+  "$defs": {
+    "Id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "Verdict": {
+      "type": "string",
+      "enum": [
+        "accept",
+        "reject",
+        "unsure"
+      ]
+    },
+    "TokenRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "username",
+        "password"
+      ],
+      "properties": {
+        "username": {
+          "type": "string",
+          "minLength": 1
+        },
+        "password": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "TokenResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "access_token",
+        "token_type",
+        "expires_at"
+      ],
+      "properties": {
+        "access_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "token_type": {
+          "const": "Bearer"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "Clip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "text",
+        "audio_url",
+        "audio_url_expires_at"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "text": {
+          "type": "string"
+        },
+        "audio_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "audio_url_expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "Session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "clips"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "title": {
+          "type": "string"
+        },
+        "clips": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Clip"
+          }
+        }
+      }
+    },
+    "SessionList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessions"
+      ],
+      "properties": {
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Session"
+          }
+        }
+      }
+    },
+    "AudioUrlResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "audio_url",
+        "expires_at"
+      ],
+      "properties": {
+        "audio_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "CharacterMark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end",
+        "verdict",
+        "note"
+      ],
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "verdict": {
+          "$ref": "#/$defs/Verdict"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 2000
+        }
+      }
+    },
+    "ClipSubmission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clip_id",
+        "verdict",
+        "marks",
+        "note"
+      ],
+      "properties": {
+        "clip_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "verdict": {
+          "$ref": "#/$defs/Verdict"
+        },
+        "marks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CharacterMark"
+          }
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4000
+        }
+      }
+    },
+    "SubmissionAccepted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accepted",
+        "clip_id"
+      ],
+      "properties": {
+        "accepted": {
+          "const": true
+        },
+        "clip_id": {
+          "$ref": "#/$defs/Id"
+        }
+      }
+    },
+    "ApiError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "error"
+      ],
+      "properties": {
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "message",
+            "retryable"
+          ],
+          "properties": {
+            "code": {
+              "type": "string",
+              "minLength": 1
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  "": "#//SessionList"
+}

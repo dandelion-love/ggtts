@@ -278,6 +278,8 @@ pub fn options(engine: &dyn Engine, seed: u64, instruction: Option<&str>) -> Ren
 
 fn render_error(e: RenderError) -> Fail {
     match e {
+        RenderError::Stopped => (ERR_STOPPED, "render cancelled".into()),
+        RenderError::CancelUnsupported => (ERR_ARG, "cancellable generation is unsupported".into()),
         RenderError::Sink(m) if m == STOPPED => (ERR_STOPPED, "the stream callback asked to stop".into()),
         other => engine_err(other.to_string()),
     }
@@ -583,7 +585,18 @@ pub fn render_document(
     options: &Options,
     on_piece: Option<PieceSink<'_>>,
 ) -> Result<(Vec<f32>, u32), Fail> {
-    render_document_inner(engine, text, options, on_piece, None)
+    render_document_inner(engine, text, options, on_piece, None, None)
+}
+
+/// A streaming document render with an explicit one-shot cancellation signal.
+pub fn render_document_cancellable(
+    engine: &mut dyn Engine,
+    text: &str,
+    options: &Options,
+    on_piece: PieceSink<'_>,
+    signal: &ggtts_core::cancel::CancelSignal,
+) -> Result<(Vec<f32>, u32), Fail> {
+    render_document_inner(engine, text, options, Some(on_piece), None, Some(signal))
 }
 
 /// Render using the evidence stream; evidence is provisional until this call succeeds.
@@ -593,7 +606,7 @@ pub fn render_document_evidence(
     options: &Options,
     sink: EvidenceSink<'_>,
 ) -> Result<(Vec<f32>, u32), Fail> {
-    render_document_inner(engine, text, options, None, Some(sink))
+    render_document_inner(engine, text, options, None, Some(sink), None)
 }
 
 fn render_document_inner(
@@ -602,6 +615,7 @@ fn render_document_inner(
     options: &Options,
     on_piece: Option<PieceSink<'_>>,
     evidence: Option<EvidenceSink<'_>>,
+    cancel: Option<&ggtts_core::cancel::CancelSignal>,
 ) -> Result<(Vec<f32>, u32), Fail> {
     let exact_seed = options.render.seed;
     let chunks = match exact_seed {
@@ -643,6 +657,9 @@ fn render_document_inner(
     }
     let mut hooks = Hooks::new();
     let mut obs = Observers::new(events, &mut hooks);
+    if let Some(signal) = cancel {
+        obs = obs.with_cancel(signal);
+    }
     let story = StorySeeds {
         story_id: STORY,
         salt: &opts.seed_salt,
@@ -678,6 +695,9 @@ fn render_document_inner(
         ),
         (Some(f), None) => {
             let mut sink = |p: StreamPiece<'_>| {
+                if cancel.is_some_and(|signal| signal.is_cancelled()) {
+                    return Err(STOPPED.to_string());
+                }
                 if f(p.samples, p.sample_rate) {
                     Ok(())
                 } else {
@@ -693,6 +713,9 @@ fn render_document_inner(
         (Some(_), Some(_)) => unreachable!("only one stream sink"),
     }
     .map_err(render_error)?;
+    if cancel.is_some_and(|signal| signal.is_cancelled()) {
+        return Err((ERR_STOPPED, "render cancelled".into()));
+    }
     if let Some(w) = trace {
         w.finish_with_stats()
             .map_err(|e| engine_err(format!("observe.trace: {e}")))?;

@@ -61,3 +61,11 @@ GGTTS_LIB=native/linux-x64/libggtts_ffi.so dart run tool/smoke.dart /tmp/spike.w
 
 `--dart-define=GGTTS_AUTOSPEAK=true` makes a build speak on launch and log to `flutter` in logcat, so a device
 check needs no tap. The app must be in the foreground: Android freezes it behind the lock screen.
+
+
+The Android build runs the APK native gate tests, builds the native libraries,
+and checks the packaged ARM64 and x86-64 ELF libraries for 16 KB LOAD alignment,
+the Dart binding's required C exports, and equality with the current build after
+stripping. The gate confirms that ggtts_abi_version is exported; it cannot
+execute the cross-architecture library to verify its returned version. The app
+checks that value at runtime when it loads the library.

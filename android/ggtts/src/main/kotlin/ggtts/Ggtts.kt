@@ -18,6 +18,17 @@ fun interface PieceListener {
     fun onPiece(samples: FloatArray, sampleRate: Int): Boolean
 }
 
+/**
+ * A piece's exact delivered samples and kept-draw identity. [speechEnd] and [start]
+ * are absolute sample offsets; samples after speechEnd are the following gap.
+ * Stop is 0 for EOS and 1 for the frame cap. Values are provisional until the
+ * render returns true; false or an exception leaves an incomplete stream.
+ */
+fun interface EvidenceListener {
+    fun onPiece(chunk: Int, text: String, seed: Long, draw: Int, stop: Int,
+                start: Long, speechEnd: Long, samples: FloatArray, sampleRate: Int): Boolean
+}
+
 /** The JNI entry points (crates/ggtts-ffi, feature `jni`). */
 internal object Native {
     init {
@@ -76,6 +87,10 @@ internal object Native {
         seed: Long,
         seedGiven: Boolean,
         listener: PieceListener,
+    ): Boolean
+    @JvmStatic external fun renderStreamEvidence(
+        handle: Long, text: String, optionsJson: String?, seed: Long, seedGiven: Boolean,
+        listener: EvidenceListener,
     ): Boolean
     @JvmStatic external fun optionsSchema(): String
     @JvmStatic external fun capabilities(handle: Long): String
@@ -259,6 +274,14 @@ class Ggtts private constructor(private var handle: Long) : AutoCloseable {
         } else {
             Native.renderStreamOpts(handle, text, options, seed ?: 0L, seed != null, listener)
         }
+
+    /**
+     * Stream the exact samples delivered alongside their kept-draw evidence.
+     * Without options this is raw; with options, stream mode follows renderStream.
+     * A false return or thrown exception leaves every delivered piece provisional.
+     */
+    fun renderStreamEvidence(text: String, seed: Long? = null, options: String? = null, listener: EvidenceListener): Boolean =
+        Native.renderStreamEvidence(handle, text, options, seed ?: if (options == null) DEFAULT_SEED else 0L, seed != null || options == null, listener)
 
     /** The `renderStream` from before the options document, kept so compiled code still links. Hidden from source. */
     @Deprecated("Kept for binary compatibility; call renderStream with options", level = DeprecationLevel.HIDDEN)

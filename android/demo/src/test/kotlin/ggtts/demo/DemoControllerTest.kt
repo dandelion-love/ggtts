@@ -119,6 +119,20 @@ class DemoControllerTest {
     }
 
     @Test
+    fun unconfirmedPlaybackIsAnErrorButStopRemainsAStop() {
+        val c = controller(FakeBinding())
+        audio.duringFinish = { throw PlaybackUnconfirmed() }
+        c.speak(request, "Hello.", Ggtts.DEFAULT_SEED)
+        assertTrue(view.errors.any { it.contains("did not confirm playback") })
+        assertFalse(view.statuses.any { it.startsWith("kitten-tts-2: 3.00 s of audio") })
+        view.errors.clear()
+        audio.duringFinish = { c.stop(); throw PlaybackUnconfirmed() }
+        c.speak(request, "Hello.", Ggtts.DEFAULT_SEED)
+        assertTrue(view.errors.isEmpty())
+        assertTrue(view.statuses.last(), view.statuses.last().startsWith("Stopped during playback"))
+    }
+
+    @Test
     fun anErrorFromPlaybackLeavesTheScreenUsable() {
         val c = controller(FakeBinding())
         audio.duringFinish = { throw OutOfMemoryError("planted") }

@@ -155,7 +155,7 @@ fn merged(json: &str, a: &LoadArgs) -> Result<Options, Fail> {
 
 /// A render call's document ([`binding::render_request`]) with Kotlin's refusals. A salt nothing gives stays the C
 /// ABI's document default (empty), as `ggtts_render_opts` renders it.
-fn document(json: Option<&str>, seed: Option<u64>, stream: bool) -> Result<Options, Fail> {
+pub(crate) fn document(json: Option<&str>, seed: Option<u64>, stream: bool) -> Result<Options, Fail> {
     let doc = binding::render_request(json, seed, stream)?;
     check(&doc)?;
     Ok(doc)

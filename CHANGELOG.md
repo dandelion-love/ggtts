@@ -13,6 +13,8 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **Declared voice metadata:** a shared reader recognizes language tags and display names in model GGUFs and prepared voice JSON. Kitten conversion and preparation accept optional `--language` and `--name`; `ggtts-gguf-voices` writes per-speaker metadata to a new talker GGUF while preserving tensor data. Missing declarations remain absent. See `docs/voice-keys.md`.
+
 - **`ggtts-render --codes FILE` (`observe.codes`) writes every kept chunk's codec tokens**, all codebooks (16 on
   Qwen3-TTS), one `ggtts-codes/1` JSON line per chunk, on `--text` and `--story` alike and on every device. Writing
   them changes no sample. A line holds the `frames`, `codebooks` and `codes` keys the Qwen3-TTS decode example reads,

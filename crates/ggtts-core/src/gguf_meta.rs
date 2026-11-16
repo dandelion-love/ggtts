@@ -7,8 +7,8 @@
 //!
 //! A path of exactly `/proc/self/fd/<n>` is read through that descriptor ([`crate::fdpath`]).
 
-use std::collections::BTreeMap;
-use std::fs::File;
+use std::collections::{BTreeMap, HashSet};
+use std::fs::OpenOptions;
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
@@ -32,7 +32,11 @@ impl Kv {
     pub fn string(key: &str, value: &str) -> Kv {
         let mut raw = (value.len() as u64).to_le_bytes().to_vec();
         raw.extend_from_slice(value.as_bytes());
-        Kv { key: key.to_string(), ty: TYPE_STRING, raw }
+        Kv {
+            key: key.to_string(),
+            ty: TYPE_STRING,
+            raw,
+        }
     }
 
     /// The value, when it is a string.
@@ -185,8 +189,12 @@ pub fn read_header(r: impl Read) -> io::Result<Header> {
         return Err(bad("GGUF header counts are implausible"));
     }
     let mut kv = Vec::with_capacity(n_kv as usize);
+    let mut keys = HashSet::new();
     for _ in 0..n_kv {
         let key = string_of(&mut r)?;
+        if !keys.insert(key.clone()) {
+            return Err(bad(format!("duplicate GGUF key {key}")));
+        }
         let ty = u32_of(&mut r)?;
         let mut raw = Vec::new();
         value_raw(&mut r, ty, &mut raw)?;
@@ -213,7 +221,14 @@ pub fn read_header(r: impl Read) -> io::Result<Header> {
     if alignment == 0 || !alignment.is_power_of_two() {
         return Err(bad(format!("GGUF alignment {alignment} is not a power of two")));
     }
-    Ok(Header { version, kv, n_tensors, tensor_infos, end: r.n, alignment })
+    Ok(Header {
+        version,
+        kv,
+        n_tensors,
+        tensor_infos,
+        end: r.n,
+        alignment,
+    })
 }
 
 /// [`read_header`] of the file at `path`.
@@ -252,7 +267,7 @@ pub fn rewrite(input: &Path, output: &Path, set: &BTreeMap<String, String>) -> i
 
     let mut src = crate::fdpath::open(input)?;
     src.seek(SeekFrom::Start(h.data_start()))?;
-    let mut out = BufWriter::new(File::create(output)?);
+    let mut out = BufWriter::new(OpenOptions::new().write(true).create_new(true).open(output)?);
     out.write_all(&head)?;
     io::copy(&mut src, &mut out)?;
     out.flush()
@@ -269,7 +284,7 @@ pub(crate) mod tests {
         b.extend_from_slice(&3u32.to_le_bytes());
         b.extend_from_slice(&2u64.to_le_bytes());
         b.extend_from_slice(&((kv.len() + 1) as u64).to_le_bytes());
-        let mut put_key = |b: &mut Vec<u8>, k: &str| {
+        let put_key = |b: &mut Vec<u8>, k: &str| {
             b.extend_from_slice(&(k.len() as u64).to_le_bytes());
             b.extend_from_slice(k.as_bytes());
         };
@@ -311,14 +326,23 @@ pub(crate) mod tests {
         let h = read_header(&bytes[..]).unwrap();
         assert_eq!(h.n_tensors, 2);
         assert_eq!(h.alignment, 32);
-        assert_eq!(h.strings("general.").get("general.architecture").map(String::as_str), Some("qwen3-tts"));
+        assert_eq!(
+            h.strings("general.").get("general.architecture").map(String::as_str),
+            Some("qwen3-tts")
+        );
         assert_eq!(&bytes[h.data_start() as usize..], &data[..]);
     }
 
     #[test]
     fn a_rewrite_sets_keys_and_leaves_every_tensor_byte() {
         let data: Vec<u8> = (0..64u8).map(|i| i.wrapping_mul(37)).collect();
-        let input = temp("in.gguf", &tiny(&[("general.architecture", "qwen3-tts"), ("ggtts.voice.a.name", "old")], &data));
+        let input = temp(
+            "in.gguf",
+            &tiny(
+                &[("general.architecture", "qwen3-tts"), ("ggtts.voice.a.name", "old")],
+                &data,
+            ),
+        );
         let output = input.with_file_name("out.gguf");
         let set = BTreeMap::from([
             ("ggtts.voice.a.name".to_string(), "Voice A".to_string()),
@@ -328,15 +352,44 @@ pub(crate) mod tests {
         let before = read_header(&std::fs::read(&input).unwrap()[..]).unwrap();
         let out_bytes = std::fs::read(&output).unwrap();
         let after = read_header(&out_bytes[..]).unwrap();
-        assert_eq!(after.tensor_infos, before.tensor_infos, "the tensor directory is unchanged");
-        assert_eq!(&out_bytes[after.data_start() as usize..], &data[..], "every tensor byte is unchanged");
+        assert_eq!(
+            after.tensor_infos, before.tensor_infos,
+            "the tensor directory is unchanged"
+        );
+        assert_eq!(
+            &out_bytes[after.data_start() as usize..],
+            &data[..],
+            "every tensor byte is unchanged"
+        );
         assert_eq!(after.data_start() % 32, 0);
         let s = after.strings("ggtts.voice.");
         assert_eq!(s.get("ggtts.voice.a.name").map(String::as_str), Some("Voice A"));
         assert_eq!(s.get("ggtts.voice.a.language").map(String::as_str), Some("yue-HK"));
-        assert_eq!(after.strings("general.").get("general.architecture").map(String::as_str), Some("qwen3-tts"));
+        assert_eq!(
+            after
+                .strings("general.")
+                .get("general.architecture")
+                .map(String::as_str),
+            Some("qwen3-tts")
+        );
         assert!(rewrite(&input, &input, &set).is_err(), "never over the input");
+        let original = std::fs::read(&input).unwrap();
+        let alias = input.with_file_name("hardlink.gguf");
+        std::fs::hard_link(&input, &alias).unwrap();
+        assert!(rewrite(&input, &alias, &set).is_err(), "never truncate a hard link");
+        assert_eq!(std::fs::read(&input).unwrap(), original);
+        std::fs::remove_file(alias).unwrap();
         let _ = std::fs::remove_dir_all(input.parent().unwrap());
+    }
+
+    #[test]
+    fn duplicate_keys_are_refused() {
+        let bytes = tiny(
+            &[("ggtts.voice.a.name", "old"), ("ggtts.voice.a.name", "stale")],
+            &[0; 64],
+        );
+        let error = read_header(&bytes[..]).unwrap_err();
+        assert!(error.to_string().contains("ggtts.voice.a.name"));
     }
 
     #[test]

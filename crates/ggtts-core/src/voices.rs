@@ -76,31 +76,27 @@ impl fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
-/// Whether `tag` is a well-formed BCP 47 language tag in the shape these files use: a language of 2 to 3 letters (or
-/// 5 to 8), then subtags of 1 to 8 letters or digits separated by `-`, such as `yue-HK`, `en-US`, `zh-Hant-HK`.
-/// The shape only: whether the subtags are registered is not checked.
+/// Check BCP 47 syntax; registration of individual subtags is not checked.
 pub fn check_language(tag: &str) -> Result<(), String> {
-    let mut parts = tag.split('-');
-    let lang = parts.next().unwrap_or("");
-    if !(matches!(lang.len(), 2 | 3 | 5..=8) && lang.bytes().all(|b| b.is_ascii_alphabetic())) {
-        return Err(format!("{tag:?} is not a BCP 47 language tag (it must start with a 2 or 3 letter language, such as yue-HK)"));
-    }
-    for p in parts {
-        if p.is_empty() || p.len() > 8 || !p.bytes().all(|b| b.is_ascii_alphanumeric()) {
-            return Err(format!("{tag:?} is not a BCP 47 language tag (subtag {p:?} is not 1 to 8 letters or digits)"));
-        }
-    }
-    Ok(())
+    language_tags::LanguageTag::parse(tag)
+        .map(|_| ())
+        .map_err(|e| format!("{tag:?} is not a well-formed BCP 47 language tag: {e}"))
 }
 
 fn language(key: &str, value: &str) -> Result<String, Refused> {
-    check_language(value).map_err(|why| Refused { key: key.to_string(), why })?;
+    check_language(value).map_err(|why| Refused {
+        key: key.to_string(),
+        why,
+    })?;
     Ok(value.to_string())
 }
 
 fn name(key: &str, value: &str) -> Result<String, Refused> {
     if value.trim().is_empty() {
-        return Err(Refused { key: key.to_string(), why: "the name is empty".into() });
+        return Err(Refused {
+            key: key.to_string(),
+            why: "the name is empty".into(),
+        });
     }
     Ok(value.to_string())
 }
@@ -155,7 +151,24 @@ impl From<Refused> for ReadError {
 
 /// The voices a GGUF declares, read from its header only (no tensor is read).
 pub fn read_gguf(path: &Path) -> Result<FileVoices, ReadError> {
-    Ok(from_keys(&crate::gguf_meta::header(path)?.strings(PREFIX))?)
+    let header = crate::gguf_meta::header(path)?;
+    for entry in &header.kv {
+        let Some(rest) = entry.key.strip_prefix(PREFIX) else {
+            continue;
+        };
+        let known = entry.key == FILE_LANGUAGE
+            || entry.key == FILE_NAME
+            || rest.strip_suffix(LANGUAGE_SUFFIX).is_some_and(|s| !s.is_empty())
+            || rest.strip_suffix(NAME_SUFFIX).is_some_and(|s| !s.is_empty());
+        if known && entry.as_str().is_none() {
+            return Err(Refused {
+                key: entry.key.clone(),
+                why: "is not a UTF-8 string".into(),
+            }
+            .into());
+        }
+    }
+    Ok(from_keys(&header.strings(PREFIX))?)
 }
 
 /// The voice a prepared voice JSON declares, in [`FileVoices::file`]. A field that is not a string is refused.
@@ -164,7 +177,10 @@ pub fn from_voice_json(doc: &serde_json::Value) -> Result<FileVoices, Refused> {
         match doc.get(f) {
             None | Some(serde_json::Value::Null) => Ok(None),
             Some(serde_json::Value::String(s)) => Ok(Some(s.clone())),
-            Some(_) => Err(Refused { key: f.to_string(), why: "is not a string".into() }),
+            Some(_) => Err(Refused {
+                key: f.to_string(),
+                why: "is not a string".into(),
+            }),
         }
     };
     let mut out = FileVoices::default();
@@ -199,7 +215,10 @@ pub fn read(path: &Path) -> Result<FileVoices, ReadError> {
 /// value is checked as the reader would check it, so a file written with them reads back.
 pub fn speaker_keys(speaker: &str, declared: &Declared) -> Result<BTreeMap<String, String>, Refused> {
     if speaker.is_empty() {
-        return Err(Refused { key: PREFIX.into(), why: "the speaker name is empty".into() });
+        return Err(Refused {
+            key: PREFIX.into(),
+            why: "the speaker name is empty".into(),
+        });
     }
     let mut out = BTreeMap::new();
     if let Some(l) = &declared.language {
@@ -231,30 +250,65 @@ mod tests {
         ]))
         .unwrap();
         assert!(v.file.is_empty());
-        assert_eq!(v.speakers["hk_voice_343"], Declared { language: Some("yue-HK".into()), name: Some("Voice 343".into()) });
-        assert_eq!(v.speakers["v1.2"], Declared { language: Some("en-US".into()), name: None });
+        assert_eq!(
+            v.speakers["hk_voice_343"],
+            Declared {
+                language: Some("yue-HK".into()),
+                name: Some("Voice 343".into())
+            }
+        );
+        assert_eq!(
+            v.speakers["v1.2"],
+            Declared {
+                language: Some("en-US".into()),
+                name: None
+            }
+        );
         assert_eq!(speaker_language_key("v1.2"), "ggtts.voice.v1.2.language");
     }
 
     #[test]
     fn a_language_model_declares_its_one_voice() {
         let v = from_keys(&kv(&[(FILE_LANGUAGE, "en-US"), (FILE_NAME, "Kitten")])).unwrap();
-        assert_eq!(v.file, Declared { language: Some("en-US".into()), name: Some("Kitten".into()) });
+        assert_eq!(
+            v.file,
+            Declared {
+                language: Some("en-US".into()),
+                name: Some("Kitten".into())
+            }
+        );
         assert!(v.speakers.is_empty());
     }
 
     /// AC4: no keys read as none, never a guess.
     #[test]
     fn a_file_without_the_keys_declares_nothing() {
-        let v = from_keys(&kv(&[("general.architecture", "qwen3-tts"), ("tokenizer.ggml.model", "gpt2")])).unwrap();
+        let v = from_keys(&kv(&[
+            ("general.architecture", "qwen3-tts"),
+            ("tokenizer.ggml.model", "gpt2"),
+        ]))
+        .unwrap();
         assert_eq!(v, FileVoices::default());
-        assert_eq!(from_voice_json(&serde_json::json!({"transcript": "x"})).unwrap(), FileVoices::default());
+        assert_eq!(
+            from_voice_json(&serde_json::json!({"transcript": "x"})).unwrap(),
+            FileVoices::default()
+        );
     }
 
     /// AC4: a malformed tag is refused with its key named (planted).
     #[test]
     fn a_malformed_language_is_refused_by_its_key() {
-        for bad in ["", "Cantonese", "yue_HK", "yue-", "y", "yue-HKHKHKHKHK", "粵-HK"] {
+        for bad in [
+            "",
+            "Cantonese",
+            "yue_HK",
+            "yue-",
+            "y",
+            "yue-HKHKHKHKHK",
+            "en-a",
+            "en-1",
+            "粵-HK",
+        ] {
             let e = from_keys(&kv(&[("ggtts.voice.a.language", bad)])).unwrap_err();
             assert_eq!(e.key, "ggtts.voice.a.language", "{bad:?}");
         }
@@ -272,9 +326,37 @@ mod tests {
     }
 
     #[test]
+    fn a_non_string_voice_key_is_refused_by_name() {
+        let dir = std::env::temp_dir().join(format!("ggtts-voice-type-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bad.gguf");
+        let mut b = Vec::new();
+        b.extend_from_slice(b"GGUF");
+        b.extend_from_slice(&3u32.to_le_bytes());
+        b.extend_from_slice(&0u64.to_le_bytes());
+        b.extend_from_slice(&1u64.to_le_bytes());
+        let key = "ggtts.voice.a.language";
+        b.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        b.extend_from_slice(key.as_bytes());
+        b.extend_from_slice(&4u32.to_le_bytes());
+        b.extend_from_slice(&42u32.to_le_bytes());
+        std::fs::write(&path, b).unwrap();
+        let error = read_gguf(&path).unwrap_err();
+        assert!(error.to_string().contains(key));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn a_prepared_voice_declares_its_voice() {
-        let v = from_voice_json(&serde_json::json!({"language": "en-GB", "name": "Reader", "transcript": "x"})).unwrap();
-        assert_eq!(v.file, Declared { language: Some("en-GB".into()), name: Some("Reader".into()) });
+        let v =
+            from_voice_json(&serde_json::json!({"language": "en-GB", "name": "Reader", "transcript": "x"})).unwrap();
+        assert_eq!(
+            v.file,
+            Declared {
+                language: Some("en-GB".into()),
+                name: Some("Reader".into())
+            }
+        );
     }
 
     #[test]
@@ -283,14 +365,28 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ggtts-voices-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let input = dir.join("talker.gguf");
-        std::fs::write(&input, crate::gguf_meta::tests::tiny(&[("general.architecture", "qwen3-tts")], &data)).unwrap();
+        std::fs::write(
+            &input,
+            crate::gguf_meta::tests::tiny(&[("general.architecture", "qwen3-tts")], &data),
+        )
+        .unwrap();
         assert_eq!(read_gguf(&input).unwrap(), FileVoices::default());
-        let declared = Declared { language: Some("yue-HK".into()), name: Some("Voice A".into()) };
+        let declared = Declared {
+            language: Some("yue-HK".into()),
+            name: Some("Voice A".into()),
+        };
         let set = speaker_keys("a.b", &declared).unwrap();
         let output = dir.join("out.gguf");
         crate::gguf_meta::rewrite(&input, &output, &set).unwrap();
         assert_eq!(read(&output).unwrap().speakers["a.b"], declared);
-        assert!(speaker_keys("a", &Declared { language: Some("nope nope".into()), name: None }).is_err());
+        assert!(speaker_keys(
+            "a",
+            &Declared {
+                language: Some("nope nope".into()),
+                name: None
+            }
+        )
+        .is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -30,11 +30,8 @@ android() {
     # libclang: set LIBCLANG_PATH to the directory holding libclang.so (any recent LLVM).
     [[ -n "${LIBCLANG_PATH:-}" ]] || say "LIBCLANG_PATH unset: bindgen looks for libclang in the system paths"
     local sysroot="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-    # The NDK clang's own builtin headers (stdbool.h and the like), so any host libclang parses ggml.h the same way.
-    local builtins
-    builtins=$(ls -d "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/*/include | head -1)
-    export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$sysroot --target=aarch64-linux-android$api -isystem $builtins"
-    export BINDGEN_EXTRA_CLANG_ARGS_x86_64_linux_android="--sysroot=$sysroot --target=x86_64-linux-android$api -isystem $builtins"
+    export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$sysroot --target=aarch64-linux-android$api"
+    export BINDGEN_EXTRA_CLANG_ARGS_x86_64_linux_android="--sysroot=$sysroot --target=x86_64-linux-android$api"
     # 16 KB pages, as scripts/android_build.sh.
     export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="${CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS:-} -C link-arg=-Wl,-z,max-page-size=16384"
     export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="${CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS:-} -C link-arg=-Wl,-z,max-page-size=16384"

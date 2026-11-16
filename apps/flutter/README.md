@@ -12,7 +12,7 @@ Flutter stable (tested with 3.50.0) and the toolchains below. The native library
 committed (`.gitignore`).
 
 ```bash
-# Linux desktop: needs clang, ninja-build, pkg-config, libgtk-3-dev, liblzma-dev and the GStreamer dev packages.
+# Linux desktop: needs clang, ninja-build, pkg-config, libgtk-3-dev, liblzma-dev, the GStreamer dev packages, and the GStreamer good and PulseAudio runtime plugins.
 apps/flutter/tool/build_native.sh linux
 cd apps/flutter && flutter run -d linux
 
@@ -26,11 +26,17 @@ cd apps/flutter && flutter build apk --target-platform android-arm64
 
 The app loads the engine's default model from the engine's cache with downloads off (`"offline": true`), so a
 missing model is reported, never fetched by surprise. On Linux the cache is `~/.cache/ggtts` (or `GGTTS_CACHE_DIR`).
-On Android it is the app's external files folder, where `adb` can place the files:
+On Android it is the app's private documents folder. For a debuggable trial build, stage the verified cache through
+the app's own identity (install the APK first):
 
 ```bash
+adb shell 'mkdir -p /sdcard/Android/data/dev.ggtts.ggtts_app/files/ggtts-cache'
 adb push ~/.cache/ggtts/models /sdcard/Android/data/dev.ggtts.ggtts_app/files/ggtts-cache/
+adb shell 'run-as dev.ggtts.ggtts_app mkdir -p app_flutter/ggtts-cache/models'
+adb shell 'run-as dev.ggtts.ggtts_app cp -R /sdcard/Android/data/dev.ggtts.ggtts_app/files/ggtts-cache/models/. app_flutter/ggtts-cache/models/'
 ```
+
+This is a developer-only staging procedure; a user-facing model provisioner remains needed.
 
 ## Checks
 

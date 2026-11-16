@@ -62,6 +62,7 @@ pub const NOT_OPTIONS: &[(Surface, &str, &str)] = &[
     (Surface::C, "pcm", "an out-parameter"),
     (Surface::C, "on_piece", "the stream's callback, not a value"),
     (Surface::Dart, "onPiece", "the stream's callback, not a value"),
+    (Surface::Dart, "text", "the content to render, not an option"),
     (Surface::C, "user", "the callback's own pointer, passed through"),
     (Surface::C, "len", "an out-parameter"),
     (Surface::C, "rate", "an out-parameter"),
@@ -244,12 +245,23 @@ pub fn kotlin_names() -> Vec<String> {
     out
 }
 
+pub fn dart_names() -> Vec<String> {
+    let mut out: Vec<String> = dart_entries(&read("apps/flutter/lib/ggtts.dart"))
+        .into_iter()
+        .flat_map(|entry| entry.names)
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 pub fn surfaces() -> Vec<(Surface, Vec<String>)> {
     vec![
         (Surface::Flag, render_flags()),
         (Surface::Python, python_names()),
         (Surface::C, c_names()),
         (Surface::Kotlin, kotlin_names()),
+        (Surface::Dart, dart_names()),
     ]
 }
 

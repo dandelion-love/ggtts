@@ -37,4 +37,34 @@ void main() {
     expect(() => queue.add(Float32List.fromList([1])), throwsStateError);
     expect(calls, 3);
   });
+
+  test('pause does not consume retries and resume preserves samples', () {
+    var calls = 0;
+    final received = <double>[];
+    final queue = PcmQueue(
+      (chunk) {
+        if (++calls <= 5) return -2;
+        received.addAll(chunk);
+        return 0;
+      },
+      pause: (_) {},
+      maxRetries: 2,
+    );
+    final samples = Float32List.fromList([0.1, 0.2]);
+    queue.add(samples);
+    expect(received, samples);
+  });
+
+  test('stopped session exits immediately rather than retrying as full', () {
+    var calls = 0;
+    final queue = PcmQueue((_) {
+      calls++;
+      return -3;
+    }, pause: (_) {});
+    expect(
+      () => queue.add(Float32List.fromList([1])),
+      throwsA(isA<ReadStopped>()),
+    );
+    expect(calls, 1);
+  });
 }

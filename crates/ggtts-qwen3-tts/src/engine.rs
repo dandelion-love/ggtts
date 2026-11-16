@@ -416,6 +416,10 @@ impl Engine for Qwen3Tts {
         })
     }
 
+    fn supports_cancellation(&self) -> bool {
+        self.trace.is_none()
+    }
+
     fn generate_cancellable(
         &mut self,
         req: &ChunkRequest<'_>,

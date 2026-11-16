@@ -165,7 +165,7 @@ int32_t ggtts_render_opts(uint64_t handle, const char *text, const char *options
 const char *ggtts_options_schema(void);
 
 /* ggtts_capabilities: the capability statement of a loaded engine, as JSON in *json (free it with ggtts_string_free):
- *   {"format": "ggtts-capabilities/1", "family": "qwen3-tts", "instruction": true, "no_instruction_why": null,
+ *   {"format": "ggtts-capabilities/1", "cancellable": true, "family": "qwen3-tts", "instruction": true, "no_instruction_why": null,
  *    "steering": true, "speakers": true, "speaker_names": ["...", ...], "devices": ["cpu", "cuda"],
  *    "hooks": {"p_stop": true, "logits": true}, "step_events": true}
  * speaker_names are the loaded model's (empty for an engine without speakers); no_instruction_why says why a

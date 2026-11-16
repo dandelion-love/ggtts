@@ -11,6 +11,7 @@ void main() {
   }
   late Directory temp;
   late Ggtts ggtts;
+  late CancellationApi cancel;
   setUpAll(() {
     temp = Directory.systemTemp.createTempSync('ggtts-bindings-');
     final lib = '${temp.path}/fixture.so';
@@ -24,7 +25,9 @@ void main() {
     if (result.exitCode != 0) {
       throw StateError('fixture build failed: ${result.stderr}');
     }
-    ggtts = Ggtts(DynamicLibrary.open(lib));
+    final native = DynamicLibrary.open(lib);
+    ggtts = Ggtts(native);
+    cancel = CancellationApi(native);
   });
   tearDownAll(() => temp.deleteSync(recursive: true));
 
@@ -57,6 +60,28 @@ void main() {
       throwsA(isA<GgttsException>().having((e) => e.code, 'code', -5)),
     );
     expect(calls, 1);
+  });
+
+  test('cancellable render keeps one-shot native token semantics', () {
+    final id = cancel.create();
+    var calls = 0;
+    ggtts.renderStream(7, 'text', null, (_) {
+      calls++;
+      return true;
+    }, cancellationToken: id);
+    expect(calls, 2);
+    cancel.signal(id);
+    expect(
+      () => ggtts.renderStream(
+        7,
+        'text',
+        null,
+        (_) => true,
+        cancellationToken: id,
+      ),
+      throwsA(isA<GgttsException>().having((e) => e.code, 'code', -5)),
+    );
+    cancel.free(id);
   });
 
   test('callback exceptions stop native render and are rethrown', () {

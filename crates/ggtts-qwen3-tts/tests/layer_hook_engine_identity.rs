@@ -5,6 +5,7 @@
 use ggtts_core::engine::{ChunkRequest, Engine};
 use ggtts_core::hooks::{Hooks, LayerStep, Step, TensorHook, Wants};
 use ggtts_core::trace::NullEvents;
+use ggtts_qwen3_tts::cpu::Device;
 use ggtts_qwen3_tts::engine::{Qwen3Tts, Voice};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -57,8 +58,11 @@ fn pinned(var: &str, key: &str) -> PathBuf {
 fn layer_capture_preserves_codes_and_decoded_samples() {
     let talker = pinned("GGTTS_TINY_TALKER", "CUT_SHA256");
     let codec = pinned("GGTTS_CODEC", "CODEC_SHA256");
+    let device_name = std::env::var("GGTTS_DEVICE").unwrap_or_else(|_| "cpu".into());
+    let device = Device::parse(&device_name).expect("GGTTS_DEVICE must be cpu or cuda");
     let voice = Voice {
         max_frames: 8,
+        device,
         ..Default::default()
     };
     let mut plain = Qwen3Tts::load(&talker, &codec, 4, voice.clone()).unwrap();

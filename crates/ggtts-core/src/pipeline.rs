@@ -513,6 +513,19 @@ pub fn render_chunk(
     opts: &RenderOptions,
     obs: &mut Observers<'_>,
 ) -> Result<KeptChunk, RenderError> {
+    render_chunk_inner(engine, text, index, seeds, judge, opts, obs, false)
+}
+
+fn render_chunk_inner(
+    engine: &mut dyn Engine,
+    text: &str,
+    index: usize,
+    seeds: &dyn SeedSource,
+    judge: &mut dyn Judge,
+    opts: &RenderOptions,
+    obs: &mut Observers<'_>,
+    stop_on_abort: bool,
+) -> Result<KeptChunk, RenderError> {
     if !obs.hooks.layers().is_empty() && !engine.supports_layer_hooks() {
         return Err(EngineError(format!(
             "the {} engine does not support talker layer hooks",
@@ -550,6 +563,9 @@ pub fn render_chunk(
         }
         let stage_start = (tracing || timings.is_some()).then(std::time::Instant::now);
         let generated = engine.generate_hooked(&req, events, obs.hooks)?;
+        if stop_on_abort && generated.stop == Stop::Abort {
+            return Err(EngineError("aborted draw cannot provide complete stream evidence".into()).into());
+        }
         stage_end(
             stage_start,
             "generate",
@@ -716,7 +732,8 @@ pub fn render_plan(
     let mut sample_rate = 0;
     let mut records = Vec::with_capacity(chunks.len());
     for (i, c) in chunks.iter().enumerate() {
-        let kept = render_chunk(engine, &c.text, i, seeds, judge, opts, obs)?;
+        let stop_on_abort = stream.as_ref().is_some_and(|s| s.evidence());
+        let kept = render_chunk_inner(engine, &c.text, i, seeds, judge, opts, obs, stop_on_abort)?;
         total_frames += kept.frames();
         if let (Some(t), Some(k)) = (timings.as_mut(), kept.timings) {
             t.generate_ns += k.generate_ns;

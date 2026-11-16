@@ -286,6 +286,7 @@ pub struct Observers<'a> {
     /// Handed each chunk's kept draw and its codec tokens, as the engine generated them and the decoder read them,
     /// once the chunk is kept: the chunk's index, the kept draw and its codes. It reads only, so no sample changes.
     pub codes: Option<CodesObserver<'a>>,
+    pub layer_stats: Option<crate::layer_stats::LayerStats>,
 }
 
 impl<'a> Observers<'a> {
@@ -294,7 +295,13 @@ impl<'a> Observers<'a> {
             events,
             hooks,
             codes: None,
+            layer_stats: None,
         }
+    }
+
+    pub fn with_layer_stats(mut self, stats: crate::layer_stats::LayerStats) -> Self {
+        self.layer_stats = Some(stats);
+        self
     }
 
     /// The same observers, also handing each kept draw's codes to `codes`.
@@ -581,6 +588,14 @@ pub fn render_chunk(
             stop: generated.stop,
         });
         let clean = j.verdict.is_none();
+        if let Some(stats) = &obs.layer_stats {
+            if !obs.hooks.failures().is_empty() {
+                return Err(EngineError("layer hook failed".into()).into());
+            }
+            stats
+                .end_draw(req.chunk, k, seed, generated.stop, clean || k == opts.redraw)
+                .map_err(|e| RenderError::Engine(EngineError(e)))?;
+        }
         kept = Some((pcm, generated.codes));
         if clean {
             break;

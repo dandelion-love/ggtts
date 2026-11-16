@@ -77,4 +77,16 @@ class AudioBoundReadManifestIndependentTest {
         assertEquals(before, manifest.encodeJson())
         assertEquals(manifest, AudioBoundReadManifest.decodeJson(before))
     }
+
+    @Test fun signedUnicodeEscapesAreNotJsonHexDigits() {
+        // The former parser accepted a leading sign via toIntOrNull(16).
+        assertEquals(65, "+041".toIntOrNull(16))
+        assertEquals(-65, "-041".toIntOrNull(16))
+        val original = make().encodeJson()
+        for (escape in listOf("\\u+041", "\\u-041")) {
+            val planted = original.replace("First passage.", escape)
+            assertNotEquals(original, planted)
+            refuses { AudioBoundReadManifest.decodeJson(planted) }
+        }
+    }
 }

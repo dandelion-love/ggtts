@@ -46,9 +46,12 @@ class AboutTest {
     @Test
     fun theReadingScreenOpensWithTheTaglineAndTheOtherAppsHint() {
         assertEquals(About.TAGLINE, About.HEADER_SUBTITLE)
+        // The screen shows them through the string resources, in the phone's language; in English they are these.
+        assertEquals(About.TAGLINE, About.tagline(EnglishWords))
+        assertEquals(About.EMPTY_TEXT_HINT, About.emptyTextHint(EnglishWords))
         val screen = File("src/main/kotlin/ggtts/demo/MainActivity.kt").readText()
-        assertTrue("the header's subtitle is not About.HEADER_SUBTITLE", "subtitle = About.HEADER_SUBTITLE" in screen)
-        assertTrue("the empty text box does not show About.EMPTY_TEXT_HINT", "About.EMPTY_TEXT_HINT" in screen)
+        assertTrue("the header's subtitle is not the tagline", "subtitle = About.tagline(tr)" in screen)
+        assertTrue("the empty text box does not show the other-apps hint", "About.emptyTextHint(tr)" in screen)
         assertTrue("text-to-speech engine" in About.EMPTY_TEXT_HINT)
         assertTrue(About.PURPOSE.any { "text-to-speech engine" in it })
     }

@@ -32,8 +32,13 @@ vectors.
 | `--steer FILE` | The steering file: a path, or an `https://` URL (see below). Without it the render is exactly the render without steering. |
 | `--steer-scale X` | One scale for every layer, default 1.0. Each vector is multiplied by it, in f32. |
 | `--steer-layers LIST` | The layers of the file to apply, for example `23,24,25`. Default: every layer in the file. One file can then serve a comparison of layer subsets. |
+| `--steer-scales LIST` | One scale per layer of `--steer-layers`, in its order, for example `--steer-layers 21,22,23 --steer-scales 7.9,9.8,10.8`: layer 21 is pushed by 7.9 times the file's vector there. Not with `--steer-scale`. |
 
-A different scale per layer is not a flag: write the vectors pre-scaled.
+**Per-layer scales and unit-length files.** Steering methods that store each direction at unit length (EmoSteer-TTS,
+CoCoEmo) set a push length α per layer. `--steer-scales` takes those. A preset tuned with one scale `s` over
+unnormalised vectors `v_L` is the same render from a file of `v_L / |v_L|` at `--steer-scales` `s × |v_L|`, within
+f32 rounding of the added vectors (`crates/ggtts-core/tests/steer_scales.rs`). The options document spells it
+`render.steer_scales`, a list paired with `render.steer_layers`, and every front end that takes steering takes it.
 
 ### A steering file named by URL
 
@@ -89,6 +94,10 @@ Each of these stops the render before anything is generated, with a message nami
 - `--steer-layers` naming a layer the file does not hold, or naming one twice;
 - `--steer-scale` that is not a finite number in f32 (the vectors are scaled and added in f32, so `1e39` is refused),
   a scale that makes any scaled value overflow f32, and `--steer-scale` or `--steer-layers` without `--steer`;
+- `--steer-scales` whose length differs from `--steer-layers`, a value in it that is not a finite number (or that
+  overflows f32 when scaled), `--steer-scales` without `--steer-layers`, and `--steer-scale` and `--steer-scales`
+  together: one scale for every layer, or one per layer, never both. A negative scale is allowed, as for
+  `--steer-scale`: it pushes that layer the opposite way;
 - `--steer` with an engine that cannot steer (Kitten-TTS 2, the fake engine). The engines refuse a steered request
   themselves too, so a library caller cannot have one ignored.
 
@@ -101,7 +110,9 @@ instruments' `report.json` carry
 "steer": {"sha256": "<the file's sha256>", "layers": [23, 24, 25], "scale": 0.5}
 ```
 
-and an unsteered render carries no `steer` at all. A steered render can therefore never be taken for a plain one.
+or, with per-layer scales, `"scales": [7.9, 9.8, 10.8]` (one per entry of `layers`) in place of `"scale"`; and an
+unsteered render carries no `steer` at all. A book's chapter manifest records the same, so a resume under other
+scales renders the chapter again. A steered render can therefore never be taken for a plain one.
 Replaying a steered trace needs the same steering (`trace::replay_steered`); `trace::replay` refuses it.
 
 ## Steering is not an instrument

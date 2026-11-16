@@ -182,6 +182,29 @@ finished read has **Save to Music** and **Share** under the player: Save adds it
 on Android 7 to 9 the two buttons are hidden. The app logs to logcat under the tag `ggtts-demo`: what it loaded, the time
 to first audio, how long the render took, and its real-time factor.
 
+## Rendering for later
+
+"Render for later", under Read aloud, queues the passage with the chosen voice and renders it in the background
+without playing it. Each finished read is saved to `Music/ggtts/` as FLAC, titled with the passage's first words (in
+the file's TITLE tag and in Android's media library), where the Files app, a music player and USB see it. The queue
+is kept in the app's storage: it goes on with the screen left, and a render cut off by the app being closed starts
+again the next time the app opens. One entry renders at a time, sharing the one loaded engine with Read aloud and the
+system engine, and waits while either reads. An entry that cannot render (a model file gone, storage full) is marked
+failed with the reason, saves nothing, and the queue moves on.
+
+It runs as a foreground service of type `mediaProcessing` on Android 15 and later (`dataSync` below). Android 15
+allows either 6 hours a day per app: at 7 to 13 s of rendering per second of speech, that is about 28 to 50 minutes of
+speech a day. When that time runs out the render in progress stops cleanly and waits, and the queue resumes when the
+app is next opened. Both service types are permissions Android grants at install; nothing is asked.
+
+## Saved reads
+
+"Saved reads" in the ⋮ menu lists the reads in `Music/ggtts/`, newest first: each with its title, length and date,
+and Play, Share and Delete. The title and length come from the file itself (a FLAC's TITLE tag and STREAMINFO, a
+WAV's header), so the list is right after a restart. It lists this install's reads with no permission. Reads saved
+before the app was reinstalled are no longer the app's to Android's media library; choosing the `Music/ggtts` folder
+once with the system's folder picker (the list offers it) lists and deletes those too, still with no permission.
+
 ## Leaving the screen during a read
 
 A read belongs to the app, not its screen. Leave the screen and the read goes on, in a foreground service. Its

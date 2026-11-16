@@ -8,7 +8,7 @@
 //! version, with a changed set of pipeline cases.
 
 use crate::audio::{judge_f32, trim_edges_f32, Judgement, Verdict};
-use crate::engine::{ChunkRequest, Engine, EngineError, Stop};
+use crate::engine::{ChunkRequest, Codes, Engine, EngineError, Stop};
 use crate::hooks::Hooks;
 use crate::numeric::{log10, mean_f32, pow};
 use crate::profile::Profile;
@@ -66,6 +66,42 @@ impl RenderOptions {
             trim: true,
             level: true,
         }
+    }
+}
+
+/// A render of one chunk at an exact seed (`render.seed`): `ggtts-render --text`, and a binding's render document
+/// that gives the seed. The text is one chunk, not planned or split; it is drawn once at [`Given`], with the duration
+/// judge's verdict recorded and the draw kept whatever it is (no redraw), untrimmed and unlevelled, so its samples are
+/// the decoded draw. Every front end builds it here, so the same text, seed, model and settings give the same samples
+/// on each.
+pub mod exact {
+    use super::{Given, PlannedChunk, RenderOptions};
+    use crate::options::Refusal;
+
+    /// The one-chunk plan of `text`. Refused under `render.text` when it is empty or holds no speech.
+    pub fn chunks(text: &str) -> Result<Vec<PlannedChunk>, Refusal> {
+        if text.chars().all(crate::text::is_strip_space) {
+            return Err(Refusal::new("render.text", "the chunk is empty"));
+        }
+        crate::text::validate_speech(text).map_err(|e| Refusal::new("render.text", e.to_string()))?;
+        Ok(vec![PlannedChunk {
+            para: 0,
+            text: text.to_string(),
+            punct: String::new(),
+            last_in_para: true,
+        }])
+    }
+
+    /// `options` for that one draw: no redraw, no trim, no level.
+    pub fn options(options: &mut RenderOptions) {
+        options.redraw = 0;
+        options.trim = false;
+        options.level = false;
+    }
+
+    /// The seed source: every draw at `seed`.
+    pub fn seeds(seed: u64) -> Given {
+        Given(seed)
     }
 }
 
@@ -241,14 +277,30 @@ impl Judge for DurationJudge {
 
 /// The observers a render feeds: trace events and tensor hooks. Neither changes the audio. They hold references,
 /// so they are passed beside the options, never inside them.
+/// What [`Observers::codes`] is handed: the chunk's index, the kept draw and its codes.
+pub type CodesObserver<'a> = &'a mut dyn FnMut(usize, &DrawRecord, &Codes);
+
 pub struct Observers<'a> {
     pub events: &'a mut dyn Events,
     pub hooks: &'a mut Hooks,
+    /// Handed each chunk's kept draw and its codec tokens, as the engine generated them and the decoder read them,
+    /// once the chunk is kept: the chunk's index, the kept draw and its codes. It reads only, so no sample changes.
+    pub codes: Option<CodesObserver<'a>>,
 }
 
 impl<'a> Observers<'a> {
     pub fn new(events: &'a mut dyn Events, hooks: &'a mut Hooks) -> Self {
-        Self { events, hooks }
+        Self {
+            events,
+            hooks,
+            codes: None,
+        }
+    }
+
+    /// The same observers, also handing each kept draw's codes to `codes`.
+    pub fn with_codes(mut self, codes: CodesObserver<'a>) -> Self {
+        self.codes = Some(codes);
+        self
     }
 }
 
@@ -522,12 +574,15 @@ pub fn render_chunk(
             stop: generated.stop,
         });
         let clean = j.verdict.is_none();
-        kept = Some(pcm);
+        kept = Some((pcm, generated.codes));
         if clean {
             break;
         }
     }
-    let pcm = kept.expect("at least one draw");
+    let (pcm, codes) = kept.expect("at least one draw");
+    if let Some(observe) = obs.codes.as_mut() {
+        observe(index, draws.last().expect("at least one draw"), &codes);
+    }
     let decoded_samples = pcm.samples.len();
     let mut samples = pcm.samples;
     if opts.trim {

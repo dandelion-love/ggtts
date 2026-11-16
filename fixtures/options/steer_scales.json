@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "render": {
+    "steer": "steer.safetensors",
+    "steer_layers": [25, 21, 23],
+    "steer_scales": [13.0, 7.9, 10.8]
+  }
+}

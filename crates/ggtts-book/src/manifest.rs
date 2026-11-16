@@ -404,8 +404,8 @@ impl Manifest {
     }
 }
 
-/// The render options a manifest was written under against the ones about to run: the instruction, then the steering,
-/// then anything else, the first difference named. A manifest without the field (written before it existed, or by a
+/// The render options a manifest was written under against the ones about to run: the instruction, the steering and
+/// the edge kept at each chunk (`--edge-s`), then anything else, the first difference named. A manifest without the field (written before it existed, or by a
 /// render with neither) is a render with no instruction and no steering.
 fn check_render(recorded: &Value, planned: &Value) -> Result<(), ManifestError> {
     let shown = |v: Option<&Value>| match v {
@@ -413,7 +413,11 @@ fn check_render(recorded: &Value, planned: &Value) -> Result<(), ManifestError> 
         Some(Value::String(s)) => s.clone(),
         Some(v) => v.to_string(),
     };
-    for (key, field) in [("instruction", "instruction"), ("steer", "steering")] {
+    for (key, field) in [
+        ("instruction", "instruction"),
+        ("steer", "steering"),
+        ("edge_s", "edge"),
+    ] {
         let (m, p) = (recorded.get(key), planned.get(key));
         if m != p {
             return Err(ManifestError::Mismatch {

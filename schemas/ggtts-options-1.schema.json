@@ -306,6 +306,15 @@
         ]
       },
       "properties": {
+        "codes": {
+          "description": "Where every chunk's kept codec tokens go (ggtts-codes/1 JSON lines: frames x codebooks, as the decoder reads them). Writing them changes no sample.",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-flags": [
+            "--codes"
+          ],
+          "x-ggtts-phase": "render"
+        },
         "duration_report": {
           "description": "A new file for the per-chunk duration report.",
           "minLength": 1,
@@ -530,6 +539,9 @@
         ],
         "steer_scale": [
           "steer"
+        ],
+        "steer_scales": [
+          "steer_layers"
         ]
       },
       "properties": {
@@ -537,6 +549,9 @@
           "description": "Seconds of silence kept at each edge of a chunk; unset is the engine profile's.",
           "minimum": 0.0,
           "type": "number",
+          "x-ggtts-flags": [
+            "--edge-s"
+          ],
           "x-ggtts-phase": "render"
         },
         "instruction": {
@@ -597,6 +612,9 @@
           "x-ggtts-c": [
             "seed"
           ],
+          "x-ggtts-flags": [
+            "--seed-salt"
+          ],
           "x-ggtts-kotlin": [
             "seed"
           ],
@@ -634,6 +652,18 @@
           "type": "number",
           "x-ggtts-flags": [
             "--steer-scale"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "steer_scales": {
+          "description": "One scale per layer of --steer-layers, in its order: layer L is pushed by its scale times the file's vector there. For a file of unit-length directions, the push lengths. Not with --steer-scale.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 1,
+          "type": "array",
+          "x-ggtts-flags": [
+            "--steer-scales"
           ],
           "x-ggtts-phase": "render"
         },

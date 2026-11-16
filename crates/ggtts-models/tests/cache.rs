@@ -343,6 +343,33 @@ fn two_processes_starting_at_once_leave_one_good_file() {
 }
 
 #[test]
+fn concurrent_resolves_repeat_without_losing_a_live_partial() {
+    let server = Server::start();
+    let d = defaults(vec![pinned("talker", "model.gguf", server.url("/model"), MODEL)]);
+    for _ in 0..200 {
+        let dir = scratch("race-repeat");
+        let start = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let cache = Cache::new(dir.join("cache"));
+                let start = start.clone();
+                std::thread::spawn(move || {
+                    start.wait();
+                    resolve(d, &[None], &cache, false, &local(), &mut |_| {})
+                })
+            })
+            .collect();
+        for thread in threads {
+            let files = thread.join().unwrap().unwrap();
+            assert_eq!(std::fs::read(&files[0].path).unwrap(), MODEL);
+        }
+        let left = files_under(&dir);
+        assert_eq!(left.len(), 2, "only the file and its sidecar: {left:?}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
 fn the_cache_root_follows_the_override() {
     // The only test that reads the environment variable, so no other test races it.
     let dir = scratch("root");

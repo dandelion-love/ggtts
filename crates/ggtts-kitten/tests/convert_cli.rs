@@ -92,9 +92,21 @@ fn converts_a_download_and_embeds_its_tokenizer() {
     let d = dir("ok");
     write_repo(&d, true);
     let out = d.join("kitten-lm.gguf");
-    let o = run(&["--repo", d.to_str().unwrap(), "--out", out.to_str().unwrap()]);
+    let o = run(&[
+        "--repo",
+        d.to_str().unwrap(),
+        "--out",
+        out.to_str().unwrap(),
+        "--language",
+        "yue-HK",
+        "--name",
+        "Kitten",
+    ]);
     assert!(o.status.success(), "{}{}", text(&o.stdout), text(&o.stderr));
     assert!(text(&o.stdout).contains("READBACK PASS"), "{}", text(&o.stdout));
+    let voice = ggtts_core::voices::read_gguf(&out).unwrap().file;
+    assert_eq!(voice.language.as_deref(), Some("yue-HK"));
+    assert_eq!(voice.name.as_deref(), Some("Kitten"));
     let g = Gguf::open(&out).unwrap();
     assert_eq!(g.str("general.architecture").unwrap(), "kitten-tts-2");
     match g.kv.get("kitten.tokenizer.json") {
@@ -282,4 +294,24 @@ fn ggtts_kitten_help_and_version() {
     let o = Command::new(bin).arg("--version").output().unwrap();
     let lines: Vec<String> = text(&o.stdout).lines().map(str::to_string).collect();
     assert_eq!(lines, ggtts_core::version_lines("ggtts-kitten").to_vec());
+}
+
+#[test]
+fn invalid_voice_metadata_is_refused_before_conversion() {
+    let d = dir("bad-voice");
+    write_repo(&d, true);
+    for (flag, value) in [("--language", "yue_HK"), ("--name", "  ")] {
+        let out = d.join("bad.gguf");
+        let o = run(&[
+            "--repo",
+            d.to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+            flag,
+            value,
+        ]);
+        assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
+        assert!(!out.exists());
+    }
+    std::fs::remove_dir_all(&d).unwrap();
 }

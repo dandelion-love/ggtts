@@ -144,6 +144,34 @@ pub fn convert(
     layout: Layout,
     tokenizer_json: Option<&str>,
 ) -> Result<Summary, String> {
+    convert_with_voice(
+        st,
+        model,
+        lm,
+        source,
+        out,
+        rule,
+        strict,
+        layout,
+        tokenizer_json,
+        &Default::default(),
+    )
+}
+
+/// Convert with optional declared voice metadata.
+#[allow(clippy::too_many_arguments)]
+pub fn convert_with_voice(
+    st: &SafeTensors,
+    model: &serde_json::Value,
+    lm: &serde_json::Value,
+    source: &str,
+    out: &Path,
+    rule: Rule,
+    strict: bool,
+    layout: Layout,
+    tokenizer_json: Option<&str>,
+    voice: &ggtts_core::voices::Declared,
+) -> Result<Summary, String> {
     if layout == Layout::Tq1 {
         return Err(
             "the tq1_0-256-experimental layout is read but not written: it gives two 128-weight groups one scale, \
@@ -151,7 +179,16 @@ pub fn convert(
                 .into(),
         );
     }
-    let kv = metadata(model, lm, source, layout, tokenizer_json)?;
+    let mut kv = metadata(model, lm, source, layout, tokenizer_json)?;
+    let mut voice_keys = BTreeMap::new();
+    if let Some(language) = &voice.language {
+        voice_keys.insert(ggtts_core::voices::FILE_LANGUAGE.to_string(), language.clone());
+    }
+    if let Some(name) = &voice.name {
+        voice_keys.insert(ggtts_core::voices::FILE_NAME.to_string(), name.clone());
+    }
+    ggtts_core::voices::from_keys(&voice_keys).map_err(|e| e.to_string())?;
+    kv.extend(voice_keys.into_iter().map(|(k, v)| (k, Value::Str(v))));
     let mut tensors = Vec::new();
     let mut sum = Summary::default();
     for (name, info) in &st.tensors {

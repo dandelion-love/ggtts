@@ -922,6 +922,13 @@ fn cond_cmd(a: &Args) -> Result<bool, String> {
 
 fn prepare_cmd(a: &Args) -> Result<bool, String> {
     use ggtts_kitten::condnet::CondNets;
+    let mut voice = serde_json::Map::new();
+    for key in [ggtts_core::voices::JSON_LANGUAGE, ggtts_core::voices::JSON_NAME] {
+        if let Some(value) = a.map.get(key) {
+            voice.insert(key.into(), value.clone().into());
+        }
+    }
+    ggtts_core::voices::from_voice_json(&serde_json::Value::Object(voice.clone())).map_err(|e| e.to_string())?;
     let threads: usize = a.or("threads", "4").parse().map_err(|_| "bad --threads")?;
     let be = backend(a, threads)?;
     let wav = PathBuf::from(a.get("wav")?);
@@ -936,7 +943,7 @@ fn prepare_cmd(a: &Args) -> Result<bool, String> {
     let nets = CondNets::load(&gguf, be.clone())?;
     let t0 = Instant::now();
     let p = nets.prepare(&samples, sr)?;
-    let j = serde_json::json!({
+    let mut j = serde_json::json!({
         "transcript": transcript,
         "reference_wav": wav.to_string_lossy(),
         "reference_tokens": p.reference_tokens,
@@ -944,6 +951,7 @@ fn prepare_cmd(a: &Args) -> Result<bool, String> {
         "s3gen": {"prompt_token": p.prompt_token, "prompt_feat": p.prompt_feat, "embedding": p.xvector},
         "prepared_by": format!("ggtts-kitten {} (no Python)", ggtts_core::VERSION),
     });
+    j.as_object_mut().unwrap().extend(voice);
     std::fs::write(a.get("out")?, serde_json::to_string(&j).unwrap()).map_err(|e| e.to_string())?;
     println!(
         "prepared {}: {} LM prompt tokens, {} S3Gen prompt tokens, {} mel frames, in {:.1}s",
@@ -1060,7 +1068,7 @@ fn text_of(lines: &[String], i: usize) -> &str {
 
 const USAGE: &str =
     "usage: ggtts-kitten prepare --s3gguf S3GEN.gguf --wav CLIP.flac|CLIP.wav --transcript TEXT --out VOICE.json
-                            [--threads N] [--device cpu|cuda]
+                            [--threads N] [--device cpu|cuda] [--language TAG] [--name NAME]
        ggtts-kitten --version
 
 prepare: a reference voice for `ggtts-render --engine kitten-tts-2 --voice VOICE.json`, from 5 to 30 seconds of one

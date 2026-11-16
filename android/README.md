@@ -205,6 +205,38 @@ WAV's header), so the list is right after a restart. It lists this install's rea
 before the app was reinstalled are no longer the app's to Android's media library; choosing the `Music/ggtts` folder
 once with the system's folder picker (the list offers it) lists and deletes those too, still with no permission.
 
+## Audio-bound read manifest (v1)
+
+AudioBoundReadManifest is a pure Kotlin/JVM validation model for evidence attached to one final saved audio file.
+This slice does not decode audio or publish MediaStore metadata. A caller must create and persist the record only
+after rendering completed successfully and the final audio write succeeded. The record does not prove playback or
+that callback PCM matches the saved audio, and is not by itself feedback-readiness evidence.
+
+The JSON record has format ggtts-audio-read-manifest and integer version 1. It contains a stable opaque read_id, an
+audio object with sha256, byte_length, sample_rate and sample_count, and a nonempty ordered chunks array. Every chunk
+has index, exact delivered text, kept draw number, seed_u64, stop, delivered and speech. seed_u64 is the original
+64-bit seed as a canonical unsigned decimal string, preserving all seed bits even when the JVM Long value is negative.
+stop is eos or cap. delivered and speech each contain absolute half-open start/end sample offsets. delivered covers
+every sample appended to the final audio, including any trailing delivery-only gap; speech begins at the same sample
+and ends at the last speech sample. The next chunk begins exactly at the previous delivered end. The spans cover the
+entire saved sample range without overlap or unaccounted gaps. Text is not trimmed or reconstructed.
+
+read_id is an opaque 1-to-128-character ASCII token beginning with a letter or digit and containing only letters,
+digits, period, underscore, colon or hyphen. audio.sha256 is lowercase SHA-256 over the exact stored file bytes.
+When creating a record, audioBytes must be those exact bytes. sample_rate and sample_count passed to create or
+validateAudio must come from an independent trusted decoder of those saved bytes. The model checks the supplied facts
+against the manifest and recomputes the byte hash; it does not parse FLAC/WAV headers or verify that the supplied rate
+and count describe the encoded audio. It also does not inspect mono PCM, verify trailing gap samples are zero, or
+compare each delivered callback's PCM with decoded saved samples. Integration must independently decode the saved
+file and verify those audio-to-span/sample claims before calling a read feedback-ready; playback completion is a
+separate fact. decodeJson rejects missing/unknown fields, duplicate JSON keys, malformed IDs or hashes, unsupported
+versions/stops, missing chunk evidence, invalid Unicode, noncontiguous or out-of-range spans, and noncanonical or
+overflowing seeds.
+
+Legacy audio remains playable and listable without this sidecar. Missing or invalid manifest evidence means
+feedback-ineligible; the app must not infer text, draw, seed, stop, or chunk boundaries from a title, filename,
+duration, or current render settings.
+
 ## Leaving the screen during a read
 
 A read belongs to the app, not its screen. Leave the screen and the read goes on, in a foreground service. Its

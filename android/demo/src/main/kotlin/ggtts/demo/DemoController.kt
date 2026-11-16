@@ -26,6 +26,9 @@ interface AudioOut {
     /** Wait until everything queued has played. Throws if playback failed before the end (the read is not finished). */
     fun finish()
 
+    /** Whether this output can confirm playback-head consumption. */
+    val supportsPlaybackConfirmation: Boolean get() = false
+
     /** True only when the playback device reports all frames consumed; this does not prove a person heard them. */
     fun finishConfirmed(): Boolean { finish(); return false }
 
@@ -238,8 +241,12 @@ class DemoController(
         )
         // The files rendered: remember them now (the system engine can use them while this read still plays).
         onSpoke(request)
+        var playbackConfirmed = false
         try {
-            audio.finish()
+            if (path != null && evidence != null && evidenceValid && audio.supportsPlaybackConfirmation) {
+                playbackConfirmed = audio.finishConfirmed()
+                if (!playbackConfirmed && !stopRequested) throw PlaybackUnconfirmed()
+            } else audio.finish()
         } catch (e: PlaybackUnconfirmed) {
             // A deliberate Stop is reported below; an unexplained failure is never read_done.
             if (!stopRequested) throw e
@@ -248,6 +255,10 @@ class DemoController(
         if (stopRequested) {
             log("stopped during playback, after rendering ${pieces.size} chunks")
             return words.get("stopped_during_playback", path)
+        }
+        if (playbackConfirmed && path != null) {
+            runCatching { evidenceStore!!.markPlaybackComplete(path) }
+                .onFailure { log("playback completion unavailable: " + it.message) }
         }
         return words.get("read_done", request.engine, seconds, renderMs / 1000.0, rtf, firstMs / 1000.0, path)
     }

@@ -14,9 +14,14 @@ class EvidenceControllerTest {
     }
     private class Audio(private val path: String) : AudioOut {
         val played = mutableListOf<FloatArray>()
+        var confirmed = true
+        var supportsConfirmation = true
+        override val supportsPlaybackConfirmation: Boolean get() = supportsConfirmation
+        var duringFinish: () -> Unit = {}
         override fun begin(rate: Int) {}
         override fun play(samples: FloatArray) { played += samples }
         override fun finish() {}
+        override fun finishConfirmed(): Boolean { duringFinish(); return confirmed }
         override fun stop() {}
         override fun save(samples: FloatArray, rate: Int, engine: String): String {
             java.io.File(path).writeBytes(Wav.encode(samples, rate))
@@ -51,6 +56,9 @@ class EvidenceControllerTest {
             assertEquals(2, manifest.chunks[0].draw)
             assertEquals(-1L, manifest.chunks[0].seedBits)
             assertEquals(SampleSpan(0, 3), manifest.chunks[0].delivered)
+            assertTrue(FileSavedEvidenceStore().playbackComplete(file.path))
+            file.writeBytes(file.readBytes().also { it[44] = (it[44].toInt() xor 1).toByte() })
+            assertFalse(FileSavedEvidenceStore().playbackComplete(file.path))
         } finally { dir.deleteRecursively() }
     }
 
@@ -63,6 +71,36 @@ class EvidenceControllerTest {
             controller.speak(LoadRequest("fake", null, null, null), "x", 7)
             assertFalse(file.exists())
             assertNull(FileSavedEvidenceStore().load(file.path))
+        } finally { dir.deleteRecursively() }
+    }
+    @Test fun unconfirmedOrStoppedNeverRecordsCompletion() {
+        for (stop in listOf(false, true)) {
+            val dir = Files.createTempDirectory("controller-evidence").toFile()
+            try {
+                val file = dir.resolve("read.wav"); val audio = Audio(file.path); val view = View()
+                lateinit var controller: DemoController
+                controller = DemoController(TtsBinding { Engine(true) }, view, audio,
+                    background = { it.run() }, main = { it.run() }, evidenceStore = FileSavedEvidenceStore())
+                audio.confirmed = false
+                if (stop) audio.duringFinish = { controller.stop() }
+                controller.speak(LoadRequest("fake", null, null, null), "x", 7)
+                assertNotNull(FileSavedEvidenceStore().load(file.path))
+                assertFalse(FileSavedEvidenceStore().playbackComplete(file.path))
+                assertEquals(!stop, view.errors.isNotEmpty())
+            } finally { dir.deleteRecursively() }
+        }
+    }
+    @Test fun legacyOutputStillFinishesWithoutClaimingConfirmation() {
+        val dir = Files.createTempDirectory("controller-evidence").toFile()
+        try {
+            val file = dir.resolve("read.wav"); val audio = Audio(file.path); val view = View()
+            audio.supportsConfirmation = false
+            val controller = DemoController(TtsBinding { Engine(true) }, view, audio,
+                background = { it.run() }, main = { it.run() }, evidenceStore = FileSavedEvidenceStore())
+            controller.speak(LoadRequest("fake", null, null, null), "x", 7)
+            assertTrue(view.errors.toString(), view.errors.isEmpty())
+            assertNotNull(FileSavedEvidenceStore().load(file.path))
+            assertFalse(FileSavedEvidenceStore().playbackComplete(file.path))
         } finally { dir.deleteRecursively() }
     }
 }

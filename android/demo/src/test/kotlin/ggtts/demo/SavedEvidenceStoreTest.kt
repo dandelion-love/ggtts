@@ -68,4 +68,22 @@ class SavedEvidenceStoreTest {
             assertEquals(listOf("read.wav"), dir.list()!!.sorted())
         } finally { dir.deleteRecursively() }
     }
+    @Test fun completionPublicationFailureAndManifestReplacementFailClosed() {
+        val dir = Files.createTempDirectory("read-evidence").toFile()
+        try {
+            val audio = dir.resolve("read.wav")
+            audio.writeBytes(Wav.encode(floatArrayOf(0.5f, -0.5f, 0f, 1f), 24000))
+            val store = FileSavedEvidenceStore()
+            store.save(audio.path, evidence())
+            val failed = FileSavedEvidenceStore(publish = { _, _ -> false })
+            try { failed.markPlaybackComplete(audio.path); fail("expected failure") }
+            catch (_: IllegalStateException) {}
+            assertFalse(store.playbackComplete(audio.path))
+            store.markPlaybackComplete(audio.path)
+            assertTrue(FileSavedEvidenceStore().playbackComplete(audio.path))
+            val manifest = dir.resolve("read.wav.manifest.json")
+            manifest.writeText(manifest.readText() + " ")
+            assertFalse(store.playbackComplete(audio.path))
+        } finally { dir.deleteRecursively() }
+    }
 }

@@ -10,6 +10,7 @@ data class SavedAudioEvidence(val audioFile: File, val manifest: AudioBoundReadM
 /** Audio identity only: this record establishes neither playback completion nor feedback readiness. */
 interface SavedEvidenceStore {
     fun save(audioPath: String, evidence: VerifiedWavEvidence)
+    fun markPlaybackComplete(audioPath: String)
 }
 
 /** Sidecar bound to a unique app-owned WAV. Missing, corrupt or mismatched records are unavailable. */
@@ -43,6 +44,37 @@ class FileSavedEvidenceStore(
         manifest.validateAudio(bytes, manifest.audio.sampleRate, manifest.audio.sampleCount)
         manifest
     } catch (_: Exception) { null }
+
+    private fun completion(audio: File) = File(audio.path + ".playback-complete")
+
+    /** Persist only a confirmed playback head, bound to this verified manifest and audio hash. */
+    override fun markPlaybackComplete(audioPath: String) {
+        val audio = File(audioPath)
+        val manifest = load(audioPath) ?: error("saved evidence unavailable")
+        val dest = completion(audio)
+        check(!dest.exists())
+        val content = completionContent(audio, manifest)
+        val temp = File(dest.path + "." + UUID.randomUUID() + ".tmp")
+        try {
+            write(temp, content.toByteArray(Charsets.UTF_8))
+            check(load(audioPath) == manifest && !dest.exists() && publish(temp, dest))
+        } finally { temp.delete() }
+    }
+
+    /** False for missing, interrupted, mismatched or corrupt evidence; not proof a person heard it. */
+    fun playbackComplete(audioPath: String): Boolean {
+        return try {
+            val audio = File(audioPath)
+            val manifest = load(audioPath) ?: return false
+            completion(audio).readText(Charsets.UTF_8) == completionContent(audio, manifest)
+        } catch (_: Exception) { false }
+    }
+
+    private fun completionContent(audio: File, manifest: AudioBoundReadManifest): String =
+        listOf("ggtts-playback-complete/1", manifest.readId, manifest.audio.sha256, manifestHash(audio), "").joinToString(10.toChar().toString())
+
+    private fun manifestHash(audio: File): String = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(sidecar(audio).readBytes()).joinToString("") { "%02x".format(it) }
 
     /** Reopen valid evidence in an app-private audio directory after process restart. */
     fun list(directory: File): List<SavedAudioEvidence> {

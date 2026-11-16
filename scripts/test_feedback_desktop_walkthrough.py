@@ -1,12 +1,11 @@
 """CLI-only, headless desktop walkthrough for offline feedback.
 
-Generates a synthetic tone and a valid input/provenance pair, uses Chromium's
-DevTools protocol across two separate browser processes to prove playback,
+Generates one synthetic story through ggtts-render's CPU fake engine, then uses
+Chromium's DevTools protocol across two separate browser processes to prove playback,
 marking/export, and localStorage draft restoration, then saves through the
 desktop host CLI. It never opens a visible browser window.
 """
 import base64
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -22,7 +21,6 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from scripts.feedback_page import generate, input_digest
 
 
 def _recv_exact(sock, n):
@@ -252,35 +250,37 @@ SECOND = r"""(async()=>{
 
 def main():
     chrome = os.environ.get("CHROME_BIN") or shutil.which("google-chrome") or shutil.which("chromium")
-    ffmpeg = shutil.which("ffmpeg")
-    if not chrome or not ffmpeg:
-        raise SystemExit("SKIP: requires headless Chromium and ffmpeg")
+    cargo = Path.home() / ".cargo/bin/cargo"
+    if not cargo.is_file():
+        cargo = Path("cargo")
+    if not chrome:
+        raise SystemExit("SKIP: requires headless Chromium")
+    subprocess.run(
+        [str(cargo), "build", "--quiet", "-p", "ggtts-cli", "--bin", "ggtts-render"],
+        cwd=ROOT,
+        check=True,
+    )
+    binary = ROOT / "target/debug" / ("ggtts-render.exe" if os.name == "nt" else "ggtts-render")
     with tempfile.TemporaryDirectory(prefix="ggtts-desktop-walkthrough-") as tmp:
         directory = Path(tmp)
-        audio = directory / "synthetic-read.flac"
+        audio = directory / "fake-read.flac"
         page = directory / "trusted-feedback.html"
-        subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
-                        "sine=frequency=440:sample_rate=24000:duration=0.25", "-c:a", "flac",
-                        "-f", "flac", str(audio)], check=True)
-        raw_audio = audio.read_bytes()
-        packed = int.from_bytes(raw_audio[18:26], "big")
-        rate, samples = packed >> 44, packed & ((1 << 36) - 1)
-        item_id = "clip-1"
-        text_value = chr(65) + chr(0x4e2d) + chr(0x20000) + chr(0x6587)
-        audio_hash = hashlib.sha256(raw_audio).hexdigest()
-        source = {"format":"ggtts-feedback-input/1","id":"desktop-walkthrough","items":[
-            {"id":item_id,"text":text_value,"audio":"data:audio/flac;base64,"+base64.b64encode(raw_audio).decode("ascii")}]}
-        page.write_text(generate(source), encoding="utf-8")
-        companion = {
-            "format":"ggtts-feedback-provenance/1","id":source["id"],
-            "input_sha256":input_digest(source),"output_sha256":audio_hash,
-            "sample_rate":rate,"output_samples":samples,
-            "render":{"audio":{"sha256":audio_hash}},
-            "chunks":[{"id":item_id,"chunk":0,"draw":0,"seed":20261116,"start":0,"end":samples,
-                       "text_sha256":hashlib.sha256(text_value.encode("utf-8")).hexdigest(),
-                       "audio_sha256":audio_hash,"stop":"eos"}],
-        }
-        Path(str(page)+".provenance.json").write_text(json.dumps(companion), encoding="utf-8")
+        story = directory / "synthetic-story.txt"
+        story.write_text(
+            "Synthetic read" + chr(10) + chr(65) + chr(0x4e2d) + chr(0x20000) + chr(0x6587),
+            encoding="utf-8",
+        )
+        rendered = subprocess.run(
+            [
+                str(binary), "--engine", "fake", "--story", str(story),
+                "--out", str(audio), "--feedback-page", str(page), "--log-level", "error",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if rendered.returncode:
+            raise RuntimeError("fake-engine render failed: " + rendered.stderr)
         profile = directory / "chrome-profile"
         proc, browser = launch(chrome, profile, page)
         try:
@@ -316,7 +316,7 @@ def main():
         ], cwd=ROOT, capture_output=True, text=True)
         if again.returncode == 0:
             raise AssertionError("host overwrote an existing result")
-        print("PASS: real-time headless Chromium played synthetic FLAC to ended, marked CJK index 2, exported rating and notes offline; a separate browser process restored the draft; host save wrote the export beside audio and refused overwrite.")
+        print("PASS: real-time headless Chromium played the actual CPU fake-rendered FLAC to ended, marked CJK index 2, exported rating and notes offline; a separate browser process restored the draft; host save wrote the export beside audio and refused overwrite.")
 
 if __name__ == "__main__":
     main()

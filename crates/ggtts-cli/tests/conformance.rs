@@ -2417,6 +2417,7 @@ fn a_new_python_keyword_fails_the_snapshot() {
     now.extend(surfaces::kotlin_entries(&read(
         "android/ggtts/src/main/kotlin/ggtts/Ggtts.kt",
     )));
+    now.extend(surfaces::dart_entries(&read("apps/flutter/lib/ggtts.dart")));
     let diff = snapshot_diff(&read(SNAPSHOT), &now);
     assert!(
         diff.iter().any(|l| l.starts_with("+ python load: engine, foo,")),
@@ -2427,6 +2428,23 @@ fn a_new_python_keyword_fails_the_snapshot() {
         "{diff:?}"
     );
     assert!(known(TABLE, Surface::Python, "model"));
+}
+
+/// A newly exposed Dart binding call must make the snapshot fail.
+#[test]
+fn a_new_dart_call_fails_the_snapshot() {
+    let src = read("apps/flutter/lib/ggtts.dart");
+    let planted = src.replacen(
+        "class Ggtts {",
+        "class Ggtts {\n  int added(int handle, String text) => 0;",
+        1,
+    );
+    assert_ne!(planted, src, "the plant applies");
+    let mut now = surfaces::binding_entries();
+    now.retain(|entry| entry.surface != Surface::Dart);
+    now.extend(surfaces::dart_entries(&planted));
+    let diff = snapshot_diff(&read(SNAPSHOT), &now);
+    assert!(diff.iter().any(|line| line == "+ dart added: handle, text"), "{diff:?}");
 }
 
 // ── the render path ────────────────────────────────────────────────────────────────────────────────────────────────

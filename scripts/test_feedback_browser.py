@@ -155,5 +155,11 @@ def main():
    'name="feedback-input-sha256" content="'+'0'*64+'"').replace('</body>',BAD_DIGEST_HARNESS+'\n</body>')
   dom,_=run(chrome,wrong,root/'bad-profile')
   if 'data-digest-test="PASS"' not in dom:raise AssertionError('tampered embedded-input digest accepted')
-  print('PASS offline Chromium: offline/CSP, no-WebCrypto boot, CJK scalar marks, rating independence, draft reload, export, invalid index, audio error, changed-input result/draft isolation, digest tamper')
+  mutant=generate(source).replace("const position = index++;","const position = index++ + 1;")
+  if mutant==generate(source):raise AssertionError('wrong-index mutant did not alter page code')
+  mutant=mutant.replace('</body>',harness+'\n</body>')
+  dom,_=run(chrome,mutant,root/'mutant-profile')
+  if 'data-feedback-test="FAIL"' not in dom or 'export did not create blob' not in dom:
+   raise AssertionError('off-by-one CJK index plant escaped the browser oracle')
+  print('PASS offline Chromium: offline/CSP, no-WebCrypto boot, CJK scalar marks, rating independence, draft reload, export, invalid index, audio error, changed-input result/draft isolation, digest tamper; planted off-by-one index was detected')
 if __name__=='__main__':main()

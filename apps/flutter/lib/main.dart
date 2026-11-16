@@ -4,7 +4,9 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:material_ui/material_ui.dart';
-import 'package:mp_audio_stream/ggtts_audio_session.dart';
+
+import 'playback_session.dart';
+
 import 'package:path_provider/path_provider.dart';
 
 import 'ggtts.dart';
@@ -61,7 +63,7 @@ void controlWorkerWithoutCancellation(SendPort parent) =>
 
 void _controlWorker(SendPort parent, bool cancellable) {
   final commands = ReceivePort();
-  AudioSession? audio;
+  PlaybackSession? audio;
   CancellationApi? cancellation;
   int? token;
   try {
@@ -69,7 +71,7 @@ void _controlWorker(SendPort parent, bool cancellable) {
       cancellation = CancellationApi(openGgtts());
       token = cancellation.create();
     }
-    audio = AudioSession.reserve();
+    audio = PlaybackSession.reserve();
     if (audio == null) throw StateError('Audio output is already in use.');
     parent.send({'port': commands.sendPort, 'audio': audio.id, 'token': token});
   } catch (error) {
@@ -150,7 +152,7 @@ Future<String?> controlCommand(SendPort port, String op) async {
 /// Native callbacks remain synchronous on the render isolate.
 void renderWorker(Map<String, Object?> request) async {
   final port = request['port'] as SendPort;
-  final audio = AudioSession.attach(request['audio'] as int);
+  final audio = PlaybackSession.attach(request['audio'] as int);
   var audioReady = false;
   int? sampleRate;
   PcmQueue? queue;
@@ -197,7 +199,15 @@ void renderWorker(Map<String, Object?> request) async {
           cancellationToken: cancellable ? request['token'] as int : null,
         );
         if (audioReady) {
-          drainAudio(state: audio.state, softwareEmpty: audio.softwareEmpty);
+          if (Platform.isAndroid) {
+            drainPresentation(
+              state: audio.state,
+              submitted: audio.submitted,
+              head: audio.head,
+            );
+          } else {
+            drainAudio(state: audio.state, softwareEmpty: audio.softwareEmpty);
+          }
         }
         if (audio.state() == 3) throw ReadStopped();
       } finally {

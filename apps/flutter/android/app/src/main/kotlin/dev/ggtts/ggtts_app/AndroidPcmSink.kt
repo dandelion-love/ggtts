@@ -2,6 +2,9 @@ package dev.ggtts.ggtts_app
 
 import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioRouting
+import android.os.Handler
+import android.os.Looper
 import android.media.AudioTrack
 
 /**
@@ -9,9 +12,10 @@ import android.media.AudioTrack
  * Route checks sample the active route only when queried: they do not detect
  * transient reroutes between calls, focus loss or prove acoustic output.
  */
-internal class AndroidPcmSink(rate: Int) : ControlledPcmSink {
+internal class AndroidPcmSink(rate: Int, onRouteChange: () -> Unit = {}) : ControlledPcmSink {
     private val track: AudioTrack
     private var route: Int? = null
+    private val routeListener = AudioRouting.OnRoutingChangedListener { onRouteChange() }
 
     init {
         val minimum = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_FLOAT)
@@ -25,6 +29,7 @@ internal class AndroidPcmSink(rate: Int) : ControlledPcmSink {
             track.release()
             error("AudioTrack initialization failed")
         }
+        track.addOnRoutingChangedListener(routeListener, Handler(Looper.getMainLooper()))
     }
 
     override fun play() { track.play() }
@@ -44,5 +49,5 @@ internal class AndroidPcmSink(rate: Int) : ControlledPcmSink {
     }
 
     override fun flush() { track.flush() }
-    override fun release() { track.release() }
+    override fun release() { track.removeOnRoutingChangedListener(routeListener); track.release() }
 }

@@ -106,11 +106,15 @@ pub fn render_chunk_judged(
     let pcm: Vec<i16> = kept.samples.iter().map(|&x| to_i16(x)).collect();
     let bytes = encode_flac(&pcm, kept.sample_rate).map_err(|e| e.to_string())?;
     let last = kept.kept();
+    if last.stop == ggtts_core::engine::Stop::Abort {
+        return Err("aborted chunk cannot be saved as complete".into());
+    }
     Ok(ChunkOutput {
         bytes,
         draws: Some(Draws {
             kept: last.draw,
             count: kept.draws.len() as u32,
+            stop: Some(last.stop.as_str().to_string()),
             verdict: last.judgement.verdict.map(|v| v.as_str().to_string()),
             reads: kept
                 .readings
@@ -154,9 +158,22 @@ pub fn join_chapter(
     out: &Path,
     tags: &[(String, String)],
 ) -> Result<PathBuf, String> {
+    join_chapter_with_spans(profile, dir, plan, out, tags).map(|result| result.0)
+}
+
+/// The final level step changes values, not sample positions; gaps are excluded from each span.
+fn join_chapter_with_spans(
+    profile: &Profile,
+    dir: &Path,
+    plan: &ChapterPlan,
+    out: &Path,
+    tags: &[(String, String)],
+) -> Result<(PathBuf, u32, u64, Vec<crate::manifest::SampleSpan>), String> {
     let mut read: Vec<f32> = Vec::new();
     let mut rate = None;
+    let mut spans = Vec::with_capacity(plan.chunks.len());
     for (i, chunk) in plan.chunks.iter().enumerate() {
+        let start = read.len() as u64;
         let path = dir.join(chunk_file(i));
         let mut reader = claxon::FlacReader::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let sr = reader.streaminfo().sample_rate;
@@ -171,6 +188,11 @@ pub fn join_chapter(
             let s = s.map_err(|e| format!("{}: {e}", path.display()))?;
             read.push(s as f32 / 32768.0);
         }
+        let end = read.len() as u64;
+        if end == start {
+            return Err(format!("{}: empty chunk audio", path.display()));
+        }
+        spans.push(crate::manifest::SampleSpan { start, end });
         if i + 1 < plan.chunks.len() {
             read.extend(std::iter::repeat_n(
                 0.0,
@@ -184,7 +206,7 @@ pub fn join_chapter(
     let flac = encode_flac(&pcm, rate).map_err(|e| format!("{}: {e}", out.display()))?;
     let tagged = crate::flac::with_tags(&flac, tags).map_err(|e| format!("{}: {e}", out.display()))?;
     crate::manifest::write_atomic(out, &tagged).map_err(|e| format!("{}: {e}", out.display()))?;
-    Ok(out.to_path_buf())
+    Ok((out.to_path_buf(), rate, pcm.len() as u64, spans))
 }
 
 /// The tags a chapter FLAC carries: TITLE (the chapter), ALBUM (the book), one ARTIST per author, TRACKNUMBER (its
@@ -849,10 +871,19 @@ pub fn render_book_judged(
         let profile = *engine.profile();
         track += 1;
         let tags = chapter_tags(book, chapter, track, plan);
-        let file = join_chapter(&profile, &dir, plan, &out.join(format!("{stem}.flac")), &tags)?;
+        let (file, sample_rate, sample_count, spans) =
+            join_chapter_with_spans(&profile, &dir, plan, &out.join(format!("{stem}.flac")), &tags)?;
         let bytes = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
-        crate::manifest::Manifest::record_chapter(&dir, plan, &format!("{stem}.flac"), &bytes)
-            .map_err(|e| format!("chapter {}: {e}", chapter.id))?;
+        crate::manifest::Manifest::record_chapter_with_spans(
+            &dir,
+            plan,
+            &format!("{stem}.flac"),
+            &bytes,
+            sample_rate,
+            sample_count,
+            spans,
+        )
+        .map_err(|e| format!("chapter {}: {e}", chapter.id))?;
         reports.push(ChapterReport {
             id: chapter.id.clone(),
             outcome: ChapterOutcome::Written {
@@ -865,4 +896,202 @@ pub fn render_book_judged(
         });
     }
     Ok(reports)
+}
+
+/// Create a feedback page from a completed chapter and its verified final PCM.
+pub fn feedback_chapter(dir: &Path, page: &Path) -> Result<(), String> {
+    use ggtts_core::feedback::{from_heard_pcm, render_html, HeardChunk};
+    use ggtts_core::seed::{hex, sha256};
+    use serde_json::{json, Value};
+    use std::io::Write;
+
+    fn field<'a>(v: &'a Value, name: &str) -> Result<&'a str, String> {
+        v.get(name)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("missing {name}"))
+    }
+    fn number(v: &Value, name: &str) -> Result<u64, String> {
+        v.get(name)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("missing {name}"))
+    }
+    fn filename(s: &str) -> Result<&Path, String> {
+        let p = Path::new(s);
+        if p.components().count() != 1 || !matches!(p.components().next(), Some(std::path::Component::Normal(_))) {
+            return Err("invalid chapter filename".into());
+        }
+        Ok(p)
+    }
+    let body = crate::manifest::Manifest::read_body(dir).map_err(|e| e.to_string())?;
+    let book_id = field(&body, "book_id")?;
+    let chapter_id = field(&body, "chapter_id")?;
+    let seed_root = field(&body, "seed_root")?;
+    let chapter = body.get("chapter_file").ok_or("missing chapter file")?;
+    let path = dir
+        .parent()
+        .ok_or("chapter directory has no parent")?
+        .join(filename(field(chapter, "file")?)?);
+    let bytes = std::fs::read(&path).map_err(|e| format!("cannot read chapter: {e}"))?;
+    let hash = hex(&sha256(&bytes));
+    if field(chapter, "sha256")? != hash {
+        return Err("chapter hash mismatch".into());
+    }
+    let spans = body.get("chapter_spans").ok_or("missing chapter spans")?;
+    if field(spans, "chapter_sha256")? != hash {
+        return Err("chapter span hash mismatch".into());
+    }
+    let rate = u32::try_from(number(spans, "sample_rate")?).map_err(|_| "invalid sample rate")?;
+    let mut reader = claxon::FlacReader::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
+    let info = reader.streaminfo();
+    if info.sample_rate != rate || info.channels != 1 || info.bits_per_sample != 16 {
+        return Err("chapter audio format mismatch".into());
+    }
+    let pcm: Vec<i16> = reader
+        .samples()
+        .map(|s| i16::try_from(s.map_err(|e| e.to_string())?).map_err(|_| "invalid PCM sample".to_string()))
+        .collect::<Result<_, _>>()?;
+    if number(spans, "sample_count")? != pcm.len() as u64 {
+        return Err("chapter sample count mismatch".into());
+    }
+    let chunks = body.get("chunks").and_then(Value::as_array).ok_or("missing chunks")?;
+    let ranges = spans.get("chunks").and_then(Value::as_array).ok_or("missing spans")?;
+    if chunks.is_empty() || chunks.len() != ranges.len() {
+        return Err("chunk/span count mismatch".into());
+    }
+    let mut heard = Vec::new();
+    let mut reconstructed = vec![0.0f32; pcm.len()];
+    for (i, (c, span)) in chunks.iter().zip(ranges).enumerate() {
+        if number(c, "index")? != i as u64 || field(c, "state")? != "done" {
+            return Err("invalid chunk state".into());
+        }
+        let text = field(c, "text")?;
+        let text_hash = hex(&sha256(text.as_bytes()));
+        if field(c, "text_sha256")? != text_hash {
+            return Err("chunk text hash mismatch".into());
+        }
+        let draw = u32::try_from(number(c, "kept_draw")?).map_err(|_| "invalid kept draw")?;
+        let count = number(c, "draws")?;
+        if count != u64::from(draw) + 1 {
+            return Err("invalid draw count".into());
+        }
+        let paragraph = usize::try_from(number(c, "paragraph")?).map_err(|_| "invalid paragraph")?;
+        let chunk = usize::try_from(number(c, "chunk")?).map_err(|_| "invalid chunk index")?;
+        let key = crate::plan::SeedKey {
+            seed_root,
+            book_id,
+            chapter_id,
+            paragraph,
+            chunk,
+            draw: 0,
+            text_sha256: &text_hash,
+        };
+        if number(c, "seed")? != u64::from(crate::plan::seed(&key)) {
+            return Err("chunk seed mismatch".into());
+        }
+        let seed = u64::from(crate::plan::seed(&crate::plan::SeedKey { draw, ..key }));
+        let stop = match field(c, "kept_stop")? {
+            "eos" => ggtts_core::engine::Stop::Eos,
+            "cap" => ggtts_core::engine::Stop::Cap,
+            _ => return Err("invalid kept stop".into()),
+        };
+        let span = span.as_array().filter(|v| v.len() == 2).ok_or("invalid span")?;
+        let start = usize::try_from(span[0].as_u64().ok_or("invalid span start")?).map_err(|_| "invalid span start")?;
+        let end = usize::try_from(span[1].as_u64().ok_or("invalid span end")?).map_err(|_| "invalid span end")?;
+        if start >= end || end > pcm.len() {
+            return Err("invalid span bounds".into());
+        }
+        let output = c.get("output").ok_or("missing chunk output")?;
+        let source = dir.join(filename(field(output, "file")?)?);
+        let source_bytes = std::fs::read(&source).map_err(|e| e.to_string())?;
+        if field(output, "sha256")? != hex(&sha256(&source_bytes)) {
+            return Err("chunk audio hash mismatch".into());
+        }
+        let mut source_reader =
+            claxon::FlacReader::new(std::io::Cursor::new(source_bytes)).map_err(|e| e.to_string())?;
+        let source_info = source_reader.streaminfo();
+        if source_info.sample_rate != rate || source_info.channels != 1 || source_info.bits_per_sample != 16 {
+            return Err("chunk audio format mismatch".into());
+        }
+        let source_pcm: Vec<i32> = source_reader
+            .samples()
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        if source_pcm.len() != end - start {
+            return Err("chunk span length mismatch".into());
+        }
+        for (dst, sample) in reconstructed[start..end].iter_mut().zip(source_pcm) {
+            *dst = sample as f32 / 32768.0;
+        }
+        heard.push(HeardChunk {
+            text,
+            draw,
+            seed,
+            stop,
+            start,
+            end,
+        });
+    }
+    let profile_name = field(&body, "profile")?;
+    let profile = crate::plan::engine_profile("fake")?;
+    if profile.name != profile_name {
+        return Err("unsupported chapter profile".into());
+    }
+    level(&profile, &mut reconstructed);
+    if reconstructed
+        .iter()
+        .map(|&v| ggtts_core::flac::to_i16(v))
+        .ne(pcm.iter().copied())
+    {
+        return Err("chapter audio does not match its chunks and spans".into());
+    }
+    let id = format!("chapter-{}", &hash[..24]);
+    let render = json!({"audio":{"path":path.to_string_lossy(),"sha256":hash},
+        "book_id":book_id,"chapter_id":chapter_id,"seed_root":seed_root,
+        "engine":body.get("engine"),"settings":body.get("render")});
+    let bundle = from_heard_pcm(&pcm, rate, &heard, &id, &hash, render)?;
+    let html = render_html(&bundle.input)?;
+    let companion = PathBuf::from(format!("{}.provenance.json", page.display()));
+    if page == companion || page.exists() || companion.exists() {
+        return Err("feedback destination already exists".into());
+    }
+    let parent = page
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut staged = Vec::new();
+    for (dest, data) in [
+        (
+            companion.as_path(),
+            serde_json::to_vec_pretty(&bundle.provenance).map_err(|e| e.to_string())?,
+        ),
+        (page, html.into_bytes()),
+    ] {
+        let temp = parent.join(format!(".ggtts-feedback-{}-{}", std::process::id(), staged.len()));
+        let mut created = false;
+        let result = (|| -> Result<(), String> {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)
+                .map_err(|e| e.to_string())?;
+            created = true;
+            f.write_all(&data)
+                .and_then(|_| f.sync_all())
+                .map_err(|e| e.to_string())?;
+            std::fs::hard_link(&temp, dest).map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        if created {
+            let _ = std::fs::remove_file(&temp);
+        }
+        if let Err(e) = result {
+            for p in &staged {
+                let _ = std::fs::remove_file(p);
+            }
+            return Err(format!("cannot publish feedback: {e}"));
+        }
+        staged.push(dest.to_path_buf());
+    }
+    Ok(())
 }

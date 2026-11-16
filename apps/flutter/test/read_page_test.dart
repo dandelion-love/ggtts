@@ -21,6 +21,95 @@ class FakePrepareCancellation implements PrepareCancellation {
 }
 
 void main() {
+  testWidgets('offline preparation uses selected paths and can read', (
+    tester,
+  ) async {
+    Map<String, Object?>? observed;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ReadPage(
+          loadSettings: () async => {
+            'load': {
+              'model': '/chosen/model.gguf',
+              'codec': '/chosen/codec.gguf',
+              'offline': false,
+            },
+          },
+          prepare: (doc) async {
+            observed = doc;
+            return {
+              'schema': <String, Object?>{},
+              'capabilities': <String, Object?>{},
+            };
+          },
+        ),
+      ),
+    );
+    final offline = find.text('Prepare offline (selected or cached files)');
+    await tester.ensureVisible(offline);
+    await tester.tap(offline);
+    await tester.pumpAndSettle();
+    final load = observed!['load'] as Map;
+    expect(load['offline'], true);
+    expect(load['model'], '/chosen/model.gguf');
+    expect(load['codec'], '/chosen/codec.gguf');
+    expect(find.text('Model ready.'), findsOneWidget);
+    expect(
+      find.text('Prepare model again (download if needed)'),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, 'Speak'))
+          .onPressed,
+      isNotNull,
+    );
+  });
+
+  testWidgets(
+    'offline missing files report failure and explicit download retries',
+    (tester) async {
+      final seen = <bool>[];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ReadPage(
+            loadSettings: () async => {},
+            prepare: (doc) async {
+              final offline = (doc['load'] as Map)['offline'] as bool;
+              seen.add(offline);
+              if (offline) throw StateError('file unavailable offline');
+              return {
+                'schema': <String, Object?>{},
+                'capabilities': <String, Object?>{},
+              };
+            },
+          ),
+        ),
+      );
+      final offline = find.text('Prepare offline (selected or cached files)');
+      await tester.ensureVisible(offline);
+      await tester.tap(offline);
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('Offline preparation failed.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('file unavailable offline'), findsOneWidget);
+      expect(
+        tester
+            .widget<FilledButton>(find.widgetWithText(FilledButton, 'Speak'))
+            .onPressed,
+        isNull,
+      );
+      final download = find.text('Prepare model (download if needed)');
+      await tester.ensureVisible(download);
+      await tester.tap(download);
+      await tester.pumpAndSettle();
+      expect(seen, [true, false]);
+      expect(find.text('Model ready.'), findsOneWidget);
+    },
+  );
+
   testWidgets(
     'stop preparation waits for worker and rejects late success; retry works',
     (tester) async {
@@ -177,7 +266,10 @@ void main() {
     );
     await tester.tap(find.text('Prepare model (download if needed)'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('offline'), findsOneWidget);
+    expect(
+      tester.widget<Text>(find.byKey(const Key('error'))).data,
+      contains('offline'),
+    );
     await tester.tap(find.text('Prepare model (download if needed)'));
     await tester.pumpAndSettle();
     expect(find.text('Model ready.'), findsOneWidget);

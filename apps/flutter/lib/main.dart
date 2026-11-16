@@ -370,7 +370,7 @@ class _ReadPageState extends State<ReadPage> {
     return '${Platform.environment['HOME']}/.cache/ggtts';
   }
 
-  Future<void> _prepare() async {
+  Future<void> _prepare({bool offline = false}) async {
     setState(() {
       _busy = true;
       _preparing = true;
@@ -378,14 +378,16 @@ class _ReadPageState extends State<ReadPage> {
       _error = null;
       _caps = null;
       _schema = null;
-      _status = 'Preparing model. Download may take several minutes…';
+      _status = offline
+          ? 'Preparing model from selected and cached files...'
+          : 'Preparing model. Download may take several minutes...';
     });
     try {
       final settings = await widget.loadSettings();
       final document = composeLoadDocument(
         settings,
         await _cacheDir(),
-        offline: false,
+        offline: offline,
       );
       void onProgress(String progress) {
         // Notices may contain URLs and private cache paths. Only display the
@@ -445,7 +447,9 @@ class _ReadPageState extends State<ReadPage> {
             _status = 'Model preparation stopped.';
           } else {
             _error = error.toString();
-            _status = 'Model preparation failed. Retry to try again.';
+            _status = offline
+                ? 'Offline preparation failed. Check selected files or prepare with download.'
+                : 'Model preparation failed. Retry to try again.';
           }
         });
       }
@@ -832,8 +836,12 @@ class _ReadPageState extends State<ReadPage> {
                 child: Text(
                   _caps == null
                       ? 'Prepare model (download if needed)'
-                      : 'Prepare model again',
+                      : 'Prepare model again (download if needed)',
                 ),
+              ),
+              OutlinedButton(
+                onPressed: _busy ? null : () => _prepare(offline: true),
+                child: const Text('Prepare offline (selected or cached files)'),
               ),
               FilledButton(
                 onPressed:

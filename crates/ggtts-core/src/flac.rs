@@ -85,7 +85,7 @@ fn crc16(data: &[u8]) -> u16 {
     crc
 }
 
-/// The frame number in FLAC's UTF-8-like coding.
+/// A frame or sample number in FLAC's UTF-8-like coding.
 fn utf8_number(v: u64) -> Vec<u8> {
     if v < 0x80 {
         return vec![v as u8];
@@ -112,6 +112,9 @@ pub fn encode_flac(pcm: &[i16], sample_rate: u32) -> io::Result<Vec<u8>> {
             "sample rate out of FLAC's range",
         ));
     }
+    if (pcm.len() as u64) >= (1u64 << 36) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "too many FLAC samples"));
+    }
     let mut out = b"fLaC".to_vec();
     // STREAMINFO, the last metadata block.
     let mut si = Bits::new();
@@ -134,7 +137,7 @@ pub fn encode_flac(pcm: &[i16], sample_rate: u32) -> io::Result<Vec<u8>> {
         let mut h = Bits::new();
         h.put(0x3ffe, 14);
         h.put(0, 1);
-        h.put(0, 1); // fixed block size
+        h.put(1, 1); // variable-block stream: the header carries the first sample number
         let size_code = if block.len() == BLOCK { 0b1100 } else { 0b0111 };
         h.put(size_code, 4);
         h.put(0, 4); // sample rate from STREAMINFO
@@ -142,7 +145,7 @@ pub fn encode_flac(pcm: &[i16], sample_rate: u32) -> io::Result<Vec<u8>> {
         h.put(0b100, 3); // 16 bits per sample
         h.put(0, 1);
         let mut header = h.bytes();
-        header.extend(utf8_number(index as u64));
+        header.extend(utf8_number((index * BLOCK) as u64));
         if size_code == 0b0111 {
             header.extend(((block.len() - 1) as u16).to_be_bytes());
         }

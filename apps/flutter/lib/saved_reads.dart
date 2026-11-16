@@ -13,11 +13,30 @@ class SavedRead {
     required this.audioPath,
     required this.missing,
     required this.savedAt,
+    this.problem,
   });
   final String id, text, audioPath;
   final Map<String, Object?> options;
   final bool missing;
   final DateTime savedAt;
+
+  /// A metadata failure; invalid entries can still be explicitly removed.
+  final String? problem;
+  bool get invalid => problem != null;
+}
+
+/// A completed stage recoverable after the rendering isolate or app exits.
+class PendingReadInfo {
+  PendingReadInfo({
+    required this.token,
+    required this.text,
+    required this.options,
+    this.problem,
+  });
+  final String token, text;
+  final Map<String, Object?> options;
+  final String? problem;
+  bool get invalid => problem != null;
 }
 
 /// An app-private library; callers supply a durable application directory.
@@ -63,24 +82,104 @@ class SavedReads {
     }
   }
 
+  static Future<FileSystemEntityType> _type(String path) =>
+      FileSystemEntity.type(path, followLinks: false);
+
+  Future<void> _requireDirectory(String path) async {
+    if (await _type(path) != FileSystemEntityType.directory) {
+      throw FileSystemException('expected a real directory', path);
+    }
+  }
+
+  Future<bool> _regularFile(String path) async =>
+      await _type(path) == FileSystemEntityType.file;
+
+  Future<Map<String, dynamic>> _metadata(String path, String id) async {
+    if (!await _regularFile(path)) {
+      throw FormatException('metadata unavailable');
+    }
+    final value = jsonDecode(await File(path).readAsString());
+    if (value is! Map<String, dynamic> ||
+        value['version'] != 1 ||
+        value['id'] != id ||
+        value['text'] is! String ||
+        value['options'] is! Map<String, dynamic>) {
+      throw FormatException('invalid metadata');
+    }
+    return value;
+  }
+
+  /// Completed stages only. Never removes or assumes ownership of live stages.
+  Future<List<PendingReadInfo>> completedPending() async {
+    if (!await root.exists()) return [];
+    final result = <PendingReadInfo>[];
+    final pattern = RegExp(r'^\.([0-9a-f]{32})\.tmp$');
+    await for (final entity in root.list(followLinks: false)) {
+      if (entity is! Directory) continue;
+      final name = entity.uri.pathSegments.where((s) => s.isNotEmpty).last;
+      final match = pattern.firstMatch(name);
+      if (match == null) continue;
+      final token = match.group(1)!;
+      if (!await _regularFile('${entity.path}${Platform.pathSeparator}ready')) {
+        continue;
+      }
+      try {
+        final metadata = await _metadata(
+          '${entity.path}${Platform.pathSeparator}pending.json',
+          token,
+        );
+        if (!await _regularFile(
+          '${entity.path}${Platform.pathSeparator}audio.flac',
+        )) {
+          throw FormatException('pending audio unavailable');
+        }
+        result.add(
+          PendingReadInfo(
+            token: token,
+            text: metadata['text'] as String,
+            options: (metadata['options'] as Map).cast<String, Object?>(),
+          ),
+        );
+      } catch (e) {
+        result.add(
+          PendingReadInfo(
+            token: token,
+            text: '',
+            options: {},
+            problem: e.toString(),
+          ),
+        );
+      }
+    }
+    return result;
+  }
+
   /// Publish a completed worker's token only after the user selects Save.
   Future<SavedRead> publish(String token) async {
     if (!_idPattern.hasMatch(token)) {
       throw ArgumentError('invalid pending-read token');
     }
     final staging = Directory(_path('.$token.tmp'));
-    if (!await File('${staging.path}${Platform.pathSeparator}ready').exists()) {
+    if (await _type(staging.path) == FileSystemEntityType.notFound) {
       throw StateError('pending read is not complete');
     }
-    final metadata = jsonDecode(
-      await File('${staging.path}${Platform.pathSeparator}pending.json')
-          .readAsString(),
-    ) as Map<String, dynamic>;
-    if (metadata['version'] != 1 ||
-        metadata['id'] != token ||
-        !await File('${staging.path}${Platform.pathSeparator}audio.flac')
-            .exists()) {
-      throw FormatException('invalid pending read');
+    await _requireDirectory(staging.path);
+    if (!await _regularFile('${staging.path}${Platform.pathSeparator}ready')) {
+      throw StateError('pending read is not complete');
+    }
+    final metadata = await _metadata(
+      '${staging.path}${Platform.pathSeparator}pending.json',
+      token,
+    );
+    if (!await _regularFile(
+      '${staging.path}${Platform.pathSeparator}audio.flac',
+    )) {
+      throw FormatException('pending audio unavailable');
+    }
+    final outputMetadata = '${staging.path}${Platform.pathSeparator}read.json';
+    if (await _type(outputMetadata) != FileSystemEntityType.notFound &&
+        !await _regularFile(outputMetadata)) {
+      throw FileSystemException('unsafe metadata path', outputMetadata);
     }
     final savedAt = DateTime.now().toUtc();
     final options = (metadata['options'] as Map).cast<String, Object?>();
@@ -96,7 +195,7 @@ class SavedReads {
           }),
           flush: true,
         );
-    if (await Directory(_path(token)).exists()) {
+    if (await _type(_path(token)) != FileSystemEntityType.notFound) {
       throw StateError('saved-read ID collision');
     }
     await staging.rename(_path(token));
@@ -116,7 +215,10 @@ class SavedReads {
       throw ArgumentError('invalid pending-read token');
     }
     final staging = Directory(_path('.$token.tmp'));
-    if (await staging.exists()) await staging.delete(recursive: true);
+    final type = await _type(staging.path);
+    if (type == FileSystemEntityType.notFound) return;
+    await _requireDirectory(staging.path);
+    await staging.delete(recursive: true);
   }
 
   Future<List<SavedRead>> list() async {
@@ -126,24 +228,37 @@ class SavedReads {
       if (entity is! Directory) continue;
       final id = entity.uri.pathSegments.where((s) => s.isNotEmpty).last;
       if (!_idPattern.hasMatch(id)) continue;
-      final metadata = jsonDecode(
-        await File('${entity.path}${Platform.pathSeparator}read.json')
-            .readAsString(),
-      ) as Map<String, dynamic>;
-      if (metadata['version'] != 1 || metadata['id'] != id) {
-        throw FormatException('invalid saved read metadata: $id');
-      }
       final path = _audio(id);
-      reads.add(
-        SavedRead(
-          id: id,
-          text: metadata['text'] as String,
-          options: (metadata['options'] as Map).cast<String, Object?>(),
-          audioPath: path,
-          missing: !await File(path).exists(),
-          savedAt: DateTime.parse(metadata['saved_at'] as String),
-        ),
-      );
+      final missing = !await _regularFile(path);
+      try {
+        final metadata = await _metadata(
+          '${entity.path}${Platform.pathSeparator}read.json',
+          id,
+        );
+        final savedAt = DateTime.parse(metadata['saved_at'] as String);
+        reads.add(
+          SavedRead(
+            id: id,
+            text: metadata['text'] as String,
+            options: (metadata['options'] as Map).cast<String, Object?>(),
+            audioPath: path,
+            missing: missing,
+            savedAt: savedAt,
+          ),
+        );
+      } catch (e) {
+        reads.add(
+          SavedRead(
+            id: id,
+            text: '',
+            options: {},
+            audioPath: path,
+            missing: missing,
+            savedAt: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+            problem: e.toString(),
+          ),
+        );
+      }
     }
     reads.sort((a, b) => b.savedAt.compareTo(a.savedAt));
     return reads;
@@ -154,7 +269,10 @@ class SavedReads {
       throw ArgumentError('invalid saved-read ID');
     }
     final dir = Directory(_path(read.id));
-    if (await dir.exists()) await dir.delete(recursive: true);
+    final type = await _type(dir.path);
+    if (type == FileSystemEntityType.notFound) return;
+    await _requireDirectory(dir.path);
+    await dir.delete(recursive: true);
   }
 }
 

@@ -121,7 +121,7 @@ pub fn encode_flac(pcm: &[i16], sample_rate: u32) -> io::Result<Vec<u8>> {
     si.put(1, 1);
     si.put(0, 7);
     si.put(34, 24);
-    si.put(BLOCK as u64, 16);
+    si.put(16, 16); // variable-block lower bound (the final block may be shorter)
     si.put(BLOCK as u64, 16);
     si.put(0, 24);
     si.put(0, 24);

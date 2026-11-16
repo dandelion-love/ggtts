@@ -19,9 +19,11 @@ fn frame_start_number(bytes: &[u8], at: usize) -> (u64, usize) {
 
 #[test]
 fn variable_blocks_expose_absolute_sample_numbers_and_preserve_pcm() {
-    for len in [1usize, 4095, 4096, 4097, 8192, 23760, 32769, 131073] {
+    for len in [1usize, 15, 16, 17, 4095, 4096, 4097, 8192, 23760, 32769, 131073] {
         let pcm: Vec<i16> = (0..len).map(|i| (i as i32 * 97 % 65536 - 32768) as i16).collect();
         let flac = encode_flac(&pcm, 24000).unwrap();
+        assert_eq!(u16::from_be_bytes([flac[8], flac[9]]), 16);
+        assert_eq!(u16::from_be_bytes([flac[10], flac[11]]), 4096);
         let mut reader = claxon::FlacReader::new(Cursor::new(&flac)).unwrap();
         let info = reader.streaminfo();
         assert_eq!(info.samples, Some(len as u64));

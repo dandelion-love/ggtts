@@ -21,6 +21,9 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import java.io.File
+import java.util.concurrent.atomic.AtomicReference
+import java.security.MessageDigest
+import java.util.UUID
 
 /** Why a queued render stops, which levels of a memory trim stop one, and what the person is told. */
 object RenderStops {
@@ -71,24 +74,50 @@ class QueueWorker(
         /** A stop arrived between entries, before another entry was taken. */
         data class Halted(val reason: RenderStops.Reason) : Outcome()
         data class Done(val entry: RenderQueue.Entry, val where: String, val seconds: Double, val renderMs: Long) : Outcome()
+        data class Recovered(val entry: RenderQueue.Entry, val where: String) : Outcome()
+        data class RecoveryBlocked(val entry: RenderQueue.Entry, val reason: String) : Outcome()
         data class Failed(val entry: RenderQueue.Entry, val reason: String) : Outcome()
         data class Stopped(val entry: RenderQueue.Entry, val reason: RenderStops.Reason) : Outcome()
     }
 
-    private val stopLock = Any()
-    @Volatile
-    private var stopRequested: RenderStops.Reason? = null
+    private val stopRequested = AtomicReference<RenderStops.Reason?>(null)
 
     /** Stop the render in progress after its current chunk, for [reason]; its entry waits again. */
     fun stop(reason: RenderStops.Reason = RenderStops.Reason.PERSON) {
-        synchronized(stopLock) { if (stopRequested == null) stopRequested = reason }
+        stopRequested.compareAndSet(null, reason)
     }
 
     /** Render the next waiting entry, if any, to the end, and settle it. */
     fun step(): Outcome {
-        stopRequested?.let { return Outcome.Halted(it) }
+        stopRequested.get()?.let { return Outcome.Halted(it) }
+        queue.publications().firstOrNull()?.let { pending ->
+            val journal = sink as? JournaledReadSink
+                ?: return Outcome.RecoveryBlocked(pending, "the saved read needs publication recovery, but this sink cannot reconcile it")
+            val publication = pending.publication
+                ?: return Outcome.RecoveryBlocked(pending, "the saved publication journal is incomplete; refusing to render a possible duplicate")
+            val recovery = try {
+                when (val located = journal.locate(publication)) {
+                    is PublicationRecovery.Pending -> journal.recoverPending(publication, located.uri)
+                    else -> located
+                }
+            } catch (t: Throwable) {
+                PublicationRecovery.Unknown(t.message ?: t.javaClass.simpleName)
+            }
+            try {
+                queue.reconcilePublication(pending.id, recovery)
+            } catch (t: Throwable) {
+                return Outcome.RecoveryBlocked(pending, "could not persist publication recovery: ${t.message ?: t.javaClass.simpleName}")
+            }
+            when (recovery) {
+                is PublicationRecovery.Published -> return Outcome.Recovered(pending, recovery.uri)
+                is PublicationRecovery.Unknown -> return Outcome.RecoveryBlocked(pending, recovery.reason)
+                is PublicationRecovery.Pending -> return Outcome.RecoveryBlocked(pending, "the pending media row could not be safely reconciled")
+                PublicationRecovery.Missing -> Unit // Safe to render again; the exact journaled row is absent.
+            }
+        }
+        stopRequested.get()?.let { return Outcome.Halted(it) }
         val e = queue.take() ?: return Outcome.Idle
-        stopRequested?.let {
+        stopRequested.get()?.let {
             queue.requeue(e.id)
             return Outcome.Stopped(e, it)
         }
@@ -106,14 +135,14 @@ class QueueWorker(
             val pieces = mutableListOf<FloatArray>()
             var rate = 0
             val finished = tts.renderStream(e.text, seed) { samples, r ->
-                if (stopRequested != null) return@renderStream false
+                if (stopRequested.get() != null) return@renderStream false
                 rate = r
                 pieces += samples
                 true
             }
             val renderMs = (clock() - t0) / 1_000_000
-            if (!finished || stopRequested != null) {
-                val reason = stopRequested ?: RenderStops.Reason.PERSON
+            if (!finished || stopRequested.get() != null) {
+                val reason = stopRequested.get() ?: RenderStops.Reason.PERSON
                 queue.requeue(e.id)
                 ok = true
                 log("queue: entry ${e.id} stopped (${reason.name.lowercase()}) after ${pieces.size} chunks, $renderMs ms; nothing saved, it waits again")
@@ -123,10 +152,21 @@ class QueueWorker(
             var at = 0
             for (p in pieces) { p.copyInto(all, at); at += p.size }
             if (all.isEmpty() || rate <= 0) return fail(e, "the render made no audio")
-            val where = sink.save(Storage.queuedName(e.request.engine, now()), e.title, Flac.encode(all, rate, e.title)) { publish ->
-                synchronized(stopLock) {
-                    if (stopRequested != null) false else { publish(); true }
-                }
+            val flac = Flac.encode(all, rate, e.title)
+            val gate: (() -> Unit) -> Boolean = { publish ->
+                // This atomic read is the publication gate. A Stop observed first cancels the pending item; once the
+                // gate is passed, publication owns the item and its result is settled as DONE or FAILED. In
+                // particular, Stop never waits for a potentially slow MediaStore provider call.
+                if (stopRequested.get() != null) false else { publish(); true }
+            }
+            val where = if (sink is JournaledReadSink) {
+                val token = UUID.randomUUID().toString().replace("-", "")
+                val name = Storage.queuedName(e.request.engine, now()).removeSuffix(".flac") + "-q$token.flac"
+                val publication = Publication(name, token, sha256(flac), flac.size.toLong())
+                queue.preparePublication(e.id, publication)
+                sink.saveJournaled(name, e.title, flac, publication, gate)
+            } else {
+                sink.save(Storage.queuedName(e.request.engine, now()), e.title, flac, gate)
             }
             queue.done(e.id, where)
             ok = true
@@ -135,16 +175,26 @@ class QueueWorker(
             return Outcome.Done(e, where, seconds, renderMs)
         } catch (t: Throwable) {
             if (t is SaveCancelled) {
-                val reason = stopRequested ?: RenderStops.Reason.PERSON
+                val reason = stopRequested.get() ?: RenderStops.Reason.PERSON
                 queue.requeue(e.id)
                 ok = true
                 return Outcome.Stopped(e, reason)
+            }
+            if (queue.all.firstOrNull { it.id == e.id }?.state == RenderQueue.State.PUBLISHING) {
+                // The provider may have inserted or published before throwing. Keep the durable identity and let a
+                // later step establish the exact row state instead of creating a duplicate.
+                queue.reconcilePublication(e.id, PublicationRecovery.Unknown(t.message ?: t.javaClass.simpleName))
+                ok = true
+                return Outcome.RecoveryBlocked(e, t.message ?: t.javaClass.simpleName)
             }
             return fail(e, t.message ?: t.javaClass.simpleName)
         } finally {
             cache.done(failed = !ok)
         }
     }
+
+    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes)
+        .joinToString("") { "%02x".format(it) }
 
     private fun fail(e: RenderQueue.Entry, reason: String): Outcome {
         queue.failed(e.id, reason)
@@ -162,8 +212,19 @@ class FileQueueStore(private val file: File) : QueueStore {
     override fun write(text: String) {
         file.parentFile?.mkdirs()
         val part = File(file.path + ".part")
-        part.writeText(text)
-        if (!part.renameTo(file)) { file.delete(); part.renameTo(file) }
+        java.io.FileOutputStream(part).use { stream ->
+            stream.write(text.toByteArray(Charsets.UTF_8))
+            stream.fd.sync()
+        }
+        // Same-directory rename atomically replaces the prior journal without deleting the last known-good copy.
+        android.system.Os.rename(part.absolutePath, file.absolutePath)
+        // Sync the directory entry too: PUBLISHING must be durable before MediaStore insertion starts.
+        val dirFd = android.system.Os.open(
+            file.parentFile!!.absolutePath,
+            android.system.OsConstants.O_RDONLY,
+            0,
+        )
+        try { android.system.Os.fsync(dirFd) } finally { android.system.Os.close(dirFd) }
     }
 }
 
@@ -183,22 +244,26 @@ class RenderService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    /** Clear the waiting entries once the render in progress has stopped (the notification's Clear queue). */
-    @Volatile
-    private var clearAfterStop = false
+    /** Linearizes a notification's Clear queue with the worker's final shutdown handoff. */
+    private val clearHandoff = QueueClearHandoff()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // The notification's Stop and Clear queue: a control, never a start.
         when (intent?.action) {
             ACTION_STOP, ACTION_CLEAR -> {
+                val clearing = intent.action == ACTION_CLEAR
                 val running = thread?.isAlive == true
-                if (intent.action == ACTION_CLEAR) clearAfterStop = true
-                Log.i(MainActivity.TAG, "queue: notification ${if (intent.action == ACTION_CLEAR) "Clear queue" else "Stop"}")
-                if (running) {
+                val handedToWorker = clearing && running && clearHandoff.requestClear()
+                Log.i(MainActivity.TAG, "queue: notification ${if (clearing) "Clear queue" else "Stop"}")
+                if (clearing && !handedToWorker) {
+                    // The worker already crossed its shutdown handoff (or is not running); no future worker step will
+                    // consume this request, so this caller owns clearing the waiting entries now.
+                    Queue.get(this).clearWaiting()
+                }
+                if (running && (!clearing || handedToWorker)) {
                     worker?.stop(RenderStops.Reason.PERSON)
                     notify(RenderStops.stopping(RenderStops.Reason.PERSON, ResourceWords(this)))
                 } else {
-                    if (clearAfterStop) Queue.get(this).clearWaiting()
                     stopSelf()
                 }
                 return START_NOT_STICKY
@@ -210,11 +275,21 @@ class RenderService : Service() {
         val music = MusicFolder(this)
         val w = QueueWorker(
             queue, Reader.shared(this),
-            sink = { name, title, flac, publish -> music.save(name, Flac.MIME, title, publish = publish) { it.write(flac) }.toString() },
+            sink = object : JournaledReadSink {
+                override fun save(name: String, title: String, flac: ByteArray, publish: (() -> Unit) -> Boolean): String =
+                    music.save(name, Flac.MIME, title, publish = publish) { it.write(flac) }.toString()
+                override fun saveJournaled(name: String, title: String, flac: ByteArray, publication: Publication,
+                                           publish: (() -> Unit) -> Boolean): String =
+                    music.save(name, Flac.MIME, title, publish = publish, publication = publication) { it.write(flac) }.toString()
+                override fun locate(publication: Publication): PublicationRecovery = music.locate(publication)
+                override fun recoverPending(publication: Publication, uri: String): PublicationRecovery =
+                    music.recoverPending(publication, uri)
+            },
             seed = ggtts.Ggtts.DEFAULT_SEED,
             log = { Log.i(MainActivity.TAG, it) },
         )
         worker = w
+        clearHandoff.begin()
         thread = Thread({
             var stopped: RenderStops.Reason? = null
             while (true) {
@@ -224,10 +299,15 @@ class RenderService : Service() {
                     QueueWorker.Outcome.Busy -> Thread.sleep(15_000) // the engine is reading; try again
                     is QueueWorker.Outcome.Stopped -> { stopped = o.reason; break }
                     is QueueWorker.Outcome.Halted -> { stopped = o.reason; break }
+                    is QueueWorker.Outcome.RecoveryBlocked -> {
+                        Log.e(MainActivity.TAG, "queue: entry ${o.entry.id} remains pending; publication could not be verified: ${o.reason}")
+                        done("A saved read could not be verified. It remains queued; no duplicate was created.")
+                        break
+                    }
                     else -> Unit
                 }
             }
-            if (clearAfterStop) { queue.clearWaiting(); clearAfterStop = false }
+            if (clearHandoff.finish()) queue.clearWaiting()
             stopForeground(STOP_FOREGROUND_REMOVE)
             // What happened stays in the shade after the service has gone.
             stopped?.let { done(RenderStops.stopped(it, queue.pending, ResourceWords(this))) }

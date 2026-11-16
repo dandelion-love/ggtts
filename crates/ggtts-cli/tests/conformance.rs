@@ -76,6 +76,7 @@ const STEER: &[&str] = &[
 ];
 const TRACE: &[&str] = &["observe.trace", "observe.trace_level"];
 const CODES: &[&str] = &["observe.codes"];
+const FEEDBACK: &[&str] = &["observe.feedback_page"];
 const LAYER_STATS: &[&str] = &["observe.layer_stats", "observe.layer_stats_layers"];
 const REPORTS: &[&str] = &["observe.timing_report", "observe.duration_report"];
 const LOG: &[&str] = &["observe.log_level", "observe.log_format"];
@@ -154,6 +155,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.seed_salt", "render.edge_s"], Carried),
             (TRACE, Carried),
             (CODES, Carried),
+            (FEEDBACK, Carried),
             (LAYER_STATS, Carried),
             (REPORTS, Carried),
             (LOG, Carried),
@@ -186,6 +188,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.edge_s"], Gap(180)),
             (TRACE, Carried),
             (CODES, Carried),
+            (FEEDBACK, Carried),
             (LAYER_STATS, Carried),
             (REPORTS, Carried),
             (LOG, Carried),
@@ -212,6 +215,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.measure_timings"], Refused(BOOK_TIMINGS)),
             (TRACE, Carried),
             (CODES, Refused(BOOK_CODES)),
+            (FEEDBACK, Refused("a book does not produce a feedback page yet")),
             (LAYER_STATS, Refused("a book writes no layer statistics artifact")),
             (REPORTS, Refused(BOOK_REPORTS)),
             (LOG, Refused(BOOK_LOG)),
@@ -236,6 +240,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Carried),
             (CODES, Refused(NO_FILE)),
+            (FEEDBACK, Refused(NO_FILE)),
             (LAYER_STATS, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
@@ -274,6 +279,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Carried),
             (CODES, Refused(NO_FILE)),
+            (FEEDBACK, Refused(NO_FILE)),
             (LAYER_STATS, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
@@ -318,6 +324,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Refused(ANDROID_TRACE)),
             (CODES, Refused(NO_FILE)),
+            (FEEDBACK, Refused(NO_FILE)),
             (LAYER_STATS, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
@@ -364,6 +371,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Refused(ANDROID_TRACE)),
             (CODES, Refused(NO_FILE)),
+            (FEEDBACK, Refused(NO_FILE)),
             (LAYER_STATS, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
@@ -397,6 +405,7 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (STEER, Refused(PARITY_TOOL)),
             (TRACE, Refused(PARITY_TOOL)),
             (CODES, Refused(PARITY_TOOL)),
+            (FEEDBACK, Refused(PARITY_TOOL)),
             (LAYER_STATS, Refused(PARITY_TOOL)),
             (REPORTS, Refused(PARITY_TOOL)),
             (LOG, Refused(PARITY_TOOL)),
@@ -1050,6 +1059,66 @@ fn layer_stats_refuses_outputs_inside_instrument_report_directories() {
     }
 }
 
+#[test]
+fn feedback_page_requires_out_and_refuses_aliased_outputs() {
+    let missing = render(
+        "feedback-missing-out",
+        "text",
+        &["--stream", "-", "--feedback-page", "page.html"],
+    );
+    assert!(
+        !missing.ok && missing.stderr.contains("requires --out"),
+        "{}",
+        missing.stderr
+    );
+    let collision = render(
+        "feedback-alias",
+        "text",
+        &["--out", "page.wav", "--feedback-page", "page.flac"],
+    );
+    assert!(
+        !collision.ok && collision.stderr.contains("distinct output paths"),
+        "{}",
+        collision.stderr
+    );
+    assert!(!collision.dir.join("page.flac").exists());
+}
+
+#[test]
+fn feedback_page_refuses_raw_and_levelled_stream_before_writes() {
+    for (name, extra) in [
+        (
+            "feedback-stream-levelled",
+            vec![
+                "--out",
+                "audio.flac",
+                "--stream",
+                "stream.wav",
+                "--feedback-page",
+                "page.html",
+            ],
+        ),
+        (
+            "feedback-stream-raw",
+            vec![
+                "--out",
+                "audio.flac",
+                "--stream",
+                "stream.wav",
+                "--stream-raw",
+                "--feedback-page",
+                "page.html",
+            ],
+        ),
+    ] {
+        let r = render(name, "text", &extra);
+        assert!(!r.ok && r.stderr.contains("does not support --stream"), "{}", r.stderr);
+        for path in ["audio.flac", "stream.wav", "page.html", "page.html.provenance.json"] {
+            assert!(!r.dir.join(path).exists(), "{name}: unexpectedly wrote {path}");
+        }
+    }
+}
+
 fn render_probes() -> Vec<Probe> {
     let mut out = Vec::new();
     for mode in ["story", "text"] {
@@ -1080,6 +1149,8 @@ fn render_probes() -> Vec<Probe> {
         push("observe.trace", by_file(&r, "t.jsonl", "--trace"));
         let r = render(&p("codes"), mode, &["--codes", "c.jsonl"]);
         push("observe.codes", by_file(&r, "c.jsonl", "--codes"));
+        let r = render(&p("feedback-page"), mode, &["--feedback-page", "feedback.html"]);
+        push("observe.feedback_page", by_file(&r, "feedback.html", "--feedback-page"));
         // The fake engine refuses layer hooks; reaching that refusal proves both options reached the render.
         let r = render(
             &p("layer-stats"),
@@ -1472,6 +1543,10 @@ fn c_abi_document_probes(plain: usize) -> Vec<Probe> {
         ("observe.log_format", r#"{"observe": {"log_format": "json"}}"#),
         ("observe.codes", r#"{"observe": {"codes": "c.jsonl"}}"#),
         (
+            "observe.feedback_page",
+            r#"{"observe": {"feedback_page": "feedback.html"}}"#,
+        ),
+        (
             "observe.layer_stats",
             r#"{"observe": {"layer_stats": "layers.json", "layer_stats_layers": [0]}}"#,
         ),
@@ -1640,6 +1715,10 @@ fn python_probes() -> Vec<Probe> {
         ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
         ("observe.log_format", r#"{"observe": {"log_format": "json"}}"#),
         ("observe.codes", r#"{"observe": {"codes": "c.jsonl"}}"#),
+        (
+            "observe.feedback_page",
+            r#"{"observe": {"feedback_page": "feedback.html"}}"#,
+        ),
         (
             "observe.layer_stats",
             r#"{"observe": {"layer_stats": "layers.json", "layer_stats_layers": [0]}}"#,

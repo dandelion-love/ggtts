@@ -5,9 +5,14 @@ package ggtts.demo
 import ggtts.Pcm
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 class RenderQueueTest {
     private class Store(var text: String? = null) : QueueStore {
@@ -220,6 +225,92 @@ class RenderQueueTest {
             assertEquals(1, q.pending)
             assertEquals(if (between) 1 else 0, sink.saved.size)
         }
+    }
+
+    /**
+     * Plant: hold MediaStore publication while the notification thread requests Stop. Stop must return without waiting
+     * for provider IPC; because publication passed its gate first, success remains DONE and is never called discarded.
+     */
+    @Test
+    fun aStopDuringBlockedPublicationReturnsAndSuccessfulReadRemainsDone() {
+        val q = RenderQueue(Store())
+        q.add(request, "first")
+        val providerEntered = CountDownLatch(1)
+        val releaseProvider = CountDownLatch(1)
+        val stopReturned = CountDownLatch(1)
+        val published = AtomicBoolean(false)
+        val outcome = AtomicReference<QueueWorker.Outcome?>(null)
+        val sink = ReadSink { _, _, _, publish ->
+            if (!publish {
+                providerEntered.countDown()
+                check(releaseProvider.await(5, TimeUnit.SECONDS)) { "test did not release the provider" }
+                published.set(true)
+            }) throw SaveCancelled()
+            "content://media/1"
+        }
+        val w = QueueWorker(q, EngineCache(TtsBinding { Engine(1) }), sink, seed = 1)
+        val render = Thread { outcome.set(w.step()) }.apply { start() }
+        var stop: Thread? = null
+        var wasResponsive = false
+        try {
+            assertTrue("provider did not enter publication", providerEntered.await(5, TimeUnit.SECONDS))
+            stop = Thread { w.stop(); stopReturned.countDown() }.apply { start() }
+            wasResponsive = stopReturned.await(1, TimeUnit.SECONDS)
+            assertEquals(RenderQueue.State.RENDERING, q.all.single().state)
+            assertTrue("provider was unexpectedly released", !published.get())
+        } finally {
+            releaseProvider.countDown()
+            render.join(5000)
+            stop?.join(5000)
+        }
+        assertTrue("Stop waited for the blocked provider", wasResponsive)
+        assertTrue("render thread is still blocked", !render.isAlive)
+        assertTrue("stop thread is still blocked", stop?.isAlive != true)
+        assertTrue("publication did not complete", published.get())
+        assertTrue(outcome.get().toString(), outcome.get() is QueueWorker.Outcome.Done)
+        assertEquals(RenderQueue.State.DONE, q.all.single().state)
+        assertEquals("content://media/1", q.all.single().note)
+    }
+
+    /**
+     * Plant: the service checks its clear flag before a late Clear request, then resets the flag and stops. The
+     * handoff must either deliver the request to finish or tell the requester to clear immediately.
+     */
+    @Test
+    fun clearDuringShutdownHandoffCannotBeLost() {
+        val handoff = QueueClearHandoff()
+        handoff.begin()
+        val finishReturned = CountDownLatch(1)
+        val allowShutdown = CountDownLatch(1)
+        val queue = mutableListOf("waiting")
+        val workerCleared = AtomicBoolean(false)
+        val worker = Thread {
+            val shouldClear = handoff.finish()
+            finishReturned.countDown()
+            check(allowShutdown.await(5, TimeUnit.SECONDS))
+            if (shouldClear) {
+                queue.clear()
+                workerCleared.set(true)
+            }
+        }.apply { start() }
+        assertTrue("worker did not reach shutdown handoff", finishReturned.await(5, TimeUnit.SECONDS))
+        val accepted = handoff.requestClear()
+        if (!accepted) queue.clear()
+        allowShutdown.countDown()
+        worker.join(5000)
+        assertTrue("worker did not finish", !worker.isAlive)
+        assertTrue("late clear was lost", queue.isEmpty())
+        assertTrue("the requester must own a post-handoff clear", !accepted)
+        assertTrue("worker unexpectedly consumed a request it never received", !workerCleared.get())
+    }
+
+    @Test
+    fun clearBeforeShutdownHandoffIsConsumedByWorker() {
+        val handoff = QueueClearHandoff()
+        handoff.begin()
+        assertTrue(handoff.requestClear())
+        assertTrue(handoff.finish())
+        assertFalse(handoff.requestClear())
     }
 
     @Test

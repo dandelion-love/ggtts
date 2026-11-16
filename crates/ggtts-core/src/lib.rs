@@ -19,6 +19,7 @@ pub mod audio;
 pub mod capabilities;
 pub mod engine;
 pub mod fdpath;
+pub mod feedback;
 pub mod flac;
 pub mod gguf_meta;
 pub mod hooks;

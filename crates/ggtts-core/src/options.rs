@@ -488,6 +488,11 @@ pub const TABLE: &[Descriptor] = &[
         ..row("codes", SO, R, path(), "null")
     },
     Descriptor {
+        flags: &["--feedback-page"],
+        help: "Create an offline feedback page and provenance companion from this render; requires --out.",
+        ..row("feedback_page", SO, R, path(), "null")
+    },
+    Descriptor {
         flags: &["--layer-stats"],
         requires: Some("layer_stats_layers"),
         help: "Write selected talker layer statistics to a new artifact; requires --out, --trace and --codes.",
@@ -827,6 +832,9 @@ pub struct Observe {
     /// Where each chunk's kept codec tokens go (`ggtts-codes/1`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codes: Option<PathBuf>,
+    /// Offline feedback page destination.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feedback_page: Option<PathBuf>,
     /// Destination for the same-render layer statistics artifact.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layer_stats: Option<PathBuf>,

@@ -5,6 +5,9 @@ import java.nio.ByteOrder
 
 /** The interactive read's mono PCM16 WAV serialization. */
 object Wav {
+    fun uniqueFile(dir: java.io.File): java.io.File =
+        java.io.File(dir, java.util.UUID.randomUUID().toString() + ".wav")
+
     fun encode(samples: FloatArray, rate: Int): ByteArray {
         val data = samples.size * 2
         val b = ByteBuffer.allocate(44 + data).order(ByteOrder.LITTLE_ENDIAN)

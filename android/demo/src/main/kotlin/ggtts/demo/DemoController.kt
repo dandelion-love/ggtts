@@ -61,6 +61,7 @@ class DemoController(
     private val cache: EngineCache = EngineCache(binding, log),
     /** What it reports, in the phone's language on a phone ([ResourceWords]); English by default. */
     private val words: Words = EnglishWords,
+    private val evidenceStore: SavedEvidenceStore? = null,
 ) {
     /** A load the user was warned about; the same request again goes ahead. Main thread only. */
     private var warnedFor: LoadRequest? = null
@@ -171,8 +172,10 @@ class DemoController(
         var firstMs = -1L
         var rate = 0
         val pieces = mutableListOf<FloatArray>()
-        val finished = tts.renderStream(text, seed) { samples, sampleRate ->
-            if (stopRequested) return@renderStream false
+        val evidence = if (tts.supportsEvidence && evidenceStore != null) VerifiedWavEvidence() else null
+        var evidenceValid = true
+        val onPiece: (FloatArray, Int) -> Boolean = piece@ { samples, sampleRate ->
+            if (stopRequested) return@piece false
             if (pieces.isEmpty()) {
                 firstMs = (clock() - t0) / 1_000_000
                 rate = sampleRate
@@ -186,6 +189,24 @@ class DemoController(
                 view.showStatus(words.get(if (audio.paused) "paused_chunk" else "speaking_chunk", n, firstMs / 1000.0))
             })
             true
+        }
+        val finished = if (evidence == null) tts.renderStream(text, seed, onPiece) else {
+            try {
+                val success = tts.renderEvidence(text, seed) { i, t, s, d, stop, start, speechEnd, samples, sampleRate ->
+                    if (stopRequested) false else {
+                        if (evidenceValid) {
+                            runCatching { evidence.add(i, t, s, d, stop, start, speechEnd, samples, sampleRate) }
+                                .onFailure { evidenceValid = false; log("stream evidence unavailable: " + it.message) }
+                        }
+                        onPiece(samples, sampleRate)
+                    }
+                }
+                evidence.complete(success && evidenceValid)
+                success
+            } catch (t: Throwable) {
+                evidence.complete(false)
+                throw t
+            }
         }
         val renderMs = (clock() - t0) / 1_000_000
         if (!finished) {
@@ -204,6 +225,10 @@ class DemoController(
         val seconds = if (rate > 0) all.size.toDouble() / rate else 0.0
         val rtf = if (seconds > 0) renderMs / 1000.0 / seconds else Double.NaN
         val path = if (all.isEmpty()) null else audio.save(all, rate, request.engine)
+        if (path != null && evidence != null && evidenceValid) {
+            runCatching { evidenceStore!!.save(path, evidence) }
+                .onFailure { log("saved audio evidence unavailable: " + it.message) }
+        }
         log(
             "rendered ${request.engine}: ${all.size} samples at $rate Hz (%.2f s) in $renderMs ms, RTF %.2f, ".format(seconds, rtf) +
                 "first audio after $firstMs ms, ${pieces.size} chunks, seed $seed, wrote $path",

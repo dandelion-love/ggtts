@@ -51,6 +51,7 @@ void _inspectModelWorker(Map<String, Object?> request) {
     final handle = engine.loadWithProgress(
       Map<String, Object?>.from(request['document'] as Map),
       (notice) => port.send({'notice': notice}),
+      cancellationToken: request['token'] as int?,
     );
     Map<String, Object?> caps;
     try {
@@ -69,12 +70,13 @@ void _inspectModelWorker(Map<String, Object?> request) {
 Future<Map<String, Object?>> inspectModel(
   Map<String, Object?> document, [
   void Function(String)? onProgress,
+  int? token,
 ]) async {
   final port = ReceivePort();
   try {
     await Isolate.spawn(
       _inspectModelWorker,
-      {'port': port.sendPort, 'document': document},
+      {'port': port.sendPort, 'document': document, 'token': token},
       onError: port.sendPort,
       onExit: port.sendPort,
     );
@@ -268,11 +270,31 @@ void renderWorker(Map<String, Object?> request) async {
   );
 }
 
+abstract interface class PrepareCancellation {
+  int get token;
+  void signal();
+  void close();
+}
+
+class _NativePrepareCancellation implements PrepareCancellation {
+  _NativePrepareCancellation() : _api = CancellationApi(openGgtts()) {
+    token = _api.create();
+  }
+  final CancellationApi _api;
+  @override
+  late final int token;
+  @override
+  void signal() => _api.signal(token);
+  @override
+  void close() => _api.free(token);
+}
+
 class ReadPage extends StatefulWidget {
   const ReadPage({
     super.key,
     this.prepare,
     this.prepareWithProgress,
+    this.createPrepareCancellation,
     this.loadSettings = loadSavedSettings,
     this.controlEntry,
     this.renderEntry = renderWorker,
@@ -284,6 +306,7 @@ class ReadPage extends StatefulWidget {
     void Function(String),
   )?
   prepareWithProgress;
+  final PrepareCancellation Function()? createPrepareCancellation;
   final Future<Map<String, Object?>> Function() loadSettings;
   final void Function(SendPort)? controlEntry;
   final void Function(Map<String, Object?>) renderEntry;
@@ -302,6 +325,9 @@ class _ReadPageState extends State<ReadPage> {
   bool _paused = false;
   bool _controlPending = false;
   bool _busy = false;
+  bool _preparing = false;
+  bool _prepareStopped = false;
+  PrepareCancellation? _prepareCancellation;
   String _status = 'Prepare the model to get started.';
   String? _error;
   String? _speaker;
@@ -347,6 +373,8 @@ class _ReadPageState extends State<ReadPage> {
   Future<void> _prepare() async {
     setState(() {
       _busy = true;
+      _preparing = true;
+      _prepareStopped = false;
       _error = null;
       _caps = null;
       _schema = null;
@@ -365,18 +393,38 @@ class _ReadPageState extends State<ReadPage> {
         final match = RegExp(
           r'^[^:]*: ([0-9.]+ of [0-9.]+ MB \([0-9]+%\), [0-9.]+ MB/s)$',
         ).firstMatch(progress);
-        if (mounted && match != null) {
+        if (mounted && !_prepareStopped && match != null) {
           setState(() => _status = 'Downloading: ${match.group(1)}');
         }
       }
 
-      final result = widget.prepare != null
-          ? await widget.prepare!(document)
-          : await (widget.prepareWithProgress ?? inspectModel)(
-              document,
-              onProgress,
-            );
+      if (_prepareStopped || !mounted) {
+        if (mounted) setState(() => _status = 'Model preparation stopped.');
+        return;
+      }
+      late final Map<String, Object?> result;
+      if (widget.prepare != null) {
+        result = await widget.prepare!(document);
+      } else if (widget.prepareWithProgress != null) {
+        if (widget.createPrepareCancellation != null) {
+          _prepareCancellation = widget.createPrepareCancellation!();
+        }
+        result = await widget.prepareWithProgress!(document, onProgress);
+      } else {
+        _prepareCancellation =
+            (widget.createPrepareCancellation ??
+            _NativePrepareCancellation.new)();
+        result = await inspectModel(
+          document,
+          onProgress,
+          _prepareCancellation!.token,
+        );
+      }
       if (!mounted) return;
+      if (_prepareStopped) {
+        setState(() => _status = 'Model preparation stopped.');
+        return;
+      }
       final caps = Map<String, Object?>.from(result['capabilities'] as Map);
       final schema = Map<String, Object?>.from(result['schema'] as Map);
       final names =
@@ -391,15 +439,47 @@ class _ReadPageState extends State<ReadPage> {
         debugPrint('ggtts-read: model ready');
       });
     } catch (error) {
-      debugPrint('ggtts-read: model preparation failed: $error');
       if (mounted) {
         setState(() {
-          _error = error.toString();
-          _status = 'Model preparation failed. Retry to try again.';
+          if (_prepareStopped) {
+            _status = 'Model preparation stopped.';
+          } else {
+            _error = error.toString();
+            _status = 'Model preparation failed. Retry to try again.';
+          }
         });
       }
     } finally {
+      try {
+        _prepareCancellation?.close();
+      } catch (error) {
+        if (mounted) {
+          setState(() {
+            _caps = null;
+            _schema = null;
+            _error = error.toString();
+            _status = 'Model preparation cleanup failed.';
+          });
+        }
+      }
+      _prepareCancellation = null;
+      _preparing = false;
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _stopPreparation({bool updateUi = true}) {
+    if (!_preparing || _prepareStopped) return;
+    try {
+      _prepareCancellation?.signal();
+      _prepareStopped = true;
+      if (mounted && updateUi) {
+        setState(() => _status = 'Stopping model preparation...');
+      }
+    } catch (error) {
+      if (mounted && updateUi) {
+        setState(() => _error = 'Could not request stop: $error');
+      }
     }
   }
 
@@ -659,6 +739,7 @@ class _ReadPageState extends State<ReadPage> {
 
   @override
   void dispose() {
+    _stopPreparation(updateUi: false);
     _stopRead(updateUi: false);
     _text.dispose();
     _steering.dispose();
@@ -764,6 +845,11 @@ class _ReadPageState extends State<ReadPage> {
                     : null,
                 child: const Text('Speak'),
               ),
+              if (_preparing)
+                TextButton(
+                  onPressed: _prepareStopped ? null : _stopPreparation,
+                  child: const Text('Stop preparation'),
+                ),
               if (_busy && _control != null) ...[
                 if (!_cancellable)
                   const Text('Stop is unavailable for this engine.'),

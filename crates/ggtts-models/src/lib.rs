@@ -177,6 +177,10 @@ impl ModelFile {
 /// Opens a URL for reading. The real one is [`Http`]; tests can serve their own.
 pub trait Fetch {
     fn open(&self, url: &str) -> Result<Box<dyn Read>, String>;
+    /// Cooperative cancellation, checked before verified file publication.
+    fn cancelled(&self) -> bool {
+        false
+    }
 }
 
 /// HTTPS over ureq with rustls. Redirects are followed (the hub redirects to its CDN), but never out of HTTPS: every
@@ -620,6 +624,9 @@ impl Cache {
                 pinned.size, pinned.url
             ));
         }
+        if fetch.cancelled() {
+            return Err(format!("{name}: download cancelled; the partial file was removed"));
+        }
         out.as_ref()
             .expect("open until the rename")
             .sync_all()
@@ -635,6 +642,9 @@ impl Cache {
         // first; on Unix it stays open, and locked, through the rename.
         if cfg!(windows) {
             out = None;
+        }
+        if fetch.cancelled() {
+            return Err(format!("{name}: download cancelled; the partial file was removed"));
         }
         let renamed = fs::rename(&tmp, &path);
         drop(out);

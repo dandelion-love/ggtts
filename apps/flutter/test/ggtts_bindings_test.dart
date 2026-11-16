@@ -55,7 +55,7 @@ void main() {
   test('old native ABI refuses progress before symbol lookup', () {
     final source = File('test/fixtures/ggtts_fixture.c')
         .readAsStringSync()
-        .replaceFirst('return 7;', 'return 6;');
+        .replaceFirst('return 8;', 'return 6;');
     final path = '${temp.path}/old.c';
     final lib = '${temp.path}/old.so';
     File(path).writeAsStringSync(source);

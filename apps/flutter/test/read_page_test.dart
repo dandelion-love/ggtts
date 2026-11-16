@@ -4,7 +4,78 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:ggtts_app/main.dart';
 
+class FakePrepareCancellation implements PrepareCancellation {
+  @override
+  int get token => 1;
+  int signals = 0;
+  int closes = 0;
+  @override
+  void signal() {
+    signals++;
+  }
+
+  @override
+  void close() {
+    closes++;
+  }
+}
+
 void main() {
+  testWidgets(
+    'stop preparation waits for worker and rejects late success; retry works',
+    (tester) async {
+      final first = Completer<Map<String, Object?>>();
+      final controls = <FakePrepareCancellation>[];
+      var attempts = 0;
+      Future<Map<String, Object?>> prepare(
+        Map<String, Object?> _,
+        void Function(String) notice,
+      ) {
+        attempts++;
+        return attempts == 1
+            ? first.future
+            : Future.value({
+                'schema': <String, Object?>{},
+                'capabilities': <String, Object?>{},
+              });
+      }
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ReadPage(
+            loadSettings: () async => {},
+            prepareWithProgress: prepare,
+            createPrepareCancellation: () {
+              final control = FakePrepareCancellation();
+              controls.add(control);
+              return control;
+            },
+          ),
+        ),
+      );
+      await tester.tap(find.text('Prepare model (download if needed)'));
+      await tester.pump();
+      await tester.tap(find.text('Stop preparation'));
+      await tester.pump();
+      expect(controls.single.signals, 1);
+      expect(controls.single.closes, 0);
+      expect(find.text('Stopping model preparation...'), findsOneWidget);
+      first.complete({
+        'schema': <String, Object?>{},
+        'capabilities': <String, Object?>{},
+      });
+      await tester.pumpAndSettle();
+      expect(find.text('Model preparation stopped.'), findsOneWidget);
+      expect(find.text('Model ready.'), findsNothing);
+      expect(controls.single.closes, 1);
+      await tester.tap(find.text('Prepare model (download if needed)'));
+      await tester.pumpAndSettle();
+      expect(find.text('Model ready.'), findsOneWidget);
+      expect(controls.length, 2);
+      expect(controls.last.closes, 1);
+    },
+  );
+
   testWidgets('shows numeric download progress without private notices', (
     tester,
   ) async {

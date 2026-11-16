@@ -509,3 +509,40 @@ fn a_live_download_in_another_process_is_never_removed_and_a_killed_one_is() {
     let _ = std::fs::remove_dir_all(dir);
     let _ = std::fs::remove_dir_all(other);
 }
+
+#[test]
+fn cancelled_before_rename_removes_only_own_partial_and_retry_succeeds() {
+    use ggtts_models::Fetch;
+    use std::cell::Cell;
+    struct BeforeRename {
+        checks: Cell<u32>,
+    }
+    impl Fetch for BeforeRename {
+        fn open(&self, _: &str) -> Result<Box<dyn std::io::Read>, String> {
+            Ok(Box::new(std::io::Cursor::new(MODEL.to_vec())))
+        }
+        fn cancelled(&self) -> bool {
+            let n = self.checks.get() + 1;
+            self.checks.set(n);
+            n == 2
+        }
+    }
+    struct Retry;
+    impl Fetch for Retry {
+        fn open(&self, _: &str) -> Result<Box<dyn std::io::Read>, String> {
+            Ok(Box::new(std::io::Cursor::new(MODEL.to_vec())))
+        }
+    }
+    let root = scratch("cancel-before-rename");
+    std::fs::write(root.join("other-writer-file"), b"keep").unwrap();
+    let cache = Cache::new(root.clone());
+    let pin = pinned("model", "model.gguf", "https://example.invalid/model", MODEL);
+    let fetch = BeforeRename { checks: Cell::new(0) };
+    assert!(cache.download(&pin, &fetch, &mut |_| {}).is_err());
+    assert_eq!(fetch.checks.get(), 2);
+    assert!(!cache.path_for(&pin).exists());
+    assert_eq!(files_under(&root), vec!["other-writer-file"]);
+    assert_eq!(std::fs::read(root.join("other-writer-file")).unwrap(), b"keep");
+    assert!(cache.download(&pin, &Retry, &mut |_| {}).unwrap().is_file());
+    std::fs::remove_dir_all(root).unwrap();
+}

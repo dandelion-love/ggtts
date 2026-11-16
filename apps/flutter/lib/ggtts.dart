@@ -31,6 +31,20 @@ typedef _LoadProgressD = int Function(
   Pointer<NativeFunction<_ProgressC>>,
   Pointer<Void>,
 );
+typedef _LoadCancelC = Int32 Function(
+  Pointer<Utf8>,
+  Pointer<Uint64>,
+  Uint64,
+  Pointer<NativeFunction<_ProgressC>>,
+  Pointer<Void>,
+);
+typedef _LoadCancelD = int Function(
+  Pointer<Utf8>,
+  Pointer<Uint64>,
+  int,
+  Pointer<NativeFunction<_ProgressC>>,
+  Pointer<Void>,
+);
 typedef _PieceC = Int32 Function(Pointer<Void>, Pointer<Float>, Size, Uint32);
 typedef _RenderOptsC = Int32 Function(
   Uint64,
@@ -228,8 +242,14 @@ class Ggtts {
   /// native callback returns; it cannot cancel the load.
   int loadWithProgress(
     Map<String, Object?> options,
-    void Function(String) notice,
-  ) {
+    void Function(String) notice, {
+    int? cancellationToken,
+  }) {
+    if (cancellationToken != null && _abiVersion() < 8) {
+      throw UnsupportedError(
+        'Model preparation cancellation requires native ABI 8.',
+      );
+    }
     if (_abiVersion() < 7) {
       throw UnsupportedError(
         'Model preparation progress requires native ABI 7.',
@@ -252,7 +272,18 @@ class Ggtts {
       return using((arena) {
         final doc = jsonEncode(options).toNativeUtf8(allocator: arena);
         final handle = arena<Uint64>();
-        _check(load(doc, handle, callback.nativeFunction, nullptr));
+        final rc = cancellationToken == null
+            ? load(doc, handle, callback.nativeFunction, nullptr)
+            : _lib.lookupFunction<_LoadCancelC, _LoadCancelD>(
+                'ggtts_load_opts_cancellable',
+              )(
+                doc,
+                handle,
+                cancellationToken,
+                callback.nativeFunction,
+                nullptr,
+              );
+        _check(rc);
         return handle.value;
       });
     } finally {

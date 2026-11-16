@@ -29,3 +29,7 @@ The client creates an opaque `Idempotency-Key` per exact submission and reuses i
 Errors use `{"error":{"code":"...","message":"...","retryable":false}}`. Messages are safe to display and must not contain signed URLs or bearer tokens. `retryable` is true for transient server failures. A `403` from a signed audio URL triggers refresh; a source API `403` means authorization failed and must not be retried automatically.
 
 See [`schemas/ggtts-listening-source-1.schema.json`](../schemas/ggtts-listening-source-1.schema.json) for machine-readable shapes. The loopback fake is [`apps/flutter/test/support/listening_source_fake.dart`](../apps/flutter/test/support/listening_source_fake.dart).
+
+## Shared-page mapping
+
+The shared page marks CJK ordinal positions as pronunciation errors; each maps to a one-scalar source range with verdict reject. Item rating maps to the clip verdict. The source clip note carries a JSON object with format ggtts-shared-notes/1 and string fields page_note and item_note; both are preserved exactly. The mapper refuses any encoded note exceeding the schema limit of 4000 Unicode scalar values. The same page note is included in each item submission so each carries the complete context. The adapter derives the digest from validated canonical input bytes and checks the supplied source IDs, exact texts, and fetched-audio SHA-256 against every page item. FLAC validation checks STREAMINFO only and does not decode or certify the full audio stream.

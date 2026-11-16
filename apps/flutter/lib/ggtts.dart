@@ -39,6 +39,63 @@ typedef _RenderOptsD = int Function(
   Pointer<Size>,
   Pointer<Uint32>,
 );
+typedef _CancelNewC = Int32 Function(Pointer<Uint64>);
+typedef _CancelNewD = int Function(Pointer<Uint64>);
+typedef _CancelOpC = Int32 Function(Uint64);
+typedef _CancelOpD = int Function(int);
+typedef _CancelRenderC = Int32 Function(
+  Uint64,
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Uint64,
+  Pointer<NativeFunction<_PieceC>>,
+  Pointer<Void>,
+);
+typedef _CancelRenderD = int Function(
+  int,
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  int,
+  Pointer<NativeFunction<_PieceC>>,
+  Pointer<Void>,
+);
+
+/// One-shot native cancellation IDs. Keep each ID until its render and all
+/// outstanding signals have returned. An ABI-5 library is explicitly refused.
+class CancellationApi {
+  factory CancellationApi(DynamicLibrary lib) {
+    final abi = lib.lookupFunction<_AbiVersionC, _AbiVersionD>(
+      'ggtts_abi_version',
+    )();
+    if (abi < 6) throw UnsupportedError('Native cancellation requires ABI 6.');
+    return CancellationApi._(lib);
+  }
+
+  CancellationApi._(DynamicLibrary lib)
+    : _new = lib.lookupFunction<_CancelNewC, _CancelNewD>('ggtts_cancel_new'),
+      _signal = lib.lookupFunction<_CancelOpC, _CancelOpD>(
+        'ggtts_cancel_signal',
+      ),
+      _free = lib.lookupFunction<_CancelOpC, _CancelOpD>('ggtts_cancel_free');
+  final _CancelNewD _new;
+  final _CancelOpD _signal, _free;
+  int create() => using((arena) {
+    final out = arena<Uint64>();
+    final rc = _new(out);
+    if (rc != 0) throw StateError('Cannot create cancellation token ($rc).');
+    return out.value;
+  });
+  void signal(int id) {
+    final rc = _signal(id);
+    if (rc != 0) throw StateError('Cannot signal cancellation token ($rc).');
+  }
+
+  void free(int id) {
+    final rc = _free(id);
+    if (rc != 0) throw StateError('Cannot release cancellation token ($rc).');
+  }
+}
+
 typedef _PcmFreeC = Void Function(Pointer<Float>, Size);
 typedef _PcmFreeD = void Function(Pointer<Float>, int);
 typedef _FreeC = Int32 Function(Uint64);
@@ -81,19 +138,26 @@ DynamicLibrary openGgtts() {
   } else if (Platform.isWindows) {
     path = '$exeDir/ggtts_ffi.dll';
   } else {
-    throw UnsupportedError('ggtts is not packaged for ${Platform.operatingSystem}');
+    throw UnsupportedError(
+      'ggtts is not packaged for ${Platform.operatingSystem}',
+    );
   }
   final lib = DynamicLibrary.open(path);
-  final abi = lib.lookupFunction<_AbiVersionC, _AbiVersionD>('ggtts_abi_version')();
+  final abi = lib.lookupFunction<_AbiVersionC, _AbiVersionD>(
+    'ggtts_abi_version',
+  )();
   if (abi < requiredAbi) {
-    throw StateError('library ABI $abi is older than the $requiredAbi this app needs');
+    throw StateError(
+      'library ABI $abi is older than the $requiredAbi this app needs',
+    );
   }
   return lib;
 }
 
 class Ggtts {
   Ggtts(DynamicLibrary lib)
-    : _abiVersion = lib.lookupFunction<_AbiVersionC, _AbiVersionD>(
+    : _lib = lib,
+      _abiVersion = lib.lookupFunction<_AbiVersionC, _AbiVersionD>(
         'ggtts_abi_version',
       ),
       _loadOpts = lib.lookupFunction<_LoadOptsC, _LoadOptsD>('ggtts_load_opts'),
@@ -115,6 +179,7 @@ class Ggtts {
         'ggtts_string_free',
       );
 
+  final DynamicLibrary _lib;
   final _AbiVersionD _abiVersion;
   final _LoadOptsD _loadOpts;
   final _RenderOptsD _renderOpts;
@@ -195,8 +260,9 @@ class Ggtts {
     int handle,
     String text,
     Map<String, Object?>? options,
-    bool Function(Pcm) onPiece,
-  ) {
+    bool Function(Pcm) onPiece, {
+    int? cancellationToken,
+  }) {
     Object? callbackError;
     StackTrace? callbackStack;
     final callback = NativeCallable<_PieceC>.isolateLocal((
@@ -227,16 +293,34 @@ class Ggtts {
         final doc = options == null
             ? nullptr.cast<Utf8>()
             : jsonEncode(options).toNativeUtf8(allocator: arena);
-        final rc = _renderOpts(
-          handle,
-          t,
-          doc,
-          callback.nativeFunction,
-          nullptr,
-          nullptr,
-          nullptr,
-          nullptr,
-        );
+        final int rc;
+        if (cancellationToken == null) {
+          rc = _renderOpts(
+            handle,
+            t,
+            doc,
+            callback.nativeFunction,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+          );
+        } else {
+          if (_abiVersion() < 6) {
+            throw UnsupportedError('Native cancellation requires ABI 6.');
+          }
+          final render = _lib.lookupFunction<_CancelRenderC, _CancelRenderD>(
+            'ggtts_render_opts_cancellable',
+          );
+          rc = render(
+            handle,
+            t,
+            doc,
+            cancellationToken,
+            callback.nativeFunction,
+            nullptr,
+          );
+        }
         if (callbackError != null) {
           Error.throwWithStackTrace(callbackError!, callbackStack!);
         }

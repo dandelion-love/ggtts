@@ -223,6 +223,18 @@ mod planted {
         /// passed (a traced or hooked render): it exists to show that the trace-identity check sees an instrument that
         /// is not read-only.
         StepHookDraw,
+        /// Export the previous prefill row instead of the last one.
+        LayerCaptureWrongPrefillRow,
+        /// Label a captured output as the following layer.
+        LayerCaptureShift,
+        /// Do not export requested layer values.
+        LayerCaptureMissingExport,
+        /// Force EOS after decode step zero, then omit that EOS layer callback.
+        LayerCaptureOmitEos,
+        /// Draw once from the sampler stream after each layer callback.
+        LayerHookDraw,
+        /// Force EOS after decode step zero for termination coverage.
+        ForceEosAfterFirstDecode,
         /// The talker's named speakers dropped, as a model with none would load. It exists to show the engine's
         /// refusal when no speaker is named and the model has none to default to.
         NoSpeakers,
@@ -237,7 +249,9 @@ mod planted {
     #[cfg(feature = "plant")]
     impl Plant {
         /// `none`, `rope-normal`, `sampler-off-by-one`, `frame-hook-draw`, `instruction-after-role`,
-        /// `steer-add-missing`, `steer-layer-shift`, `steer-next-layer-too`, `step-hook-draw`, `no-speakers`,
+        /// `steer-add-missing`, `steer-layer-shift`, `steer-next-layer-too`, `step-hook-draw`,
+        /// `layer-capture-wrong-prefill-row`, `layer-capture-shift`, `layer-capture-missing-export`,
+        /// `layer-capture-omit-eos`, `layer-hook-draw`, `force-eos-after-first-decode`, `no-speakers`,
         /// `voice-speakers-only` or `no-default-speaker`.
         pub fn parse(s: &str) -> Option<Self> {
             Some(match s {
@@ -253,6 +267,12 @@ mod planted {
                 "steer-layer-shift" => Self::SteerLayerShift,
                 "steer-next-layer-too" => Self::SteerNextLayerToo,
                 "step-hook-draw" => Self::StepHookDraw,
+                "layer-capture-wrong-prefill-row" => Self::LayerCaptureWrongPrefillRow,
+                "layer-capture-shift" => Self::LayerCaptureShift,
+                "layer-capture-missing-export" => Self::LayerCaptureMissingExport,
+                "layer-capture-omit-eos" => Self::LayerCaptureOmitEos,
+                "layer-hook-draw" => Self::LayerHookDraw,
+                "force-eos-after-first-decode" => Self::ForceEosAfterFirstDecode,
                 _ => return None,
             })
         }
@@ -369,6 +389,9 @@ pub struct Generation {
 /// [`Wants`] asked for: the end-of-speech probability under the sampler's distribution, and the logits as the sampler
 /// saw them (after suppression and the repetition penalty, before temperature). Nothing unasked is computed.
 pub type StepHook<'a> = dyn FnMut(i32, i32, Option<f64>, Option<&[f32]>) + 'a;
+
+/// Called for a requested talker layer after a token is sampled, including thinking and EOS steps.
+pub type LayerHook<'a> = dyn FnMut(i32, i32, usize, bool, &[f32]) + 'a;
 
 /// Normalized EOS weight after the sampler's actual filtering, computed on a copy without using its random stream.
 fn stop_probability(logits: &[f32], eos: i32, s: Sampling) -> f64 {
@@ -945,10 +968,55 @@ impl Talker {
         max_len: i32,
         sampling: Sampling,
         steer: Option<&Steering>,
+        on_step: Option<(Wants, &mut StepHook<'_>)>,
+        on_frame: Option<&mut FrameHook<'_>>,
+    ) -> Result<Generation, EngineError> {
+        self.generate_steered_with_layers(
+            text,
+            instruction,
+            speaker,
+            language_id,
+            seed,
+            max_len,
+            sampling,
+            steer,
+            &[],
+            None,
+            on_step,
+            on_frame,
+        )
+    }
+
+    /// generate_steered while exporting selected post-residual talker layers.
+    /// Layer indices are zero-based. Selected values are borrowed for the callback only.
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate_steered_with_layers(
+        &mut self,
+        text: &str,
+        instruction: Option<&str>,
+        speaker: &str,
+        language_id: i32,
+        seed: u64,
+        max_len: i32,
+        sampling: Sampling,
+        steer: Option<&Steering>,
+        layer_indices: &[usize],
+        mut on_layer: Option<&mut LayerHook<'_>>,
         mut on_step: Option<(Wants, &mut StepHook<'_>)>,
         mut on_frame: Option<&mut FrameHook<'_>>,
     ) -> Result<Generation, EngineError> {
         sampling.check()?;
+        if !layer_indices.is_empty() && on_layer.is_none() {
+            return Err(err("talker layer outputs were requested without a layer callback"));
+        }
+        for &layer in layer_indices {
+            if layer >= self.config.n_layers as usize {
+                return Err(err(format!(
+                    "requested talker layer {layer} is out of range for {} layers",
+                    self.config.n_layers
+                )));
+            }
+        }
         self.check_instruction(instruction)?;
         let steer = self.steer_rows(steer)?;
         let c = self.config.clone();
@@ -1054,7 +1122,8 @@ impl Talker {
             )?);
         }
 
-        let (mut logits, mut hidden) = self.talker_prefill(&prefill, prefill_len, &steer)?;
+        let (mut logits, mut hidden, mut layer_outputs) =
+            self.talker_prefill(&prefill, prefill_len, &steer, layer_indices)?;
 
         let mut out = Vec::with_capacity(max_len as usize * c.n_codebooks as usize);
         let mut n_past = prefill_len;
@@ -1083,6 +1152,12 @@ impl Talker {
                 logits.fill(-1.0e9);
                 logits[0] = 1.0e9;
             }
+            #[cfg(feature = "plant")]
+            if (self.plant == Plant::ForceEosAfterFirstDecode || self.plant == Plant::LayerCaptureOmitEos) && frame == 1
+            {
+                logits.fill(f32::NEG_INFINITY);
+                logits[c.codec_eos_id as usize] = 0.0;
+            }
             let next = if sampling.temperature <= 0.0 {
                 argmax(&logits)
             } else {
@@ -1091,6 +1166,24 @@ impl Talker {
             if let Some((_, f)) = on_step.as_mut() {
                 f(frame, next, p_stop, seen.as_deref());
                 if self.plant == Plant::StepHookDraw {
+                    rng.next_uniform();
+                }
+            }
+            if let Some(f) = on_layer.as_mut() {
+                for (layer, values) in &layer_outputs {
+                    #[cfg(feature = "plant")]
+                    if self.plant == Plant::LayerCaptureOmitEos && next == c.codec_eos_id {
+                        continue;
+                    }
+                    let observed_frame = if self.plant == Plant::LayerCaptureShift {
+                        frame + 1
+                    } else {
+                        frame
+                    };
+                    f(observed_frame, next, *layer, next == c.codec_eos_id, values);
+                }
+                #[cfg(feature = "plant")]
+                if self.plant == Plant::LayerHookDraw {
                     rng.next_uniform();
                 }
             }
@@ -1121,9 +1214,10 @@ impl Talker {
                 &tts_pad[..]
             };
             let row = row.to_vec();
-            let (l, hid) = self.talker_step(&frame_codes, &row, n_past, &steer)?;
+            let (l, hid, outputs) = self.talker_step(&frame_codes, &row, n_past, &steer, layer_indices)?;
             logits = l;
             hidden = hid;
+            layer_outputs = outputs;
             n_past += 1;
         }
         Ok(Generation { codes: out, stop })
@@ -1278,6 +1372,8 @@ impl Talker {
         mask: T,
         prefill: bool,
         steer: &[(usize, T)],
+        layer_indices: &[usize],
+        layer_outputs: &mut Vec<(usize, T)>,
     ) -> T {
         let c = &self.config;
         let cache = self.cache.as_ref().unwrap();
@@ -1425,6 +1521,15 @@ impl Talker {
             if let Some(&(_, v)) = steer.iter().find(|(layer, _)| *layer == il) {
                 inp_l = g::ggml_add(ctx, inp_l, v);
             }
+            if layer_indices.contains(&il) && self.plant != Plant::LayerCaptureMissingExport {
+                g::ggml_set_output(inp_l);
+                let label = if self.plant == Plant::LayerCaptureShift {
+                    il + 1
+                } else {
+                    il
+                };
+                layer_outputs.push((label, inp_l));
+            }
         }
         g::ggml_mul(ctx, g::ggml_rms_norm(ctx, inp_l, eps), self.output_norm)
     }
@@ -1527,8 +1632,9 @@ impl Talker {
         embd: &[f32],
         n_tokens: i64,
         steer: &[(usize, Vec<f32>)],
-    ) -> Result<(Vec<f32>, Vec<f32>), EngineError> {
-        self.talker_prefill_rows(embd, n_tokens, steer, false)
+        layer_indices: &[usize],
+    ) -> Result<(Vec<f32>, Vec<f32>, Vec<(usize, Vec<f32>)>), EngineError> {
+        self.talker_prefill_rows(embd, n_tokens, steer, false, layer_indices)
     }
 
     /// [`talker_prefill`](Self::talker_prefill), returning every row's hidden state when `all_rows`.
@@ -1538,7 +1644,8 @@ impl Talker {
         n_tokens: i64,
         steer: &[(usize, Vec<f32>)],
         all_rows: bool,
-    ) -> Result<(Vec<f32>, Vec<f32>), EngineError> {
+        layer_indices: &[usize],
+    ) -> Result<(Vec<f32>, Vec<f32>, Vec<(usize, Vec<f32>)>), EngineError> {
         let h = self.config.hidden_size as i64;
         let vocab = self.config.codec_vocab_size as usize;
         let n_kv_pad = self.n_kv_pad(0, n_tokens);
@@ -1550,7 +1657,24 @@ impl Talker {
             g::ggml_set_input(inp);
             let (pos, mrope_pos, mask) = self.talker_inputs(ctx, n_tokens, n_kv_pad);
             let steer_in = self.steer_inputs(ctx, steer);
-            let hidden = self.talker_layers(ctx, gf, inp, n_tokens, n_kv_pad, pos, mrope_pos, mask, true, &steer_in);
+            let mut layer_tensors = Vec::new();
+            let hidden = self.talker_layers(
+                ctx,
+                gf,
+                inp,
+                n_tokens,
+                n_kv_pad,
+                pos,
+                mrope_pos,
+                mask,
+                true,
+                &steer_in,
+                layer_indices,
+                &mut layer_tensors,
+            );
+            for (_, tensor) in &layer_tensors {
+                g::ggml_set_output(*tensor);
+            }
             g::ggml_set_output(hidden);
             let logits = g::ggml_mul_mat(ctx, self.codec_head, hidden);
             g::ggml_set_output(logits);
@@ -1574,7 +1698,23 @@ impl Talker {
                     let first = if all_rows { 0 } else { n_tokens as usize - 1 };
                     let mut hid = vec![0f32; (n_tokens as usize - first) * h as usize];
                     g::ggml_backend_tensor_get(hidden, hid.as_mut_ptr().cast(), first * h as usize * 4, hid.len() * 4);
-                    (l, hid)
+                    let mut layers = Vec::with_capacity(layer_tensors.len());
+                    let row = if self.plant == Plant::LayerCaptureWrongPrefillRow {
+                        (n_tokens as usize - 1).saturating_sub(1)
+                    } else {
+                        n_tokens as usize - 1
+                    };
+                    for &(layer, tensor) in &layer_tensors {
+                        let mut values = vec![0f32; h as usize];
+                        g::ggml_backend_tensor_get(
+                            tensor,
+                            values.as_mut_ptr().cast(),
+                            row * h as usize * 4,
+                            values.len() * 4,
+                        );
+                        layers.push((layer, values));
+                    }
+                    (l, hid, layers)
                 },
             )
         }
@@ -1609,7 +1749,7 @@ impl Talker {
                 required,
             )?);
         }
-        Ok(self.talker_prefill_rows(embd, n_tokens as i64, &rows, true)?.1)
+        Ok(self.talker_prefill_rows(embd, n_tokens as i64, &rows, true, &[])?.1)
     }
 
     /// The number of nodes in the talker's prefill graph for `n_tokens` rows under `steer`. Test builds only: it
@@ -1638,7 +1778,21 @@ impl Talker {
             let inp = g::ggml_new_tensor_2d(ctx, g::GGML_TYPE_F32, h, n_tokens);
             let (pos, mrope_pos, mask) = self.talker_inputs(ctx, n_tokens, n_kv_pad);
             let steer_in = self.steer_inputs(ctx, &rows);
-            let hidden = self.talker_layers(ctx, gf, inp, n_tokens, n_kv_pad, pos, mrope_pos, mask, true, &steer_in);
+            let mut layer_tensors = Vec::new();
+            let hidden = self.talker_layers(
+                ctx,
+                gf,
+                inp,
+                n_tokens,
+                n_kv_pad,
+                pos,
+                mrope_pos,
+                mask,
+                true,
+                &steer_in,
+                &[],
+                &mut layer_tensors,
+            );
             let logits = g::ggml_mul_mat(ctx, self.codec_head, hidden);
             g::ggml_build_forward_expand(gf, logits);
             let n = g::ggml_graph_n_nodes(gf);
@@ -1654,7 +1808,8 @@ impl Talker {
         overlay: &[f32],
         n_past: i64,
         steer: &[(usize, Vec<f32>)],
-    ) -> Result<(Vec<f32>, Vec<f32>), EngineError> {
+        layer_indices: &[usize],
+    ) -> Result<(Vec<f32>, Vec<f32>, Vec<(usize, Vec<f32>)>), EngineError> {
         let h = self.config.hidden_size as i64;
         let vocab = self.config.codec_vocab_size as usize;
         let ncb = self.config.n_codebooks as i64;
@@ -1680,7 +1835,24 @@ impl Talker {
             cur = g::ggml_add(ctx, cur, inp_overlay);
             let (pos, mrope_pos, mask) = self.talker_inputs(ctx, 1, n_kv_pad);
             let steer_in = self.steer_inputs(ctx, steer);
-            let hidden = self.talker_layers(ctx, gf, cur, 1, n_kv_pad, pos, mrope_pos, mask, false, &steer_in);
+            let mut layer_tensors = Vec::new();
+            let hidden = self.talker_layers(
+                ctx,
+                gf,
+                cur,
+                1,
+                n_kv_pad,
+                pos,
+                mrope_pos,
+                mask,
+                false,
+                &steer_in,
+                layer_indices,
+                &mut layer_tensors,
+            );
+            for (_, tensor) in &layer_tensors {
+                g::ggml_set_output(*tensor);
+            }
             g::ggml_set_output(hidden);
             let logits = g::ggml_mul_mat(ctx, self.codec_head, hidden);
             g::ggml_set_output(logits);
@@ -1699,7 +1871,13 @@ impl Talker {
                     g::ggml_backend_tensor_get(logits, l.as_mut_ptr().cast(), 0, vocab * 4);
                     let mut hid = vec![0f32; h as usize];
                     g::ggml_backend_tensor_get(hidden, hid.as_mut_ptr().cast(), 0, h as usize * 4);
-                    (l, hid)
+                    let mut layers = Vec::with_capacity(layer_tensors.len());
+                    for &(layer, tensor) in &layer_tensors {
+                        let mut values = vec![0f32; h as usize];
+                        g::ggml_backend_tensor_get(tensor, values.as_mut_ptr().cast(), 0, values.len() * 4);
+                        layers.push((layer, values));
+                    }
+                    (l, hid, layers)
                 },
             )
         }

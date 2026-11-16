@@ -43,3 +43,20 @@ Android, and what does it cost? The answer decides the stack for the cross-platf
 **Go for Flutter, provisionally.** Every step that ran worked first time apart from the two app bugs above, and
 nothing needed per-option wiring. Two things remain before the answer is final: the Linux GUI build with playback,
 and the on-device render with playback, both of which need a person (root for packages; an unlocked phone).
+The follow-up below supersedes this provisional state.
+
+
+## Follow-up: Linux GUI and Android device
+
+On 2026-11-15, a Linux debug GUI built with Flutter 3.50.0. With the GStreamer good and PulseAudio runtime plugins
+installed, the auto-speak run logged ABI 5, a 3.89 s render at 24 kHz (load 3198 ms; render 7584 ms), then player
+start without the earlier missing-plugin exception. This log does not establish that sound reached a speaker.
+
+On an unlocked Galaxy Z Fold5, an external cache populated via adb failed with permission denied despite matching
+the talker file's SHA-256. A debug build using app-private documents storage and the same files copied there by
+`run-as` logged ABI 5 and a 3.65 s render at 24 kHz (load 12513 ms; render 78358 ms), then player start. The
+private-cache test demonstrates a working route, not the precise cause of the external-storage failure. Player
+start alone does not establish audible output. The error was displayed without an app crash.
+
+These observations support Flutter for the spike. The adb staging procedure is developer-only; model provisioning
+and playback verification remain necessary for a usable app. Times are single observations, not benchmarks.

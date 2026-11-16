@@ -102,9 +102,9 @@ class _SpikePageState extends State<SpikePage> {
     final env = Platform.environment['GGTTS_CACHE_DIR'];
     if (env != null && env.isNotEmpty) return env;
     if (Platform.isAndroid) {
-      // App-specific external storage: adb can place model files there, and the app reads them without a permission.
-      final ext = await getExternalStorageDirectory();
-      return '${ext!.path}/ggtts-cache';
+      // Use app-private storage; externally staged files failed to open on the test device.
+      final dir = await getApplicationDocumentsDirectory();
+      return '${dir.path}/ggtts-cache';
     }
     return '${Platform.environment['HOME']}/.cache/ggtts';
   }
@@ -138,8 +138,13 @@ class _SpikePageState extends State<SpikePage> {
       _busy = false;
       _status = status;
     });
-    await _player.play(DeviceFileSource(r.wav!));
-    debugPrint('ggtts-spike: playing ${r.wav}');
+    try {
+      await _player.play(DeviceFileSource(r.wav!));
+      debugPrint('ggtts-spike: playing ${r.wav}');
+    } catch (e) {
+      debugPrint('ggtts-spike: playback error $e');
+      if (mounted) setState(() => _error = 'Playback failed: $e');
+    }
   }
 
   @override

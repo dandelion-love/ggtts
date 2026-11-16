@@ -1096,6 +1096,7 @@ class DeviceAudio(private val dir: File) : AudioOut {
     override fun begin(rate: Int) = player.begin(rate)
     override fun play(samples: FloatArray) = player.play(samples)
     override fun finish() = player.finish()
+    override fun finishConfirmed() = player.finishConfirmed()
     override fun stop() = player.stop()
     override fun pause() = player.pause()
     override fun resume() = player.resume()
@@ -1126,6 +1127,7 @@ private class TrackSink(rate: Int) : PcmSink {
     // Never a blocking write: one begun just after a Stop's pause would wait for good (see StreamPlayer).
     override fun write(samples: FloatArray, offset: Int, count: Int): Int =
         track.write(samples, offset, count, AudioTrack.WRITE_NON_BLOCKING)
+    override fun playbackHead(): Long = track.playbackHeadPosition.toLong() and 0xffffffffL
     override fun pause() = track.pause()
     override fun flush() = track.flush()
     override fun stop() = track.stop()

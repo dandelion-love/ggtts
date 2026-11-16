@@ -26,6 +26,9 @@ interface AudioOut {
     /** Wait until everything queued has played. Throws if playback failed before the end (the read is not finished). */
     fun finish()
 
+    /** True only when the playback device reports all frames consumed; this does not prove a person heard them. */
+    fun finishConfirmed(): Boolean { finish(); return false }
+
     /** Drop what is queued and stop playing now. Safe from any thread, and when nothing is playing. */
     fun stop()
 
@@ -235,7 +238,12 @@ class DemoController(
         )
         // The files rendered: remember them now (the system engine can use them while this read still plays).
         onSpoke(request)
-        audio.finish()
+        try {
+            audio.finish()
+        } catch (e: PlaybackUnconfirmed) {
+            // A deliberate Stop is reported below; an unexplained failure is never read_done.
+            if (!stopRequested) throw e
+        }
         // A Stop while the last chunks play out cuts the playback short: say so, not that the read finished.
         if (stopRequested) {
             log("stopped during playback, after rendering ${pieces.size} chunks")

@@ -15,7 +15,11 @@ object Flac {
         Math.rint(x.toDouble() * 32767.0).coerceIn(Short.MIN_VALUE.toDouble(), Short.MAX_VALUE.toDouble()).toInt().toShort()
 
     /** Encode mono [samples] at [rate] Hz as a FLAC stream, with [title] as its TITLE tag when given. */
-    fun encode(samples: FloatArray, rate: Int, title: String? = null): ByteArray {
+    fun encode(samples: FloatArray, rate: Int, title: String? = null): ByteArray =
+        encodePcm16(ShortArray(samples.size) { toI16(samples[it]) }, rate, title)
+
+    /** Encode exact signed PCM16 samples, without a second float quantization. */
+    fun encodePcm16(samples: ShortArray, rate: Int, title: String? = null): ByteArray {
         require(rate in 1 until (1 shl 20)) { "sample rate $rate is out of FLAC's range" }
         val out = ByteArrayOutputStream()
         out.write("fLaC".toByteArray())
@@ -23,7 +27,10 @@ object Flac {
         // STREAMINFO, then VORBIS_COMMENT (the last metadata block).
         val si = Bits()
         si.put(0, 1); si.put(0, 7); si.put(34, 24)
-        si.put(BLOCK.toLong(), 16); si.put(BLOCK.toLong(), 16)
+        val tail = samples.size % BLOCK
+        val minBlock = if (tail == 0) minOf(BLOCK, maxOf(16, samples.size)) else maxOf(16, tail)
+        val maxBlock = minOf(BLOCK, maxOf(16, samples.size))
+        si.put(minBlock.toLong(), 16); si.put(maxBlock.toLong(), 16)
         si.put(0, 24); si.put(0, 24)
         si.put(rate.toLong(), 20)
         si.put(0, 3) // channels - 1
@@ -38,12 +45,11 @@ object Flac {
         out.write(vh.bytes())
         out.write(comment)
 
-        var index = 0L
         var at = 0
         while (at < samples.size) {
             val n = minOf(BLOCK, samples.size - at)
             val h = Bits()
-            h.put(0x3ffe, 14); h.put(0, 1); h.put(0, 1)
+            h.put(0x3ffe, 14); h.put(0, 1); h.put(1, 1) // variable-block: header carries the first sample offset
             val sizeCode = if (n == BLOCK) 0b1100 else 0b0111
             h.put(sizeCode.toLong(), 4)
             h.put(0, 4) // sample rate from STREAMINFO
@@ -52,19 +58,18 @@ object Flac {
             h.put(0, 1)
             val frame = ByteArrayOutputStream()
             frame.write(h.bytes())
-            frame.write(utf8Number(index))
+            frame.write(utf8Number(at.toLong()))
             if (sizeCode == 0b0111) { frame.write((n - 1) shr 8); frame.write((n - 1) and 0xff) }
             frame.write(crc8(frame.toByteArray()).toInt())
             frame.write(0b0000_0010) // pad bit, VERBATIM subframe, no wasted bits
             for (i in at until at + n) {
-                val s = toI16(samples[i]).toInt()
+                val s = samples[i].toInt()
                 frame.write((s shr 8) and 0xff); frame.write(s and 0xff)
             }
             val crc = crc16(frame.toByteArray())
             frame.write(crc shr 8); frame.write(crc and 0xff)
             out.write(frame.toByteArray())
             at += n
-            index++
         }
         return out.toByteArray()
     }

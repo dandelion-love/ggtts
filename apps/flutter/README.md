@@ -35,6 +35,12 @@ from a short drive mapping after a longer checkout failed.
 Initialize the repository's ggml submodule before building on any platform. Hosted Flutter packaging is opt-in via
 `GGTTS_FLUTTER_CI=enabled`; local builds are the evidence while hosted minutes are unavailable.
 
+## Playback
+
+Android uses the existing miniaudio output by default. Its software-drain wait reports handoff, not confirmed device
+presentation or audibility. The Android AudioTrack/JNI path is an experimental build-time opt-in and is not yet
+validated for routing and interruption ordering.
+
 ## Model files
 
 The explicit **Prepare model** action may download the default model when it is missing; reading uses the cache

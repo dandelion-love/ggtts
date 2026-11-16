@@ -4,7 +4,19 @@ import 'dart:typed_data';
 import 'package:jni/jni.dart';
 import 'package:mp_audio_stream/ggtts_audio_session.dart';
 
-/// Synchronous per-read output. Android uses JNI; other platforms keep miniaudio.
+/// The Android AudioTrack/JNI prototype is opt-in until its route ordering and
+/// actual Android execution are verified. Software handoff is not presentation.
+const bool experimentalAndroidPlayback = bool.fromEnvironment(
+  'GGTTS_EXPERIMENTAL_ANDROID_AUDIO',
+  defaultValue: false,
+);
+
+bool useAndroidPlaybackBridge({
+  required bool isAndroid,
+  bool experimental = experimentalAndroidPlayback,
+}) => isAndroid && experimental;
+
+/// Synchronous per-read output. All platforms default to miniaudio.
 class PlaybackSession {
   PlaybackSession._(this.id, this._native);
   final int id;
@@ -32,8 +44,8 @@ class PlaybackSession {
     }
   }
 
-  static PlaybackSession? reserve() {
-    if (!Platform.isAndroid) {
+  static PlaybackSession? reserve({bool? isAndroid}) {
+    if (!useAndroidPlaybackBridge(isAndroid: isAndroid ?? Platform.isAndroid)) {
       final native = AudioSession.reserve();
       return native == null ? null : PlaybackSession._(native.id, native);
     }
@@ -41,9 +53,12 @@ class PlaybackSession {
     return id == 0 ? null : PlaybackSession._(id, null);
   }
 
-  static PlaybackSession attach(int id) => Platform.isAndroid
+  static PlaybackSession attach(int id, {bool? isAndroid}) =>
+      useAndroidPlaybackBridge(isAndroid: isAndroid ?? Platform.isAndroid)
       ? PlaybackSession._(id, null)
       : PlaybackSession._(id, AudioSession.attach(id));
+
+  bool get usesPresentationTracking => _native == null;
 
   int init({required int sampleRate}) =>
       _native?.init(sampleRate: sampleRate) ??

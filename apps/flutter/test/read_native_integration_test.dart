@@ -5,6 +5,7 @@ import 'dart:isolate';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ggtts_app/main.dart';
+import 'package:ggtts_app/playback_session.dart';
 import 'package:ggtts_app/saved_reads.dart';
 import 'package:mp_audio_stream/ggtts_audio_session.dart';
 
@@ -131,6 +132,22 @@ void main() {
     skip: enabled && Platform.environment['GGTTS_FIXTURE_ABI'] != '5'
         ? false
         : 'Requires ABI 6 fixture via tool/test_read_native_fixture.sh',
+  );
+  test(
+    'Android default selects the existing native session',
+    () async {
+      final session = PlaybackSession.reserve(isAndroid: true);
+      expect(session, isNotNull);
+      expect(session!.usesPresentationTracking, isFalse);
+      final attached = PlaybackSession.attach(session.id, isAndroid: true);
+      expect(attached.usesPresentationTracking, isFalse);
+      expect(attached.state(), 0);
+      expect(attached.stop(), 0);
+      expect(session.release(), 0);
+    },
+    skip: enabled
+        ? false
+        : 'Requires the native fake via tool/test_read_native_fixture.sh',
   );
   test(
     'ABI 5 library renders without cancellation symbols being required',

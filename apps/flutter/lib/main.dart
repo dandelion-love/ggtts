@@ -199,7 +199,7 @@ void renderWorker(Map<String, Object?> request) async {
           cancellationToken: cancellable ? request['token'] as int : null,
         );
         if (audioReady) {
-          if (Platform.isAndroid) {
+          if (audio.usesPresentationTracking) {
             drainPresentation(
               state: audio.state,
               submitted: audio.submitted,

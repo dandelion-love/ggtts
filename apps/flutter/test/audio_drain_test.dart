@@ -1,8 +1,24 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ggtts_app/audio_drain.dart';
 import 'package:ggtts_app/pcm_queue.dart';
+import 'package:ggtts_app/playback_session.dart';
 
 void main() {
+  test(
+    'Android defaults to miniaudio and prototype requires explicit opt-in',
+    () {
+      expect(useAndroidPlaybackBridge(isAndroid: true), isFalse);
+      expect(
+        useAndroidPlaybackBridge(isAndroid: false, experimental: true),
+        isFalse,
+      );
+      expect(
+        useAndroidPlaybackBridge(isAndroid: true, experimental: true),
+        isTrue,
+      );
+    },
+  );
+
   test('waits for software handoff and does not count paused time', () {
     var tick = 0;
     final states = [1, 1, 2, 2, 1, 1];

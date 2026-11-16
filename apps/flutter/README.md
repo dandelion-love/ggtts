@@ -38,11 +38,13 @@ Initialize the repository's ggml submodule before building on any platform. Host
 ## Model files
 
 The explicit **Prepare model** action may download the default model when it is missing; reading uses the cache
-offline. Settings can instead select an engine and enter model, codec and prepared-voice file paths that the app
-can read. Blank paths use engine defaults. On Android these are filesystem paths accessible to the app, not
-`content://` document-provider links; this screen does not yet provide a system file picker, Wi-Fi-only policy,
-or resumable download. On Linux the cache is `~/.cache/ggtts` (or `GGTTS_CACHE_DIR`); on Android it is the app's
-private documents folder. For a debuggable trial build, stage the verified cache through the app's own identity
+offline. In Settings, choose an engine and select model, codec and prepared-voice files, or enter app-readable paths.
+On Linux and Windows the picker returns a filesystem path. On Android the system picker imports a private copy, with
+an 8 GiB model/codec limit and a 64 MiB voice limit. It checks the GGUF signature or JSON object prefix; the engine
+performs further validation. Picker cancellation leaves the previous setting unchanged. Unsaved copies are removed
+on a best-effort basis; a process crash or a provider that blocks indefinitely can leave an incomplete private file.
+This is not a catalogue, Wi-Fi-only policy or resumable download. On Linux the cache is `~/.cache/ggtts` (or
+`GGTTS_CACHE_DIR`); on Android it is the app's private documents folder. For a debuggable trial build, stage the verified cache through the app's own identity
 (install the APK first):
 
 ```bash

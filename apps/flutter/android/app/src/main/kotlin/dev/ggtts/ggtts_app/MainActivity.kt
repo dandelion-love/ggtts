@@ -1,6 +1,7 @@
 package dev.ggtts.ggtts_app
 
 import android.app.Dialog
+import android.content.Intent
 import android.graphics.Bitmap
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
@@ -16,16 +17,23 @@ import java.io.File
 import java.security.MessageDigest
 
 class MainActivity : FlutterActivity() {
+    private val modelPicker by lazy { ModelFilePicker(this) }
     private var active = false
     private var closeActive: (() -> Unit)? = null
 
     override fun onDestroy() {
+        modelPicker.close()
         closeActive?.invoke()
         super.onDestroy()
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "ggtts/model_picker")
+            .setMethodCallHandler { call, result ->
+                if (call.method != "pick") result.notImplemented()
+                else modelPicker.pick(call.argument<String>("kind"), result)
+            }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "ggtts/shared_feedback")
             .setMethodCallHandler { call, result ->
                 if (call.method != "open") { result.notImplemented(); return@setMethodCallHandler }
@@ -49,6 +57,12 @@ class MainActivity : FlutterActivity() {
                     result.error("host", "Feedback page unavailable", null)
                 }
             }
+    }
+
+    @Deprecated("Uses FlutterActivity's activity-result callback")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        modelPicker.result(requestCode, resultCode, data)
     }
 
     private fun showPage(page: String, digest: String, result: MethodChannel.Result) {

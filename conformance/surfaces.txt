@@ -14,6 +14,10 @@ c ggtts_render: handle, text, seed, pcm, len, rate
 c ggtts_render_stream: handle, text, seed, on_piece, user
 c ggtts_render_stream_evidence: handle, text, seed, callback, user
 c ggtts_render_document_evidence: handle, text, options_json, callback, user
+c ggtts_cancel_new: out
+c ggtts_cancel_signal: token
+c ggtts_cancel_free: token
+c ggtts_render_opts_cancellable: handle, text, options_json, token, on_piece, user
 c ggtts_pcm_free: pcm, len
 c ggtts_free: handle
 c ggtts_last_error:

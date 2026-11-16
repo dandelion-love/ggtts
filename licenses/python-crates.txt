@@ -21,6 +21,7 @@ http 1.5.0 | MIT OR Apache-2.0 | LICENSE-APACHE [8bb1b50b0e5c], LICENSE-MIT [dc9
 httparse 1.10.1 | MIT OR Apache-2.0 | LICENSE-APACHE [a60eea817514], LICENSE-MIT [1626f2c950ce]
 indoc 2.0.8 | MIT OR Apache-2.0 | LICENSE-APACHE [62c7a1e35f56], LICENSE-MIT [23f18e03dc49]
 itoa 1.0.18 | MIT OR Apache-2.0 | LICENSE-APACHE [62c7a1e35f56], LICENSE-MIT [23f18e03dc49]
+language-tags 0.3.2 | MIT/Apache-2.0 | LICENSE [e03e58ea9205]
 lazy_static 1.5.1 | MIT OR Apache-2.0 | LICENSE-APACHE [a60eea817514], LICENSE-MIT [23f18e03dc49]
 libc 0.2.191 | MIT OR Apache-2.0 | LICENSE-APACHE [62c7a1e35f56], LICENSE-MIT [123a331b5dbf]
 libm 0.2.16 | MIT | LICENSE.txt [3823dda7cf04]
@@ -1620,6 +1621,28 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
    of your accepting any such warranty or additional liability.
 
 END OF TERMS AND CONDITIONS
+
+== Text [e03e58ea9205], for: language-tags 0.3.2 ==
+
+Copyright (c) 2015 Pyfisch
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
 
 == Text [123a331b5dbf], for: libc 0.2.191 ==
 

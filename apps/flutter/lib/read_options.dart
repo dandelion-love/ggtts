@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 /// Combine saved options with the explicit action's cache, offline and voice choices.
 Map<String, Object?> composeLoadDocument(
@@ -6,10 +7,14 @@ Map<String, Object?> composeLoadDocument(
   String cacheDir, {
   bool offline = true,
   String? speaker,
+  bool? isAndroid,
 }) {
   final doc = Map<String, Object?>.from(jsonDecode(jsonEncode(saved)) as Map);
   final load = Map<String, Object?>.from((doc['load'] as Map?) ?? {});
   load.putIfAbsent('cache_dir', () => cacheDir);
+  if (isAndroid ?? Platform.isAndroid) {
+    load.putIfAbsent('threads', () => 4);
+  }
   load['offline'] = offline;
   if (speaker != null && speaker.isNotEmpty) load['speaker'] = speaker;
   doc['load'] = load;

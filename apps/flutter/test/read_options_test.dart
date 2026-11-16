@@ -9,6 +9,19 @@ void main() {
     expect(load['offline'], false);
     expect(load['speaker'], 'voice');
   });
+  test('Android defaults to four threads and preserves explicit values', () {
+    final defaultDoc = composeLoadDocument({}, '/cache', isAndroid: true);
+    expect((defaultDoc['load'] as Map)['threads'], 4);
+    final saved = <String, Object?>{
+      'load': <String, Object?>{'threads': 7},
+    };
+    final explicit = composeLoadDocument(saved, '/cache', isAndroid: true);
+    expect((explicit['load'] as Map)['threads'], 7);
+    expect((saved['load'] as Map)['threads'], 7);
+    final other = composeLoadDocument({}, '/cache', isAndroid: false);
+    expect((other['load'] as Map).containsKey('threads'), isFalse);
+  });
+
   test('render sends a shared streaming document and omits blank steering', () {
     expect(renderOptions()['output'], {'stream': 'raw'});
     expect(

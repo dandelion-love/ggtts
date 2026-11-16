@@ -4,6 +4,9 @@ import argparse
 import base64
 import binascii
 import json
+import hashlib
+import os
+import tempfile
 import re
 from pathlib import Path
 
@@ -61,10 +64,18 @@ def validate_input(doc):
             raise ValueError("FLAC sample rate and sample count must be nonzero")
     return doc
 
+def canonical_input(source):
+    validate_input(source)
+    return (json.dumps(source, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+            .replace("<", r"\u003c").replace(">", r"\u003e").replace("&", r"\u0026"))
+
+def input_digest(source):
+    return hashlib.sha256(canonical_input(source).encode("utf-8")).hexdigest()
+
 def validate_result(result, source):
     validate_input(source)
-    _object(result, ("format", "id", "note", "items"), "result")
-    if result["format"] != RESULT_FORMAT or result["id"] != source["id"]:
+    _object(result, ("format", "id", "input_sha256", "note", "items"), "result")
+    if result["format"] != RESULT_FORMAT or result["id"] != source["id"] or result["input_sha256"] != input_digest(source):
         raise ValueError("result format or input id mismatch")
     if not isinstance(result["note"], str) or not isinstance(result["items"], list):
         raise ValueError("invalid result note or items")
@@ -91,8 +102,26 @@ def generate(source, template=None):
     page = (template if template is not None else TEMPLATE.read_text(encoding="utf-8"))
     if page.count(MARKER) != 1:
         raise ValueError("template must contain exactly one input marker")
-    data = json.dumps(source, ensure_ascii=True, separators=(",", ":")).replace("<", r"\u003c").replace(">", r"\u003e").replace("&", r"\u0026")
-    return page.replace(MARKER, '<script id="feedback-input" type="application/json">' + data + '</script>')
+    data = canonical_input(source)
+    digest = input_digest(source)
+    embedded = '<meta name="feedback-input-sha256" content="' + digest + '">'
+    embedded += '<script id="feedback-input" type="application/json">' + data + '</script>'
+    return page.replace(MARKER, embedded)
+
+def publish(path, page):
+    """Write a complete sibling then publish without replacing an existing path."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n",
+                dir=path.parent, prefix=".feedback-", delete=False) as out:
+            temporary = out.name
+            out.write(page)
+            out.flush()
+            os.fsync(out.fileno())
+        os.link(temporary, path)
+    finally:
+        if temporary is not None:
+            os.unlink(temporary)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -108,8 +137,7 @@ def main():
         source = json.loads(args.input.read_text(encoding="utf-8"))
         if args.command == "build":
             page = generate(source)
-            with args.output.open("x", encoding="utf-8", newline="\n") as out:
-                out.write(page)
+            publish(args.output, page)
         else:
             validate_result(json.loads(args.result.read_text(encoding="utf-8")), source)
     except (OSError, ValueError, TypeError, KeyError) as exc:

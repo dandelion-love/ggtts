@@ -12,7 +12,7 @@ An input has `format`, `id`, and a nonempty `items` array. Each item has
 `data:audio/flac;base64,...` URI. The generator checks base64 and a complete FLAC STREAMINFO header with
 nonzero sample rate and count; it does not decode the audio or certify its integrity.
 
-A result has `format`, the same page `id`, a page `note`, and one item
+A result has `format`, the same page `id`, `input_sha256`, a page `note`, and one item
 for every input item. Each result item has `id`, `marks`, `rating`
 (`accept`, `reject`, or `unsure`) and `note`. Marks are unique,
 zero-based indices into the text's CJK scalar values, not UTF-16 offsets or
@@ -29,7 +29,16 @@ python3 scripts/feedback_page.py check-result input.json result.json
 python3 -m unittest scripts.test_feedback_page
 ```
 
-The build refuses an existing destination. It inlines the supplied audio and
+The input digest is SHA-256 of the exact UTF-8 bytes of the embedded JSON: Python
+`json.dumps(input, ensure_ascii=True, sort_keys=True, separators=(",", ":"))`,
+then replace literal `<`, `>` and `&` with the JSON escapes `\u003c`,
+`\u003e` and `\u0026`, respectively. The generator embeds that digest and
+the page verifies it before restoring a draft or accepting a result. Thus the same
+ID with different text or audio cannot reuse old marks.
+
+The build writes a temporary sibling, flushes it, and publishes by a no-clobber
+hard link; unsupported filesystems fail rather than exposing a partial page.
+It refuses an existing destination. It inlines the supplied audio and
 escaped JSON in the local template; input strings cannot terminate the JSON
 script element. Schema validation alone cannot compare a result against its
 input text, so use `check-result` to check identity, item completeness and

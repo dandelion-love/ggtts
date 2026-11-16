@@ -2,7 +2,10 @@ import base64
 import copy
 import unittest
 
-from scripts.feedback_page import generate, validate_input, validate_result
+from scripts.feedback_page import generate, input_digest, publish, validate_input, validate_result
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 def source():
     return {"format":"ggtts-feedback-input/1","id":"test-1","items":[
@@ -10,7 +13,7 @@ def source():
     ]}
 
 def result():
-    return {"format":"ggtts-feedback-result/1","id":"test-1","note":"","items":[
+    return {"format":"ggtts-feedback-result/1","id":"test-1","input_sha256":input_digest(source()),"note":"","items":[
         {"id":"clip-1","marks":[0,1,2],"rating":"unsure","note":"note"}
     ]}
 
@@ -37,6 +40,33 @@ class ContractTest(unittest.TestCase):
             if mutation=="rating": bad["items"][0]["rating"]="unknown"
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 validate_result(bad,source())
+
+    def test_same_id_changed_text_and_audio_refused(self):
+        for field in ("text", "audio"):
+            changed = source()
+            if field == "text": changed["items"][0][field] += "x"
+            else:
+                import base64
+                raw = base64.b64decode(changed["items"][0][field].split(",", 1)[1])
+                changed["items"][0][field] = "data:audio/flac;base64," + base64.b64encode(raw + b"x").decode()
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                validate_result(result(), changed)
+
+    def test_publish_failure_and_existing_destination_are_safe(self):
+        with TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "page.html"
+            dest.write_text("existing")
+            with self.assertRaises(FileExistsError):
+                publish(dest, "new")
+            self.assertEqual(dest.read_text(), "existing")
+            dest.unlink()
+            with patch("scripts.feedback_page.os.link", side_effect=OSError("planted failure")):
+                with self.assertRaises(OSError):
+                    publish(dest, "new")
+            self.assertFalse(dest.exists())
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+            publish(dest, "complete")
+            self.assertEqual(dest.read_text(), "complete")
 
     def test_audio_external_invalid_and_non_flac_refused(self):
         for audio in ("https://example.invalid/a.flac","data:audio/flac;base64,!!!","data:audio/flac;base64,QUJD","data:audio/flac;base64,ZkxhQw=="):

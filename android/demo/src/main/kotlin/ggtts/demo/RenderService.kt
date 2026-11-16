@@ -116,7 +116,7 @@ class QueueWorker(
                 val reason = stopRequested ?: RenderStops.Reason.PERSON
                 queue.requeue(e.id)
                 ok = true
-                log("queue: entry ${e.id} stopped (${reason.name.lowercase()}) after ${pieces.size} chunks, $renderMs ms; nothing saved, it waits again")
+                log("queue_render outcome=interrupted elapsed_ms=$renderMs chunks=${pieces.size}")
                 return Outcome.Stopped(e, reason)
             }
             val all = FloatArray(pieces.sumOf { it.size })
@@ -131,7 +131,7 @@ class QueueWorker(
             queue.done(e.id, where)
             ok = true
             val seconds = all.size.toDouble() / rate
-            log("queue: entry ${e.id} rendered %.2f s of audio in $renderMs ms (RTF %.2f), saved to $where".format(seconds, renderMs / 1000.0 / seconds))
+            log("queue_render outcome=ok elapsed_ms=$renderMs")
             return Outcome.Done(e, where, seconds, renderMs)
         } catch (t: Throwable) {
             if (t is SaveCancelled) {
@@ -148,7 +148,7 @@ class QueueWorker(
 
     private fun fail(e: RenderQueue.Entry, reason: String): Outcome {
         queue.failed(e.id, reason)
-        log("queue: entry ${e.id} failed: $reason")
+        log("queue_render outcome=failure")
         return Outcome.Failed(e, reason)
     }
 }
@@ -324,7 +324,7 @@ class RenderService : Service() {
             if (Queue.get(context).pending == 0) return
             val i = Intent(context, RenderService::class.java)
             runCatching { if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i) else context.startService(i) }
-                .onFailure { Log.w(MainActivity.TAG, "queue: could not start the render service: $it") }
+                .onFailure { Log.w(MainActivity.TAG, "queue_service outcome=start_failure") }
         }
     }
 }

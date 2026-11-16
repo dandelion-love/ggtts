@@ -67,6 +67,7 @@ class DemoController(
     private val cache: EngineCache = EngineCache(binding, log),
     /** What it reports, in the phone's language on a phone ([ResourceWords]); English by default. */
     private val words: Words = EnglishWords,
+    private val diagnostics: DiagnosticLog = DiagnosticLog(log),
     private val evidenceStore: SavedEvidenceStore? = null,
 ) {
     /** A load the user was warned about; the same request again goes ahead. Main thread only. */
@@ -90,7 +91,7 @@ class DemoController(
             val (available, low) = memory()
             EngineCosts.memoryWarning(request.engine, available, low, words)?.let {
                 warnedFor = request
-                log("memory warning: $it")
+                log("memory_warning outcome=shown")
                 view.showError(it)
                 return
             }
@@ -105,19 +106,19 @@ class DemoController(
                 Result.success(run(request, text, seed))
             } catch (e: GgttsException) {
                 audio.stop()
-                log("error ${e.code}: ${e.message}")
+                log("render outcome=binding_failure code=${e.code}")
                 Result.failure(IllegalStateException("ggtts error ${e.code}: ${e.message}"))
             } catch (e: EngineInUse) {
-                log("refused: ${e.message}")
+                log("render outcome=busy")
                 Result.failure(IllegalStateException(words.get("not_started", e.message ?: "")))
             } catch (e: RuntimeException) {
                 audio.stop()
-                log("error: $e")
+                log("render outcome=failure")
                 Result.failure(IllegalStateException("${e.javaClass.simpleName}: ${e.message}"))
             } catch (e: Throwable) {
                 // An Error (out of memory, say) too: shown, and the screen is left usable rather than busy for good.
                 runCatching { audio.stop() }
-                log("error: $e")
+                log("render outcome=failure")
                 Result.failure(IllegalStateException("${e.javaClass.simpleName}: ${e.message}"))
             }
             main(Runnable {
@@ -202,7 +203,7 @@ class DemoController(
                     if (stopRequested) false else {
                         if (evidenceValid) {
                             runCatching { evidence.add(i, t, s, d, stop, start, speechEnd, samples, sampleRate) }
-                                .onFailure { evidenceValid = false; log("stream evidence unavailable: " + it.message) }
+                                .onFailure { evidenceValid = false; log("stream_evidence outcome=invalid") }
                         }
                         onPiece(samples, sampleRate)
                     }
@@ -232,24 +233,34 @@ class DemoController(
         val rtf = if (seconds > 0) renderMs / 1000.0 / seconds else Double.NaN
         val path = if (all.isEmpty()) null else audio.save(all, rate, request.engine)
         if (path != null && evidence != null && evidenceValid) {
+            val event = diagnostics.start(DiagnosticStage.EVIDENCE)
             runCatching { evidenceStore!!.save(path, evidence) }
-                .onFailure { log("saved audio evidence unavailable: " + it.message) }
+                .onSuccess { event.finish(DiagnosticOutcome.OK) }
+                .onFailure { event.finish(DiagnosticOutcome.INVALID) }
         }
         log(
-            "rendered ${request.engine}: ${all.size} samples at $rate Hz (%.2f s) in $renderMs ms, RTF %.2f, ".format(seconds, rtf) +
-                "first audio after $firstMs ms, ${pieces.size} chunks, seed $seed, wrote $path",
+            "render outcome=ok samples=${all.size} rate=$rate elapsed_ms=$renderMs first_audio_ms=$firstMs chunks=${pieces.size}",
         )
         // The files rendered: remember them now (the system engine can use them while this read still plays).
         onSpoke(request)
         var playbackConfirmed = false
+        val playbackEvent = diagnostics.start(DiagnosticStage.PLAYBACK)
         try {
             if (path != null && evidence != null && evidenceValid && audio.supportsPlaybackConfirmation) {
                 playbackConfirmed = audio.finishConfirmed()
                 if (!playbackConfirmed && !stopRequested) throw PlaybackUnconfirmed()
-            } else audio.finish()
+                playbackEvent.finish(if (playbackConfirmed) DiagnosticOutcome.OK else DiagnosticOutcome.INTERRUPTED)
+            } else {
+                audio.finish()
+                playbackEvent.finish(DiagnosticOutcome.UNSUPPORTED)
+            }
         } catch (e: PlaybackUnconfirmed) {
+            playbackEvent.finish(if (stopRequested) DiagnosticOutcome.INTERRUPTED else DiagnosticOutcome.FAILURE)
             // A deliberate Stop is reported below; an unexplained failure is never read_done.
             if (!stopRequested) throw e
+        } catch (e: Throwable) {
+            playbackEvent.finish(DiagnosticOutcome.FAILURE)
+            throw e
         }
         // A Stop while the last chunks play out cuts the playback short: say so, not that the read finished.
         if (stopRequested) {
@@ -258,7 +269,7 @@ class DemoController(
         }
         if (playbackConfirmed && path != null) {
             runCatching { evidenceStore!!.markPlaybackComplete(path) }
-                .onFailure { log("playback completion unavailable: " + it.message) }
+                .onFailure { log("completion_publish outcome=failure") }
         }
         return words.get("read_done", request.engine, seconds, renderMs / 1000.0, rtf, firstMs / 1000.0, path)
     }

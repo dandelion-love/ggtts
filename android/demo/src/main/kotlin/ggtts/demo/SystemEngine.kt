@@ -165,23 +165,23 @@ class SynthesisSession(
         val request = voices.load(name) ?: run {
             val why = voices.unusable(name)
             if (why != null) {
-                log("system engine: the saved $name voice is unusable: $why; speak once with it in the demo")
+                log("system_engine outcome=voice_unusable")
                 return out.error(TtsCodes.ERROR_INVALID_REQUEST)
             }
-            log("system engine: no model files known for $name; speak once with it in the demo")
+            log("system_engine outcome=voice_missing")
             return out.error(TtsCodes.ERROR_NOT_INSTALLED_YET)
         }
         val tts = try {
             cache.acquire(request)
         } catch (e: EngineInUse) {
-            log("system engine: ${e.message}")
+            log("system_engine outcome=busy")
             return out.error(TtsCodes.ERROR_SERVICE)
         } catch (e: GgttsException) {
             if (refused(name, e)) return out.error(TtsCodes.ERROR_INVALID_REQUEST)
-            log("system engine: load failed ${e.code}: ${e.message}")
+            log("system_engine_load outcome=failure")
             return out.error(TtsCodes.ERROR_NOT_INSTALLED_YET)
         } catch (e: RuntimeException) {
-            log("system engine: load failed: $e")
+            log("system_engine_load outcome=failure")
             return out.error(TtsCodes.ERROR_NOT_INSTALLED_YET)
         }
         var ok = false
@@ -200,7 +200,7 @@ class SynthesisSession(
         val key = e.key
         if (e.code != Ggtts.ERR_ARG || key == null) return false
         voices.refuse(engine, e.message ?: key)
-        log("system engine: the saved $engine voice is unusable: the binding refused $key: ${e.message}")
+        log("system_engine outcome=voice_unusable")
         return true
     }
 
@@ -228,11 +228,11 @@ class SynthesisSession(
                 out.error(TtsCodes.ERROR_INVALID_REQUEST)
                 return false
             }
-            log("system engine: render failed ${e.code}: ${e.message}")
+            log("system_engine_render outcome=failure")
             out.error(TtsCodes.ERROR_SYNTHESIS)
             return false
         } catch (e: RuntimeException) {
-            log("system engine: render failed: $e")
+            log("system_engine_render outcome=failure")
             out.error(TtsCodes.ERROR_SYNTHESIS)
             return false
         }

@@ -28,7 +28,7 @@ class EngineCache(private val binding: TtsBinding, private val log: (String) -> 
         try {
             val t0 = System.nanoTime()
             val e = binding.load(request)
-            log("loaded ${request.engine} in ${(System.nanoTime() - t0) / 1_000_000} ms: ${request.options.toJson()}")
+            log("engine_load outcome=ok elapsed_ms=${(System.nanoTime() - t0) / 1_000_000}")
             synchronized(this) {
                 engine = e
                 loaded = request
@@ -59,7 +59,7 @@ class EngineCache(private val binding: TtsBinding, private val log: (String) -> 
     @Synchronized
     fun release(): Boolean {
         if (inUse) {
-            log("release refused: ${loaded?.engine} is reading")
+            log("engine_release outcome=busy")
             return false
         }
         closeHeld()
@@ -68,7 +68,7 @@ class EngineCache(private val binding: TtsBinding, private val log: (String) -> 
 
     private fun closeHeld() {
         engine?.let {
-            log("released ${loaded?.engine}")
+            log("engine_release outcome=ok")
             it.close()
         }
         engine = null

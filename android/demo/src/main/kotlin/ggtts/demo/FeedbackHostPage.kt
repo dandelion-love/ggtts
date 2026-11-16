@@ -25,7 +25,7 @@ internal fun feedbackHostPage(template: String, input: PreparedFeedbackInput): S
 """ + page.substring(persistEnd)
     val start = page.indexOf("        const blob = new Blob(")
     val end = page.indexOf("        notify('Feedback exported.');", start)
-    check(start >= 0 && end > start)
+    check(start >= 0 && end > start && page.indexOf("        const blob = new Blob(", start + 1) < 0 && page.lastIndexOf("        notify('Feedback exported.');") == end)
     page = page.substring(0, start) +
         "        if (!FeedbackHost.save(JSON.stringify(state))) throw new Error('Could not save feedback.');\n" +
         page.substring(end).once("notify('Feedback exported.');", "notify('Feedback saved.');")

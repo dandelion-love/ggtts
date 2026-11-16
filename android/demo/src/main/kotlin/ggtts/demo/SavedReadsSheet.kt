@@ -11,6 +11,12 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.webkit.WebView
+import android.app.Dialog
+import java.io.File
+import java.lang.ref.WeakReference
+import android.os.Handler
+import android.os.Looper
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.R as M
@@ -31,6 +37,8 @@ class SavedReadsSheet(
         val reads = library.list()
         Log.i(MainActivity.TAG, "saved reads: ${reads.size} (${reads.count { it.owned }} this install's)")
         val d = BottomSheetDialog(activity)
+        val handler = Handler(Looper.getMainLooper())
+        val tasks = FeedbackTaskSession(post = { handler.post(it) })
         val col = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(24)) }
         col.addView(TextView(activity).apply {
             text = "Saved reads"; setTextAppearance(M.style.TextAppearance_Material3_TitleLarge)
@@ -51,12 +59,60 @@ class SavedReadsSheet(
                 setOnClickListener { d.dismiss(); pickFolder() }
             })
         }
+        val privateDir = File(activity.getExternalFilesDir(null) ?: activity.filesDir, "out")
+        val privateReads = privateDir.listFiles()?.filter { it.isFile && it.extension.equals("wav", true) }
+            ?.sortedByDescending { it.lastModified() } ?: emptyList()
+        val checks = mutableListOf<Triple<File, TextView, MaterialButton>>()
+        if (privateReads.isNotEmpty()) {
+            col.addView(TextView(activity).apply {
+                text = activity.getString(R.string.feedback_private_reads)
+                setTextAppearance(M.style.TextAppearance_Material3_TitleMedium)
+            })
+            for (audio in privateReads) {
+                val line = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+                val status = TextView(activity).apply {
+                    text = activity.getString(R.string.feedback_checking)
+                    setTextAppearance(M.style.TextAppearance_Material3_BodySmall)
+                }
+                line.addView(TextView(activity).apply { text = audio.name })
+                line.addView(status)
+                val button = MaterialButton(activity, null, M.attr.materialButtonOutlinedStyle).apply {
+                    text = activity.getString(R.string.feedback_open)
+                    isEnabled = false
+                }
+                val weakDialog = WeakReference(d)
+                val weakButton = WeakReference(button)
+                val gate = FeedbackOpenGate { enabled ->
+                    if (weakDialog.get()?.isShowing == true) weakButton.get()?.isEnabled = enabled
+                }
+                button.setOnClickListener {
+                    if (gate.begin()) openFeedback(audio, d, tasks, gate)
+                }
+                line.addView(button)
+                col.addView(line)
+                checks.add(Triple(audio, status, button))
+            }
+        }
         val list = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
         for (r in reads) list.addView(row(r, d))
         col.addView(ScrollView(activity).apply { addView(list) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         d.setContentView(col)
-        d.setOnDismissListener { player?.release(); player = null }
+        d.setOnDismissListener { tasks.close(); player?.release(); player = null }
         d.show()
+        for ((audio, status, button) in checks) {
+            val weakDialog = WeakReference(d)
+            val weakStatus = WeakReference(status)
+            val weakButton = WeakReference(button)
+            val weakActivity = WeakReference(activity)
+            tasks.submit({ FeedbackReadSelector().eligible(audio) }) { eligible ->
+                val owner = weakActivity.get()
+                val sheet = weakDialog.get()
+                if (owner != null && !owner.isFinishing && !owner.isDestroyed && sheet?.isShowing == true) {
+                    weakStatus.get()?.text = owner.getString(if (eligible) R.string.feedback_available else R.string.feedback_unavailable)
+                    weakButton.get()?.isEnabled = eligible
+                }
+            }
+        }
         dialog = d
     }
 
@@ -66,6 +122,10 @@ class SavedReadsSheet(
         addView(TextView(activity).apply { text = r.title; setTextAppearance(M.style.TextAppearance_Material3_TitleMedium) })
         addView(TextView(activity).apply {
             text = SavedReads.describe(r) + if (r.owned) "" else " · from the chosen folder"
+            setTextAppearance(M.style.TextAppearance_Material3_BodySmall)
+        })
+        addView(TextView(activity).apply {
+            text = activity.getString(R.string.feedback_export_unavailable)
             setTextAppearance(M.style.TextAppearance_Material3_BodySmall)
         })
         val buttons = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
@@ -82,6 +142,39 @@ class SavedReadsSheet(
             )
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
         addView(buttons)
+    }
+
+    private fun openFeedback(audio: File, sheet: BottomSheetDialog, tasks: FeedbackTaskSession, gate: FeedbackOpenGate) {
+        val weakActivity = WeakReference(activity)
+        val weakSheet = WeakReference(sheet)
+        tasks.submit({ FeedbackReadSelector().prepare(audio) }) { input ->
+            val owner = weakActivity.get()
+            if (owner == null || owner.isFinishing || owner.isDestroyed || weakSheet.get()?.isShowing != true)
+                return@submit
+            if (input == null) {
+                gate.finish()
+                (owner as? DemoView)?.showError(owner.getString(R.string.feedback_unavailable))
+                return@submit
+            }
+            var panel: Dialog? = null
+            var host: OfflineFeedbackHost? = null
+            try {
+                val dialog = Dialog(owner)
+                val web = WebView(owner)
+                val pageHost = OfflineFeedbackHost(owner, web, input)
+                panel = dialog
+                host = pageHost
+                dialog.setContentView(web)
+                dialog.setOnDismissListener { pageHost.close(); gate.finish() }
+                pageHost.show(owner)
+                dialog.show()
+                dialog.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            } catch (e: Exception) {
+                if (panel?.isShowing == true) panel.dismiss() else host?.close()
+                gate.finish()
+                (owner as? DemoView)?.showError(owner.getString(R.string.feedback_unavailable))
+            }
+        }
     }
 
     private fun play(r: SavedRead) {

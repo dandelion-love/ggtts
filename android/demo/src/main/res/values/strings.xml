@@ -165,4 +165,10 @@
     <string name="incoming_source_opened">opened</string>
     <string name="file_unopened">That file could not be opened.</string>
     <string name="file_unopened_why">That file could not be opened: %1$s</string>
+    <string name="feedback_private_reads">Private reads with playback evidence</string>
+    <string name="feedback_checking">Checking feedback availability...</string>
+    <string name="feedback_open">Feedback</string>
+    <string name="feedback_available">Feedback available for this verified read.</string>
+    <string name="feedback_unavailable">Feedback unavailable: this read lacks valid saved audio or playback evidence.</string>
+    <string name="feedback_export_unavailable">Feedback is unavailable for Music exports and older reads.</string>
 </resources>

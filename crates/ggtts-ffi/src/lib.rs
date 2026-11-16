@@ -68,7 +68,8 @@ pub const GGTTS_ERR_BUSY: i32 = binding::ERR_BUSY;
 /// 5 added [`ggtts_options_schema`], [`ggtts_capabilities`], [`ggtts_string_free`] and [`ggtts_last_error_key`].
 /// Version 6 adds one-shot cancellation tokens and cancellable stream rendering.
 /// Version 7 adds synchronous load progress notices.
-pub const GGTTS_ABI_VERSION: u32 = 7;
+/// Version 8 adds cooperative load cancellation.
+pub const GGTTS_ABI_VERSION: u32 = 8;
 
 /// The settings [`ggtts_load_with`] takes, by pointer. **Frozen at version 3**: no field is ever added; a new option
 /// goes in an options document ([`ggtts_load_opts`], [`ggtts_render_opts`]). `size` is `sizeof(ggtts_settings)` as the caller's header
@@ -358,6 +359,54 @@ fn cache_for(cache_dir: Option<&str>) -> Result<ggtts_models::Cache, String> {
 /// The engine for a name ([`binding::open`]). The fake engine needs no files. With version-3 settings and engine
 /// `qwen3-tts`, a model or codec not given is the pinned default `ggtts-render` uses, from the same cache and verified
 /// against the same sha256, downloaded only when `allow_download` is set.
+struct LoadFetch<'a> {
+    inner: &'a dyn ggtts_models::Fetch,
+    signal: Option<&'a ggtts_core::cancel::CancelSignal>,
+}
+struct LoadReader {
+    inner: Box<dyn std::io::Read>,
+    signal: ggtts_core::cancel::CancelSignal,
+}
+impl std::io::Read for LoadReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.signal.is_cancelled() {
+            return Err(std::io::Error::other("download cancelled"));
+        }
+        let result = self.inner.read(buf);
+        if self.signal.is_cancelled() {
+            return Err(std::io::Error::other("download cancelled"));
+        }
+        result
+    }
+}
+impl ggtts_models::Fetch for LoadFetch<'_> {
+    fn open(&self, url: &str) -> Result<Box<dyn std::io::Read>, String> {
+        if self.cancelled() {
+            return Err("download cancelled".into());
+        }
+        let reader = self.inner.open(url)?;
+        if self.cancelled() {
+            return Err("download cancelled".into());
+        }
+        Ok(match self.signal {
+            Some(signal) => Box::new(LoadReader {
+                inner: reader,
+                signal: signal.clone(),
+            }),
+            None => reader,
+        })
+    }
+    fn cancelled(&self) -> bool {
+        self.signal.is_some_and(|signal| signal.is_cancelled())
+    }
+}
+
+struct LoadReporting<'a> {
+    wording: &'a binding::Wording,
+    notice: &'a mut dyn FnMut(&str),
+    signal: Option<&'a ggtts_core::cancel::CancelSignal>,
+}
+
 fn open_engine(
     engine: &str,
     model: Option<&str>,
@@ -365,9 +414,13 @@ fn open_engine(
     voice: Option<&str>,
     threads: i32,
     settings: Settings<'_>,
-    reporting: (&binding::Wording, &mut dyn FnMut(&str)),
+    reporting: LoadReporting<'_>,
 ) -> Result<Held, Fail> {
-    let (wording, notice) = reporting;
+    let LoadReporting {
+        wording,
+        notice,
+        signal,
+    } = reporting;
     // The C-ABI refuses a setting the engine does not take before it reads the device; `binding::open` checks again.
     if engine != "qwen3-tts" {
         binding::refuse_settings(engine, settings.speaker, settings.instruction)?;
@@ -376,10 +429,11 @@ fn open_engine(
     let cache_dir = settings.models.and_then(|m| m.cache_dir);
     let cache = || cache_for(cache_dir);
     let http = ggtts_models::Http::default();
+    let fetch = LoadFetch { inner: &http, signal };
     let models = settings.models.map(|m| binding::Models {
         cache: &cache,
         offline: !m.allow_download,
-        fetch: &http,
+        fetch: &fetch,
     });
     let opened = binding::open(
         binding::Request {
@@ -497,7 +551,7 @@ unsafe fn load(
 /// value is a load document, checked whole against the engine before anything is read ([`ggtts_core::options::check`]);
 /// otherwise only a speaker or instruction the engine does not take is refused first, as the struct loads always have.
 fn load_options(o: &Options, default_files: bool, document: bool) -> Result<u64, Fail> {
-    let e = open_options(o, default_files, document, &mut |_| {})?;
+    let e = open_options(o, default_files, document, &mut |_| {}, None)?;
     Ok(register(o, e))
 }
 
@@ -513,7 +567,13 @@ pub(crate) fn checked_document_engine(o: &Options) -> Result<String, Fail> {
 }
 
 /// [`load_options`]' first half: the engine an options value names, opened, not yet registered.
-fn open_options(o: &Options, default_files: bool, document: bool, notice: &mut dyn FnMut(&str)) -> Result<Held, Fail> {
+fn open_options(
+    o: &Options,
+    default_files: bool,
+    document: bool,
+    notice: &mut dyn FnMut(&str),
+    signal: Option<&ggtts_core::cancel::CancelSignal>,
+) -> Result<Held, Fail> {
     let path = |p: &Option<PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned());
     let (model, codec, voice) = (path(&o.load.model), path(&o.load.codec), path(&o.load.voice));
     // "auto" is a document's engine only: a struct load names its engine, and "auto" is no engine there.
@@ -540,7 +600,11 @@ fn open_options(o: &Options, default_files: bool, document: bool, notice: &mut d
         voice.as_deref(),
         o.load.threads.unwrap_or(0),
         settings,
-        (if document { &DOCUMENT_WORDING } else { &WORDING }, notice),
+        LoadReporting {
+            wording: if document { &DOCUMENT_WORDING } else { &WORDING },
+            notice,
+            signal,
+        },
     )
 }
 
@@ -595,7 +659,47 @@ pub unsafe extern "C" fn ggtts_load_opts_with_progress(
         let o = Options::from_json(json).map_err(refused)?;
         binding::check_document(&o, true)?;
         let mut notice = |message: &str| forward_load_notice(callback, context, message);
-        let e = open_options(&o, true, true, &mut notice)?;
+        let e = open_options(&o, true, true, &mut notice, None)?;
+        unsafe { *handle = register_document(&o, e) };
+        Ok(())
+    })
+}
+
+/// Load with cooperative cancellation and synchronous progress notices.
+/// Blocking network calls and model loading cannot be interrupted.
+/// # Safety
+/// Pointers and callback follow ggtts_load_opts_with_progress.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_load_opts_cancellable(
+    options_json: *const c_char,
+    handle: *mut u64,
+    token: u64,
+    callback: Option<unsafe extern "C" fn(*const c_char, *mut c_void)>,
+    context: *mut c_void,
+) -> i32 {
+    guard(|| {
+        if handle.is_null() {
+            return Err((GGTTS_ERR_ARG, "handle is NULL".into()));
+        }
+        let signal = cancel_registry()
+            .get(token)
+            .ok_or((GGTTS_ERR_HANDLE, "unknown cancellation token".into()))?;
+        if signal.is_cancelled() {
+            return Err((GGTTS_ERR_STOPPED, "model preparation stopped".into()));
+        }
+        let json = unsafe { arg(options_json, "options_json") }?;
+        let o = Options::from_json(json).map_err(refused)?;
+        binding::check_document(&o, true)?;
+        let mut notice = |message: &str| {
+            if !signal.is_cancelled() {
+                forward_load_notice(callback, context, message);
+            }
+        };
+        let opened = open_options(&o, true, true, &mut notice, Some(&signal));
+        if signal.is_cancelled() {
+            return Err((GGTTS_ERR_STOPPED, "model preparation stopped".into()));
+        }
+        let e = opened?;
         unsafe { *handle = register_document(&o, e) };
         Ok(())
     })
@@ -616,7 +720,7 @@ fn forward_load_notice(
 /// Load the engine a checked load document names and keep its render defaults with the handle: the body of
 /// [`ggtts_load_opts`], which the Kotlin binding's document load calls too.
 fn load_document(o: &Options) -> Result<u64, Fail> {
-    let e = open_options(o, true, true, &mut |_| {})?;
+    let e = open_options(o, true, true, &mut |_| {}, None)?;
     Ok(register_document(o, e))
 }
 
@@ -1661,6 +1765,122 @@ mod load_progress_tests {
             "{messages:?}"
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancellation_during_blocked_read_cleans_partial_and_retry_works() {
+        use ggtts_models::Fetch;
+        use std::sync::mpsc;
+        use std::thread;
+        use std::time::Duration;
+
+        struct GateFetch {
+            entered: mpsc::Sender<()>,
+            release: std::sync::Mutex<mpsc::Receiver<()>>,
+        }
+        struct GateReader {
+            entered: mpsc::Sender<()>,
+            release: mpsc::Receiver<()>,
+            done: bool,
+        }
+        impl std::io::Read for GateReader {
+            fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+                if self.done {
+                    return Ok(0);
+                }
+                self.entered.send(()).unwrap();
+                self.release.recv_timeout(Duration::from_secs(3)).unwrap();
+                self.done = true;
+                b[0] = b'a';
+                Ok(1)
+            }
+        }
+        impl Fetch for GateFetch {
+            fn open(&self, _: &str) -> Result<Box<dyn std::io::Read>, String> {
+                let (_, dummy) = mpsc::channel();
+                let receiver = std::mem::replace(&mut *self.release.lock().unwrap(), dummy);
+                Ok(Box::new(GateReader {
+                    entered: self.entered.clone(),
+                    release: receiver,
+                    done: false,
+                }))
+            }
+        }
+        struct Fast;
+        impl Fetch for Fast {
+            fn open(&self, _: &str) -> Result<Box<dyn std::io::Read>, String> {
+                Ok(Box::new(std::io::Cursor::new(vec![b'a'])))
+            }
+        }
+        let root = std::env::temp_dir().join(format!("ggtts-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let pin = ggtts_models::Pinned {
+            role: "model",
+            file_name: "model.gguf",
+            url: "https://example.invalid/model",
+            size: 1,
+            sha256: "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
+            licence: "test",
+        };
+        let signal = ggtts_core::cancel::CancelSignal::new();
+        let worker_signal = signal.clone();
+        let (entered, seen) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let worker_root = root.clone();
+        let worker = thread::spawn(move || {
+            let cache = ggtts_models::Cache::new(worker_root);
+            let source = GateFetch {
+                entered,
+                release: std::sync::Mutex::new(resume),
+            };
+            let fetch = LoadFetch {
+                inner: &source,
+                signal: Some(&worker_signal),
+            };
+            cache.download(&pin, &fetch, &mut |_| {})
+        });
+        seen.recv_timeout(Duration::from_secs(3)).unwrap();
+        signal.cancel();
+        release.send(()).unwrap();
+        assert!(worker.join().unwrap().is_err());
+        let cache = ggtts_models::Cache::new(root.clone());
+        assert!(!cache.path_for(&pin).exists());
+        assert_eq!(
+            std::fs::read_dir(cache.path_for(&pin).parent().unwrap())
+                .unwrap()
+                .count(),
+            0
+        );
+        let fresh = ggtts_core::cancel::CancelSignal::new();
+        let fetch = LoadFetch {
+            inner: &Fast,
+            signal: Some(&fresh),
+        };
+        assert!(cache.download(&pin, &fetch, &mut |_| {}).unwrap().is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancelled_load_never_publishes_handle_and_new_token_works() {
+        let mut token = 0;
+        assert_eq!(unsafe { ggtts_cancel_new(&mut token) }, GGTTS_OK);
+        assert_eq!(ggtts_cancel_signal(token), GGTTS_OK);
+        let input = CString::new(r#"{"load":{"engine":"fake"}}"#).unwrap();
+        let mut handle = 42;
+        assert_eq!(
+            unsafe { ggtts_load_opts_cancellable(input.as_ptr(), &mut handle, token, None, std::ptr::null_mut()) },
+            GGTTS_ERR_STOPPED
+        );
+        assert_eq!(handle, 42);
+        assert_eq!(ggtts_cancel_free(token), GGTTS_OK);
+        let mut fresh = 0;
+        assert_eq!(unsafe { ggtts_cancel_new(&mut fresh) }, GGTTS_OK);
+        assert_eq!(
+            unsafe { ggtts_load_opts_cancellable(input.as_ptr(), &mut handle, fresh, None, std::ptr::null_mut()) },
+            GGTTS_OK
+        );
+        assert_eq!(ggtts_free(handle), GGTTS_OK);
+        assert_eq!(ggtts_cancel_free(fresh), GGTTS_OK);
     }
 
     #[test]

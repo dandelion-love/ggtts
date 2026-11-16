@@ -251,6 +251,7 @@ pub fn c_names() -> Vec<String> {
     out.extend(names(between(&h, "int32_t ggtts_render(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_load_opts(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_load_opts_with_progress(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_load_opts_cancellable(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_render_opts(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_cancel_new(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_cancel_signal(", ");")));

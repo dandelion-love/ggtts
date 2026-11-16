@@ -84,7 +84,7 @@ fn the_options_schema_is_the_committed_file() {
     // It is the schema itself, not a copy of some file: it names its own id.
     let v: Value = serde_json::from_slice(got).unwrap();
     assert_eq!(v["$id"], ggtts_core::options::SCHEMA_ID);
-    assert_eq!(ggtts_abi_version(), 7);
+    assert_eq!(ggtts_abi_version(), 8);
 }
 
 /// AC2 on the fake engine: what `Engine::capabilities` reports, with no speakers.

@@ -15,7 +15,8 @@
  *   4  ggtts_load_opts and ggtts_render_opts (options documents); ggtts_settings is frozen at version 3
  *   5  ggtts_options_schema, ggtts_capabilities and ggtts_string_free, ggtts_last_error_key
  *   6  one-shot cancellation tokens and ggtts_render_opts_cancellable
- *   7  ggtts_load_opts_with_progress */
+ *   7  ggtts_load_opts_with_progress
+ *   8  ggtts_load_opts_cancellable */
 #ifndef GGTTS_H
 #define GGTTS_H
 
@@ -26,7 +27,7 @@
 extern "C" {
 #endif
 
-#define GGTTS_ABI_VERSION 7
+#define GGTTS_ABI_VERSION 8
 
 #define GGTTS_OK 0
 #define GGTTS_ERR_ARG (-1)
@@ -155,6 +156,13 @@ int32_t ggtts_load_opts(const char *options_json, uint64_t *handle);
 typedef void (*ggtts_load_progress_fn)(const char *message, void *context);
 int32_t ggtts_load_opts_with_progress(const char *options_json, uint64_t *handle,
                                       ggtts_load_progress_fn callback, void *context);
+
+/* Stopped returns GGTTS_ERR_STOPPED if cancellation is observed before the
+ * load is registered. A cancellation racing the final check may lose to
+ * successful registration. A blocked network call or model load can delay
+ * stopping; a verified file may remain cached if publication wins a race. */
+int32_t ggtts_load_opts_cancellable(const char *options_json, uint64_t *handle,
+                                    uint64_t token, ggtts_load_progress_fn callback, void *context);
 
 /* ggtts_render_opts: render text with a render document, laid over the load's render defaults; NULL is the empty
  * document. Without "output": {"stream": "raw"} it is a whole read: on_piece must be NULL, and pcm, len and rate get

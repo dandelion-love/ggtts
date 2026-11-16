@@ -23,6 +23,7 @@ c ggtts_free: handle
 c ggtts_last_error:
 c ggtts_load_opts: options_json, handle
 c ggtts_load_opts_with_progress: options_json, handle, callback, context
+c ggtts_load_opts_cancellable: options_json, handle, token, callback, context
 c ggtts_render_opts: handle, text, options_json, on_piece, user, pcm, len, rate
 c ggtts_options_schema:
 c ggtts_capabilities: handle, json
@@ -43,7 +44,7 @@ kotlin free: handle
 dart Ggtts: lib
 dart abiVersion:
 dart load: options
-dart loadWithProgress: options, notice
+dart loadWithProgress: options, notice, cancellationToken
 dart optionsSchema:
 dart capabilities: handle
 dart render: handle, text, options

@@ -119,19 +119,24 @@
     // SHA-256 over the exact generator-embedded ASCII JSON, independent of
     // WebCrypto so file: and offline WebView contexts can verify their input.
     function sha256(text) {
-      const bytes = [];
+      // The canonical JSON is ASCII. Read it directly in 64-byte blocks;
+      // never materialize a second, per-byte number array for inlined audio.
       for (let i = 0; i < text.length; i++) {
-        const c = text.charCodeAt(i);
-        if (c > 127) throw new Error('Feedback input is not canonical ASCII JSON.');
-        bytes.push(c);
+        if (text.charCodeAt(i) > 127) throw new Error('Feedback input is not canonical ASCII JSON.');
       }
-      const bitLength = bytes.length * 8;
-      bytes.push(0x80);
-      while (bytes.length % 64 !== 56) bytes.push(0);
-      const high = Math.floor(bitLength / 0x100000000);
+      const bitLength = text.length * 8;
+      const paddedLength = Math.ceil((text.length + 9) / 64) * 64;
+      const high = Math.floor(bitLength / 0x100000000) >>> 0;
       const low = bitLength >>> 0;
-      for (let j = 3; j >= 0; j--) bytes.push((high >>> (j * 8)) & 255);
-      for (let j = 3; j >= 0; j--) bytes.push((low >>> (j * 8)) & 255);
+      function byteAt(i) {
+        if (i < text.length) return text.charCodeAt(i);
+        if (i === text.length) return 0x80;
+        if (i >= paddedLength - 8) {
+          const shift = (3 - (i % 4)) * 8;
+          return ((i < paddedLength - 4 ? high : low) >>> shift) & 255;
+        }
+        return 0;
+      }
       const k = [
         0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
         0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
@@ -144,11 +149,11 @@
       ];
       const h = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
       const rotr = (x, n) => (x >>> n) | (x << (32 - n));
-      for (let offset = 0; offset < bytes.length; offset += 64) {
+      for (let offset = 0; offset < paddedLength; offset += 64) {
         const w = new Array(64);
         for (let i = 0; i < 16; i++) {
           const j = offset + i * 4;
-          w[i] = ((bytes[j] << 24) | (bytes[j + 1] << 16) | (bytes[j + 2] << 8) | bytes[j + 3]) >>> 0;
+          w[i] = ((byteAt(j) << 24) | (byteAt(j + 1) << 16) | (byteAt(j + 2) << 8) | byteAt(j + 3)) >>> 0;
         }
         for (let i = 16; i < 64; i++) {
           const x = w[i - 15], y = w[i - 2];

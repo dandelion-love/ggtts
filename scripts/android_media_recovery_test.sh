@@ -35,9 +35,46 @@ run_phase() {
     fi
 }
 
+# Distinguish a confirmed absent package from a failed or malformed query.
+# pm list's filter can return other package names, so match the full line.
+package_paths() {
+    local package="$1" listing paths line found=0
+    if ! listing=$("$adb" -s "$ANDROID_SERIAL" shell pm list packages "$package"); then
+        echo "cannot list packages; refusing APK operation for $package" >&2
+        return 1
+    fi
+    listing=$(tr -d '\r' <<<"$listing")
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        if [[ ! "$line" =~ ^package:[a-zA-Z0-9_.]+$ ]]; then
+            echo "invalid package listing; refusing APK operation for $package" >&2
+            return 1
+        fi
+        [ "$line" = "package:$package" ] && found=1
+    done <<<"$listing"
+    [ "$found" -eq 1 ] || return 0
+    if ! paths=$("$adb" -s "$ANDROID_SERIAL" shell pm path "$package"); then
+        echo "cannot inspect APK paths; refusing APK operation for $package" >&2
+        return 1
+    fi
+    paths=$(tr -d '\r' <<<"$paths")
+    if [ -z "$paths" ]; then
+        echo "empty APK paths; refusing APK operation for $package" >&2
+        return 1
+    fi
+    while IFS= read -r line; do
+        if [[ ! "$line" =~ ^package:/[^[:space:]]+$ ]]; then
+            echo "invalid APK paths; refusing APK operation for $package" >&2
+            return 1
+        fi
+        printf '%s\n' "${line#package:}"
+    done <<<"$paths"
+}
+
 assert_no_stale_test_state() {
-    local package="$1" files
-    if [ -z "$("$adb" -s "$ANDROID_SERIAL" shell pm path "$package" 2>/dev/null || true)" ]; then
+    local package="$1" files paths
+    paths=$(package_paths "$package") || return 1
+    if [ -z "$paths" ]; then
         return 0
     fi
     case "$package" in
@@ -69,7 +106,7 @@ install_isolated_test_apk() {
     local apk="$1" package="$2" local_hash remote_paths remote_path remote_hash
     case "$package" in "$target_package"|"$test_package") ;; *) echo "refusing update outside isolated test packages: $package" >&2; return 1 ;; esac
     local_hash=$(sha256sum "$apk" | awk '{print $1}')
-    remote_paths=$("$adb" -s "$ANDROID_SERIAL" shell pm path "$package" 2>/dev/null | sed -n 's/^package://p' | tr -d '\r' || true)
+    remote_paths=$(package_paths "$package") || return 1
     if [ -z "$remote_paths" ]; then
         "$adb" -s "$ANDROID_SERIAL" install -t "$apk"
         return

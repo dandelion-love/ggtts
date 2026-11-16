@@ -1,4 +1,4 @@
-import os, pathlib, shutil, subprocess, tempfile, unittest
+import hashlib, os, pathlib, shutil, subprocess, tempfile, unittest
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / 'android_media_recovery_test.sh'
 AAPT = """#!/usr/bin/env python3
 import os,sys
@@ -14,9 +14,18 @@ a=sys.argv[1:]
 with open(os.environ['LOG'],'a') as f: f.write(' '.join(a)+'\\n')
 if 'services' in a and os.getenv('ACTIVE'): print('ggtts.demo.recovery/.RenderService')
 if 'activities' in a and os.getenv('VISIBLE'): print('topResumedActivity: ggtts.demo.recovery/.MainActivity')
-if 'path' in a and os.getenv('INSTALLED'): print('package:/data/app/base.apk')
+if 'list' in a:
+ if os.getenv('LIST_FAIL'): sys.exit(1)
+ if os.getenv('BAD_LIST'): print('Error: package manager unavailable')
+ elif os.getenv('INSTALLED'): print('package:' + a[-1])
+ elif os.getenv('SIMILAR'): print('package:' + a[-1] + '.other')
+if 'path' in a:
+ if os.getenv('PATH_FAIL'): sys.exit(1)
+ if os.getenv('INSTALLED'):
+  print('package:/data/app/base.apk')
+  if os.getenv('SPLIT'): print('package:/data/app/split.apk')
 if 'run-as' in a and os.getenv('STALE'): print('files/queue-recovery-old.txt')
-if 'sha256sum' in a: print('differenthash /data/app/base.apk')
+if 'sha256sum' in a: print(os.getenv('HASH','differenthash') + ' /data/app/base.apk')
 if 'instrument' in a:
  if 'cleanupExactRowsAndJournals' in ' '.join(a) and os.getenv('FAIL'):
   print('INSTRUMENTATION_FAILED'); sys.exit(1)
@@ -51,6 +60,27 @@ class Safety(unittest.TestCase):
   self.assertTrue(any('demo-debug.apk' in c and 'androidTest' not in c for c in ins))
   self.assertTrue(any('demo-debug-androidTest.apk' in c for c in ins))
   self.assertEqual([c for c in calls if 'force-stop' in c],['-s fake shell am force-stop ggtts.demo.recovery'])
+ def test_inspection_failure_refuses_install(self):
+  for kw in ({'LIST_FAIL':'1'}, {'BAD_LIST':'1'}, {'PATH_FAIL':'1','INSTALLED':'1'}):
+   with self.subTest(kw=kw):
+    self.log.unlink(missing_ok=True); p=self.run_script(**kw)
+    self.assertNotEqual(p.returncode,0,p.stdout+p.stderr)
+    self.assertFalse(any(' install ' in ' '+c+' ' for c in self.calls()))
+ def test_absent_and_similar_package_are_installed_without_replace(self):
+  for kw in ({}, {'SIMILAR':'1'}):
+   with self.subTest(kw=kw):
+    self.log.unlink(missing_ok=True); p=self.run_script(**kw)
+    self.assertEqual(p.returncode,0,p.stdout+p.stderr)
+    ins=[c for c in self.calls() if ' install ' in ' '+c+' ']
+    self.assertEqual(len(ins),2); self.assertTrue(all(' install -t ' in ' '+c+' ' for c in ins))
+ def test_split_refused_and_matching_apks_untouched(self):
+  p=self.run_script(INSTALLED='1',SPLIT='1')
+  self.assertNotEqual(p.returncode,0); self.assertIn('multi-split',p.stderr)
+  self.assertFalse(any(' install ' in ' '+c+' ' for c in self.calls()))
+  self.log.unlink(); digest=hashlib.sha256(b'fake').hexdigest()
+  p=self.run_script(INSTALLED='1',HASH=digest)
+  self.assertEqual(p.returncode,0,p.stdout+p.stderr)
+  self.assertFalse(any(' install ' in ' '+c+' ' for c in self.calls()))
  def test_cleanup_failure_preserves_fixture(self):
   p=self.run_script(FAIL='1'); self.assertNotEqual(p.returncode,0); self.assertIn('cleanup failed',p.stderr)
   fixture=p.stdout.split('GGTTS recovery fixture ID: ')[1].splitlines()[0]

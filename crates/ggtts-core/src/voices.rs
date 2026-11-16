@@ -173,6 +173,12 @@ pub fn read_gguf(path: &Path) -> Result<FileVoices, ReadError> {
 
 /// The voice a prepared voice JSON declares, in [`FileVoices::file`]. A field that is not a string is refused.
 pub fn from_voice_json(doc: &serde_json::Value) -> Result<FileVoices, Refused> {
+    if !doc.is_object() {
+        return Err(Refused {
+            key: "voice JSON".into(),
+            why: "is not an object".into(),
+        });
+    }
     let field = |f: &str| -> Result<Option<String>, Refused> {
         match doc.get(f) {
             None | Some(serde_json::Value::Null) => Ok(None),
@@ -202,12 +208,24 @@ pub fn read_voice_json(path: &Path) -> Result<FileVoices, ReadError> {
     Ok(from_voice_json(&doc)?)
 }
 
-/// The voices a model file declares: a prepared voice JSON (`.json`) or a GGUF (anything else).
+/// Identify the format by content. Descriptor duplicates share offsets; concurrent use is unsupported.
 pub fn read(path: &Path) -> Result<FileVoices, ReadError> {
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
-        read_voice_json(path)
-    } else {
+    use std::io::Read;
+    let mut file = crate::fdpath::open(path)?;
+    let mut magic = [0u8; 4];
+    let mut count = 0;
+    while count < magic.len() {
+        match file.read(&mut magic[count..])? {
+            0 => break,
+            n => count += n,
+        }
+    }
+    drop(file);
+    // Each reader opens at byte zero, including the duplicate of a descriptor.
+    if count == 4 && &magic == b"GGUF" {
         read_gguf(path)
+    } else {
+        read_voice_json(path)
     }
 }
 
@@ -357,6 +375,68 @@ mod tests {
                 name: Some("Reader".into())
             }
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn descriptor_formats_and_rejections() {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        use std::process::{Command, Stdio};
+        let dir = std::env::temp_dir().join(format!("ggtts-voice-fd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cases: Vec<(&str, Vec<u8>, Option<Declared>)> = vec![
+            (
+                "voice",
+                br#" {"language":"en-GB","name":"Reader"}"#.to_vec(),
+                Some(Declared {
+                    language: Some("en-GB".into()),
+                    name: Some("Reader".into()),
+                }),
+            ),
+            ("empty", b"{}".to_vec(), Some(Declared::default())),
+            (
+                "model",
+                crate::gguf_meta::tests::tiny(&[(FILE_LANGUAGE, "yue-HK"), (FILE_NAME, "Model")], &[7; 64]),
+                Some(Declared {
+                    language: Some("yue-HK".into()),
+                    name: Some("Model".into()),
+                }),
+            ),
+            ("bad-language", br#"{"language":"en US"}"#.to_vec(), None),
+            ("array", b"[1,2,3]".to_vec(), None),
+            ("junk", b"not a model".to_vec(), None),
+        ];
+        for (name, bytes, expected) in cases {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            let held = std::fs::File::open(&path).unwrap();
+            let fdpath = std::path::PathBuf::from(format!("/proc/self/fd/{}", held.as_raw_fd()));
+            let result = read(&fdpath);
+            if let Some(expected) = expected {
+                assert_eq!(result.unwrap().file, expected, "{name}");
+                assert_eq!(read(&path).unwrap().file, expected, "ordinary {name}");
+            } else {
+                let error = result.unwrap_err().to_string();
+                if name == "bad-language" {
+                    assert!(error.contains("language"), "{error}");
+                }
+            }
+            assert!(held.metadata().is_ok());
+        }
+        let mut child = Command::new("printf")
+            .arg("sentinel")
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut reader = child.stdout.take().unwrap();
+        let fdpath = std::path::PathBuf::from(format!("/proc/self/fd/{}", reader.as_raw_fd()));
+        assert!(read(&fdpath).is_err());
+        let mut bytes = [0; 8];
+        reader.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"sentinel");
+        assert!(child.wait().unwrap().success());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

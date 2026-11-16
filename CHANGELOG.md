@@ -11,6 +11,12 @@ that a merge places under a released heading is caught.
 
 ## Unreleased
 
+### Fixed
+
+- **Prepared voice JSON passed as a file descriptor is recognized by content**, so Android picked files no longer
+  need a `.json` filename. Non-seekable descriptors and non-object JSON are refused.
+
+
 ### Added
 
 - **Declared voice metadata:** a shared reader recognizes language tags and display names in model GGUFs and prepared voice JSON. Kitten conversion and preparation accept optional `--language` and `--name`; `ggtts-gguf-voices` writes per-speaker metadata to a new talker GGUF while preserving tensor data. Missing declarations remain absent. See `docs/voice-keys.md`.

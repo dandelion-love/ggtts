@@ -49,6 +49,12 @@ class StreamPlayerTest {
             if (n > 0) taken.addAndGet(n)
             return n
         }
+        @Volatile var head: Long? = null
+        @Volatile var headThrows = false
+        override fun playbackHead(): Long {
+            if (headThrows) throw IllegalStateException("head unavailable")
+            return head ?: taken.get().toLong()
+        }
         override fun pause() { call("pause"); isPaused = true; paused.countDown() }
         override fun flush() = call("flush")
         override fun stop() = call("stop")
@@ -63,7 +69,7 @@ class StreamPlayerTest {
     private val sinks = mutableListOf<FakeSink>()
     /** Applied to each new sink as begin() creates it, before its play(). */
     private var setUp: (FakeSink) -> Unit = {}
-    private val player = StreamPlayer({ FakeSink().also { setUp(it); sinks += it } }, drainMs = 0)
+    private val player = StreamPlayer({ FakeSink().also { setUp(it); sinks += it } })
 
     /** Waits up to 5 s in all for [latch], through any interrupts; never longer, so a fault fails a test, not hangs it. */
     private fun awaitIgnoringInterrupts(latch: CountDownLatch) {
@@ -127,7 +133,7 @@ class StreamPlayerTest {
             stopWaited = stopper.state == Thread.State.BLOCKED
         }
         player.play(FloatArray(10))
-        player.finish()
+        assertTrue(runCatching { player.finish() }.exceptionOrNull() is PlaybackUnconfirmed)
         stopper.join(2000)
         assertTrue("the Stop arrived while the sink was being released", stopWaited)
         assertEquals(emptyList<String>(), sink.misuse)
@@ -212,6 +218,95 @@ class StreamPlayerTest {
         assertEquals(2, sinks.size)
         assertTrue(sinks[1].calls.any { it.startsWith("write@") })
         sinks.forEach { assertTrue(it.released.await(2, TimeUnit.SECONDS)); assertEquals(emptyList<String>(), it.misuse) }
+    }
+
+    @Test
+    fun finishRequiresHeadToReachTheSubmittedFrames() {
+        setUp = { it.head = 0 }
+        player.begin(24000)
+        val sink = sinks.single()
+        player.play(FloatArray(10))
+        val result = java.util.concurrent.atomic.AtomicReference<Boolean>()
+        val done = CountDownLatch(1)
+        Thread { result.set(player.finishConfirmed()); done.countDown() }.start()
+        val deadline = System.nanoTime() + 2_000_000_000L
+        while (sink.taken.get() < 10 && System.nanoTime() < deadline) Thread.sleep(1)
+        assertEquals(10, sink.taken.get())
+        assertTrue(!done.await(100, TimeUnit.MILLISECONDS))
+        sink.head = 10
+        assertTrue(done.await(2, TimeUnit.SECONDS))
+        assertEquals(true, result.get())
+    }
+
+    @Test
+    fun stopReplacementAndInvalidHeadCannotConfirm() {
+        for (replace in listOf(false, true)) {
+            setUp = { it.head = 0 }
+            player.begin(24000)
+            player.play(FloatArray(10))
+            val result = java.util.concurrent.atomic.AtomicReference<Boolean>()
+            val done = CountDownLatch(1)
+            Thread { result.set(player.finishConfirmed()); done.countDown() }.start()
+            Thread.sleep(30)
+            if (replace) player.begin(24000) else player.stop()
+            assertTrue(done.await(2, TimeUnit.SECONDS))
+            assertEquals(false, result.get())
+            player.stop()
+        }
+        setUp = { it.head = 1 }
+        player.begin(24000)
+        player.play(FloatArray(10))
+        assertEquals(false, player.finishConfirmed())
+    }
+
+    @Test
+    fun lateEnqueueInvalidatesConfirmation() {
+        setUp = { it.head = 0 }
+        player.begin(24000)
+        val sink = sinks.single()
+        player.play(FloatArray(10))
+        val result = java.util.concurrent.atomic.AtomicReference<Boolean>()
+        val done = CountDownLatch(1)
+        Thread { result.set(player.finishConfirmed()); done.countDown() }.start()
+        val deadline = System.nanoTime() + 2_000_000_000L
+        while (sink.taken.get() < 10 && System.nanoTime() < deadline) Thread.sleep(1)
+        Thread.sleep(20)
+        player.play(FloatArray(1))
+        assertTrue(done.await(2, TimeUnit.SECONDS))
+        assertEquals(false, result.get())
+    }
+
+    @Test
+    fun stalledOrFailedHeadCannotConfirm() {
+        val stalled = FakeSink().apply { head = 0 }
+        val p = StreamPlayer({ stalled }, waitMs = 1, stallMs = 30)
+        p.begin(24000)
+        p.play(FloatArray(10))
+        assertEquals(false, p.finishConfirmed())
+        setUp = { it.headThrows = true }
+        player.begin(24000)
+        player.play(FloatArray(10))
+        assertEquals(false, player.finishConfirmed())
+    }
+
+    @Test
+    fun unpausedZeroWritesTimeOutAndCannotConfirm() {
+        val sink = FakeSink().apply { blockWrites = true }
+        val p = StreamPlayer({ sink }, waitMs = 1, stallMs = 30)
+        p.begin(24000)
+        p.play(FloatArray(10))
+        assertEquals(false, p.finishConfirmed())
+        assertEquals(0, sink.taken.get())
+        assertTrue(sink.isReleased)
+    }
+
+    @Test
+    fun headWrapIsCountedAndResetFailsClosed() {
+        val head = PlaybackHeadCounter()
+        head.observe(0xfffffffeL, 0xfffffffeL)
+        head.observe(2, 0x100000002L)
+        assertEquals(0x100000002L, head.played)
+        assertTrue(runCatching { head.observe(1, 0x100000003L) }.isFailure)
     }
 
     // ---- Pause and resume (#324). Each test names the planted fault it catches.

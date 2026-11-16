@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 /** The device refused a write with [code] (an AudioTrack error), so the stream did not play to its end. */
 class PlaybackFailed(val code: Int) : RuntimeException("the audio device refused a write (error $code)")
+class PlaybackUnconfirmed : RuntimeException("the audio device did not confirm playback completion")
 
 /** One stream's output device, as the player sees it: an AudioTrack on a phone, a fake in a test. */
 interface PcmSink {
@@ -19,10 +20,27 @@ interface PcmSink {
      */
     fun write(samples: FloatArray, offset: Int, count: Int): Int
 
+    /** Unsigned 32-bit playback-head frame counter, before stop or flush. */
+    fun playbackHead(): Long
     fun pause()
     fun flush()
     fun stop()
     fun release()
+}
+
+/** Tracks a fresh AudioTrack's unsigned 32-bit head without treating a reset as progress. */
+internal class PlaybackHeadCounter {
+    private var previous = 0L
+    var played = 0L
+        private set
+
+    fun observe(head: Long, submitted: Long) {
+        check(head in 0..0xffffffffL)
+        val delta = (head - previous) and 0xffffffffL
+        check(delta <= submitted - played)
+        played += delta
+        previous = head
+    }
 }
 
 /**
@@ -38,18 +56,21 @@ interface PcmSink {
  */
 class StreamPlayer(
     private val newSink: (rate: Int) -> PcmSink,
-    /** How long the last buffer is given to play out after the final write. */
-    private val drainMs: Long = 250,
     /** How long the player waits before trying again when the device's buffer is full. */
     private val waitMs: Long = 5,
+    /** A non-paused device that stops advancing cannot confirm playback. */
+    private val stallMs: Long = 30_000,
 ) {
     private class Stream(val sink: PcmSink) {
         val queue = LinkedBlockingQueue<FloatArray>()
         val lock = Any()
         @Volatile var cut = false
         var released = false // guarded by lock
+        var closing = false // guarded by lock
         /** The code of a write the device refused, if one was; the stream ended there. */
         @Volatile var refused: Int? = null
+        @Volatile var failed = false
+        @Volatile var completed = false
         lateinit var thread: Thread
     }
 
@@ -92,44 +113,99 @@ class StreamPlayer(
     }
 
     private fun run(s: Stream) {
+        var submitted = 0L
+        val head = PlaybackHeadCounter()
+        fun observe() = head.observe(s.sink.playbackHead(), submitted)
         try {
-            while (!s.cut) {
+            check(s.sink.playbackHead() == 0L)
+            while (!s.cut && !s.failed) {
                 val piece = s.queue.take()
                 if (piece === end || s.cut) break
                 var at = 0
-                while (at < piece.size && !s.cut) {
+                var lastWriteProgress = System.nanoTime()
+                while (at < piece.size && !s.cut && !s.failed) {
                     val n = s.sink.write(piece, at, piece.size - at)
                     if (n < 0) {
-                        s.refused = n // the device refused the write: end the stream here, and finish() reports it
+                        s.refused = n
                         return
                     }
-                    if (n == 0) Thread.sleep(waitMs) else at += n
+                    check(n <= piece.size - at)
+                    submitted += n.toLong()
+                    at += n
+                    observe()
+                    if (n > 0 || paused) {
+                        lastWriteProgress = System.nanoTime()
+                    } else if (System.nanoTime() - lastWriteProgress >= stallMs * 1_000_000L) {
+                        s.failed = true
+                    }
+                    if (n == 0 && !s.failed) Thread.sleep(waitMs)
                 }
             }
-            // Held: the stream is not over while the device still has what it was given to play.
-            while (paused && !s.cut) Thread.sleep(waitMs)
-            if (!s.cut) Thread.sleep(drainMs)
+            var lastProgress = System.nanoTime()
+            var previousPlayed = head.played
+            while (!s.cut && !s.failed) {
+                synchronized(s.lock) {
+                    if (!paused && !s.cut && !s.failed) {
+                        observe()
+                        if (head.played == submitted && submitted > 0) s.completed = true
+                        if (head.played != previousPlayed) {
+                            previousPlayed = head.played
+                            lastProgress = System.nanoTime()
+                        } else if (System.nanoTime() - lastProgress >= stallMs * 1_000_000L) {
+                            s.failed = true
+                        }
+                    } else if (paused) {
+                        lastProgress = System.nanoTime()
+                    }
+                }
+                if (s.completed) break
+                Thread.sleep(waitMs)
+            }
         } catch (_: InterruptedException) {
+            s.failed = true
+        } catch (_: Throwable) {
+            s.failed = true
         } finally {
-            release(s)
+            try { release(s) } catch (_: Throwable) { s.failed = true }
         }
     }
 
     /** Queue [samples] and return at once; dropped if no stream is playing. */
     fun play(samples: FloatArray) {
-        if (samples.isNotEmpty()) current.get()?.queue?.put(samples)
+        if (samples.isEmpty()) return
+        val s = current.get() ?: return
+        synchronized(s.lock) {
+            if (s.closing) {
+                s.failed = true
+                s.thread.interrupt()
+            } else if (!s.cut && !s.failed) {
+                s.queue.put(samples)
+            }
+        }
     }
 
     /**
      * Wait until everything queued has played, or until the stream is stopped. Never on the main thread. Throws
      * [PlaybackFailed] if the device refused a write, since the stream then did not play to its end.
      */
-    fun finish() {
-        val s = current.get() ?: return
-        s.queue.put(end)
+    fun finish() { if (!finishConfirmed()) throw PlaybackUnconfirmed() }
+
+    /**
+     * True only when this stream's playback head reached every submitted frame.
+     * This says nothing about whether a person heard the output. False on stop,
+     * replacement, head failure, or no stream. Call off the main thread.
+     */
+    fun finishConfirmed(): Boolean {
+        val s = current.get() ?: return false
+        synchronized(s.lock) {
+            if (s.closing) return false
+            s.closing = true
+            s.queue.put(end)
+        }
         s.thread.join()
-        current.compareAndSet(s, null)
+        val stillCurrent = current.compareAndSet(s, null)
         s.refused?.let { throw PlaybackFailed(it) }
+        return stillCurrent && !s.cut && !s.failed && s.completed
     }
 
     /**
@@ -139,14 +215,14 @@ class StreamPlayer(
     fun pause() {
         paused = true
         val s = current.get() ?: return
-        synchronized(s.lock) { if (!s.released) runCatching { s.sink.pause() } }
+        synchronized(s.lock) { if (!s.released) try { s.sink.pause() } catch (_: Throwable) { s.failed = true; s.thread.interrupt() } }
     }
 
     /** Play on from where [pause] held it, nothing skipped. Safe from any thread. */
     fun resume() {
         paused = false
         val s = current.get() ?: return
-        synchronized(s.lock) { if (!s.released) runCatching { s.sink.play() } }
+        synchronized(s.lock) { if (!s.released) try { s.sink.play() } catch (_: Throwable) { s.failed = true; s.thread.interrupt() } }
     }
 
     /**

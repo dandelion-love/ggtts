@@ -9,11 +9,13 @@ class ListeningSourceFake {
     this._server,
     this.expireFirstAudio,
     this.failFirstSubmission,
+    this.clipText,
   );
 
   final HttpServer _server;
   final bool expireFirstAudio;
   final bool failFirstSubmission;
+  final String clipText;
   final List<FakeSourceRequest> requests = [];
   final List<Map<String, Object?>> submissions = [];
   final Map<
@@ -34,12 +36,14 @@ class ListeningSourceFake {
   static Future<ListeningSourceFake> start({
     bool expireFirstAudio = true,
     bool failFirstSubmission = true,
+    String clipText = 'A \u{1F60A} cafe\u0301.',
   }) async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final fake = ListeningSourceFake._(
       server,
       expireFirstAudio,
       failFirstSubmission,
+      clipText,
     );
     unawaited(server.forEach(fake._handle));
     return fake;
@@ -79,7 +83,7 @@ class ListeningSourceFake {
         'clips': [
           {
             'id': 'clip-1',
-            'text': 'A \u{1F60A} cafe\u0301.',
+            'text': clipText,
             'audio_url': baseUrl
                 .replace(
                   path: _expiredAudioPath,

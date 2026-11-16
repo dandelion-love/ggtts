@@ -273,3 +273,7 @@ List<Map<String, Object?>> mapSharedFeedback(
   }
   return submissions;
 }
+
+/// Builds the exact canonical bytes embedded in the shared page.
+List<int> canonicalFeedbackInput(Map<String, Object?> input) =>
+    utf8.encode(_canonical(input));

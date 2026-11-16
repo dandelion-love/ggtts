@@ -239,10 +239,10 @@ fn a_chunk_rejected_on_every_draw_keeps_its_last_draw_with_the_verdict() {
     std::fs::remove_dir_all(book.parent().unwrap()).ok();
 }
 
-/// AC3: at `--redraw 0` a rejected first draw is kept, one request per chunk, and the manifest carries no draw fields:
-/// the same bytes the book wrote before it redrew (see the AC1 capture for the byte comparison).
+/// At `--redraw 0`, the first draw is kept with explicit identity and stop evidence, even when rejected. The
+/// manifest still omits a zero redraw limit, which reads as zero for legacy compatibility.
 #[test]
-fn at_redraw_0_the_first_draw_is_kept_and_no_draw_is_recorded() {
+fn at_redraw_0_the_first_draw_and_its_evidence_are_recorded() {
     let (book, out) = temp("zero");
     let run = render(&book, &out, Plant::FirstDraw, &["--redraw", "0"]);
     assert!(run.seen.iter().all(|&(_, d, _)| d == 0));
@@ -250,14 +250,16 @@ fn at_redraw_0_the_first_draw_is_kept_and_no_draw_is_recorded() {
         let m: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
         assert!(m["manifest"].get("redraw").is_none());
         for c in manifest_chunks(&dir) {
-            assert!(c.get("kept_draw").is_none() && c.get("draws").is_none(), "{c}");
+            assert_eq!(c["kept_draw"].as_u64(), Some(0), "{c}");
+            assert_eq!(c["draws"].as_u64(), Some(1), "{c}");
+            assert!(matches!(c["kept_stop"].as_str(), Some("eos" | "cap")), "{c}");
         }
     }
     std::fs::remove_dir_all(book.parent().unwrap()).ok();
 }
 
 /// #336: with no `--redraw`, a book takes the engine profile's `redraw`. Every draw is planted to be rejected, so the
-/// number drawn per chunk is that setting plus one, and the manifests record it (absent at 0).
+/// number drawn per chunk is that setting plus one, and manifests record the kept draw even at 0.
 /// When a profile's default rises, every book resumed without `--redraw` judges its done chunks again under it
 /// (`docs/book.md`).
 #[test]

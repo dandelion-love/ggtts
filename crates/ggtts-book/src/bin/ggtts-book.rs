@@ -68,6 +68,7 @@ ggtts-book render BOOK.epub --out DIR [--engine qwen3-tts|kitten-tts-2|fake] [--
 [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] \
 [--report DIR] [--run ID]\n       \
 ggtts-book export DIR --out BOOK.flac|BOOK.m4b\n       \
+ggtts-book feedback CHAPTER_DIR --out PAGE.html\n       \
 ggtts-book --version";
 
 fn fail(message: &str) -> ExitCode {
@@ -89,6 +90,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("export") => export(&args[1..]),
+        Some("feedback") => feedback(&args[1..]),
         Some(command @ ("inspect" | "render")) => {
             match ggtts_book::options::parse(command, &args[1..], &|name| std::env::var(name).ok()) {
                 Ok((book, o)) if command == "inspect" => inspect(&book, o),
@@ -217,6 +219,16 @@ fn export(args: &[String]) -> ExitCode {
             );
             ExitCode::SUCCESS
         }
+        Err(e) => fail(&e),
+    }
+}
+
+fn feedback(args: &[String]) -> ExitCode {
+    if args.len() != 3 || args[1] != "--out" {
+        return fail("usage: ggtts-book feedback CHAPTER_DIR --out PAGE.html");
+    }
+    match ggtts_book::render::feedback_chapter(Path::new(&args[0]), Path::new(&args[2])) {
+        Ok(()) => ExitCode::SUCCESS,
         Err(e) => fail(&e),
     }
 }

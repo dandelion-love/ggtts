@@ -39,6 +39,8 @@ pub struct Output {
 pub struct Draws {
     /// The kept draw: 0 for the first, `n` for the `n`th redraw.
     pub kept: u32,
+    /// The kept draw's termination reason, when recorded.
+    pub stop: Option<String>,
     /// Draws made, the kept one included.
     pub count: u32,
     /// The judge's verdict on the kept draw (`runaway`, `truncated`, ...), or `None` when it passed.
@@ -60,6 +62,20 @@ impl Draws {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SampleSpan {
+    pub start: u64,
+    pub end: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChapterSpans {
+    pub sample_rate: u32,
+    pub sample_count: u64,
+    pub chapter_sha256: String,
+    pub chunks: Vec<SampleSpan>,
+}
+
 /// What a chunk renderer returns to [`run_chapter`]: the file's bytes and, when it judges its draws, the draws it made.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChunkOutput {
@@ -79,15 +95,19 @@ pub struct Manifest {
     pub plan: ChapterPlan,
     /// One entry per planned chunk: `Some` once it is done.
     pub done: Vec<Option<Output>>,
-    /// Each done chunk's draws, when recorded. Written only when the plan allows redraws
-    /// ([`ChapterPlan::redraw`] above 0), so a render at redraw 0 writes the manifest it wrote before draws existed.
+    /// Draw identity and verdict for each done chunk when the renderer records them. New renders record even draw 0;
+    /// older manifests without these optional fields remain readable.
     pub draws: Vec<Option<Draws>>,
     /// How long each done chunk took to render (generate, decode, trim and encode), in milliseconds. Recorded for
     /// reading back; never checked.
     pub render_ms: Vec<Option<u64>>,
+    /// Kept draw termination reason, including when redraw is zero.
+    pub kept_stop: Vec<Option<String>>,
     /// The chapter FLAC joined from these chunks, once written: its file name in the output directory and its
     /// SHA-256. `export` checks the file against it. Cleared whenever a chunk is rendered again.
     pub chapter: Option<Output>,
+    /// Exact final joined-audio spans, absent for legacy manifests.
+    pub chapter_spans: Option<ChapterSpans>,
 }
 
 /// Why a manifest is not trusted.
@@ -139,18 +159,50 @@ impl Manifest {
         let done = vec![None; plan.chunks.len()];
         let render_ms = vec![None; plan.chunks.len()];
         let draws = vec![None; plan.chunks.len()];
+        let kept_stop = vec![None; plan.chunks.len()];
         Manifest {
             plan,
             done,
             draws,
             render_ms,
+            kept_stop,
             chapter: None,
+            chapter_spans: None,
         }
     }
 
-    /// Record the chapter FLAC joined from a finished chapter: load the manifest in `dir`, set its chapter file and
-    /// SHA-256, save it.
+    /// Record a chapter file for legacy callers that have no joined-sample map.
     pub fn record_chapter(dir: &Path, plan: &ChapterPlan, file: &str, bytes: &[u8]) -> Result<(), String> {
+        Self::record_chapter_inner(dir, plan, file, bytes, None)
+    }
+
+    /// Record the chapter file and exact final-audio spans in one atomic manifest replacement.
+    pub fn record_chapter_with_spans(
+        dir: &Path,
+        plan: &ChapterPlan,
+        file: &str,
+        bytes: &[u8],
+        sample_rate: u32,
+        sample_count: u64,
+        chunks: Vec<SampleSpan>,
+    ) -> Result<(), String> {
+        let spans = ChapterSpans {
+            sample_rate,
+            sample_count,
+            chapter_sha256: hex(&sha256(bytes)),
+            chunks,
+        };
+        validate_chapter_spans(&spans, plan.chunks.len())?;
+        Self::record_chapter_inner(dir, plan, file, bytes, Some(spans))
+    }
+
+    fn record_chapter_inner(
+        dir: &Path,
+        plan: &ChapterPlan,
+        file: &str,
+        bytes: &[u8],
+        spans: Option<ChapterSpans>,
+    ) -> Result<(), String> {
         let mut m = Manifest::load(dir, plan).map_err(|e| e.to_string())?;
         if m.done.iter().any(Option::is_none) {
             return Err("the chapter is not fully rendered".to_string());
@@ -159,6 +211,7 @@ impl Manifest {
             file: file.to_string(),
             sha256: hex(&sha256(bytes)),
         });
+        m.chapter_spans = spans;
         m.save(dir).map_err(|e| e.to_string())
     }
 
@@ -186,7 +239,10 @@ impl Manifest {
                     "output": done.as_ref().map(|o| json!({"file": o.file, "sha256": o.sha256})),
                     "render_ms": self.render_ms[i],
                 });
-                if let (true, Some(d)) = (p.redraw > 0 && done.is_some(), &self.draws[i]) {
+                if let Some(stop) = &self.kept_stop[i] {
+                    chunk["kept_stop"] = stop.clone().into();
+                }
+                if let (Some(_), Some(d)) = (done, &self.draws[i]) {
                     chunk["kept_draw"] = d.kept.into();
                     chunk["draws"] = d.count.into();
                     chunk["verdict"] = d.verdict.clone().into();
@@ -197,7 +253,7 @@ impl Manifest {
                 chunk
             }).collect::<Vec<_>>(),
         });
-        // Written only when the render allows redraws, so a render at redraw 0 writes the bytes it wrote before.
+        // The redraw limit is omitted at zero; kept-draw identity is recorded independently when available.
         if p.redraw > 0 {
             body["redraw"] = p.redraw.into();
         }
@@ -205,6 +261,16 @@ impl Manifest {
         // same bytes it was before the field existed.
         if !p.render.is_null() {
             body["render"] = p.render.clone();
+        }
+        if let (Some(chapter), Some(spans)) = (&self.chapter, &self.chapter_spans) {
+            if spans.chapter_sha256 == chapter.sha256 {
+                body["chapter_spans"] = json!({
+                    "sample_rate": spans.sample_rate,
+                    "sample_count": spans.sample_count,
+                    "chapter_sha256": spans.chapter_sha256,
+                    "chunks": spans.chunks.iter().map(|span| json!([span.start, span.end])).collect::<Vec<_>>(),
+                });
+            }
         }
         body
     }
@@ -322,6 +388,7 @@ impl Manifest {
         let mut done = Vec::with_capacity(plan.chunks.len());
         let mut draws = Vec::with_capacity(plan.chunks.len());
         let mut render_ms = Vec::with_capacity(plan.chunks.len());
+        let mut kept_stop = Vec::with_capacity(plan.chunks.len());
         for (i, planned) in plan.chunks.iter().enumerate() {
             let Some(c) = chunks.get(i) else {
                 return Err(ManifestError::PlanChanged { index: i });
@@ -351,6 +418,11 @@ impl Manifest {
                 (state, _) => return Err(ManifestError::Format(format!("chunk {i} has state {state:?}"))),
             };
             render_ms.push(output.as_ref().and(c.get("render_ms").and_then(Value::as_u64)));
+            let stop = c.get("kept_stop").and_then(Value::as_str).map(String::from);
+            if stop.as_deref().is_some_and(|stop| !matches!(stop, "eos" | "cap")) {
+                return Err(ManifestError::Format(format!("chunk {i} has invalid kept stop")));
+            }
+            kept_stop.push(stop.clone());
             let kept = c
                 .get("kept_draw")
                 .and_then(Value::as_u64)
@@ -362,6 +434,7 @@ impl Manifest {
             draws.push(match (&output, kept, count) {
                 (Some(_), Some(kept), Some(count)) if kept < count => Some(Draws {
                     kept,
+                    stop,
                     count,
                     verdict: c.get("verdict").and_then(Value::as_str).map(String::from),
                     reads: c.get("reads").and_then(Value::as_array).cloned().unwrap_or_default(),
@@ -381,12 +454,67 @@ impl Manifest {
                 sha256: o.get("sha256")?.as_str()?.to_string(),
             })
         });
+        let chapter_spans = match body.get("chapter_spans") {
+            None => None,
+            Some(value) => {
+                let Some(recorded_chapter) = chapter.as_ref() else {
+                    return Err(ManifestError::Format("chapter spans without chapter file".into()));
+                };
+                let sample_rate = value
+                    .get("sample_rate")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok())
+                    .ok_or_else(|| ManifestError::Format("invalid chapter span sample rate".into()))?;
+                let sample_count = value
+                    .get("sample_count")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| ManifestError::Format("invalid chapter span sample count".into()))?;
+                let chapter_sha256 = value
+                    .get("chapter_sha256")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| ManifestError::Format("invalid chapter span hash".into()))?
+                    .to_string();
+                if chapter_sha256 != recorded_chapter.sha256 {
+                    return Err(ManifestError::Format(
+                        "chapter spans are stale for the chapter file".into(),
+                    ));
+                }
+                let records = value
+                    .get("chunks")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| ManifestError::Format("missing chapter chunk spans".into()))?;
+                let mut chunks_spans = Vec::with_capacity(records.len());
+                for record in records {
+                    let pair = record
+                        .as_array()
+                        .filter(|pair| pair.len() == 2)
+                        .ok_or_else(|| ManifestError::Format("invalid chapter chunk span".into()))?;
+                    let start = pair[0]
+                        .as_u64()
+                        .ok_or_else(|| ManifestError::Format("invalid chapter chunk span start".into()))?;
+                    let end = pair[1]
+                        .as_u64()
+                        .ok_or_else(|| ManifestError::Format("invalid chapter chunk span end".into()))?;
+                    chunks_spans.push(SampleSpan { start, end });
+                }
+                let parsed = ChapterSpans {
+                    sample_rate,
+                    sample_count,
+                    chapter_sha256,
+                    chunks: chunks_spans,
+                };
+                validate_chapter_spans(&parsed, plan.chunks.len()).map_err(ManifestError::Format)?;
+                Some(parsed)
+            }
+        };
         Ok(Manifest {
             plan: plan.clone(),
             done,
             draws,
             render_ms,
+            kept_stop,
             chapter,
+            chapter_spans,
         })
     }
 
@@ -402,6 +530,34 @@ impl Manifest {
             })
             .collect()
     }
+}
+
+fn validate_chapter_spans(spans: &ChapterSpans, expected_chunks: usize) -> Result<(), String> {
+    if spans.sample_rate == 0
+        || spans.sample_count == 0
+        || spans.chapter_sha256.len() != 64
+        || !spans.chapter_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("invalid joined chapter facts".into());
+    }
+    if spans.chunks.len() != expected_chunks {
+        return Err("joined chapter span count does not match plan".into());
+    }
+    let mut previous_end = 0;
+    for (index, span) in spans.chunks.iter().enumerate() {
+        if span.start >= span.end
+            || span.end > spans.sample_count
+            || span.start < previous_end
+            || (index == 0 && span.start != 0)
+        {
+            return Err(format!("invalid joined span for chunk {index}"));
+        }
+        previous_end = span.end;
+    }
+    if previous_end != spans.sample_count {
+        return Err("joined spans do not cover the end of chapter audio".into());
+    }
+    Ok(())
 }
 
 /// The render options a manifest was written under against the ones about to run: the instruction, the steering and
@@ -487,10 +643,12 @@ pub fn resume(dir: &Path, plan: &ChapterPlan) -> Resume {
                 manifest.done[i] = None;
                 manifest.draws[i] = None;
                 manifest.render_ms[i] = None;
+                manifest.kept_stop[i] = None;
             }
             if !todo.is_empty() {
-                // A chunk is rendered again, so the chapter file joined from the old chunks no longer stands.
+                // A chunk is rendered again, so the chapter file and its sample spans no longer stand.
                 manifest.chapter = None;
+                manifest.chapter_spans = None;
             }
             Resume {
                 manifest,
@@ -562,6 +720,7 @@ pub fn run_chapter<R: Into<ChunkOutput>>(
             file,
             sha256: hex(&sha256(&bytes)),
         });
+        manifest.kept_stop[index] = draws.as_ref().and_then(|d| d.stop.clone());
         manifest.draws[index] = draws;
         manifest.render_ms[index] = Some(ms);
         manifest.save(dir).map_err(RunError::Io)?;

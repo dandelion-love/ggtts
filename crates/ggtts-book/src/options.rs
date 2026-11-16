@@ -74,6 +74,7 @@ pub fn refusal(key: &str) -> &'static str {
         }
         "observe.timing_report" | "observe.duration_report" => "a book writes no timing or duration report",
         "observe.log_level" | "observe.log_format" => "a book writes no log",
+        "observe.feedback_page" => "a book does not produce a feedback page yet",
         "observe.layer_stats" | "observe.layer_stats_layers" => "a book writes no layer statistics artifact",
         "observe.codes" => "a book writes no codes file: render a chapter's text with ggtts-render --codes",
         _ => "a book does not take it",

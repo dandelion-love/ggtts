@@ -61,6 +61,7 @@ pub const NOT_OPTIONS: &[(Surface, &str, &str)] = &[
     ),
     (Surface::C, "pcm", "an out-parameter"),
     (Surface::C, "on_piece", "the stream's callback, not a value"),
+    (Surface::Dart, "onPiece", "the stream's callback, not a value"),
     (Surface::C, "user", "the callback's own pointer, passed through"),
     (Surface::C, "len", "an out-parameter"),
     (Surface::C, "rate", "an out-parameter"),
@@ -370,6 +371,24 @@ pub fn kotlin_entries(kt: &str) -> Vec<Entry> {
         .collect()
 }
 
+/// The closing parenthesis for an opening parenthesis, accounting for nested callback types.
+fn matching_paren_close(src: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (offset, c) in src[open..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The public constructor and methods of the Dart Ggtts binding, in source order.
 pub fn dart_entries(src: &str) -> Vec<Entry> {
     let class = between(src, "class Ggtts {", "\n}\n");
@@ -384,13 +403,13 @@ pub fn dart_entries(src: &str) -> Vec<Entry> {
             continue;
         }
         let Some(open) = decl.find('(') else { continue };
-        while !decl[open + 1..].contains(')') {
+        while matching_paren_close(&decl, open).is_none() {
             let Some(next) = lines.next() else {
                 panic!("unclosed Dart declaration: {decl}")
             };
             decl.push_str(next.trim());
         }
-        let close = decl[open + 1..].find(')').unwrap() + open + 1;
+        let close = matching_paren_close(&decl, open).unwrap();
         let item = param_name(&decl[..open]);
         if item.starts_with('_') {
             continue;
@@ -402,6 +421,14 @@ pub fn dart_entries(src: &str) -> Vec<Entry> {
         });
     }
     out
+}
+
+#[test]
+fn dart_reader_keeps_nested_callback_types_inside_parameter() {
+    let src = "class Ggtts {\n  void renderStream(\n    int handle,\n    String text,\n    Map<String, Object?>? options,\n    bool Function(Pcm) onPiece,\n  ) {}\n}\n";
+    let entries = dart_entries(src);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].line(), "dart renderStream: handle, text, options, onPiece");
 }
 
 #[test]

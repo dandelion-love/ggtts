@@ -144,7 +144,10 @@ layers, this path marks and reads no layer outputs. Hook panics are recorded in
 check failures before treating their observations as complete.
 
 The CPU capture path has been exercised for identity and alignment; its
-performance overhead has not been measured. The same backend tensor-read API is
-used for CUDA, but layer capture on CUDA has not been run or validated. Its
-device transfer and synchronization behavior and overhead are unmeasured; do
-not infer CUDA identity or performance from the CPU results.
+performance overhead has not been measured. On 2026-11-15, the one-layer
+engine identity test also passed on an RTX 3080 Ti with the CUDA backend: hooked
+and unhooked generated codes and decoded samples were identical within that
+backend. This validates only the one-layer capture path on that host. The
+synthetic two-layer alignment and steering controls have only run on CPU;
+multi-layer CUDA alignment and performance overhead remain unmeasured. Do not
+infer multi-layer CUDA alignment or CUDA performance from this result.

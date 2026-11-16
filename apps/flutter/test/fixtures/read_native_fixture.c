@@ -22,7 +22,7 @@ int32_t ggtts_free(uint64_t h) { (void)h; return 0; }
 void ggtts_pcm_free(float *p, size_t n) { (void)n; free(p); }
 void ggtts_string_free(char *p) { free(p); }
 int32_t ggtts_capabilities(uint64_t h, char **p) { (void)h; *p=strdup(atomic_load(&mode)<2 ? "{\"cancellable\":true}" : "{}"); return 0; }
-int32_t ggtts_render_opts(uint64_t h,const char*t,const char*d,piece_fn cb,void*u,float**p,size_t*n,uint32_t*r) { (void)h;(void)t;(void)d;(void)p;(void)n;(void)r; if(atomic_load(&mode)==3) return -1; float samples[2048]={0}; return cb(u,samples,2048,24000) ? -5 : 0; }
+int32_t ggtts_render_opts(uint64_t h,const char*t,const char*d,piece_fn cb,void*u,float**p,size_t*n,uint32_t*r) { (void)h;(void)t;(void)d;(void)p;(void)n;(void)r; if(atomic_load(&mode)==3) return -1; float samples[2048]={0}; if(cb(u,samples,2048,24000)) return -5; if(atomic_load(&mode)==4 && cb(u,samples,2048,16000)) return -5; return 0; }
 #if FAKE_ABI >= 6
 int32_t ggtts_cancel_new(uint64_t *out) { uint64_t id=atomic_fetch_add(&next_token,1)+1; atomic_store(&cancelled,0); atomic_store(&token_id,id); *out=id; return 0; }
 int32_t ggtts_cancel_signal(uint64_t id) { if (id!=atomic_load(&token_id)) return -2; atomic_store(&cancelled,1); return 0; }

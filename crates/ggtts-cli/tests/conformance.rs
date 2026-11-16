@@ -1084,6 +1084,41 @@ fn feedback_page_requires_out_and_refuses_aliased_outputs() {
     assert!(!collision.dir.join("page.flac").exists());
 }
 
+#[test]
+fn feedback_page_refuses_raw_and_levelled_stream_before_writes() {
+    for (name, extra) in [
+        (
+            "feedback-stream-levelled",
+            vec![
+                "--out",
+                "audio.flac",
+                "--stream",
+                "stream.wav",
+                "--feedback-page",
+                "page.html",
+            ],
+        ),
+        (
+            "feedback-stream-raw",
+            vec![
+                "--out",
+                "audio.flac",
+                "--stream",
+                "stream.wav",
+                "--stream-raw",
+                "--feedback-page",
+                "page.html",
+            ],
+        ),
+    ] {
+        let r = render(name, "text", &extra);
+        assert!(!r.ok && r.stderr.contains("does not support --stream"), "{}", r.stderr);
+        for path in ["audio.flac", "stream.wav", "page.html", "page.html.provenance.json"] {
+            assert!(!r.dir.join(path).exists(), "{name}: unexpectedly wrote {path}");
+        }
+    }
+}
+
 fn render_probes() -> Vec<Probe> {
     let mut out = Vec::new();
     for mode in ["story", "text"] {

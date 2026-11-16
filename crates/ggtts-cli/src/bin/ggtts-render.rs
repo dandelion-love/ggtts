@@ -716,6 +716,9 @@ fn render_with_models(
     }
     if let Some(page) = &a.observe.feedback_page {
         let out = a.output.out.as_ref().ok_or("--feedback-page requires --out")?;
+        if a.output.stream.is_some() {
+            return Err("--feedback-page does not support --stream: the stream can differ from the saved read".into());
+        }
         if ggtts_instruments::options::flags(&a).any() {
             return Err("--feedback-page does not yet support instrument reports".into());
         }

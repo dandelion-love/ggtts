@@ -16,6 +16,23 @@ bool useAndroidPlaybackBridge({
   bool experimental = experimentalAndroidPlayback,
 }) => isAndroid && experimental;
 
+/// Allow up to 20 seconds of mono PCM while bounding the native ring to
+/// 960,000 float samples (3.84 MB), even for higher sample rates.
+const int maxPlaybackBufferSamples = 960000;
+const int targetPlaybackBufferMs = 20000;
+
+int playbackBufferMs(int sampleRate) {
+  if (sampleRate <= 0 || sampleRate > 192000) {
+    throw ArgumentError.value(
+      sampleRate,
+      'sampleRate',
+      'unsupported audio rate',
+    );
+  }
+  final bounded = maxPlaybackBufferSamples * 1000 ~/ sampleRate;
+  return bounded < targetPlaybackBufferMs ? bounded : targetPlaybackBufferMs;
+}
+
 /// Synchronous per-read output. All platforms default to miniaudio.
 class PlaybackSession {
   PlaybackSession._(this.id, this._native);
@@ -61,7 +78,10 @@ class PlaybackSession {
   bool get usesPresentationTracking => _native == null;
 
   int init({required int sampleRate}) =>
-      _native?.init(sampleRate: sampleRate) ??
+      _native?.init(
+        sampleRate: sampleRate,
+        bufferMs: playbackBufferMs(sampleRate),
+      ) ??
       _callInt('init', '(JI)I', [id, sampleRate]);
   int pause() => _native?.pause() ?? _callInt('pause', '(J)I', [id]);
   int resume() => _native?.resume() ?? _callInt('resume', '(J)I', [id]);

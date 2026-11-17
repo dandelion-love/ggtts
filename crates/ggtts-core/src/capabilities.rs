@@ -42,6 +42,14 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
+    /// Restrict a loaded engine to backends compiled into its binary. This is
+    /// not a probe that a device is installed or currently available.
+    pub fn compiled_devices(mut self, cuda_compiled: bool) -> Self {
+        if !cuda_compiled {
+            self.devices.retain(|device| *device != "cuda");
+        }
+        self
+    }
     /// An engine with nothing optional: no instruction, steering or speakers, the CPU only, nothing exported to hooks
     /// and no step events. What [`Engine::capabilities`](crate::engine::Engine::capabilities) says by default.
     pub fn none(family: &str) -> Self {

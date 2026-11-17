@@ -522,7 +522,9 @@ impl Engine for KittenEngine {
     /// Kitten-TTS 2 runs on the CPU or CUDA, and takes no instruction, steering or speaker, and exports nothing to
     /// hooks.
     fn capabilities(&self) -> ggtts_core::capabilities::Capabilities {
-        ggtts_core::capabilities::Capabilities::of("kitten-tts-2").expect("kitten-tts-2 is an engine")
+        ggtts_core::capabilities::Capabilities::of("kitten-tts-2")
+            .expect("kitten-tts-2 is an engine")
+            .compiled_devices(cfg!(feature = "cuda"))
     }
     fn info(&self) -> &EngineInfo {
         &self.info

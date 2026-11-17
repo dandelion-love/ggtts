@@ -151,7 +151,9 @@ impl Qwen3Tts {
 /// What a Qwen3-TTS engine on `talker` supports: everything the family does, except a style instruction on a
 /// checkpoint that takes none, which then says why (its type and hidden size).
 fn capabilities_of(talker: &Talker) -> Capabilities {
-    let mut c = Capabilities::of("qwen3-tts").expect("qwen3-tts is an engine");
+    let mut c = Capabilities::of("qwen3-tts")
+        .expect("qwen3-tts is an engine")
+        .compiled_devices(cfg!(feature = "cuda"));
     if !talker.supports_instruction() {
         c.instruction = false;
         c.no_instruction_why = talker.check_instruction(Some("an instruction")).err().map(|e| e.0);

@@ -7,25 +7,50 @@ import 'presentation_tracker.dart';
 /// This is not a hardware playback completion signal.
 void drainAudio({
   required int Function() state,
-  required int Function() softwareEmpty,
+  required int Function() queuedFrames,
+  Duration Function()? now,
   void Function(Duration) wait = sleep,
   int graceTicks = 170,
+  Duration stallAfter = const Duration(seconds: 30),
 }) {
   const tick = Duration(milliseconds: 30);
+  final clock = Stopwatch()..start();
+  final readTime = now ?? () => clock.elapsed;
+  var lastTime = readTime();
+  var stagnant = Duration.zero;
+  int? previousFrames;
+  var previousRunning = false;
   var remaining = graceTicks;
   while (true) {
     final current = state();
+    final currentTime = readTime();
+    final elapsed = currentTime - lastTime;
+    lastTime = currentTime;
     if (current == 3 || current < 0) throw ReadStopped();
     if (current == 2) {
+      previousRunning = false;
       wait(tick);
       continue;
     }
-    final empty = softwareEmpty();
-    if (empty < 0) throw ReadStopped();
-    if (empty == 1) {
+    final frames = queuedFrames();
+    if (frames < 0) throw ReadStopped();
+    if (frames == 0) {
+      previousFrames = 0;
+      stagnant = Duration.zero;
       if (remaining == 0) return;
       remaining--;
+    } else {
+      if (previousFrames != null && frames < previousFrames) {
+        stagnant = Duration.zero;
+      } else if (previousRunning && elapsed > Duration.zero) {
+        stagnant += elapsed;
+      }
+      previousFrames = frames;
+      if (stagnant >= stallAfter) {
+        throw StateError('Audio output stopped consuming queued samples.');
+      }
     }
+    previousRunning = true;
     wait(tick);
   }
 }

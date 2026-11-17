@@ -328,4 +328,8 @@ int64_t ma_stream_session_software_empty(uint64_t id) {
     return lifecycle.invokeSession(id, [&] { return control.softwareEmpty() ? 1 : 0; });
 }
 
+int64_t ma_stream_session_queued_frames(uint64_t id) {
+    return lifecycle.invokeSession(id, [&] { return control.queuedFrames(); });
+}
+
 int64_t ma_stream_session_state(uint64_t id) { return lifecycle.sessionState(id, control); }

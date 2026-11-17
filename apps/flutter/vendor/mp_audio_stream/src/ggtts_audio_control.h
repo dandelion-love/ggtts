@@ -82,6 +82,13 @@ public:
         return state_ == State::running && backend_.queued() == 0;
     }
 
+    // Frames still in the software ring; not a hardware presentation count.
+    int64_t queuedFrames() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state_ != State::running && state_ != State::paused) return -1;
+        return static_cast<int64_t>(backend_.queued());
+    }
+
     template <typename F>
     int64_t push(F operation) {
         std::lock_guard<std::mutex> lock(mutex_);

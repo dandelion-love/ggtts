@@ -50,6 +50,16 @@ code units) and can be lost if the app process ends; empty, malformed or oversiz
 shares are ignored. A share arriving while a read or preparation is running waits
 until the app is idle.
 
+## Read timing diagnostics
+
+The app logs bounded `ggtts-read event=...` records without text or paths.
+`load` measures the model reload for a read. Each `piece` records callback
+wait, audio setup, FLAC append, PCM handoff, and the piece's audio duration in
+milliseconds. Callback wait includes engine work and scheduling; handoff may
+include backpressure or a pause. Neither measures silence heard by a listener
+or confirms hardware playback. At most 128 piece lines are emitted per read,
+followed by a limit marker. `drain` includes the existing output grace period.
+
 ## Model files
 
 The explicit **Prepare model** action may download the default model when it is missing. Choose **Prepare offline**

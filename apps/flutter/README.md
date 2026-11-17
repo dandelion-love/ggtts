@@ -30,6 +30,12 @@ On Windows x86_64, install Flutter's Windows desktop prerequisites, Rust's MSVC 
 ```
 
 This builds the C library and bundles it beside the app executable. Set `LIBCLANG_PATH` if bindgen cannot find it.
+For an experimental CUDA bundle, use a Visual C++ x64 developer environment with Ninja and CUDA 12 installed,
+set `CUDA_PATH` to that toolkit, and run `./apps/flutter/tool/build_windows.ps1 -Cuda`. This builds a separate
+native target and copies the CUDA runtime and cuBLAS DLLs beside the app. The default remains CPU-only. The local
+CUDA build uses `GGML_CUDA_ARCH` (default 86); a build is not evidence of working device inference. Pass
+`-Diagnostics` only for the authenticated local developer harness described below. `-TargetDir` can select an
+existing native build directory.
 If MSBuild reports a path-length or FTK1011 error, build from a short checkout path; the native build was verified
 from a short drive mapping after a longer checkout failed.
 Initialize the repository's ggml submodule before building on any platform. Hosted Flutter packaging is opt-in via

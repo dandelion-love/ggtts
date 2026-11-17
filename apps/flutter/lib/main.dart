@@ -2,10 +2,15 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/rendering.dart';
+import 'package:audioplayers/audioplayers.dart';
 
 import 'playback_session.dart';
+import 'diagnostics_server.dart';
 
 import 'package:path_provider/path_provider.dart';
 
@@ -202,7 +207,12 @@ void renderWorker(Map<String, Object?> request) async {
   int? sampleRate;
   PcmQueue? queue;
   PendingRead? pending;
-  final timings = ReadTimings();
+  final timingPort = request['timingPort'] as SendPort?;
+  final timings = ReadTimings(
+    sink: timingPort == null
+        ? null
+        : (line) => timingPort.send({'timing': line}),
+  );
   await runReadOutcome(
     generate: () async {
       pending = await SavedReads(Directory(request['library'] as String)).begin(
@@ -360,6 +370,11 @@ class _ReadPageState extends State<ReadPage> {
   String? _sharedPending;
   bool _sharedPolling = false;
   bool _sharedRepoll = false;
+  final _diagnosticBoundary = GlobalKey();
+  DiagnosticsServer? _diagnostics;
+  AudioPlayer? _diagnosticPlayer;
+  SavedRead? _diagnosticSaved;
+  final List<String> _diagnosticTimings = [];
 
   @override
   void initState() {
@@ -367,6 +382,9 @@ class _ReadPageState extends State<ReadPage> {
     _sharedInbox = widget.sharedTextInbox ?? platformSharedTextInbox();
     _sharedInbox?.onAvailable(_pollSharedText);
     _pollSharedText();
+    if (const bool.fromEnvironment('GGTTS_DIAGNOSTICS') && Platform.isLinux) {
+      _startDiagnostics();
+    }
     if (const bool.fromEnvironment('GGTTS_AUTOSPEAK')) {
       Future.microtask(() async {
         await _prepare();
@@ -382,6 +400,138 @@ class _ReadPageState extends State<ReadPage> {
           if (mounted && _caps != null) await _speak();
         }
       });
+    }
+  }
+
+  Future<void> _startDiagnostics() async {
+    try {
+      final token = Platform.environment['GGTTS_DIAGNOSTICS_TOKEN'] ?? '';
+      final server = await DiagnosticsServer.start(token, _diagnosticAction);
+      if (!mounted) {
+        await server.close();
+        return;
+      }
+      _diagnostics = server;
+      debugPrint('ggtts-diagnostics port=${server.port}');
+    } catch (_) {
+      debugPrint('ggtts-diagnostics unavailable');
+    }
+  }
+
+  Future<Object?> _diagnosticAction(
+    String operation,
+    Map<String, Object?> input,
+  ) async {
+    if (!mounted) throw StateError('page closed');
+    switch (operation) {
+      case 'status':
+        return {
+          'busy': _busy,
+          'preparing': _preparing,
+          'ready': _caps != null,
+          'pending': _pendingToken != null,
+          'saved': _diagnosticSaved != null,
+          'audio_ready': _audioReady,
+          'failed': _error != null,
+          'status': _error != null
+              ? 'failed'
+              : _busy
+              ? 'working'
+              : _pendingToken != null
+              ? 'pending'
+              : _caps != null
+              ? 'ready'
+              : 'unprepared',
+          'timings': List<String>.of(_diagnosticTimings),
+        };
+      case 'text':
+        if (_busy) throw StateError('busy');
+        setState(() => _text.text = input['text'] as String);
+        return {'ok': true};
+      case 'prepare':
+        if (_busy) throw StateError('busy');
+        await _prepare(offline: true);
+        return {'ok': _caps != null && _error == null};
+      case 'speak':
+        if (_busy || _caps == null || _pendingToken != null) {
+          throw StateError('read unavailable');
+        }
+        _diagnosticSaved = null;
+        _diagnosticTimings.clear();
+        await _speak();
+        return {'ok': _error == null && _pendingToken != null};
+      case 'stop':
+        if (!_busy) return {'ok': false};
+        if (_preparing) {
+          _stopPreparation();
+          return {'ok': true};
+        }
+        if (!_cancellable || _gate.terminal) return {'ok': false};
+        _stopRead();
+        return {'ok': _gate.stopRequested};
+      case 'save':
+        if (_busy || _pendingToken == null) {
+          throw StateError('save unavailable');
+        }
+        await _saveRead();
+        return {
+          'ok': _diagnosticSaved != null && _error == null,
+          if (_diagnosticSaved != null) 'read': _diagnosticSaved!.id,
+        };
+      case 'reopen':
+        if (_busy) throw StateError('busy');
+        final root = widget.readDirectory == null
+            ? Directory(
+                '${(await getApplicationSupportDirectory()).path}/reads',
+              )
+            : await widget.readDirectory!();
+        final reads = await SavedReads(root).list();
+        final selected = reads
+            .where((r) => r.id == input['id'] && !r.invalid && !r.missing)
+            .toList();
+        if (selected.length != 1) throw StateError('read unavailable');
+        _diagnosticSaved = selected.single;
+        return {'ok': true};
+      case 'replay':
+        if (_busy || _diagnosticSaved == null) {
+          throw StateError('replay unavailable');
+        }
+        await (_diagnosticPlayer ??= AudioPlayer()).play(
+          DeviceFileSource(_diagnosticSaved!.audioPath),
+        );
+        return {'ok': true, 'meaning': 'playback requested'};
+      case 'audio':
+        final saved = _diagnosticSaved;
+        if (saved == null) throw StateError('audio unavailable');
+        final file = File(saved.audioPath);
+        if (await FileSystemEntity.type(file.path, followLinks: false) !=
+                FileSystemEntityType.file ||
+            await file.length() > 64 * 1024 * 1024) {
+          throw StateError('audio unavailable');
+        }
+        return await file.readAsBytes();
+      case 'screenshot':
+        await WidgetsBinding.instance.endOfFrame;
+        final boundary = _diagnosticBoundary.currentContext?.findRenderObject();
+        if (boundary is! RenderRepaintBoundary || boundary.debugNeedsPaint) {
+          throw StateError('screenshot unavailable');
+        }
+        final image = await boundary.toImage(pixelRatio: 1);
+        try {
+          final data = await image.toByteData(format: ui.ImageByteFormat.png);
+          if (data == null || data.lengthInBytes > 16 * 1024 * 1024) {
+            throw StateError('screenshot unavailable');
+          }
+          return Uint8List.view(
+            data.buffer,
+            data.offsetInBytes,
+            data.lengthInBytes,
+          );
+        } finally {
+          image.dispose();
+        }
+      default:
+        throw StateError('unknown operation');
     }
   }
 
@@ -608,6 +758,7 @@ class _ReadPageState extends State<ReadPage> {
             'audio': initial['audio'],
             'token': initial['token'],
             'cancellable': _cancellable,
+            if (_diagnostics != null) 'timingPort': port.sendPort,
           },
           onError: port.sendPort,
           onExit: port.sendPort,
@@ -620,6 +771,12 @@ class _ReadPageState extends State<ReadPage> {
         await for (final dynamic message in port) {
           if (message is! Map) {
             throw StateError('Read worker exited unexpectedly: $message');
+          }
+          if (message['timing'] is String) {
+            if (_diagnosticTimings.length < 132) {
+              _diagnosticTimings.add(message['timing'] as String);
+            }
+            continue;
           }
           if (message['audioReady'] == true) {
             if (mounted) setState(() => _audioReady = true);
@@ -728,7 +885,8 @@ class _ReadPageState extends State<ReadPage> {
       _error = null;
     });
     try {
-      await _library!.publish(_pendingToken!);
+      final published = await _library!.publish(_pendingToken!);
+      if (_diagnostics != null) _diagnosticSaved = published;
       if (mounted) {
         setState(() {
           _pendingToken = null;
@@ -806,6 +964,8 @@ class _ReadPageState extends State<ReadPage> {
 
   @override
   void dispose() {
+    _diagnostics?.close();
+    _diagnosticPlayer?.dispose();
     _sharedInbox?.close();
     _stopPreparation(updateUi: false);
     _stopRead(updateUi: false);
@@ -827,7 +987,7 @@ class _ReadPageState extends State<ReadPage> {
         _schema != null &&
         hasSchemaOption(_schema!, 'render', 'steer') &&
         _caps?['steering'] == true;
-    return Scaffold(
+    final page = Scaffold(
       appBar: AppBar(
         title: const Text('ggtts'),
         actions: [
@@ -988,6 +1148,9 @@ class _ReadPageState extends State<ReadPage> {
         ),
       ),
     );
+    return const bool.fromEnvironment('GGTTS_DIAGNOSTICS') && Platform.isLinux
+        ? RepaintBoundary(key: _diagnosticBoundary, child: page)
+        : page;
   }
 }
 

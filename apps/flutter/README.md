@@ -106,3 +106,45 @@ the Dart binding's required C exports, and equality with the current build after
 stripping. The gate confirms that ggtts_abi_version is exported; it cannot
 execute the cross-architecture library to verify its returned version. The app
 checks that value at runtime when it loads the library.
+
+## Developer read diagnostics (Linux)
+
+A Linux build can opt into a local diagnostics channel. Normal builds do not
+start a listener. The opt-in build also requires
+\`GGTTS_DIAGNOSTICS_TOKEN\` at launch: exactly 64 lowercase hexadecimal digits
+generated with a cryptographically secure random source. Treat this value as a
+password and pass it through the process environment, not a URL or a log.
+The app prints only the ephemeral port as \`ggtts-diagnostics port=...\`.
+If the token is absent or malformed the channel remains unavailable.
+
+Build with \`flutter build linux --dart-define=GGTTS_DIAGNOSTICS=true\`.
+The server binds IPv4 loopback only. Requests are POSTs to
+\`http://127.0.0.1:<port>/<operation>\` with the header
+\`Authorization: Bearer <token>\` and a UTF-8 JSON object body. It rejects
+browser Origin headers, unexpected Host headers, unknown operations, bodies
+over 64 KiB, and more than eight concurrent requests. The token permits the
+holder to control the running app and access its rendered text and audio; use a
+private process environment and a separate application data directory for
+private test runs.
+
+Operations are deliberately fixed:
+
+- \`text\`: \`{"text":"..."}\` sets the read editor, with a 16,000 UTF-16-unit limit.
+- \`prepare\`: prepares using cached or selected model files only, with no download.
+- \`speak\`: performs the normal read path and completes when that read ends.
+  \`status\`, \`stop\` and \`screenshot\` remain available while it runs.
+- \`stop\`: requests the existing cooperative stop; \`ok: false\` means it was unavailable.
+- \`save\`: publishes the pending completed read and returns its opaque saved-read ID.
+- \`reopen\`: \`{"id":"..."}\` selects that ID from the app's saved-read
+  library after a restart. It accepts no paths.
+- \`replay\`: requests playback through the same audio player as Saved reads.
+- \`audio\`: returns the selected saved read's FLAC (maximum 64 MiB).
+- \`screenshot\`: returns a PNG of the read page's own Flutter render boundary,
+  not a desktop or another application (maximum 16 MiB).
+- \`status\`: returns fixed state flags and bounded text-free software timing events.
+
+All other operations take \`{}\`. The channel does not capture system audio.
+The FLAC is generated PCM, and a successful replay request does not establish
+that hardware presented it or that anyone heard it. Timing events describe
+software work, not audible silence. The channel is intended for trusted local
+developer sessions and should be disabled in ordinary builds.

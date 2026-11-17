@@ -43,6 +43,7 @@ void main() {
         String? origin,
         String? host,
         String body = '{}',
+        bool declaredLength = false,
       }) async {
         final req = await client.postUrl(
           Uri.parse('http://127.0.0.1:${server.port}/$path'),
@@ -52,7 +53,9 @@ void main() {
         }
         if (origin != null) req.headers.set('Origin', origin);
         if (host != null) req.headers.set(HttpHeaders.hostHeader, host);
-        req.add(utf8.encode(body));
+        final payload = utf8.encode(body);
+        if (declaredLength) req.contentLength = payload.length;
+        req.add(payload);
         final response = await req.close();
         return (response.statusCode, await utf8.decoder.bind(response).join());
       }
@@ -85,7 +88,13 @@ void main() {
         (await request('audio', body: jsonEncode({'path': '/etc/passwd'}))).$1,
         400,
       );
+      expect((await request('status', body: '{}${' ' * 65534}')).$1, 200);
       expect((await request('text', body: 'x' * 65537)).$1, 413);
+      expect(
+        (await request('text', body: 'x' * 65537, declaredLength: true)).$1,
+        413,
+      );
+      expect((await request('status')).$1, 200);
       expect(
         (await request('reopen', body: jsonEncode({'id': '../x'}))).$1,
         400,
@@ -98,7 +107,7 @@ void main() {
       expect((await request('stop')).$1, 200);
       release.complete();
       expect((await speaking).$1, 200);
-      expect(called, 5);
+      expect(called, 7);
     },
   );
 }

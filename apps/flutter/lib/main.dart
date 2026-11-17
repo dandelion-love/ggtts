@@ -382,7 +382,8 @@ class _ReadPageState extends State<ReadPage> {
     _sharedInbox = widget.sharedTextInbox ?? platformSharedTextInbox();
     _sharedInbox?.onAvailable(_pollSharedText);
     _pollSharedText();
-    if (const bool.fromEnvironment('GGTTS_DIAGNOSTICS') && Platform.isLinux) {
+    if (const bool.fromEnvironment('GGTTS_DIAGNOSTICS') &&
+        (Platform.isLinux || Platform.isWindows)) {
       _startDiagnostics();
     }
     if (const bool.fromEnvironment('GGTTS_AUTOSPEAK')) {
@@ -1148,7 +1149,8 @@ class _ReadPageState extends State<ReadPage> {
         ),
       ),
     );
-    return const bool.fromEnvironment('GGTTS_DIAGNOSTICS') && Platform.isLinux
+    return const bool.fromEnvironment('GGTTS_DIAGNOSTICS') &&
+        (Platform.isLinux || Platform.isWindows)
         ? RepaintBoundary(key: _diagnosticBoundary, child: page)
         : page;
   }

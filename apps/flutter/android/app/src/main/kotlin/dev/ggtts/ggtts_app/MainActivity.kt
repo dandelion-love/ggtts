@@ -3,6 +3,7 @@ package dev.ggtts.ggtts_app
 import android.app.Dialog
 import android.content.Intent
 import android.graphics.Bitmap
+import android.os.Bundle
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
@@ -18,6 +19,30 @@ import java.security.MessageDigest
 
 class MainActivity : FlutterActivity() {
     private val modelPicker by lazy { ModelFilePicker(this) }
+    private val sharedText = SharedTextQueue()
+    private var sharedTextChannel: MethodChannel? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) acceptSharedText(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        acceptSharedText(intent)
+    }
+
+    private fun acceptSharedText(intent: Intent?) {
+        if (intent == null) return
+        try {
+            if (sharedText.offer(intent.action, intent.type, intent.getCharSequenceExtra(Intent.EXTRA_TEXT))) {
+                sharedTextChannel?.invokeMethod("available", null)
+            }
+        } catch (_: RuntimeException) {
+            // Malformed or unparcelable external intent: preserve the current draft.
+        }
+    }
+
     private var active = false
     private var closeActive: (() -> Unit)? = null
 
@@ -34,6 +59,11 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        sharedTextChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "ggtts/shared_text").also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                if (call.method == "take") result.success(sharedText.take()) else result.notImplemented()
+            }
+        }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "ggtts/model_picker")
             .setMethodCallHandler { call, result ->
                 if (call.method != "pick") result.notImplemented()

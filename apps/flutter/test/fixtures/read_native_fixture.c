@@ -5,11 +5,12 @@
 #include <string.h>
 
 typedef int32_t (*piece_fn)(void *, const float *, size_t, uint32_t);
-static atomic_int mode, stage, cancelled, pushes, paused_pushes, state;
+static atomic_int mode, stage, cancelled, pushes, paused_pushes, state, buffer_samples;
 static atomic_ulong token_id, session_id, next_token, next_session;
 void fake_mode(int m) { atomic_store(&mode,m); atomic_store(&stage,0); atomic_store(&pushes,0); atomic_store(&paused_pushes,0); }
 int fake_stage(void) { return atomic_load(&stage); }
 int fake_pushes(void) { return atomic_load(&pushes); }
+int fake_buffer_samples(void) { return atomic_load(&buffer_samples); }
 int fake_paused_pushes(void) { return atomic_load(&paused_pushes); }
 #ifndef FAKE_ABI
 #define FAKE_ABI 6
@@ -47,7 +48,7 @@ uint64_t ma_stream_session_new(void) {
 }
 int64_t ma_stream_session_state(uint64_t id) { return id==atomic_load(&session_id) ? atomic_load(&state) : -1; }
 int64_t ma_stream_session_init(uint64_t id,int64_t a,int64_t b,int64_t c,int64_t d,int64_t e) {
-  (void)a;(void)b;(void)c;(void)d;(void)e;
+  (void)b;(void)c;(void)d;(void)e; atomic_store(&buffer_samples, (int)a);
   if(id!=atomic_load(&session_id)||atomic_load(&state)!=0) return -1;
   atomic_store(&state,1); return 0;
 }

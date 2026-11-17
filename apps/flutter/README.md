@@ -50,6 +50,11 @@ code units) and can be lost if the app process ends; empty, malformed or oversiz
 shares are ignored. A share arriving while a read or preparation is running waits
 until the app is idle.
 
+The native playback ring targets 20 seconds of mono audio, capped at 960,000
+float samples (3.84 MB); sample rates above 192 kHz are refused. This lets
+generation overlap playback of longer pieces, but it cannot prevent pauses
+when generation is slower than playback. Stop still clears queued audio.
+
 ## Read timing diagnostics
 
 The app logs bounded `ggtts-read event=...` records without text or paths.

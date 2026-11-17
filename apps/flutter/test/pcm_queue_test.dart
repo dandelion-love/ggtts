@@ -2,8 +2,59 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ggtts_app/pcm_queue.dart';
+import 'package:ggtts_app/playback_session.dart';
 
 void main() {
+  test('20-second bounded ring accepts the observed-size first piece without drain', () {
+    const rate = 24000;
+    final samples = Float32List.fromList(
+      List.generate(342480, (i) => (i % 13) / 16.0),
+    );
+    int deliver(int capacity, {required bool expectFull}) {
+      var accepted = 0;
+      final output = Float32List(samples.length);
+      final queue = PcmQueue(
+        (piece) {
+          if (accepted + piece.length > capacity) return -1;
+          output.setRange(accepted, accepted + piece.length, piece);
+          accepted += piece.length;
+          return 0;
+        },
+        pause: (_) {},
+        maxRetries: 2,
+      );
+      if (expectFull) {
+        expect(() => queue.add(samples), throwsStateError);
+      } else {
+        queue.add(samples);
+        expect(accepted, samples.length);
+        expect(output, samples);
+      }
+      return accepted;
+    }
+
+    expect(deliver(rate * 5, expectFull: true), lessThan(samples.length));
+    expect(
+      deliver(rate * playbackBufferMs(rate) ~/ 1000, expectFull: false),
+      samples.length,
+    );
+  });
+
+  test('ring duration is capped by sample count and rejects invalid rates', () {
+    expect(playbackBufferMs(24000), 20000);
+    expect(playbackBufferMs(48000), 20000);
+    expect(playbackBufferMs(192000), 5000);
+    for (final rate in [0, -1, 192001]) {
+      expect(() => playbackBufferMs(rate), throwsArgumentError);
+    }
+    for (final rate in [8000, 24000, 44100, 48000, 96000, 192000]) {
+      expect(
+        rate * playbackBufferMs(rate) ~/ 1000,
+        lessThanOrEqualTo(maxPlaybackBufferSamples),
+      );
+    }
+  });
+
   test('a full output retries without dropping or reordering samples', () {
     var blocked = true;
     final received = <double>[];

@@ -101,6 +101,10 @@ void main() {
         final done = await ordinary.terminal();
         expect(done['done'], isTrue);
         expect(
+          native.lookupFunction<_GetC, _GetD>('fake_buffer_samples')(),
+          480000,
+        );
+        expect(
           await controlCommand(
             ordinary.control,
             'close',

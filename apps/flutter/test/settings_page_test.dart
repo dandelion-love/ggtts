@@ -29,6 +29,34 @@ class DelayedStore extends FakeStore {
 }
 
 void main() {
+  testWidgets('CUDA is disabled unless the loaded engine reports it', (
+    tester,
+  ) async {
+    Future<bool> cudaEnabled(List<String> devices) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsPage(store: FakeStore(), devices: devices),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final device = find.byWidgetPredicate(
+        (widget) =>
+            widget is DropdownButtonFormField<String> &&
+            widget.decoration.labelText == 'Device',
+      );
+      await tester.ensureVisible(device);
+      await tester.tap(device);
+      await tester.pumpAndSettle();
+      final items = tester.widgetList<DropdownMenuItem<String>>(
+        find.byType(DropdownMenuItem<String>),
+      );
+      return items.firstWhere((item) => item.value == 'cuda').enabled;
+    }
+
+    expect(await cudaEnabled(['cpu']), isFalse);
+    await tester.pumpWidget(const SizedBox());
+    expect(await cudaEnabled(['cpu', 'cuda']), isTrue);
+  });
   testWidgets('edits persist settings in a scrollable form', (tester) async {
     final store = FakeStore();
     await tester.pumpWidget(

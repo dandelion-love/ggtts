@@ -43,6 +43,8 @@ class DiagnosticsServer {
 
   Future<void> _handle(HttpRequest req) async {
     final response = req.response;
+    // Early refusals may leave an unread request body.
+    response.persistentConnection = false;
     if (_inflight >= 8) {
       response.statusCode = HttpStatus.serviceUnavailable;
       await response.close();
@@ -78,21 +80,31 @@ class DiagnosticsServer {
         response.statusCode = HttpStatus.notFound;
         return;
       }
-      if (req.contentLength > 65536) {
+      const bodyLimit = 65536;
+      // Drain only a small bounded excess before refusing. Closing a socket
+      // while the peer is still sending can reset the response on Windows.
+      const drainLimit = 131072;
+      if (req.contentLength > drainLimit) {
         response.statusCode = HttpStatus.requestEntityTooLarge;
         return;
       }
       final bytes = BytesBuilder(copy: false);
+      var received = 0;
       final bodyClock = Stopwatch()..start();
       await for (final chunk in req.timeout(const Duration(seconds: 5))) {
         if (bodyClock.elapsed > const Duration(seconds: 10)) {
           throw TimeoutException('request body deadline');
         }
-        if (bytes.length + chunk.length > 65536) {
+        received += chunk.length;
+        if (received > drainLimit) {
           response.statusCode = HttpStatus.requestEntityTooLarge;
           return;
         }
-        bytes.add(chunk);
+        if (received <= bodyLimit) bytes.add(chunk);
+      }
+      if (received > bodyLimit) {
+        response.statusCode = HttpStatus.requestEntityTooLarge;
+        return;
       }
       final raw = bytes.takeBytes();
       final dynamic decoded = raw.isEmpty

@@ -107,9 +107,9 @@ stripping. The gate confirms that ggtts_abi_version is exported; it cannot
 execute the cross-architecture library to verify its returned version. The app
 checks that value at runtime when it loads the library.
 
-## Developer read diagnostics (Linux)
+## Developer read diagnostics (Linux and Windows)
 
-A Linux build can opt into a local diagnostics channel. Normal builds do not
+A Linux or Windows build can opt into a local diagnostics channel. Normal builds do not
 start a listener. The opt-in build also requires
 \`GGTTS_DIAGNOSTICS_TOKEN\` at launch: exactly 64 lowercase hexadecimal digits
 generated with a cryptographically secure random source. Treat this value as a
@@ -117,7 +117,7 @@ password and pass it through the process environment, not a URL or a log.
 The app prints only the ephemeral port as \`ggtts-diagnostics port=...\`.
 If the token is absent or malformed the channel remains unavailable.
 
-Build with \`flutter build linux --dart-define=GGTTS_DIAGNOSTICS=true\`.
+Build with \`flutter build linux --dart-define=GGTTS_DIAGNOSTICS=true\` or \`flutter build windows --dart-define=GGTTS_DIAGNOSTICS=true\`.
 The server binds IPv4 loopback only. Requests are POSTs to
 \`http://127.0.0.1:<port>/<operation>\` with the header
 \`Authorization: Bearer <token>\` and a UTF-8 JSON object body. It rejects

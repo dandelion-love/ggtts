@@ -261,6 +261,17 @@ static int64_t init_locked(int64_t max_buffer_size, int64_t keep_buffer_size, in
     }
     device_initialized = true;
 
+    // miniaudio's default backend list ends in the null sink. Treat selecting
+    // it as an output error: it consumes samples without playing them.
+    // The explicitly null-only callback test has its own test build flag.
+#if !defined(GGTTS_TEST_OBSERVE_CALLBACK)
+    if (!ggtts_backend_can_output(_ctx->device.pContext != NULL,
+            _ctx->device.pContext && _ctx->device.pContext->backend == ma_backend_null)) {
+        printf("No playback output backend available.\n");
+        return -10;
+    }
+#endif
+
 #ifdef MP_AUDIO_STREAM_DEBUG
     printf("Device Name: %s\n", _ctx->device.playback.name);
 #endif

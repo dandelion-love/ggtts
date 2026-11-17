@@ -5,6 +5,12 @@
 #include <functional>
 #include <mutex>
 
+// A null backend consumes audio without an output device. A missing context is
+// likewise insufficient to claim playback. This does not prove audibility.
+inline bool ggtts_backend_can_output(bool has_context, bool is_null) {
+    return has_context && !is_null;
+}
+
 // Ensures partially initialized device/ring resources are released on every
 // failure return. The owner supplies cleanup and commits only after admission.
 class GgttsInitGuard {

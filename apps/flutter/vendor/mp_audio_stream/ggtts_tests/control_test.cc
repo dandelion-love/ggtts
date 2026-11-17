@@ -15,6 +15,10 @@ struct Fake : GgttsAudioControl::Backend {
 };
 
 int main() {
+    // A null backend or missing context can never count as desktop output.
+    assert(!ggtts_backend_can_output(false, false));
+    assert(!ggtts_backend_can_output(true, true));
+    assert(ggtts_backend_can_output(true, false));
     // Plant failure after both resources were created; the production guard
     // must release both, while successful initialization keeps them.
     bool device = false, ring = false;

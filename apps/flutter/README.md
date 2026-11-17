@@ -144,6 +144,7 @@ Operations are deliberately fixed:
 - \`status\`: returns fixed state flags and bounded text-free software timing events.
 
 All other operations take \`{}\`. The channel does not capture system audio.
+The playback layer refuses miniaudio's null sink in ordinary builds; selecting a real backend still does not prove audio reached a listener.
 The FLAC is generated PCM, and a successful replay request does not establish
 that hardware presented it or that anyone heard it. Timing events describe
 software work, not audible silence. The channel is intended for trusted local

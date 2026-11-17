@@ -14,6 +14,7 @@ import 'audio_drain.dart';
 import 'read_options.dart';
 import 'read_control_gate.dart';
 import 'read_worker_outcome.dart';
+import 'read_timings.dart';
 import 'pcm_queue.dart';
 import 'settings_page.dart';
 import 'shared_text.dart';
@@ -201,6 +202,7 @@ void renderWorker(Map<String, Object?> request) async {
   int? sampleRate;
   PcmQueue? queue;
   PendingRead? pending;
+  final timings = ReadTimings();
   await runReadOutcome(
     generate: () async {
       pending = await SavedReads(Directory(request['library'] as String)).begin(
@@ -208,8 +210,8 @@ void renderWorker(Map<String, Object?> request) async {
         options: Map<String, Object?>.from(request['options'] as Map),
       );
       final engine = Ggtts(openGgtts());
-      final handle = engine.load(
-        Map<String, Object?>.from(request['load'] as Map),
+      final handle = timings.load(
+        () => engine.load(Map<String, Object?>.from(request['load'] as Map)),
       );
       try {
         final cancellable = request['cancellable'] == true;
@@ -218,40 +220,58 @@ void renderWorker(Map<String, Object?> request) async {
             'Loaded engine does not support cancellation.',
           );
         }
-        engine.renderStream(
-          handle,
-          request['text'] as String,
-          Map<String, Object?>.from(request['render'] as Map),
-          (piece) {
-            if (!audioReady) {
-              if (audio.init(sampleRate: piece.rate) != 0) {
-                if (audio.state() == 3) throw ReadStopped();
-                throw StateError('Could not initialize audio playback.');
-              }
-              audioReady = true;
-              sampleRate = piece.rate;
-              queue = PcmQueue(audio.push);
-              port.send({'audioReady': true});
-            }
-            if (sampleRate != piece.rate) {
-              throw StateError('Audio sample rate changed during the read.');
-            }
-            pending!.append(piece);
-            queue!.add(piece.samples);
-            return true;
-          },
-          cancellationToken: cancellable ? request['token'] as int : null,
-        );
+        timings.beginStream();
+        try {
+          engine.renderStream(
+            handle,
+            request['text'] as String,
+            Map<String, Object?>.from(request['render'] as Map),
+            (piece) {
+              timings.piece(
+                samples: piece.samples.length,
+                rate: piece.rate,
+                setup: () {
+                  if (!audioReady) {
+                    if (audio.init(sampleRate: piece.rate) != 0) {
+                      if (audio.state() == 3) throw ReadStopped();
+                      throw StateError('Could not initialize audio playback.');
+                    }
+                    audioReady = true;
+                    sampleRate = piece.rate;
+                    queue = PcmQueue(audio.push);
+                    port.send({'audioReady': true});
+                  }
+                  if (sampleRate != piece.rate) {
+                    throw StateError(
+                      'Audio sample rate changed during the read.',
+                    );
+                  }
+                },
+                save: () => pending!.append(piece),
+                handoff: () => queue!.add(piece.samples),
+              );
+              return true;
+            },
+            cancellationToken: cancellable ? request['token'] as int : null,
+          );
+        } finally {
+          timings.streamEnded();
+        }
         if (audioReady) {
-          if (audio.usesPresentationTracking) {
-            drainPresentation(
-              state: audio.state,
-              submitted: audio.submitted,
-              head: audio.head,
-            );
-          } else {
-            drainAudio(state: audio.state, softwareEmpty: audio.softwareEmpty);
-          }
+          timings.drain(() {
+            if (audio.usesPresentationTracking) {
+              drainPresentation(
+                state: audio.state,
+                submitted: audio.submitted,
+                head: audio.head,
+              );
+            } else {
+              drainAudio(
+                state: audio.state,
+                softwareEmpty: audio.softwareEmpty,
+              );
+            }
+          });
         }
         if (audio.state() == 3) throw ReadStopped();
       } finally {

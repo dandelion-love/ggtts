@@ -266,10 +266,7 @@ void renderWorker(Map<String, Object?> request) async {
                 head: audio.head,
               );
             } else {
-              drainAudio(
-                state: audio.state,
-                softwareEmpty: audio.softwareEmpty,
-              );
+              drainAudio(state: audio.state, queuedFrames: audio.queuedFrames);
             }
           });
         }

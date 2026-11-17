@@ -94,6 +94,7 @@ class PlaybackSession {
   }
 
   int softwareEmpty() => _native!.softwareEmpty();
+  int queuedFrames() => _native!.queuedFrames();
   int submitted() => _call('submitted', '(J)J', [id]);
   int head() => _call('head', '(J)J', [id]);
 

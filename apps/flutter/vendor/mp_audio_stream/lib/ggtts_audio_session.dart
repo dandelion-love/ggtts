@@ -24,6 +24,8 @@ class AudioSession {
         _empty =
             lib.lookupFunction<_OpC, _OpD>('ma_stream_session_software_empty'),
         _state = lib.lookupFunction<_OpC, _OpD>("ma_stream_session_state"),
+        _queued =
+            lib.lookupFunction<_OpC, _OpD>('ma_stream_session_queued_frames'),
         _push = lib.lookupFunction<_PushC, _PushD>('ma_stream_session_push');
 
   static DynamicLibrary _library() {
@@ -48,7 +50,7 @@ class AudioSession {
 
   final int id;
   final _InitD _init;
-  final _OpD _pause, _resume, _stop, _release, _empty, _state;
+  final _OpD _pause, _resume, _stop, _release, _empty, _state, _queued;
   final _PushD _push;
 
   int init({required int sampleRate, int channels = 1, int bufferMs = 5000}) =>
@@ -61,6 +63,9 @@ class AudioSession {
 
   /// 1 = software ring empty, 0 = nonempty, -1 = invalid session.
   int softwareEmpty() => _empty(id);
+
+  /// Queued software frames, not frames presented by hardware; -1 if invalid.
+  int queuedFrames() => _queued(id);
 
   /// -1 invalid, 0 reserved, 1 running, 2 paused, 3 stopped.
   int state() => _state(id);

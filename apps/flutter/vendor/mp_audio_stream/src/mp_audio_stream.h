@@ -60,6 +60,8 @@ EXPORT int64_t ma_stream_session_uninit(uint64_t id);
 
 EXPORT int64_t ma_stream_session_push(uint64_t id, float *buf, int64_t length);
 EXPORT int64_t ma_stream_session_software_empty(uint64_t id);
+// Queued software frames, or -1 for an invalid/stopped session.
+EXPORT int64_t ma_stream_session_queued_frames(uint64_t id);
 
 // -1 invalid, 0 reserved, 1 running, 2 paused, 3 stopped.
 EXPORT int64_t ma_stream_session_state(uint64_t id);

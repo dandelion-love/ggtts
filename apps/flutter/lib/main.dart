@@ -16,6 +16,7 @@ import 'read_control_gate.dart';
 import 'read_worker_outcome.dart';
 import 'pcm_queue.dart';
 import 'settings_page.dart';
+import 'shared_text.dart';
 import 'settings_store.dart';
 import 'saved_reads.dart';
 import 'saved_reads_page.dart';
@@ -299,6 +300,7 @@ class ReadPage extends StatefulWidget {
     this.controlEntry,
     this.renderEntry = renderWorker,
     this.readDirectory,
+    this.sharedTextInbox,
   });
   final Future<Map<String, Object?>> Function(Map<String, Object?>)? prepare;
   final Future<Map<String, Object?>> Function(
@@ -311,6 +313,7 @@ class ReadPage extends StatefulWidget {
   final void Function(SendPort)? controlEntry;
   final void Function(Map<String, Object?>) renderEntry;
   final Future<Directory> Function()? readDirectory;
+  final SharedTextInbox? sharedTextInbox;
   @override
   State<ReadPage> createState() => _ReadPageState();
 }
@@ -336,10 +339,17 @@ class _ReadPageState extends State<ReadPage> {
   Map<String, Object?> _settings = {};
   SavedReads? _library;
   String? _pendingToken;
+  SharedTextInbox? _sharedInbox;
+  String? _sharedPending;
+  bool _sharedPolling = false;
+  bool _sharedRepoll = false;
 
   @override
   void initState() {
     super.initState();
+    _sharedInbox = widget.sharedTextInbox ?? platformSharedTextInbox();
+    _sharedInbox?.onAvailable(_pollSharedText);
+    _pollSharedText();
     if (const bool.fromEnvironment('GGTTS_AUTOSPEAK')) {
       Future.microtask(() async {
         await _prepare();
@@ -356,6 +366,42 @@ class _ReadPageState extends State<ReadPage> {
         }
       });
     }
+  }
+
+  Future<void> _pollSharedText() async {
+    if (_sharedInbox == null || !mounted || _sharedPending != null) return;
+    if (_sharedPolling) {
+      _sharedRepoll = true;
+      return;
+    }
+    _sharedPolling = true;
+    try {
+      final text = await _sharedInbox!.take();
+      if (mounted && text != null) setState(() => _sharedPending = text);
+    } catch (_) {
+      if (mounted) setState(() => _error = 'Could not receive shared text.');
+    } finally {
+      _sharedPolling = false;
+      if (_sharedRepoll) {
+        _sharedRepoll = false;
+        if (mounted && _sharedPending == null) _pollSharedText();
+      }
+    }
+  }
+
+  void _finishSharedText({required bool use}) {
+    final text = _sharedPending;
+    if (_busy || text == null) return;
+    setState(() {
+      if (use) {
+        _text.value = TextEditingValue(
+          text: text,
+          selection: TextSelection.collapsed(offset: text.length),
+        );
+      }
+      _sharedPending = null;
+    });
+    _pollSharedText();
   }
 
   Future<String> _cacheDir() async {
@@ -743,6 +789,7 @@ class _ReadPageState extends State<ReadPage> {
 
   @override
   void dispose() {
+    _sharedInbox?.close();
     _stopPreparation(updateUi: false);
     _stopRead(updateUi: false);
     _text.dispose();
@@ -806,6 +853,28 @@ class _ReadPageState extends State<ReadPage> {
                 onChanged: (_) => setState(() {}),
                 decoration: const InputDecoration(labelText: 'Text'),
               ),
+              if (_sharedPending != null) ...[
+                Text(
+                  'Shared text: ${String.fromCharCodes(_sharedPending!.runes.take(120))}${_sharedPending!.runes.length > 120 ? "..." : ""}',
+                  key: const Key('shared_text_preview'),
+                ),
+                Row(
+                  children: [
+                    TextButton(
+                      onPressed: _busy
+                          ? null
+                          : () => _finishSharedText(use: true),
+                      child: const Text('Use shared text'),
+                    ),
+                    TextButton(
+                      onPressed: _busy
+                          ? null
+                          : () => _finishSharedText(use: false),
+                      child: const Text('Discard shared text'),
+                    ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 16),
               DropdownButtonFormField<String>(
                 key: const Key('voice'),

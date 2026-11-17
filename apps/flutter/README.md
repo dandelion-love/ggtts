@@ -41,6 +41,15 @@ Android uses the existing miniaudio output by default. Its software-drain wait r
 presentation or audibility. The Android AudioTrack/JNI path is an experimental build-time opt-in and is not yet
 validated for routing and interruption ordering.
 
+## Share text on Android
+
+Share plain text to ggtts, then choose **Use shared text** to replace the current
+draft or **Discard shared text** to keep it. Receiving text never starts
+playback. Shares are held in memory (up to eight waiting, plus the one displayed; each at most 100,000 UTF-16
+code units) and can be lost if the app process ends; empty, malformed or oversized
+shares are ignored. A share arriving while a read or preparation is running waits
+until the app is idle.
+
 ## Model files
 
 The explicit **Prepare model** action may download the default model when it is missing. Choose **Prepare offline**

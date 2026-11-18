@@ -261,6 +261,15 @@ static int64_t init_locked(int64_t max_buffer_size, int64_t keep_buffer_size, in
     }
     device_initialized = true;
 
+#ifdef _WIN32
+    // A null device consumes samples without sending them to an output.
+    // Refuse it before starting playback; init_guard releases the device.
+    if (!_ctx->device.pContext || _ctx->device.pContext->backend == ma_backend_null) {
+        printf("No real playback backend is available.\n");
+        return -4;
+    }
+#endif
+
 #ifdef MP_AUDIO_STREAM_DEBUG
     printf("Device Name: %s\n", _ctx->device.playback.name);
 #endif

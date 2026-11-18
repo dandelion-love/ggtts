@@ -25,15 +25,18 @@ use crate::prompt::TokenMap;
 use crate::sampler::{self, Ids, Rng, Settings};
 use crate::tokenizer::Tokenizer;
 
-/// A provisional profile: Kitten's own chunking numbers are characters per chunk (`config.json`
-/// `generation.chunk_chars` 380), and no story protocol has been recorded for this family yet.
+/// A provisional profile. The story ceiling is 80 code points, cut at Chinese clause punctuation: rendering long
+/// Cantonese prose from the published TQ1_0 GGUF on the CUDA release, 80-character chunks kept the error rate of
+/// 45-character ones (0 runaway or silent first draws at 45, 80 and 130), and 130 did not (chars-weighted CER
+/// 0.09 at 45 and 80, 0.18 at 130). The passage ceiling keeps Kitten's own `generation.chunk_chars` (380),
+/// which no measurement here has tested. No story protocol has been recorded for this family yet.
 pub const PROFILE: Profile = Profile {
     name: "draft/kitten-tts-2",
     protocol: "draft",
-    story_ceiling: 380,
+    story_ceiling: 80,
     passage_ceiling: 380,
     min_chunk_chars: 1,
-    split_marks: &['.', '!', '?', ';', ':'],
+    split_marks: &['，', '。', '、', '；', '：', '！', '？', '.', '!', '?', ';', ':'],
     unmarked_joiner: ',',
     redraw: 0,
     edge_s: 0.12,
@@ -571,5 +574,32 @@ impl Engine for KittenEngine {
             samples,
             sample_rate: 24000,
         })
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::PROFILE;
+    use ggtts_core::text::chunk;
+
+    /// Long Cantonese prose is cut at its own clause punctuation into chunks of at most the story ceiling.
+    #[test]
+    fn story_chunks_cut_cantonese_at_the_ceiling() {
+        let clause = "今日天氣好好，我哋一齊去公園行吓啦。";
+        let text = clause.repeat(12);
+        let got = chunk(&PROFILE, &text, PROFILE.story_ceiling).unwrap();
+        assert!(got.len() > 1, "one chunk of {} code points", text.chars().count());
+        for (body, mark) in &got {
+            let n = body.chars().count() + mark.chars().count();
+            assert!(
+                n <= PROFILE.story_ceiling,
+                "chunk of {n} code points over {}",
+                PROFILE.story_ceiling
+            );
+            assert!(
+                ["。", "，"].contains(&mark.as_str()),
+                "chunk not cut at clause punctuation: {mark:?}"
+            );
+        }
     }
 }

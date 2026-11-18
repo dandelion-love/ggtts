@@ -8,6 +8,7 @@ import 'dart:ui' as ui;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:file_selector/file_selector.dart';
 
 import 'playback_session.dart';
 import 'diagnostics_server.dart';
@@ -27,6 +28,7 @@ import 'settings_store.dart';
 import 'saved_reads.dart';
 import 'saved_reads_page.dart';
 import 'listening_page.dart';
+import 'epub_import.dart';
 
 void main() => runApp(const ReadApp());
 
@@ -375,6 +377,7 @@ class _ReadPageState extends State<ReadPage> {
   AudioPlayer? _diagnosticPlayer;
   SavedRead? _diagnosticSaved;
   final List<String> _diagnosticTimings = [];
+  ImportedBook? _importedBook;
 
   @override
   void initState() {
@@ -447,8 +450,20 @@ class _ReadPageState extends State<ReadPage> {
         };
       case 'text':
         if (_busy) throw StateError('busy');
-        setState(() => _text.text = input['text'] as String);
+        setState(() {
+          _text.text = input['text'] as String;
+          _importedBook = null;
+        });
         return {'ok': true};
+      case 'epub':
+        if (_busy) throw StateError('busy');
+        final book = await inspectEpub(input['path'] as String);
+        if (!mounted) throw StateError('page closed');
+        setState(() {
+          _text.text = book.text;
+          _importedBook = book;
+        });
+        return {'ok': true, 'chapters': book.chapterChunks};
       case 'prepare':
         if (_busy) throw StateError('busy');
         await _prepare(offline: true);
@@ -698,6 +713,31 @@ class _ReadPageState extends State<ReadPage> {
       if (mounted && updateUi) {
         setState(() => _error = 'Could not request stop: $error');
       }
+    }
+  }
+
+  Future<void> _openEpub() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final file = await openFile(
+        acceptedTypeGroups: [
+          const XTypeGroup(label: 'EPUB', extensions: ['epub']),
+        ],
+      );
+      if (file == null) return;
+      final book = await inspectEpub(file.path);
+      if (mounted)
+        setState(() {
+          _text.text = book.text;
+          _importedBook = book;
+        });
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -992,6 +1032,12 @@ class _ReadPageState extends State<ReadPage> {
       appBar: AppBar(
         title: const Text('ggtts'),
         actions: [
+          if (Platform.isWindows)
+            IconButton(
+              tooltip: 'Open EPUB',
+              onPressed: _busy ? null : _openEpub,
+              icon: const Icon(Icons.book_outlined),
+            ),
           IconButton(
             tooltip: 'Listening sessions',
             onPressed: _busy
@@ -1025,10 +1071,14 @@ class _ReadPageState extends State<ReadPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              if (_importedBook != null)
+                Text('Book: ${_importedBook!.chapterTitles.length} chapters'),
               TextField(
                 controller: _text,
                 maxLines: 5,
-                onChanged: (_) => setState(() {}),
+                onChanged: (_) => setState(() {
+                  _importedBook = null;
+                }),
                 decoration: const InputDecoration(labelText: 'Text'),
               ),
               if (_sharedPending != null) ...[
@@ -1150,7 +1200,7 @@ class _ReadPageState extends State<ReadPage> {
       ),
     );
     return const bool.fromEnvironment('GGTTS_DIAGNOSTICS') &&
-        (Platform.isLinux || Platform.isWindows)
+            (Platform.isLinux || Platform.isWindows)
         ? RepaintBoundary(key: _diagnosticBoundary, child: page)
         : page;
   }

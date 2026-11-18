@@ -68,6 +68,7 @@ class DiagnosticsServer {
           !const {
             '/status',
             '/text',
+            '/epub',
             '/prepare',
             '/speak',
             '/stop',
@@ -118,6 +119,12 @@ class DiagnosticsServer {
             input['text'] is! String ||
             (input['text'] as String).isEmpty ||
             (input['text'] as String).length > 16000) {
+          throw const FormatException();
+        }
+      } else if (operation == 'epub') {
+        if (input.length != 1 ||
+            input['path'] is! String ||
+            (input['path'] as String).isEmpty) {
           throw const FormatException();
         }
       } else if (operation == 'reopen') {

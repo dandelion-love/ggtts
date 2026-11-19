@@ -12,9 +12,11 @@ use ggtts_fake::FakeEngine;
 
 /// A steering-aware double: each layer and element affects a distinct output token.
 /// The ordinary FakeEngine cannot be used directly: it correctly refuses steering.
+type LayerVectors = Vec<(u32, Vec<f32>)>;
+
 struct SteeringEngine {
     inner: FakeEngine,
-    seen: Vec<Vec<(u32, Vec<f32>)>>,
+    seen: Vec<LayerVectors>,
 }
 
 impl Engine for SteeringEngine {
@@ -62,7 +64,7 @@ fn file(tensors: &[(&str, &[f32])]) -> SteerFile {
     SteerFile::parse(&write_safetensors(tensors)).unwrap()
 }
 
-fn render(steer: Steering) -> (Vec<f32>, Vec<Vec<(u32, Vec<f32>)>>) {
+fn render(steer: Steering) -> (Vec<f32>, Vec<LayerVectors>) {
     let mut engine = SteeringEngine {
         inner: FakeEngine::default(),
         seen: Vec::new(),

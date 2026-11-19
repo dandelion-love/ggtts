@@ -29,6 +29,7 @@ class SettingsStore {
   /// with a complete file on the same filesystem.
   Future<void> save(Map<String, Object?> document) async {
     validateSettings(document);
+    await validateReadableFiles(document);
     final encoded = jsonEncode(document);
     final parent = file.absolute.parent;
     await parent.create(recursive: true);
@@ -40,6 +41,37 @@ class SettingsStore {
     } finally {
       await tempDir.delete(recursive: true);
     }
+  }
+}
+
+/// Check paths while the old settings file is still intact. This checks access,
+/// not model format or future availability; the engine validates those on load.
+Future<void> validateReadableFiles(
+  Map<String, Object?> document, {
+  Future<void> Function(String path)? checkFile,
+}) async {
+  final load = document['load'];
+  if (load is! Map<String, dynamic>) return;
+  for (final key in ['model', 'codec', 'voice']) {
+    final path = load[key];
+    if (path is! String) continue;
+    try {
+      await (checkFile ?? _checkReadableFile)(path);
+    } on FileSystemException {
+      throw FormatException('$key must be an app-readable file.');
+    }
+  }
+}
+
+Future<void> _checkReadableFile(String path) async {
+  if (await FileSystemEntity.type(path) != FileSystemEntityType.file) {
+    throw const FileSystemException('Not a regular file');
+  }
+  final file = await File(path).open(mode: FileMode.read);
+  try {
+    await file.read(1);
+  } finally {
+    await file.close();
   }
 }
 

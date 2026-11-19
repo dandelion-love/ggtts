@@ -70,6 +70,42 @@ void main() {
   });
 
   test(
+    'unreadable model, codec and voice leave the saved document intact',
+    () async {
+      final files = <String, String>{};
+      for (final key in ['model', 'codec', 'voice']) {
+        final file = File('${directory.path}/$key');
+        await file.writeAsString('fixture');
+        files[key] = file.path;
+      }
+      final valid = <String, Object?>{
+        'load': {...files, 'threads': 2},
+        'render': {'seed': 42},
+      };
+      await store.save(valid);
+      final savedBytes = await store.file.readAsBytes();
+      for (final key in files.keys) {
+        for (final badPath in ['${directory.path}/missing', directory.path]) {
+          final invalid = <String, Object?>{
+            'load': {...files, key: badPath, 'threads': 3},
+            'render': {'seed': 99},
+          };
+          await expectLater(store.save(invalid), throwsFormatException);
+          expect(await store.file.readAsBytes(), savedBytes);
+          expect(await store.load(), valid);
+        }
+      }
+      // Clearing optional paths still uses the defaults.
+      await store.save({
+        'load': {'threads': 2},
+      });
+      expect(await store.load(), {
+        'load': {'threads': 2},
+      });
+    },
+  );
+
+  test(
     'invalid or corrupt files are reported without being overwritten',
     () async {
       await store.file.parent.create(recursive: true);

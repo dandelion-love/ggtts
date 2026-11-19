@@ -29,6 +29,44 @@ class DelayedStore extends FakeStore {
 }
 
 void main() {
+  testWidgets(
+    'a missing selection is refused before replacing saved settings',
+    (tester) async {
+      final root = Directory.systemTemp.createTempSync('settings-path-ui-');
+      final model = File('${root.path}/model.gguf')
+        ..writeAsStringSync('fixture');
+      final store = SettingsStore(File('${root.path}/settings.json'));
+      final valid = <String, Object?>{
+        'load': {'model': model.path},
+      };
+      await tester.runAsync(() => store.save(valid));
+      try {
+        await tester.pumpWidget(MaterialApp(home: SettingsPage(store: store)));
+        await tester.runAsync(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        });
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const Key('model_path')),
+          '${root.path}/missing.gguf',
+        );
+        await tester.ensureVisible(find.text('Save settings'));
+        await tester.tap(find.text('Save settings'));
+        await tester.runAsync(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        });
+        await tester.pumpAndSettle();
+        expect(
+          find.textContaining('model must be an app-readable file'),
+          findsOneWidget,
+        );
+        expect(await tester.runAsync(() => store.load()), valid);
+      } finally {
+        await tester.pumpWidget(const SizedBox());
+        root.deleteSync(recursive: true);
+      }
+    },
+  );
   testWidgets('CUDA is disabled unless the loaded engine reports it', (
     tester,
   ) async {

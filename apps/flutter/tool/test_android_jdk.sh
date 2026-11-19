@@ -11,5 +11,5 @@ if JAVA_HOME="$JDK17_HOME" "$GRADLE_BIN" -p "$here" help --offline --no-daemon >
   exit 1
 fi
 grep -F 'Flutter Android builds require JDK 21 or newer for Android lint' "$log"
-grep -F "Gradle is running on Java 17." ""
+grep -E 'Gradle is running on Java 17([. +_-]|$)' "$log"
 JAVA_HOME="$JDK21_HOME" "$GRADLE_BIN" -p "$here" help --offline --no-daemon

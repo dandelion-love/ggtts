@@ -585,11 +585,19 @@ fn per_layer_scales_over_a_unit_file_give_the_one_scale_tokens() {
     let per = file(&[(0, u.clone())]).select_scaled(&[0], &[s * 8.0]).unwrap();
     assert_eq!(raw.scaled(), per.scaled(), "the added vectors are the same bits");
     let off = file(&[(0, u)]).select_scaled(&[0], &[s * 8.0 * 1.01]).unwrap();
-    let mut differ = 0;
-    for (name, text) in texts().iter().take(3) {
+    let fixtures = texts();
+    assert!(fixtures.len() >= 3, "the 1% control requires three pinned texts");
+    for (name, text) in fixtures.iter().take(3) {
         let want = tokens(&mut e, text, Some(&raw));
-        assert_eq!(tokens(&mut e, text, Some(&per)), want, "{name}");
-        differ += usize::from(tokens(&mut e, text, Some(&off)) != want);
+        assert_eq!(
+            tokens(&mut e, text, Some(&per)),
+            want,
+            "{name}: equivalent pushes changed tokens"
+        );
+        assert_ne!(
+            tokens(&mut e, text, Some(&off)),
+            want,
+            "{name}: the 1% scale plant went undetected"
+        );
     }
-    eprintln!("a 1% per-layer scale error changed the tokens on {differ} of 3 texts");
 }

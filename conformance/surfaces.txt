@@ -1,6 +1,7 @@
 # The binding surfaces as committed (crates/ggtts-cli/tests/conformance.rs, the_binding_surfaces_match_their_snapshot):
 # the pyo3 load, render and render_stream parameters (crates/ggtts-py/src/python.rs), ggtts.h's ggtts_settings fields
-# and exported functions, and Ggtts.kt's external funs. A change fails until each new name has a row in the options
+# and exported functions, Ggtts.kt's external funs, and the public methods of the Dart Ggtts binding. A change fails
+# until each new name has a row in the options
 # table, a cell per front end in the conformance table, and this file is updated in the same pull request.
 python load: engine, model, codec, voice, speaker, instruction, device, threads, offline, options, progress
 python render: text, seed, options
@@ -11,10 +12,18 @@ c ggtts_load_with: engine, model, codec, voice, threads, settings, handle
 c ggtts_abi_version:
 c ggtts_render: handle, text, seed, pcm, len, rate
 c ggtts_render_stream: handle, text, seed, on_piece, user
+c ggtts_render_stream_evidence: handle, text, seed, callback, user
+c ggtts_render_document_evidence: handle, text, options_json, callback, user
+c ggtts_cancel_new: out
+c ggtts_cancel_signal: token
+c ggtts_cancel_free: token
+c ggtts_render_opts_cancellable: handle, text, options_json, token, on_piece, user
 c ggtts_pcm_free: pcm, len
 c ggtts_free: handle
 c ggtts_last_error:
 c ggtts_load_opts: options_json, handle
+c ggtts_load_opts_with_progress: options_json, handle, callback, context
+c ggtts_load_opts_cancellable: options_json, handle, token, callback, context
 c ggtts_render_opts: handle, text, options_json, on_piece, user, pcm, len, rate
 c ggtts_options_schema:
 c ggtts_capabilities: handle, json
@@ -28,6 +37,16 @@ kotlin render: handle, text, seed, rateOut
 kotlin renderOpts: handle, text, optionsJson, seed, seedGiven, rateOut
 kotlin renderStream: handle, text, seed, listener
 kotlin renderStreamOpts: handle, text, optionsJson, seed, seedGiven, listener
+kotlin renderStreamEvidence: handle, text, optionsJson, seed, seedGiven, listener
 kotlin optionsSchema:
 kotlin capabilities: handle
 kotlin free: handle
+dart Ggtts: lib
+dart abiVersion:
+dart load: options
+dart loadWithProgress: options, notice, cancellationToken
+dart optionsSchema:
+dart capabilities: handle
+dart render: handle, text, options
+dart renderStream: handle, text, options, onPiece, cancellationToken
+dart free: handle

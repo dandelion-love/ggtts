@@ -209,7 +209,52 @@ private fun defaultModel() {
 
 private const val TEXT = "今日天氣好好，我哋去海邊行下。\n行完之後，去食飯。"
 
+private fun evidenceStream() {
+    Ggtts.load("fake").use { g ->
+        for (options in listOf<String?>(null, "{}",
+                """{"output":{"stream":"raw"}}""")) {
+            val legacy = mutableListOf<Float>()
+            val evidence = mutableListOf<Float>()
+            var next = 0L
+            var seen = 0
+            val seenText = StringBuilder()
+            val text = "One supplementary \uD840\uDC00 character.\nAnother line."
+            // Warm the fake engine: its first distinct text has a different amplitude.
+            g.renderStream(text, seed = 7, options = options) { _, _ -> true }
+            check(g.renderStream(text, seed = 7, options = options) { samples, _ ->
+                legacy.addAll(samples.toList()); true
+            }, "legacy stream completed")
+            check(g.renderStreamEvidence(text, seed = 7, options = options) { chunk, pieceText, _, draw, stop, start, end, samples, rate ->
+                check(chunk == seen && start == next && end in start..(start + samples.size) &&
+                    draw >= 0 && stop in 0..1 && rate > 0 && pieceText.isNotEmpty(),
+                    "evidence identity and boundaries for chunk $chunk")
+                evidence.addAll(samples.toList())
+                seenText.append(pieceText)
+                next += samples.size
+                seen++
+                true
+            }, "evidence stream completed")
+            check(seen >= 2 && legacy == evidence, "evidence PCM matches legacy for $options")
+            check(seenText.contains("\uD840\uDC00"), "supplementary text survives callback")
+        }
+        var seen = 0
+        check(!g.renderStreamEvidence(TEXT) { _, _, _, _, _, _, _, _, _ -> seen++; false } && seen == 1,
+            "evidence listener can stop")
+        val marker = IllegalStateException("listener marker")
+        try {
+            g.renderStreamEvidence(TEXT) { _, _, _, _, _, _, _, _, _ -> throw marker }
+            check(false, "evidence listener exception propagated")
+        } catch (e: IllegalStateException) {
+            check(e === marker, "evidence listener exception propagated unchanged")
+        }
+        refusesKey("render.seed_salt", "evidence seed conflict") {
+            g.renderStreamEvidence(TEXT, seed = 7, options = """{"render":{"seed_salt":"8"}}""") { _, _, _, _, _, _, _, _, _ -> true }
+        }
+    }
+}
+
 fun main() {
+    evidenceStream()
     // Load and render.
     val g = Ggtts.load("fake")
     val pcm = g.render(TEXT)

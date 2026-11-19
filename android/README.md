@@ -182,10 +182,69 @@ finished read has **Save to Music** and **Share** under the player: Save adds it
 on Android 7 to 9 the two buttons are hidden. The app logs to logcat under the tag `ggtts-demo`: what it loaded, the time
 to first audio, how long the render took, and its real-time factor.
 
+## Rendering for later
+
+"Render for later", under Read aloud, queues the passage with the chosen voice and renders it in the background
+without playing it. Each finished read is saved to `Music/ggtts/` as FLAC, titled with the passage's first words (in
+the file's TITLE tag and in Android's media library), where the Files app, a music player and USB see it. The queue
+is kept in the app's storage: it goes on with the screen left, and a render cut off by the app being closed starts
+again the next time the app opens. One entry renders at a time, sharing the one loaded engine with Read aloud and the
+system engine, and waits while either reads. An entry that cannot render (a model file gone, storage full) is marked
+failed with the reason, saves nothing, and the queue moves on.
+
+It runs as a foreground service of type `mediaProcessing` on Android 15 and later (`dataSync` below). Android 15
+allows either 6 hours a day per app: at 7 to 13 s of rendering per second of speech, that is about 28 to 50 minutes of
+speech a day. When that time runs out the render in progress stops cleanly and waits, and the queue resumes when the
+app is next opened. Both service types are permissions Android grants at install; nothing is asked.
+
+## Saved reads
+
+"Saved reads" in the ⋮ menu lists the reads in `Music/ggtts/`, newest first: each with its title, length and date,
+and Play, Share and Delete. The title and length come from the file itself (a FLAC's TITLE tag and STREAMINFO, a
+WAV's header), so the list is right after a restart. It lists this install's reads with no permission. Reads saved
+before the app was reinstalled are no longer the app's to Android's media library; choosing the `Music/ggtts` folder
+once with the system's folder picker (the list offers it) lists and deletes those too, still with no permission.
+
+## Audio-bound read manifest (v1)
+
+AudioBoundReadManifest is a pure Kotlin/JVM validation model for evidence attached to one final saved audio file.
+This slice does not decode audio or publish MediaStore metadata. A caller must create and persist the record only
+after rendering completed successfully and the final audio write succeeded. The record does not prove playback or
+that callback PCM matches the saved audio, and is not by itself feedback-readiness evidence.
+
+The JSON record has format ggtts-audio-read-manifest and integer version 1. It contains a stable opaque read_id, an
+audio object with sha256, byte_length, sample_rate and sample_count, and a nonempty ordered chunks array. Every chunk
+has index, exact delivered text, kept draw number, seed_u64, stop, delivered and speech. seed_u64 is the original
+64-bit seed as a canonical unsigned decimal string, preserving all seed bits even when the JVM Long value is negative.
+stop is eos or cap. delivered and speech each contain absolute half-open start/end sample offsets. delivered covers
+every sample appended to the final audio, including any trailing delivery-only gap; speech begins at the same sample
+and ends at the last speech sample. The next chunk begins exactly at the previous delivered end. The spans cover the
+entire saved sample range without overlap or unaccounted gaps. Text is not trimmed or reconstructed.
+
+read_id is an opaque 1-to-128-character ASCII token beginning with a letter or digit and containing only letters,
+digits, period, underscore, colon or hyphen. audio.sha256 is lowercase SHA-256 over the exact stored file bytes.
+When creating a record, audioBytes must be those exact bytes. sample_rate and sample_count passed to create or
+validateAudio must come from an independent trusted decoder of those saved bytes. The model checks the supplied facts
+against the manifest and recomputes the byte hash; it does not parse FLAC/WAV headers or verify that the supplied rate
+and count describe the encoded audio. It also does not inspect mono PCM, verify trailing gap samples are zero, or
+compare each delivered callback's PCM with decoded saved samples. Integration must independently decode the saved
+file and verify those audio-to-span/sample claims before calling a read feedback-ready; playback completion is a
+separate fact. decodeJson rejects missing/unknown fields, duplicate JSON keys, malformed IDs or hashes, unsupported
+versions/stops, missing chunk evidence, invalid Unicode, noncontiguous or out-of-range spans, and noncanonical or
+overflowing seeds.
+
+Legacy audio remains playable and listable without this sidecar. Missing or invalid manifest evidence means
+feedback-ineligible; the app must not infer text, draw, seed, stop, or chunk boundaries from a title, filename,
+duration, or current render settings.
+
 ## Leaving the screen during a read
 
 A read belongs to the app, not its screen. Leave the screen and the read goes on, in a foreground service. Its
-notification shows the progress and has Stop, and reopening the app shows where the read is. The loaded model stays
+notification is a media notification, with Pause or Play and Stop, and reopening the app shows where the read is.
+The read publishes a media session, so the lock screen, a headset or Bluetooth play/pause button, and
+`adb shell cmd media_session dispatch pause` (or `play`) control it too. Pause holds what is still to play:
+rendering goes on while paused, and Play plays on from where it stopped, nothing skipped. Stop ends the read as
+before. No permission is added for this. The loaded model stays
 loaded between reads, shared with the system engine below, and is released when Android asks for memory back while
 nothing is being read.
 
@@ -199,6 +258,22 @@ nothing is being read.
 - **One read at a time.** The screen and the system engine share one loaded engine, and one of them reads with it at
   a time. While one reads, the other is refused with a message (the screen) or `ERROR_SERVICE` (the system engine)
   rather than load a second model beside it. Android's memory trims never release the engine during either read.
+
+## Text from other apps
+
+Text can reach the app three ways, and none of them needs a permission:
+
+- **Share:** share plain text to "ggtts Text-to-Speech" from another app's share sheet (`ACTION_SEND`, `text/plain`).
+- **Selection menu:** select text in another app and pick **Read aloud** from the menu (`ACTION_PROCESS_TEXT`).
+- **Open a file:** open a `.txt` file with the app, or share one to it. It must be UTF-8 and at most 256 KB.
+
+Each fills the text card, keeps the voice as it is, and says where the text came from and whether it replaced what
+the card held. **Nothing starts a read by itself**: you press Read aloud. Another app chooses what it sends, so a read
+it could start would be that app speaking through this one. Text over 20,000 characters (counted as a reader counts
+them: an emoji is one) is refused with that limit named, not cut short. A file that is not UTF-8 is refused too, and so
+is anything that is not plain text. The text is taken once: if the screen is re-created later (dark mode or the
+language changed), or the app is opened again from Recents, it keeps what you have in the card rather than taking the
+shared text again.
 
 ## ggtts as Android's text-to-speech engine
 

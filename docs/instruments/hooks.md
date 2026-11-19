@@ -100,8 +100,8 @@ its backend, build and seed.
 - **Tensor tier.** A hook receives shared references, so safe Rust cannot write through them; that is a convention,
   not a proof. What enforces read-only is the identity check: the same requests with and without the hook must give
   identical tokens and audio, and a planted hook that writes one value must turn it red (#32, #34). A tensor hook
-  runs in the engine's process and thread, so it has no timeout or crash boundary: a panic, hang or abort in a hook
-  is the render's (#30 documents and tests each).
+  runs in the engine's process and thread, so it has no timeout or crash boundary. A panic is caught and recorded;
+  a hang or abort affects the render (#30 documents and tests each).
 - **Level 0 computes nothing.** With tracing off the sink is `NullEvents`, and neither the pipeline nor an engine
   computes an instrument value.
 
@@ -122,3 +122,32 @@ against it, and a test checks that on every recorded fake-engine render (`crates
   accepts. `READS` is `["ggtts-trace/2", "ggtts-trace/1"]`, and
   `ggtts-trace/1` is dropped only at `/3`. A test holds `READS` to that shape.
 - Writers write only the current version.
+
+The kept draws' full codes (all 16 codebooks on Qwen3-TTS), for any render and without tracing, are written by
+`--codes FILE`: [docs/codes.md](../codes.md).
+
+## Qwen talker layer capture
+
+A Rust tensor hook can request zero-based talker layer indices. For each selected
+layer, it receives the block output after the residual addition and any steering
+addition, before final normalization. Step 0 is the final prefill position;
+subsequent steps use the decode position. Callbacks include thinking steps and
+the EOS step when EOS is sampled. Hook requests are unioned and out-of-range
+indices are refused.
+
+The callback receives borrowed f32 values. They are valid only during that
+callback: copy or aggregate them before returning. The graph marks selected
+outputs for retention and reads them into host vectors after graph computation,
+before resetting the scheduler and freeing the graph context. With no selected
+layers, this path marks and reads no layer outputs. Hook panics are recorded in
+`Hooks::failures` and disable the affected hook; callers must finish hooks and
+check failures before treating their observations as complete.
+
+The CPU capture path has been exercised for identity and alignment; its
+performance overhead has not been measured. On 2026-11-15, the one-layer
+engine identity test also passed on an RTX 3080 Ti with the CUDA backend: hooked
+and unhooked generated codes and decoded samples were identical within that
+backend. The synthetic two-layer capture and alignment test also passed on
+that RTX 3080 Ti using CUDA. These checks cover the tested fixtures and host;
+they do not establish speech quality or general CUDA parity. Capture performance
+overhead remains unmeasured.

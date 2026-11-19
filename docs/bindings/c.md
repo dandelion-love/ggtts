@@ -3,8 +3,16 @@
 The C library is `libggtts_ffi` with the header `ggtts.h`. It loads a text-to-speech engine, turns UTF-8 text into
 mono 32-bit float samples, and hands them to you. Any language that can call C can use it.
 
-This page covers the C ABI as of version 3 (`GGTTS_ABI_VERSION 3`). [All bindings](README.md) compares it with
+This page covers the C ABI, including the cancellation functions added in version 6. [All bindings](README.md) compares it with
 Kotlin and Python.
+
+## Cancellation
+
+ABI 6 adds one-shot cancellation tokens to the C API. Create a token, pass it to
+`ggtts_render_opts_cancellable`, signal it from another thread, and free it when no longer needed. See
+`ggtts.h` for lifetime, backend support, and callback timing. A token is a live control handle, not a render
+option. The Python and Kotlin bindings do not currently expose this cancellation API; their render calls
+cannot be stopped through these bindings.
 
 ## Get it
 
@@ -398,11 +406,11 @@ laid over the load's defaults. NULL is the empty document.
   level step, as it always has, because an exported function never changes its behaviour.
 * **What a render document takes:**
   * `render`: `seed_salt` (`ggtts_render`'s seed, as a string), `instruction`, `steer` with `steer_scale` and
-    `steer_layers`, `redraw` and `edge_s`.
+    `steer_layers`, `redraw` and `edge_s`; or `seed`: `render.seed` renders the text as one chunk at exactly that seed, drawn once and kept whole (no planning, judge, redraw, trim or level), as `ggtts-render --text TEXT --seed S` renders it: the same model, speaker, device and threads give the same samples, without a process, a model load or a hash per chunk. It cannot be given with `seed_salt` (the render call's own seed argument is one), `redraw` or `edge_s`, and an empty text is refused under `render.text`.
   * `observe`: `trace` with `trace_level`, a trace file as `ggtts-render --trace` writes it.
 * **What it refuses:**
   * any `load` key (they are fixed when the engine loads);
-  * `render.text`, `render.story` and `render.seed`: the text is the argument, and the seed is `seed_salt`;
+  * `render.text` and `render.story`: the text is the argument;
   * `render.measure_timings`, the reports and logging: the C ABI returns PCM, not timings or files;
   * `output.out` and `output.stream_format`;
   * the book options;

@@ -119,6 +119,20 @@ class DemoControllerTest {
     }
 
     @Test
+    fun unconfirmedPlaybackIsAnErrorButStopRemainsAStop() {
+        val c = controller(FakeBinding())
+        audio.duringFinish = { throw PlaybackUnconfirmed() }
+        c.speak(request, "Hello.", Ggtts.DEFAULT_SEED)
+        assertTrue(view.errors.any { it.contains("did not confirm playback") })
+        assertFalse(view.statuses.any { it.startsWith("kitten-tts-2: 3.00 s of audio") })
+        view.errors.clear()
+        audio.duringFinish = { c.stop(); throw PlaybackUnconfirmed() }
+        c.speak(request, "Hello.", Ggtts.DEFAULT_SEED)
+        assertTrue(view.errors.isEmpty())
+        assertTrue(view.statuses.last(), view.statuses.last().startsWith("Stopped during playback"))
+    }
+
+    @Test
     fun anErrorFromPlaybackLeavesTheScreenUsable() {
         val c = controller(FakeBinding())
         audio.duringFinish = { throw OutOfMemoryError("planted") }
@@ -245,5 +259,22 @@ class DemoControllerTest {
         assertEquals(2, binding.loads.size)
         c.speak(request.with(LoadRequest.LOAD, "engine", "qwen3-tts").with(LoadRequest.LOAD, "voice", null), "Four.", Ggtts.DEFAULT_SEED)
         assertEquals(3, binding.loads.size)
+    }
+    @Test fun logNeverContainsPlantedTextPathsOptionsOrErrors() {
+        val secret = "PLANTED_PRIVATE_TEXT_PATH_917"
+        val logs = mutableListOf<String>()
+        val failure = GgttsException(Ggtts.ERR_ARG, secret, secret)
+        val failed = DemoController(FakeBinding(failure), view, audio,
+            background = { it.run() }, main = { it.run() }, log = { logs += it })
+        val request = LoadRequest("fake", "/" + secret, null, null)
+        failed.speak(request, secret, 4)
+        assertTrue("failure logged", logs.any { "outcome=binding_failure" in it })
+        assertTrue(logs.toString(), logs.none { secret in it })
+        logs.clear()
+        val successful = DemoController(FakeBinding(), view, audio,
+            background = { it.run() }, main = { it.run() }, log = { logs += it })
+        successful.speak(request, secret, 4)
+        assertTrue(logs.toString(), logs.any { "engine_load outcome=ok" in it })
+        assertTrue(logs.toString(), logs.none { secret in it })
     }
 }

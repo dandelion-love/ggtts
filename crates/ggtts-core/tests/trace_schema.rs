@@ -155,6 +155,11 @@ fn every_variant() -> Vec<Map<String, Value>> {
             "language": "en"}),
         ),
     };
+    // Steering with one scale per layer, in place of the one scale.
+    let per_layer = Header {
+        steer: Some(json!({"sha256": "2".repeat(64), "layers": [12, 13], "scales": [7.9, 9.8]})),
+        ..full.clone()
+    };
     let bare = Header {
         model_sha256: None,
         codec_sha256: None,
@@ -171,6 +176,7 @@ fn every_variant() -> Vec<Map<String, Value>> {
     let evs = [
         Event::Trace(&full),
         Event::Trace(&bare),
+        Event::Trace(&per_layer),
         Event::ChunkBegin {
             chunk: 0,
             draw: 1,

@@ -135,8 +135,30 @@ impl SteerFile {
         let s = Steering {
             sha256: self.sha256.clone(),
             scale,
+            scales: None,
             layers: wanted.iter().map(|l| (*l, self.layers[l].clone())).collect(),
         };
+        s.check_scaled()?;
+        Ok(s)
+    }
+
+    /// The steering to apply with one scale per layer: `scales[i]` for `layers[i]` (`render.steer_scales` with
+    /// `render.steer_layers`). Refuses lists of different lengths, a scale that is not finite, and whatever
+    /// [`select`](Self::select) refuses of the layers. The layers are applied ascending, each with its own scale.
+    pub fn select_scaled(&self, layers: &[u32], scales: &[f64]) -> Result<Steering, SteerError> {
+        if layers.len() != scales.len() {
+            return Err(refuse(format!(
+                "{} steering scales for {} steering layers: give one scale per layer",
+                scales.len(),
+                layers.len()
+            )));
+        }
+        if let Some(s) = scales.iter().find(|s| !s.is_finite()) {
+            return Err(refuse(format!("the steering scale {s} is not a finite number")));
+        }
+        let mut s = self.select(Some(layers), 1.0)?;
+        let by_layer: BTreeMap<u32, f64> = layers.iter().copied().zip(scales.iter().copied()).collect();
+        s.scales = Some(s.layers.iter().map(|(l, _)| by_layer[l]).collect());
         s.check_scaled()?;
         Ok(s)
     }
@@ -275,13 +297,18 @@ pub fn parse_layers(list: &str) -> Result<Vec<u32>, SteerError> {
     Ok(out)
 }
 
-/// The steering a request carries: the file's sha256, the layers in use with their vectors, and one scale.
+/// The steering a request carries: the file's sha256, the layers in use with their vectors, and one scale, or one
+/// scale per layer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Steering {
     /// The steering file's sha256.
     pub sha256: String,
-    /// One scale for every layer. An engine adds `scale * vector`, computed in f32.
+    /// One scale for every layer. An engine adds `scale * vector`, computed in f32. Not used when
+    /// [`scales`](Self::scales) is given.
     pub scale: f64,
+    /// One scale per entry of [`layers`](Self::layers), in its order (`render.steer_scales`), or `None` for
+    /// [`scale`](Self::scale) at every layer.
+    pub scales: Option<Vec<f64>>,
     /// The layers applied, ascending, each with its vector as the file holds it (unscaled).
     pub layers: Vec<(u32, Vec<f32>)>,
 }
@@ -292,30 +319,48 @@ impl Steering {
         self.layers.iter().map(|(l, _)| *l).collect()
     }
 
-    /// Each layer's vector times the scale, in f32, as an engine adds it.
+    /// The scale of the `i`th layer applied: its own ([`scales`](Self::scales)), or the one scale.
+    pub fn scale_at(&self, i: usize) -> f64 {
+        self.scales.as_ref().map_or(self.scale, |s| s[i])
+    }
+
+    /// Each layer's vector times its scale, in f32, as an engine adds it.
     pub fn scaled(&self) -> Vec<(u32, Vec<f32>)> {
-        let s = self.scale as f32;
         self.layers
             .iter()
-            .map(|(l, v)| (*l, v.iter().map(|x| s * x).collect()))
+            .enumerate()
+            .map(|(i, (l, v))| {
+                let s = self.scale_at(i) as f32;
+                (*l, v.iter().map(|x| s * x).collect())
+            })
             .collect()
     }
 
     /// Refuses a scale that is not finite in f32 (`1e39` is a finite f64 and infinite in f32), and a scale that makes
     /// any `scale * x` overflow f32: the engine computes in f32, so either would put an infinity in the hidden state.
+    /// With per-layer scales, each layer's own.
     pub fn check_scaled(&self) -> Result<(), SteerError> {
-        let s = self.scale as f32;
-        if !s.is_finite() {
-            return Err(refuse(format!(
-                "the steering scale {} is not a finite number in f32, the precision the vectors are added in",
-                self.scale
-            )));
-        }
-        for (l, v) in &self.layers {
-            if let Some(i) = v.iter().position(|x| !(s * x).is_finite()) {
+        if let Some(s) = &self.scales {
+            if s.len() != self.layers.len() {
                 return Err(refuse(format!(
-                    "the steering scale {} times element {i} of layer {l} ({}) is not a finite number in f32",
-                    self.scale, v[i]
+                    "{} steering scales for {} steering layers",
+                    s.len(),
+                    self.layers.len()
+                )));
+            }
+        }
+        for (i, (l, v)) in self.layers.iter().enumerate() {
+            let scale = self.scale_at(i);
+            let s = scale as f32;
+            if !s.is_finite() {
+                return Err(refuse(format!(
+                    "the steering scale {scale} is not a finite number in f32, the precision the vectors are added in"
+                )));
+            }
+            if let Some(j) = v.iter().position(|x| !(s * x).is_finite()) {
+                return Err(refuse(format!(
+                    "the steering scale {scale} times element {j} of layer {l} ({}) is not a finite number in f32",
+                    v[j]
                 )));
             }
         }
@@ -343,9 +388,13 @@ impl Steering {
         Ok(())
     }
 
-    /// What every report and the trace header record: `{"sha256", "layers", "scale"}`.
+    /// What every report and the trace header record: `{"sha256", "layers", "scale"}`, or with per-layer scales
+    /// `{"sha256", "layers", "scales"}`, one scale per entry of `layers`.
     pub fn record(&self) -> Value {
-        json!({"sha256": self.sha256, "layers": self.layer_indices(), "scale": self.scale})
+        match &self.scales {
+            Some(scales) => json!({"sha256": self.sha256, "layers": self.layer_indices(), "scales": scales}),
+            None => json!({"sha256": self.sha256, "layers": self.layer_indices(), "scale": self.scale}),
+        }
     }
 }
 

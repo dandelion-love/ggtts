@@ -491,3 +491,60 @@ fn an_engine_that_exports_nothing_refuses_a_hook_rather_than_starve_it() {
     let err = e.generate_hooked(&req, &mut NullEvents, &mut h).unwrap_err();
     assert!(err.0.contains("exports nothing"), "{err}");
 }
+
+/// Both public entry points reject unsupported selected layers before drawing.
+#[test]
+fn unsupported_layers_are_refused_directly_and_by_pipeline() {
+    struct LayerRequest;
+    impl TensorHook for LayerRequest {
+        fn name(&self) -> &str {
+            "layer-request"
+        }
+        fn wants(&self) -> Wants {
+            Wants::NONE
+        }
+        fn layers(&self) -> Vec<usize> {
+            vec![0]
+        }
+        fn step(&mut self, _: &Step<'_>) {}
+    }
+    fn hooks() -> Hooks {
+        let mut h = Hooks::new();
+        h.add(Box::new(LayerRequest));
+        h
+    }
+    let cases = common::cases();
+    let case = &cases[0];
+    let mut direct = case.engine();
+    let req = ChunkRequest {
+        text: "test",
+        seed: 1,
+        chunk: 0,
+        draw: 0,
+        instruction: None,
+        steer: None,
+    };
+    let error = direct.generate_hooked(&req, &mut NullEvents, &mut hooks()).unwrap_err();
+    assert!(
+        error.to_string().contains("does not support talker layer hooks"),
+        "{error}"
+    );
+    assert!(direct.calls.is_empty());
+
+    let mut engine = case.engine();
+    let (chunks, opts) = (case.chunks(&engine), case.opts(&engine));
+    let error = render_story_hooked(
+        &mut engine,
+        &case.story_id,
+        &chunks,
+        &opts,
+        &mut NullEvents,
+        &mut hooks(),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("does not support talker layer hooks"),
+        "{error}"
+    );
+    assert!(engine.calls.is_empty());
+}

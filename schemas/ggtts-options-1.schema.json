@@ -301,17 +301,41 @@
     "observe": {
       "additionalProperties": false,
       "dependentRequired": {
+        "layer_stats": [
+          "layer_stats_layers"
+        ],
+        "layer_stats_layers": [
+          "layer_stats"
+        ],
         "trace_level": [
           "trace"
         ]
       },
       "properties": {
+        "codes": {
+          "description": "Where every chunk's kept codec tokens go (ggtts-codes/1 JSON lines: frames x codebooks, as the decoder reads them). Writing them changes no sample.",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-flags": [
+            "--codes"
+          ],
+          "x-ggtts-phase": "render"
+        },
         "duration_report": {
           "description": "A new file for the per-chunk duration report.",
           "minLength": 1,
           "type": "string",
           "x-ggtts-flags": [
             "--duration-report"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "feedback_page": {
+          "description": "Create an offline feedback page and provenance companion from this render; requires --out.",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-flags": [
+            "--feedback-page"
           ],
           "x-ggtts-phase": "render"
         },
@@ -354,6 +378,30 @@
           "type": "string",
           "x-ggtts-flags": [
             "--instruments"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "layer_stats": {
+          "description": "Write selected talker layer statistics to a new artifact; requires --out, --trace and --codes.",
+          "minLength": 1,
+          "type": "string",
+          "x-ggtts-flags": [
+            "--layer-stats"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "layer_stats_layers": {
+          "description": "Zero-based talker layers to capture, comma-separated.",
+          "items": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true,
+          "x-ggtts-flags": [
+            "--layer-stats-layers"
           ],
           "x-ggtts-phase": "render"
         },
@@ -530,6 +578,9 @@
         ],
         "steer_scale": [
           "steer"
+        ],
+        "steer_scales": [
+          "steer_layers"
         ]
       },
       "properties": {
@@ -537,6 +588,9 @@
           "description": "Seconds of silence kept at each edge of a chunk; unset is the engine profile's.",
           "minimum": 0.0,
           "type": "number",
+          "x-ggtts-flags": [
+            "--edge-s"
+          ],
           "x-ggtts-phase": "render"
         },
         "instruction": {
@@ -597,6 +651,9 @@
           "x-ggtts-c": [
             "seed"
           ],
+          "x-ggtts-flags": [
+            "--seed-salt"
+          ],
           "x-ggtts-kotlin": [
             "seed"
           ],
@@ -634,6 +691,18 @@
           "type": "number",
           "x-ggtts-flags": [
             "--steer-scale"
+          ],
+          "x-ggtts-phase": "render"
+        },
+        "steer_scales": {
+          "description": "One scale per layer of --steer-layers, in its order: layer L is pushed by its scale times the file's vector there. For a file of unit-length directions, the push lengths. Not with --steer-scale.",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 1,
+          "type": "array",
+          "x-ggtts-flags": [
+            "--steer-scales"
           ],
           "x-ggtts-phase": "render"
         },

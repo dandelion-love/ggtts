@@ -21,7 +21,7 @@ use ggtts_kitten::gguf::Gguf;
 use ggtts_kitten::safetensors::SafeTensors;
 use ggtts_kitten::ternary::{Rule, ScaleRule};
 
-const USAGE: &str = "usage: ggtts-kitten-convert --repo DIR [--weights FILE] (--out FILE.gguf [--layout q4_0|tq2_0|tq1_0] [--plant group256|absmean] | --verify FILE.gguf)
+const USAGE: &str = "usage: ggtts-kitten-convert --repo DIR [--weights FILE] (--out FILE.gguf [--layout q4_0|tq2_0|tq1_0] [--plant group256|absmean] [--language TAG] [--name NAME] | --verify FILE.gguf)
        ggtts-kitten-convert --s3gen s3gen_meanflow.safetensors [--pyannote speaker/model.safetensors] --out FILE.gguf
        ggtts-kitten-convert --version
 
@@ -46,6 +46,7 @@ fn read_json(p: &std::path::Path) -> Result<serde_json::Value, String> {
 fn run() -> Result<bool, String> {
     let mut args = std::env::args().skip(1);
     let (mut repo, mut weights, mut out, mut verify_only, mut plant) = (None, None, None, None, None);
+    let mut voice = ggtts_core::voices::Declared::default();
     let mut s3gen: Option<PathBuf> = None;
     let mut pyannote: Option<PathBuf> = None;
     // Q4_0 by default: the one layout that passes the ternary arm's parity bar (DESIGN.md, Measured).
@@ -53,6 +54,8 @@ fn run() -> Result<bool, String> {
     while let Some(a) = args.next() {
         let mut val = || args.next().ok_or(format!("{a} needs a value"));
         match a.as_str() {
+            "--language" => voice.language = Some(val()?),
+            "--name" => voice.name = Some(val()?),
             "--repo" => repo = Some(PathBuf::from(val()?)),
             "--weights" => weights = Some(PathBuf::from(val()?)),
             "--out" => out = Some(PathBuf::from(val()?)),
@@ -76,6 +79,17 @@ fn run() -> Result<bool, String> {
             }
             other => return Err(format!("unknown argument {other}")),
         }
+    }
+    let mut voice_keys = std::collections::BTreeMap::new();
+    if let Some(v) = &voice.language {
+        voice_keys.insert(ggtts_core::voices::FILE_LANGUAGE.to_string(), v.clone());
+    }
+    if let Some(v) = &voice.name {
+        voice_keys.insert(ggtts_core::voices::FILE_NAME.to_string(), v.clone());
+    }
+    ggtts_core::voices::from_keys(&voice_keys).map_err(|e| e.to_string())?;
+    if !voice.is_empty() && (s3gen.is_some() || verify_only.is_some()) {
+        return Err("--language and --name apply only to language model conversion with --out".into());
     }
     if let Some(src) = s3gen {
         let out = out.ok_or("--s3gen needs --out")?;
@@ -133,7 +147,18 @@ fn run() -> Result<bool, String> {
                     tok_path.display()
                 )
             })?;
-            let s = convert::convert(&st, &model, &lm, &source, &out, rule, strict, layout, Some(&tok))?;
+            let s = convert::convert_with_voice(
+                &st,
+                &model,
+                &lm,
+                &source,
+                &out,
+                rule,
+                strict,
+                layout,
+                Some(&tok),
+                &voice,
+            )?;
             eprintln!(
                 "wrote {}: {} ternary matrices ({} weights) as {}, {} bf16, {} f32, {} bytes of tensors, in {:.1}s",
                 out.display(),

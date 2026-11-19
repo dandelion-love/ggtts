@@ -68,8 +68,16 @@ const LOAD: &[&str] = &[
 ];
 const KITTEN_HEAD: &[&str] = &["load.kitten_full_head"];
 const SAMPLER: &[&str] = &ggtts_core::options::SAMPLER;
-const STEER: &[&str] = &["render.steer", "render.steer_scale", "render.steer_layers"];
+const STEER: &[&str] = &[
+    "render.steer",
+    "render.steer_scale",
+    "render.steer_layers",
+    "render.steer_scales",
+];
 const TRACE: &[&str] = &["observe.trace", "observe.trace_level"];
+const CODES: &[&str] = &["observe.codes"];
+const FEEDBACK: &[&str] = &["observe.feedback_page"];
+const LAYER_STATS: &[&str] = &["observe.layer_stats", "observe.layer_stats_layers"];
 const REPORTS: &[&str] = &["observe.timing_report", "observe.duration_report"];
 const LOG: &[&str] = &["observe.log_level", "observe.log_format"];
 const INSTRUMENTS: &[&str] = &[
@@ -97,7 +105,6 @@ const TEXT_SALT: &str = "a one-chunk plan renders at --seed: there is no story s
 const NO_INSTRUMENTS: &str =
     "instruments are programs run on a finished file; run them with `ggtts-render` or on the file";
 const NO_FILE: &str = "a binding hands the PCM to its caller and writes no file";
-const BINDING_SEED: &str = "a binding's seed is the story seed's salt (render.seed_salt); render.seed is the sampler seed of ggtts-render --text";
 const NO_STORY_FILE: &str = "a binding renders the text it is given; a story file is ggtts-render --story's";
 const NOT_BOOK_FRONT: &str = "ggtts-book's own options";
 const NO_TIMINGS: &str = "a binding returns the samples, not timings or reports";
@@ -120,6 +127,7 @@ const BOOK_SEED: &str = "a book's seeds come from --seed-root and each chunk's p
 const BOOK_STREAM: &str = "a book is written as one FLAC per chapter, not streamed";
 const BOOK_REPORTS: &str = "a book writes no timing or duration report";
 const BOOK_LOG: &str = "a book writes no log";
+const BOOK_CODES: &str = "a book writes no codes file: render a chapter's text with ggtts-render --codes";
 const BOOK_TIMINGS: &str = "a book does not take it";
 
 /// Every front end of the direction document (`docs/architecture-direction.md`), with `ggtts-render`'s two modes
@@ -144,8 +152,11 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (STEER, Carried),
             (&["render.text"], Refused(ONE_OF)),
             (&["render.seed"], Gap(215)),
-            (&["render.seed_salt", "render.edge_s"], Gap(283)),
+            (&["render.seed_salt", "render.edge_s"], Carried),
             (TRACE, Carried),
+            (CODES, Carried),
+            (FEEDBACK, Carried),
+            (LAYER_STATS, Carried),
             (REPORTS, Carried),
             (LOG, Carried),
             (INSTRUMENTS, Carried),
@@ -176,6 +187,9 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (&["render.redraw"], Refused(TEXT_REDRAW)),
             (&["render.edge_s"], Gap(180)),
             (TRACE, Carried),
+            (CODES, Carried),
+            (FEEDBACK, Carried),
+            (LAYER_STATS, Carried),
             (REPORTS, Carried),
             (LOG, Carried),
             (INSTRUMENTS, Carried),
@@ -195,9 +209,14 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (STEER, Carried),
             (&["render.text", "render.story"], Refused(BOOK_TEXT)),
             (&["render.seed", "render.seed_salt"], Refused(BOOK_SEED)),
-            (&["render.edge_s"], Gap(283)),
+            // Declared here, not probed: a book render needs an EPUB, which this test does not build. The book's own
+            // test shows it carried and recorded: the_edge_reaches_every_chapter_and_a_resume_under_another_starts_again.
+            (&["render.edge_s"], Carried),
             (&["render.measure_timings"], Refused(BOOK_TIMINGS)),
             (TRACE, Carried),
+            (CODES, Refused(BOOK_CODES)),
+            (FEEDBACK, Refused("a book does not produce a feedback page yet")),
+            (LAYER_STATS, Refused("a book writes no layer statistics artifact")),
             (REPORTS, Refused(BOOK_REPORTS)),
             (LOG, Refused(BOOK_LOG)),
             (INSTRUMENTS, Carried),
@@ -214,12 +233,15 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (SAMPLER, Carried),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
-            (&["render.seed"], Refused(BINDING_SEED)),
+            (&["render.seed"], Carried),
             (&["render.judge"], Refused(NO_JUDGE)),
             (STEER, Carried),
             (&["render.redraw", "render.edge_s"], Carried),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Carried),
+            (CODES, Refused(NO_FILE)),
+            (FEEDBACK, Refused(NO_FILE)),
+            (LAYER_STATS, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
@@ -250,12 +272,15 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (SAMPLER, Carried),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
-            (&["render.seed"], Refused(BINDING_SEED)),
+            (&["render.seed"], Carried),
             (&["render.judge"], Refused(NO_JUDGE)),
             (STEER, Carried),
             (&["render.edge_s", "render.redraw"], Carried),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Carried),
+            (CODES, Refused(NO_FILE)),
+            (FEEDBACK, Refused(NO_FILE)),
+            (LAYER_STATS, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
@@ -286,16 +311,21 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (SAMPLER, Carried),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
-            (&["render.seed"], Refused(BINDING_SEED)),
+            (&["render.seed"], Carried),
             (&["render.judge"], Refused(NO_JUDGE)),
             (&["render.steer"], Carried),
-            // Read only by an engine that steers, which the fake engine is not: probed on a real model only.
-            (&["render.steer_scale", "render.steer_layers"], Gap(292)),
+            // Probed on `Recorder`, an engine that steers and redraws, loaded through `kotlin::load_over`.
+            (
+                &["render.steer_scale", "render.steer_layers", "render.steer_scales"],
+                Carried,
+            ),
             (&["render.edge_s"], Carried),
-            // A redraw needs a draw the judge rejects, which the fake engine never gives.
-            (&["render.redraw"], Gap(292)),
+            (&["render.redraw"], Carried),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Refused(ANDROID_TRACE)),
+            (CODES, Refused(NO_FILE)),
+            (FEEDBACK, Refused(NO_FILE)),
+            (LAYER_STATS, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
@@ -331,18 +361,18 @@ const FRONT_ENDS: &[FrontEnd] = &[
             (SAMPLER, Carried),
             (&["render.text", "render.seed_salt", "render.instruction"], Carried),
             (&["render.story"], Refused(NO_STORY_FILE)),
-            (&["render.seed"], Refused(BINDING_SEED)),
+            (&["render.seed"], Carried),
             (&["render.judge"], Refused(NO_JUDGE)),
-            (&["render.steer", "render.edge_s"], Carried),
+            (&["render.steer", "render.edge_s", "render.steer_scales"], Carried),
             // Handed to the binding in the document like the rest, so the app carries them exactly when the Kotlin
-            // binding does, and the binding has them as gaps (#292: no probe on the fake engine). The app cannot carry
-            // more than the binding: `the_app_carries_no_more_than_its_binding` holds the two rows together.
-            (
-                &["render.steer_scale", "render.steer_layers", "render.redraw"],
-                Gap(282),
-            ),
+            // binding does (its probes on `Recorder`). The app cannot carry more than the binding:
+            // `the_app_carries_no_more_than_its_binding` holds the two rows together.
+            (&["render.steer_scale", "render.steer_layers", "render.redraw"], Carried),
             (&["render.measure_timings"], Refused(NO_TIMINGS)),
             (TRACE, Refused(ANDROID_TRACE)),
+            (CODES, Refused(NO_FILE)),
+            (FEEDBACK, Refused(NO_FILE)),
+            (LAYER_STATS, Refused(NO_FILE)),
             (REPORTS, Refused(NO_TIMINGS)),
             (LOG, Refused(NO_LOG)),
             (INSTRUMENTS, Refused(NO_INSTRUMENTS)),
@@ -374,6 +404,9 @@ const FRONT_ENDS: &[FrontEnd] = &[
             ),
             (STEER, Refused(PARITY_TOOL)),
             (TRACE, Refused(PARITY_TOOL)),
+            (CODES, Refused(PARITY_TOOL)),
+            (FEEDBACK, Refused(PARITY_TOOL)),
+            (LAYER_STATS, Refused(PARITY_TOOL)),
             (REPORTS, Refused(PARITY_TOOL)),
             (LOG, Refused(PARITY_TOOL)),
             (INSTRUMENTS, Refused(PARITY_TOOL)),
@@ -790,6 +823,7 @@ fn sample_value(d: &Descriptor) -> Option<&'static str> {
         Kind::Int { .. } | Kind::Number { .. } | Kind::Seed => Some("1"),
         Kind::Choice(choices) => choices.first().copied(),
         Kind::Layers => Some("0"),
+        Kind::Numbers => Some("1.5"),
         _ => Some("x"),
     }
 }
@@ -814,6 +848,276 @@ fn sampler_documents() -> Vec<(String, String)> {
 
 /// A probe: the front end, the option key, and what it saw.
 type Probe = (&'static str, String, Seen);
+
+#[test]
+fn layer_stats_requires_distinct_durable_artifacts() {
+    let missing = render(
+        "layer-stats-missing",
+        "text",
+        &["--layer-stats", "layers.json", "--layer-stats-layers", "0"],
+    );
+    assert!(
+        !missing.ok && missing.stderr.contains("requires --out, --trace and --codes"),
+        "{}",
+        missing.stderr
+    );
+    let collision = render(
+        "layer-stats-collision",
+        "text",
+        &[
+            "--layer-stats",
+            "layers.json",
+            "--layer-stats-layers",
+            "0",
+            "--trace",
+            "same.jsonl",
+            "--codes",
+            "same.jsonl",
+        ],
+    );
+    assert!(
+        !collision.ok && collision.stderr.contains("distinct output paths"),
+        "{}",
+        collision.stderr
+    );
+}
+
+#[test]
+fn layer_stats_refuses_flac_extension_and_stream_collisions_before_writes() {
+    let extension = render(
+        "layer-extension",
+        "text",
+        &[
+            "--out",
+            "audio.wav",
+            "--trace",
+            "audio.flac",
+            "--codes",
+            "c.jsonl",
+            "--layer-stats",
+            "layers.json",
+            "--layer-stats-layers",
+            "0",
+        ],
+    );
+    assert!(
+        !extension.ok && extension.stderr.contains("distinct output paths"),
+        "{}",
+        extension.stderr
+    );
+    assert!(!extension.dir.join("audio.flac").exists());
+    let stats = render(
+        "layer-extension-stats",
+        "text",
+        &[
+            "--out",
+            "audio.wav",
+            "--trace",
+            "t.jsonl",
+            "--codes",
+            "c.jsonl",
+            "--layer-stats",
+            "audio.flac",
+            "--layer-stats-layers",
+            "0",
+        ],
+    );
+    assert!(
+        !stats.ok && stats.stderr.contains("distinct output paths"),
+        "{}",
+        stats.stderr
+    );
+    assert!(!stats.dir.join("audio.flac").exists());
+    let stream = render(
+        "layer-stream",
+        "text",
+        &[
+            "--out",
+            "audio.wav",
+            "--trace",
+            "t.jsonl",
+            "--codes",
+            "c.jsonl",
+            "--stream",
+            "t.jsonl",
+            "--layer-stats",
+            "layers.json",
+            "--layer-stats-layers",
+            "0",
+        ],
+    );
+    assert!(
+        !stream.ok && stream.stderr.contains("distinct output paths"),
+        "{}",
+        stream.stderr
+    );
+    assert!(!stream.dir.join("t.jsonl").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn layer_stats_refuses_existing_symlink_and_hardlink_outputs() {
+    use std::os::unix::fs::symlink;
+    let dir = scratch("layer-existing-alias");
+    std::fs::write(dir.join("source"), b"preserve").unwrap();
+    symlink("source", dir.join("trace.jsonl")).unwrap();
+    std::fs::hard_link(dir.join("source"), dir.join("codes.jsonl")).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_ggtts-render"))
+        .current_dir(&dir)
+        .args([
+            "--engine",
+            "fake",
+            "--text",
+            "hello",
+            "--out",
+            "o.flac",
+            "--trace",
+            "trace.jsonl",
+            "--codes",
+            "codes.jsonl",
+            "--layer-stats",
+            "layers.json",
+            "--layer-stats-layers",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("already exists"));
+    assert_eq!(std::fs::read(dir.join("source")).unwrap(), b"preserve");
+    assert!(!dir.join("o.flac").exists());
+    std::fs::remove_file(dir.join("trace.jsonl")).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_ggtts-render"))
+        .current_dir(&dir)
+        .args([
+            "--engine",
+            "fake",
+            "--text",
+            "hello",
+            "--out",
+            "o.flac",
+            "--trace",
+            "trace.jsonl",
+            "--codes",
+            "codes.jsonl",
+            "--layer-stats",
+            "layers.json",
+            "--layer-stats-layers",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("already exists"));
+    assert_eq!(std::fs::read(dir.join("source")).unwrap(), b"preserve");
+    assert!(!dir.join("trace.jsonl").exists());
+}
+
+#[test]
+fn layer_stats_refuses_outputs_inside_instrument_report_directories() {
+    for (name, report, codes) in [
+        ("explicit", Some("reports"), "reports/duration.json"),
+        ("default", None, "o.report/duration.json"),
+    ] {
+        let dir = scratch(&format!("layer-report-{name}"));
+        let report_dir = dir.join(report.unwrap_or("o.report"));
+        std::fs::create_dir_all(&report_dir).unwrap();
+        let mut args = vec![
+            "--engine",
+            "fake",
+            "--text",
+            "hello",
+            "--out",
+            "o.flac",
+            "--trace",
+            "t.jsonl",
+            "--codes",
+            codes,
+            "--layer-stats",
+            "layers.json",
+            "--layer-stats-layers",
+            "0",
+            "--instrument",
+            "example",
+        ];
+        if let Some(report) = report {
+            args.extend(["--report", report]);
+        }
+        let out = Command::new(env!("CARGO_BIN_EXE_ggtts-render"))
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("outside the instrument report directory"),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!dir.join(codes).exists());
+        assert!(!dir.join("o.flac").exists());
+    }
+}
+
+#[test]
+fn feedback_page_requires_out_and_refuses_aliased_outputs() {
+    let missing = render(
+        "feedback-missing-out",
+        "text",
+        &["--stream", "-", "--feedback-page", "page.html"],
+    );
+    assert!(
+        !missing.ok && missing.stderr.contains("requires --out"),
+        "{}",
+        missing.stderr
+    );
+    let collision = render(
+        "feedback-alias",
+        "text",
+        &["--out", "page.wav", "--feedback-page", "page.flac"],
+    );
+    assert!(
+        !collision.ok && collision.stderr.contains("distinct output paths"),
+        "{}",
+        collision.stderr
+    );
+    assert!(!collision.dir.join("page.flac").exists());
+}
+
+#[test]
+fn feedback_page_refuses_raw_and_levelled_stream_before_writes() {
+    for (name, extra) in [
+        (
+            "feedback-stream-levelled",
+            vec![
+                "--out",
+                "audio.flac",
+                "--stream",
+                "stream.wav",
+                "--feedback-page",
+                "page.html",
+            ],
+        ),
+        (
+            "feedback-stream-raw",
+            vec![
+                "--out",
+                "audio.flac",
+                "--stream",
+                "stream.wav",
+                "--stream-raw",
+                "--feedback-page",
+                "page.html",
+            ],
+        ),
+    ] {
+        let r = render(name, "text", &extra);
+        assert!(!r.ok && r.stderr.contains("does not support --stream"), "{}", r.stderr);
+        for path in ["audio.flac", "stream.wav", "page.html", "page.html.provenance.json"] {
+            assert!(!r.dir.join(path).exists(), "{name}: unexpectedly wrote {path}");
+        }
+    }
+}
 
 fn render_probes() -> Vec<Probe> {
     let mut out = Vec::new();
@@ -843,6 +1147,28 @@ fn render_probes() -> Vec<Probe> {
         );
         let r = render(&p("trace"), mode, &["--trace", "t.jsonl"]);
         push("observe.trace", by_file(&r, "t.jsonl", "--trace"));
+        let r = render(&p("codes"), mode, &["--codes", "c.jsonl"]);
+        push("observe.codes", by_file(&r, "c.jsonl", "--codes"));
+        let r = render(&p("feedback-page"), mode, &["--feedback-page", "feedback.html"]);
+        push("observe.feedback_page", by_file(&r, "feedback.html", "--feedback-page"));
+        // The fake engine refuses layer hooks; reaching that refusal proves both options reached the render.
+        let r = render(
+            &p("layer-stats"),
+            mode,
+            &[
+                "--layer-stats",
+                "layers.json",
+                "--layer-stats-layers",
+                "0",
+                "--trace",
+                "t.jsonl",
+                "--codes",
+                "c.jsonl",
+            ],
+        );
+        let seen = by_engine_refusal(&r, "does not support talker layer hooks");
+        push("observe.layer_stats", seen);
+        push("observe.layer_stats_layers", seen);
         let r = render(&p("level"), mode, &["--trace", "t.jsonl", "--trace-level", "2"]);
         let header = std::fs::read_to_string(r.dir.join("t.jsonl")).unwrap_or_default();
         push(
@@ -920,6 +1246,37 @@ fn render_probes() -> Vec<Probe> {
             let (a, b) = (seeds("1"), seeds("2"));
             assert!(!a.is_empty(), "the story trace records chunk seeds");
             push("render.seed", if a != b { Seen::Carried } else { Seen::Dropped });
+            // The salt: two salts give the chunks different recorded seeds.
+            let salted = |salt: &str| {
+                let r = render(
+                    &p(&format!("salt{salt}")),
+                    mode,
+                    &["--seed-salt", salt, "--trace", "t.jsonl"],
+                );
+                assert!(r.ok, "{}", r.stderr);
+                trace_seeds(&r.dir.join("t.jsonl"))
+            };
+            let (a, b) = (salted("a"), salted("b"));
+            push("render.seed_salt", if a != b { Seen::Carried } else { Seen::Dropped });
+            // The edge: a longer edge kept at each chunk makes a longer read.
+            let flac_len = |edge: &str| {
+                let r = render(&p(&format!("edge{edge}")), mode, &["--edge-s", edge]);
+                assert!(r.ok, "{}", r.stderr);
+                std::fs::metadata(r.dir.join("o.flac")).map(|m| m.len()).unwrap_or(0)
+            };
+            push(
+                "render.edge_s",
+                if flac_len("0") != flac_len("1.5") {
+                    Seen::Carried
+                } else {
+                    Seen::Dropped
+                },
+            );
+        } else {
+            let r = render(&p("salt"), mode, &["--seed-salt", "a"]);
+            push("render.seed_salt", by_front_end_refusal(&r, "--seed-salt"));
+            let r = render(&p("edge"), mode, &["--edge-s", "1"]);
+            push("render.edge_s", by_front_end_refusal(&r, "--edge-s"));
         }
 
         // The options ggtts-render does not take: refused by name.
@@ -1184,6 +1541,15 @@ fn c_abi_document_probes(plain: usize) -> Vec<Probe> {
         ),
         ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
         ("observe.log_format", r#"{"observe": {"log_format": "json"}}"#),
+        ("observe.codes", r#"{"observe": {"codes": "c.jsonl"}}"#),
+        (
+            "observe.feedback_page",
+            r#"{"observe": {"feedback_page": "feedback.html"}}"#,
+        ),
+        (
+            "observe.layer_stats",
+            r#"{"observe": {"layer_stats": "layers.json", "layer_stats_layers": [0]}}"#,
+        ),
         ("output.out", r#"{"output": {"out": "o.flac"}}"#),
         ("render.judge", r#"{"render": {"judge": "asr-qwen,model=m"}}"#),
     ] {
@@ -1341,7 +1707,6 @@ fn python_probes() -> Vec<Probe> {
     // The options a binding does not take, refused by their keys.
     for (key, doc) in [
         ("render.measure_timings", r#"{"render": {"measure_timings": true}}"#),
-        ("render.seed", r#"{"render": {"seed": 3}}"#),
         ("observe.timing_report", r#"{"observe": {"timing_report": "t.json"}}"#),
         (
             "observe.duration_report",
@@ -1349,6 +1714,15 @@ fn python_probes() -> Vec<Probe> {
         ),
         ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
         ("observe.log_format", r#"{"observe": {"log_format": "json"}}"#),
+        ("observe.codes", r#"{"observe": {"codes": "c.jsonl"}}"#),
+        (
+            "observe.feedback_page",
+            r#"{"observe": {"feedback_page": "feedback.html"}}"#,
+        ),
+        (
+            "observe.layer_stats",
+            r#"{"observe": {"layer_stats": "layers.json", "layer_stats_layers": [0]}}"#,
+        ),
         ("output.out", r#"{"output": {"out": "o.flac"}}"#),
         ("render.judge", r#"{"render": {"judge": "asr-qwen,model=m"}}"#),
     ] {
@@ -1359,11 +1733,13 @@ fn python_probes() -> Vec<Probe> {
     out
 }
 
-/// What [`Recorder`] saw: each request's draw, and the steering it carried (its scale and layers).
+/// What [`Recorder`] saw: each request's draw, and the steering it carried (its scale and layers, and its per-layer
+/// scales when it had them).
 #[derive(Default)]
 struct Recorded {
     draws: Vec<u32>,
     steer: Vec<(f64, Vec<u32>)>,
+    scales: Vec<Option<Vec<f64>>>,
 }
 
 /// An engine that steers, for the probes the fake engine cannot answer: the fake engine stating Qwen3-TTS's
@@ -1393,6 +1769,7 @@ impl ggtts_core::engine::Engine for Recorder {
         seen.draws.push(req.draw);
         if let Some(s) = req.steer {
             seen.steer.push((s.scale, s.layer_indices()));
+            seen.scales.push(s.scales.clone());
         }
         drop(seen);
         let long = req.text.repeat(20);
@@ -1472,6 +1849,23 @@ fn python_engine_probes(dir: &Path) -> Vec<Probe> {
         "render.steer_layers",
         match (first(&plain), first(&layered)) {
             (Some((_, all)), Some((_, one))) if all == vec![0, 1] && one == vec![1] => Seen::Carried,
+            _ => Seen::Dropped,
+        },
+    );
+    // Per-layer scales: given in the document's layer order (1, then 0), the engine is handed each layer's own,
+    // ascending by layer.
+    let (per_layer, _) = run(
+        qwen,
+        &format!(
+            r#"{{"render": {{"steer": {steer}, "steer_layers": [1, 0], "steer_scales": [0.5, 0.25], "redraw": 0}}}}"#
+        ),
+    );
+    push(
+        "render.steer_scales",
+        match per_layer.scales.first() {
+            Some(Some(s)) if s == &vec![0.25, 0.5] && first(&per_layer).map(|f| f.1) == Some(vec![0, 1]) => {
+                Seen::Carried
+            }
             _ => Seen::Dropped,
         },
     );
@@ -1633,7 +2027,6 @@ fn kotlin_probes() -> Vec<Probe> {
         ("observe.trace_level", r#"{"observe": {"trace_level": 2}}"#),
         ("observe.instruments", r#"{"observe": {"instruments": "i"}}"#),
         ("render.measure_timings", r#"{"render": {"measure_timings": true}}"#),
-        ("render.seed", r#"{"render": {"seed": 3}}"#),
         ("observe.timing_report", r#"{"observe": {"timing_report": "t.json"}}"#),
         ("observe.log_level", r#"{"observe": {"log_level": "info"}}"#),
         ("output.out", r#"{"output": {"out": "o.flac"}}"#),
@@ -1647,6 +2040,123 @@ fn kotlin_probes() -> Vec<Probe> {
             other => panic!("kotlin: load.device gave {:?}", other.is_ok()),
         },
     );
+    out.extend(kotlin_engine_probes());
+    out
+}
+
+/// Kotlin's `load(options=…)` through its native load path (`ggtts_ffi::kotlin::load_over`) over [`Recorder`], loaded
+/// as qwen3-tts so the document is checked against an engine that steers, and rendered through `render_opts` as the
+/// binding renders: `render.steer_scale`, `render.steer_layers` and `render.steer_scales` are seen in the steering
+/// the engine is handed,
+/// `render.redraw` in the draws it is asked for, and `load.cache_dir` in the offline refusal of an uncached steering
+/// URL, which names the cache the load gave. As Python's ([`python_engine_probes`]).
+fn kotlin_engine_probes() -> Vec<Probe> {
+    use ggtts_ffi::kotlin::{load_over, render_opts, LoadArgs};
+    use ggtts_py::core::guard_keyed;
+    let dir = unique_dir("kotlin-engine");
+    std::fs::create_dir_all(&dir).unwrap();
+    let text = "你好。";
+    let steer = dir.join("steer.safetensors");
+    let v = [0.5f32; 8];
+    std::fs::write(
+        &steer,
+        ggtts_core::steer::write_safetensors(&[("talker.layer.0", &v), ("talker.layer.1", &v)]),
+    )
+    .unwrap();
+    let steer = serde_json::to_string(&steer.to_string_lossy()).unwrap();
+    // Render `text` with the render document `doc` on a fresh recorder loaded with `load_doc`: what it saw, and the
+    // render's result.
+    let run = |load_doc: &str, doc: &str| {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Recorded::default()));
+        let engine = Recorder {
+            fake: ggtts_fake::FakeEngine::default(),
+            seen: seen.clone(),
+        };
+        let result = guard_keyed(|| {
+            let h = Freed(load_over(load_doc, &LoadArgs::default(), Box::new(engine))?);
+            render_opts(h.0, text, Some(doc), Some(7))
+        });
+        let seen = std::sync::Arc::try_unwrap(seen).ok().unwrap().into_inner().unwrap();
+        (seen, result)
+    };
+    let qwen = r#"{"load": {"engine": "qwen3-tts"}}"#;
+    let mut out = Vec::new();
+    let mut push = |key: &str, seen| out.push(("kotlin", key.to_string(), seen));
+    // Steering: the scale and the layers the engine is handed are the document's (the file has layers 0 and 1).
+    let (plain, r) = run(qwen, &format!(r#"{{"render": {{"steer": {steer}, "redraw": 0}}}}"#));
+    assert!(r.is_ok(), "kotlin: a steered render failed: {r:?}");
+    let (scaled, _) = run(
+        qwen,
+        &format!(r#"{{"render": {{"steer": {steer}, "steer_scale": 0.25, "redraw": 0}}}}"#),
+    );
+    let (layered, _) = run(
+        qwen,
+        &format!(r#"{{"render": {{"steer": {steer}, "steer_layers": [1], "redraw": 0}}}}"#),
+    );
+    let first = |s: &Recorded| s.steer.first().cloned();
+    push(
+        "render.steer_scale",
+        match (first(&plain), first(&scaled)) {
+            (Some((1.0, _)), Some((0.25, _))) => Seen::Carried,
+            _ => Seen::Dropped,
+        },
+    );
+    push(
+        "render.steer_layers",
+        match (first(&plain), first(&layered)) {
+            (Some((_, all)), Some((_, one))) if all == vec![0, 1] && one == vec![1] => Seen::Carried,
+            _ => Seen::Dropped,
+        },
+    );
+    // Per-layer scales: given in the document's layer order (1, then 0), the engine is handed each layer's own,
+    // ascending by layer.
+    let (per_layer, _) = run(
+        qwen,
+        &format!(
+            r#"{{"render": {{"steer": {steer}, "steer_layers": [1, 0], "steer_scales": [0.5, 0.25], "redraw": 0}}}}"#
+        ),
+    );
+    push(
+        "render.steer_scales",
+        match per_layer.scales.first() {
+            Some(Some(s)) if s == &vec![0.25, 0.5] && first(&per_layer).map(|f| f.1) == Some(vec![0, 1]) => {
+                Seen::Carried
+            }
+            _ => Seen::Dropped,
+        },
+    );
+    // Redraws: with none allowed the runaway first draw is the only one; with one allowed, a second draw is asked for.
+    let (none, _) = run(qwen, r#"{"render": {"redraw": 0}}"#);
+    let (one, _) = run(qwen, r#"{"render": {"redraw": 1}}"#);
+    push(
+        "render.redraw",
+        if none.draws == vec![0] && one.draws == vec![0, 1] {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        },
+    );
+    // The load's cache directory: an offline engine refuses an uncached steering URL, naming that cache. The host is
+    // `.invalid`, so a resolution that ignored the load would fail on the network instead.
+    let cache = dir.join("kotlin-cache");
+    let load_doc =
+        serde_json::json!({"load": {"engine": "qwen3-tts", "offline": true, "cache_dir": cache}}).to_string();
+    let (_, r) = run(
+        &load_doc,
+        r#"{"render": {"steer": "https://example.invalid/presets/x.safetensors"}}"#,
+    );
+    push(
+        "load.cache_dir",
+        match r {
+            Err(((_, msg), _))
+                if msg.contains("offline mode does not download it") && msg.contains(&cache.display().to_string()) =>
+            {
+                Seen::Carried
+            }
+            _ => Seen::Dropped,
+        },
+    );
+    let _ = std::fs::remove_dir_all(dir);
     out
 }
 
@@ -1793,9 +2303,99 @@ fn probes() -> Vec<Probe> {
     out.extend(c_abi_probes());
     out.extend(python_probes());
     out.extend(kotlin_probes());
+    out.extend(exact_seed_probes());
     out.extend(stream_probes());
     let kotlin: Vec<Probe> = out.iter().filter(|(fe, _, _)| *fe == "kotlin").cloned().collect();
     out.extend(android_probes(&read(ANDROID_SEAM), &kotlin));
+    out
+}
+
+/// `render.seed` in a binding's render document: one chunk at that exact seed (`ggtts_core::pipeline::exact`), as
+/// `ggtts-render --text --seed` renders it. The C ABI and Python are carried when the trace records exactly one draw,
+/// at that seed. Kotlin writes no trace on Android, so it is carried when its samples are the C ABI's exact render's
+/// and not its story render's (which trims and levels). Each render is on a fresh fake engine.
+fn exact_seed_probes() -> Vec<Probe> {
+    use ggtts_ffi::{ggtts_free, ggtts_load_opts, ggtts_pcm_free, ggtts_render_opts, GGTTS_OK};
+    use ggtts_py::core::{guard_keyed, load, LoadRequest};
+    let dir = std::env::temp_dir().join(format!("ggtts-conformance-exact-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let text = "今日天氣好好，我哋去公園行下";
+    let fake = r#"{"load": {"engine": "fake"}}"#;
+    let traced = |name: &str| {
+        let trace = dir.join(format!("{name}.jsonl"));
+        let doc = format!(
+            r#"{{"render": {{"seed": 3}}, "observe": {{"trace": {}}}}}"#,
+            serde_json::to_string(&trace.to_string_lossy()).unwrap()
+        );
+        (trace, doc)
+    };
+    let one_draw_at_3 = |trace: &Path| {
+        if trace_seeds(trace) == [3] {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        }
+    };
+    let c_render = |doc: &str| {
+        let load_doc = CString::new(fake).unwrap();
+        let mut h = 0u64;
+        assert_eq!(
+            unsafe { ggtts_load_opts(load_doc.as_ptr(), &mut h) },
+            GGTTS_OK,
+            "{}",
+            last_error()
+        );
+        let (t, d) = (CString::new(text).unwrap(), CString::new(doc).unwrap());
+        let (mut p, mut n, mut r) = (std::ptr::null_mut(), 0usize, 0u32);
+        let code = unsafe {
+            ggtts_render_opts(
+                h,
+                t.as_ptr(),
+                d.as_ptr(),
+                None,
+                std::ptr::null_mut(),
+                &mut p,
+                &mut n,
+                &mut r,
+            )
+        };
+        assert_eq!(code, GGTTS_OK, "c-abi: {doc}: {}", last_error());
+        let samples = unsafe { std::slice::from_raw_parts(p, n) }.to_vec();
+        unsafe { ggtts_pcm_free(p, n) };
+        ggtts_free(h);
+        samples
+    };
+    let mut out = Vec::new();
+    let (trace, doc) = traced("c-abi");
+    c_render(&doc);
+    out.push(("c-abi", "render.seed".to_string(), one_draw_at_3(&trace)));
+    let (trace, doc) = traced("python");
+    let req = LoadRequest {
+        options: Some(fake.into()),
+        ..Default::default()
+    };
+    let rendered = guard_keyed(|| load(&req, &mut |_| {})?.0.render_with(text, None, Some(&doc)));
+    assert!(rendered.is_ok(), "python: {:?}", rendered.err());
+    out.push(("python", "render.seed".to_string(), one_draw_at_3(&trace)));
+    let kotlin = |doc: &str| {
+        use ggtts_ffi::kotlin::{load, render_opts, LoadArgs};
+        let h = load(fake, &LoadArgs::default()).unwrap();
+        let r = guard_keyed(|| render_opts(h, text, Some(doc), None));
+        ggtts_free(h);
+        r.unwrap_or_else(|e| panic!("kotlin: {doc}: {e:?}")).0
+    };
+    let exact = r#"{"render": {"seed": 3}}"#;
+    let (ours, c_exact, c_story) = (kotlin(exact), c_render(exact), c_render("{}"));
+    out.push((
+        "kotlin",
+        "render.seed".to_string(),
+        if ours == c_exact && ours != c_story {
+            Seen::Carried
+        } else {
+            Seen::Dropped
+        },
+    ));
+    let _ = std::fs::remove_dir_all(dir);
     out
 }
 
@@ -1846,11 +2446,12 @@ fn the_app_carries_no_more_than_its_binding() {
     let mut cells = cells(TABLE, FRONT_ENDS).unwrap();
     let wrong = wider_than_its_binding(&cells);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    cells.insert(("android".to_string(), "render.steer_scale".to_string()), Carried);
+    // The plant: the app claims a timing measurement, which the binding refuses (it returns samples, not timings).
+    cells.insert(("android".to_string(), "render.measure_timings".to_string()), Carried);
     let planted = wider_than_its_binding(&cells);
     assert_eq!(planted.len(), 1, "{planted:?}");
     assert!(
-        planted[0].starts_with("render.steer_scale: android is Carried, kotlin is Gap(292)"),
+        planted[0].starts_with("render.measure_timings: android is Carried, kotlin is Refused("),
         "{planted:?}"
     );
 }
@@ -1984,12 +2585,12 @@ fn a_new_option_entered_as_a_gap_fails_naming_it() {
 #[test]
 fn a_closed_gap_still_listed_fails() {
     let mut cells = cells(TABLE, FRONT_ENDS).unwrap();
-    let key = ("book".to_string(), "render.edge_s".to_string());
-    assert_eq!(cells[&key], Gap(283));
+    let key = ("render-story".to_string(), "render.seed".to_string());
+    assert_eq!(cells[&key], Gap(215));
     cells.insert(key, Carried);
     let errors = check_gaps(&cells, &read(GAPS));
     assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(errors[0].contains("book\\trender.edge_s\\t#283"), "{errors:?}");
+    assert!(errors[0].contains("render-story\\trender.seed\\t#215"), "{errors:?}");
 }
 
 /// #284 AC3: a document path that ignores `raw` (it levels anyway) fails: the probe sees `output.stream_raw` dropped,
@@ -2140,6 +2741,7 @@ fn a_new_python_keyword_fails_the_snapshot() {
     now.extend(surfaces::kotlin_entries(&read(
         "android/ggtts/src/main/kotlin/ggtts/Ggtts.kt",
     )));
+    now.extend(surfaces::dart_entries(&read("apps/flutter/lib/ggtts.dart")));
     let diff = snapshot_diff(&read(SNAPSHOT), &now);
     assert!(
         diff.iter().any(|l| l.starts_with("+ python load: engine, foo,")),
@@ -2150,6 +2752,44 @@ fn a_new_python_keyword_fails_the_snapshot() {
         "{diff:?}"
     );
     assert!(known(TABLE, Surface::Python, "model"));
+}
+
+/// A new Dart render parameter must still be detected after recording cancellation.
+#[test]
+fn a_new_dart_render_parameter_fails_the_snapshot() {
+    let src = read("apps/flutter/lib/ggtts.dart");
+    let planted = src.replacen(
+        "    int? cancellationToken,",
+        "    int? cancellationToken, int? mysteryControl,",
+        1,
+    );
+    assert_ne!(planted, src, "the plant applies");
+    let mut now = surfaces::binding_entries();
+    now.retain(|entry| entry.surface != Surface::Dart);
+    now.extend(surfaces::dart_entries(&planted));
+    let diff = snapshot_diff(&read(SNAPSHOT), &now);
+    assert!(
+        diff.iter()
+            .any(|line| line.contains("mysteryControl: no row of the options table")),
+        "{diff:?}"
+    );
+}
+
+/// A newly exposed Dart binding call must make the snapshot fail.
+#[test]
+fn a_new_dart_call_fails_the_snapshot() {
+    let src = read("apps/flutter/lib/ggtts.dart");
+    let planted = src.replacen(
+        "class Ggtts {",
+        "class Ggtts {\n  int added(int handle, String text) => 0;",
+        1,
+    );
+    assert_ne!(planted, src, "the plant applies");
+    let mut now = surfaces::binding_entries();
+    now.retain(|entry| entry.surface != Surface::Dart);
+    now.extend(surfaces::dart_entries(&planted));
+    let diff = snapshot_diff(&read(SNAPSHOT), &now);
+    assert!(diff.iter().any(|line| line == "+ dart added: handle, text"), "{diff:?}");
 }
 
 // ── the render path ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -2514,5 +3154,33 @@ fn a_stale_exception_fails() {
     assert!(
         errors[0].contains("lists crates/ggtts-cli/src/bin/ggtts-render.rs, which no longer"),
         "{errors:?}"
+    );
+}
+
+/// A new C cancellation parameter remains visible even after the API is snapshotted.
+#[test]
+fn a_new_c_cancellation_parameter_fails_the_snapshot() {
+    let src = read("crates/ggtts-ffi/include/ggtts.h");
+    let planted = src.replacen(
+        "int32_t ggtts_cancel_signal(uint64_t token);",
+        "int32_t ggtts_cancel_signal(uint64_t token, uint32_t mystery);",
+        1,
+    );
+    assert_ne!(planted, src, "the plant applies");
+    let mut now = surfaces::binding_entries();
+    now.retain(|e| !e.line().starts_with("c ggtts_cancel_signal:"));
+    now.extend(
+        surfaces::header_entries(&planted)
+            .into_iter()
+            .filter(|e| e.line().starts_with("c ggtts_cancel_signal:")),
+    );
+    let diff = snapshot_diff(&read(SNAPSHOT), &now);
+    assert!(
+        diff.iter().any(|l| l == "+ c ggtts_cancel_signal: token, mystery"),
+        "{diff:?}"
+    );
+    assert!(
+        diff.iter().any(|l| l.contains("mystery: no row of the options table")),
+        "{diff:?}"
     );
 }

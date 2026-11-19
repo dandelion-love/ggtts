@@ -34,7 +34,10 @@ class StreamPlayerTest {
         override fun play() {
             call("play")
             if (playThrows) throw IllegalStateException("play() called on an uninitialized AudioTrack")
+            isPaused = false
         }
+        /** Samples the device has taken, in all. */
+        val taken = java.util.concurrent.atomic.AtomicInteger()
         /** Runs inside write(), on the player thread, before the write takes anything. */
         var beforeWrite: () -> Unit = {}
         @Volatile var isPaused = false
@@ -42,7 +45,15 @@ class StreamPlayerTest {
             call("write")
             beforeWrite()
             // A paused device takes nothing, as a full AudioTrack buffer does; with blockWrites a running one is full too.
-            return if (isPaused || blockWrites) 0 else writeResult ?: count
+            val n = if (isPaused || blockWrites) 0 else writeResult ?: count
+            if (n > 0) taken.addAndGet(n)
+            return n
+        }
+        @Volatile var head: Long? = null
+        @Volatile var headThrows = false
+        override fun playbackHead(): Long {
+            if (headThrows) throw IllegalStateException("head unavailable")
+            return head ?: taken.get().toLong()
         }
         override fun pause() { call("pause"); isPaused = true; paused.countDown() }
         override fun flush() = call("flush")
@@ -58,12 +69,14 @@ class StreamPlayerTest {
     private val sinks = mutableListOf<FakeSink>()
     /** Applied to each new sink as begin() creates it, before its play(). */
     private var setUp: (FakeSink) -> Unit = {}
-    private val player = StreamPlayer({ FakeSink().also { setUp(it); sinks += it } }, drainMs = 0)
+    private val player = StreamPlayer({ FakeSink().also { setUp(it); sinks += it } })
 
+    /** Waits up to 5 s in all for [latch], through any interrupts; never longer, so a fault fails a test, not hangs it. */
     private fun awaitIgnoringInterrupts(latch: CountDownLatch) {
-        while (true) {
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (System.nanoTime() < deadline) {
             try {
-                latch.await(5, TimeUnit.SECONDS)
+                latch.await(deadline - System.nanoTime(), TimeUnit.NANOSECONDS)
                 return
             } catch (_: InterruptedException) {
             }
@@ -120,7 +133,7 @@ class StreamPlayerTest {
             stopWaited = stopper.state == Thread.State.BLOCKED
         }
         player.play(FloatArray(10))
-        player.finish()
+        assertTrue(runCatching { player.finish() }.exceptionOrNull() is PlaybackUnconfirmed)
         stopper.join(2000)
         assertTrue("the Stop arrived while the sink was being released", stopWaited)
         assertEquals(emptyList<String>(), sink.misuse)
@@ -205,5 +218,177 @@ class StreamPlayerTest {
         assertEquals(2, sinks.size)
         assertTrue(sinks[1].calls.any { it.startsWith("write@") })
         sinks.forEach { assertTrue(it.released.await(2, TimeUnit.SECONDS)); assertEquals(emptyList<String>(), it.misuse) }
+    }
+
+    @Test
+    fun finishRequiresHeadToReachTheSubmittedFrames() {
+        setUp = { it.head = 0 }
+        player.begin(24000)
+        val sink = sinks.single()
+        player.play(FloatArray(10))
+        val result = java.util.concurrent.atomic.AtomicReference<Boolean>()
+        val done = CountDownLatch(1)
+        Thread { result.set(player.finishConfirmed()); done.countDown() }.start()
+        val deadline = System.nanoTime() + 2_000_000_000L
+        while (sink.taken.get() < 10 && System.nanoTime() < deadline) Thread.sleep(1)
+        assertEquals(10, sink.taken.get())
+        assertTrue(!done.await(100, TimeUnit.MILLISECONDS))
+        sink.head = 10
+        assertTrue(done.await(2, TimeUnit.SECONDS))
+        assertEquals(true, result.get())
+    }
+
+    @Test
+    fun stopReplacementAndInvalidHeadCannotConfirm() {
+        for (replace in listOf(false, true)) {
+            setUp = { it.head = 0 }
+            player.begin(24000)
+            player.play(FloatArray(10))
+            val result = java.util.concurrent.atomic.AtomicReference<Boolean>()
+            val done = CountDownLatch(1)
+            Thread { result.set(player.finishConfirmed()); done.countDown() }.start()
+            Thread.sleep(30)
+            if (replace) player.begin(24000) else player.stop()
+            assertTrue(done.await(2, TimeUnit.SECONDS))
+            assertEquals(false, result.get())
+            player.stop()
+        }
+        setUp = { it.head = 1 }
+        player.begin(24000)
+        player.play(FloatArray(10))
+        assertEquals(false, player.finishConfirmed())
+    }
+
+    @Test
+    fun lateEnqueueInvalidatesConfirmation() {
+        setUp = { it.head = 0 }
+        player.begin(24000)
+        val sink = sinks.single()
+        player.play(FloatArray(10))
+        val result = java.util.concurrent.atomic.AtomicReference<Boolean>()
+        val done = CountDownLatch(1)
+        Thread { result.set(player.finishConfirmed()); done.countDown() }.start()
+        val deadline = System.nanoTime() + 2_000_000_000L
+        while (sink.taken.get() < 10 && System.nanoTime() < deadline) Thread.sleep(1)
+        Thread.sleep(20)
+        player.play(FloatArray(1))
+        assertTrue(done.await(2, TimeUnit.SECONDS))
+        assertEquals(false, result.get())
+    }
+
+    @Test
+    fun stalledOrFailedHeadCannotConfirm() {
+        val stalled = FakeSink().apply { head = 0 }
+        val p = StreamPlayer({ stalled }, waitMs = 1, stallMs = 30)
+        p.begin(24000)
+        p.play(FloatArray(10))
+        assertEquals(false, p.finishConfirmed())
+        setUp = { it.headThrows = true }
+        player.begin(24000)
+        player.play(FloatArray(10))
+        assertEquals(false, player.finishConfirmed())
+    }
+
+    @Test
+    fun unpausedZeroWritesTimeOutAndCannotConfirm() {
+        val sink = FakeSink().apply { blockWrites = true }
+        val p = StreamPlayer({ sink }, waitMs = 1, stallMs = 30)
+        p.begin(24000)
+        p.play(FloatArray(10))
+        assertEquals(false, p.finishConfirmed())
+        assertEquals(0, sink.taken.get())
+        assertTrue(sink.isReleased)
+    }
+
+    @Test
+    fun headWrapIsCountedAndResetFailsClosed() {
+        val head = PlaybackHeadCounter()
+        head.observe(0xfffffffeL, 0xfffffffeL)
+        head.observe(2, 0x100000002L)
+        assertEquals(0x100000002L, head.played)
+        assertTrue(runCatching { head.observe(1, 0x100000003L) }.isFailure)
+    }
+
+    // ---- Pause and resume (#324). Each test names the planted fault it catches.
+
+    /** Plant: pause() that does not pause the device. The device must stop taking audio at once. */
+    @Test
+    fun pauseHoldsTheDeviceAndResumePlaysOn() {
+        player.begin(24000)
+        val sink = sinks.single()
+        player.pause()
+        assertTrue("the device was not paused", sink.isPaused)
+        assertTrue(player.paused)
+        player.resume()
+        assertTrue("the device was not played again", !sink.isPaused)
+        assertTrue(!player.paused)
+        player.stop()
+    }
+
+    /** Plant: a drain that ignores the pause. The stream must not end, nor finish() return, while it is held. */
+    @Test
+    fun aHeldStreamDoesNotEndUntilResumedAndPlaysEverything() {
+        player.begin(24000)
+        val sink = sinks.single()
+        player.pause()
+        // Rendering goes on while paused: pieces arrive and wait.
+        player.play(FloatArray(100))
+        player.play(FloatArray(50))
+        assertTrue("finish() returned while the stream was paused", !returnsWithin(300) { player.finish() })
+        assertEquals("the paused device took audio", 0, sink.taken.get())
+        player.resume()
+        assertTrue("the stream did not end after Resume", sink.released.await(2, TimeUnit.SECONDS))
+        assertEquals("a piece held during the pause was lost", 150, sink.taken.get())
+        assertEquals(emptyList<String>(), sink.misuse)
+    }
+
+    /**
+     * Plant: a drain that ignores the pause. Everything has been written and sits in the device's buffer when Pause
+     * comes; the stream must not end (and release the device with that audio unplayed) until Resume.
+     */
+    @Test
+    fun aPauseAfterTheLastWriteStillHoldsTheEndOfTheStream() {
+        player.begin(24000)
+        val sink = sinks.single()
+        player.play(FloatArray(80))
+        val deadline = System.nanoTime() + 2_000_000_000L
+        while (sink.taken.get() < 80 && System.nanoTime() < deadline) Thread.sleep(1)
+        assertEquals(80, sink.taken.get())
+        player.pause()
+        assertTrue("finish() returned while the buffered end was paused", !returnsWithin(300) { player.finish() })
+        assertEquals("the device was released with paused audio in it", 1L, sink.released.count)
+        player.resume()
+        assertTrue(sink.released.await(2, TimeUnit.SECONDS))
+    }
+
+    /** Plant: begin() that forgets a pause made before the first piece. The new stream must start held. */
+    @Test
+    fun aPauseBeforeTheFirstAudioHoldsTheStreamThatBegins() {
+        player.pause()
+        player.begin(24000)
+        val sink = sinks.single()
+        assertTrue("the stream began playing though Pause was pressed first", sink.isPaused)
+        player.play(FloatArray(10))
+        Thread.sleep(50)
+        assertEquals(0, sink.taken.get())
+        player.resume()
+        // Bounded: a resume that does not play the device on leaves the stream held, which must fail here, not hang.
+        assertTrue("resume did not play on: the stream stayed held", returnsWithin(2000) { player.finish() })
+        assertEquals(10, sink.taken.get())
+    }
+
+    /** Plant: stop() that leaves the pause set. Stop ends a held stream, and the next read is not held. */
+    @Test
+    fun stopEndsAHeldStreamAndTheNextOneIsNotHeld() {
+        player.begin(24000)
+        val first = sinks.single()
+        player.pause()
+        player.play(FloatArray(10))
+        assertTrue(returnsWithin(1000) { player.stop() })
+        assertTrue(first.released.await(2, TimeUnit.SECONDS))
+        assertTrue(!player.paused)
+        player.begin(24000)
+        assertTrue("the next read began held", !sinks[1].isPaused)
+        player.stop()
     }
 }

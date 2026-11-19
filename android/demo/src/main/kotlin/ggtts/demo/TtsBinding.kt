@@ -116,6 +116,8 @@ interface TtsEngine : AutoCloseable {
      * was stopped.
      */
     fun renderStream(text: String, seed: Long, onPiece: (FloatArray, Int) -> Boolean): Boolean
+    val supportsEvidence: Boolean get() = false
+    fun renderEvidence(text: String, seed: Long, onPiece: (Int, String, Long, Int, Int, Long, Long, FloatArray, Int) -> Boolean): Boolean = error("evidence unsupported")
 }
 
 /**
@@ -146,6 +148,11 @@ class GgttsBinding(private val cacheDir: String?, private val paths: PathResolve
             override fun render(text: String, seed: Long): Pcm = tts.render(text, seed, options = whole)
             override fun renderStream(text: String, seed: Long, onPiece: (FloatArray, Int) -> Boolean): Boolean =
                 tts.renderStream(text, seed, options = stream) { samples, rate -> onPiece(samples, rate) }
+            override val supportsEvidence: Boolean get() = true
+            override fun renderEvidence(text: String, seed: Long, onPiece: (Int, String, Long, Int, Int, Long, Long, FloatArray, Int) -> Boolean): Boolean =
+                tts.renderStreamEvidence(text, seed, options = stream) { i, t, s, d, stop, start, speechEnd, samples, rate ->
+                    onPiece(i, t, s, d, stop, start, speechEnd, samples, rate)
+                }
             override fun close() {
                 try { tts.close() } finally { held.forEach { runCatching { it.close() } } }
             }

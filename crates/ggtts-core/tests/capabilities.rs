@@ -361,3 +361,16 @@ fn a_kitten_render_with_the_whole_head_records_it() {
         .get("kitten_full_head")
         .is_none());
 }
+
+#[test]
+fn compiled_devices_restricts_loaded_engine_without_changing_family_contract() {
+    for family in ["qwen3-tts", "kitten-tts-2"] {
+        let family_caps = Capabilities::of(family).unwrap();
+        assert_eq!(family_caps.devices, ["cpu", "cuda"]);
+        let cpu = family_caps.clone().compiled_devices(false);
+        assert_eq!(cpu.devices, ["cpu"]);
+        let cuda = family_caps.clone().compiled_devices(true);
+        assert_eq!(cuda.devices, ["cpu", "cuda"]);
+        assert_eq!(family_caps.devices, ["cpu", "cuda"]);
+    }
+}

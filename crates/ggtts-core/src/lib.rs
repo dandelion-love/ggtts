@@ -16,11 +16,15 @@
 //! its recorded cases in `fixtures/pipeline/` (`cargo test -p ggtts-core --test pipeline_cases`).
 
 pub mod audio;
+pub mod cancel;
 pub mod capabilities;
 pub mod engine;
 pub mod fdpath;
+pub mod feedback;
 pub mod flac;
+pub mod gguf_meta;
 pub mod hooks;
+pub mod layer_stats;
 pub mod logging;
 pub mod numeric;
 pub mod options;
@@ -33,6 +37,7 @@ pub mod stream;
 pub mod text;
 pub mod textjudge;
 pub mod trace;
+pub mod voices;
 
 /// The release tag embedded at build time, or the workspace version for ordinary local builds.
 pub const VERSION: &str = match option_env!("GGTTS_RELEASE_VERSION") {

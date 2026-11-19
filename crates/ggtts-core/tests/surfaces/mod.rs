@@ -27,6 +27,7 @@ pub enum Surface {
     Python,
     C,
     Kotlin,
+    Dart,
 }
 
 /// Spellings that are not options: commands, callbacks, out-parameters and handles.
@@ -50,6 +51,27 @@ pub const NOT_OPTIONS: &[(Surface, &str, &str)] = &[
         "options",
         "the options document: every option, by its schema key",
     ),
+    (Surface::Kotlin, "handle", "the loaded engine handle"),
+    (
+        Surface::Kotlin,
+        "optionsJson",
+        "the options document: every option, by its schema key",
+    ),
+    (Surface::Kotlin, "seedGiven", "whether the caller supplied a seed"),
+    (
+        Surface::Kotlin,
+        "listener",
+        "the evidence stream's callback, not an option",
+    ),
+    (Surface::C, "callback", "a synchronous callback, not an option"),
+    (Surface::C, "context", "the callback context pointer"),
+    (Surface::Dart, "notice", "a synchronous load progress callback"),
+    (Surface::C, "out", "the cancellation token out-parameter"),
+    (
+        Surface::C,
+        "token",
+        "an opaque cancellation handle, not a render option",
+    ),
     (Surface::C, "size", "the struct's own size, its version"),
     (Surface::C, "settings", "the struct the settings are in"),
     (Surface::C, "handle", "the engine handle"),
@@ -60,6 +82,13 @@ pub const NOT_OPTIONS: &[(Surface, &str, &str)] = &[
     ),
     (Surface::C, "pcm", "an out-parameter"),
     (Surface::C, "on_piece", "the stream's callback, not a value"),
+    (Surface::Dart, "onPiece", "the stream's callback, not a value"),
+    (
+        Surface::Dart,
+        "cancellationToken",
+        "an opaque cancellation handle, not a render option",
+    ),
+    (Surface::Dart, "text", "the content to render, not an option"),
     (Surface::C, "user", "the callback's own pointer, passed through"),
     (Surface::C, "len", "an out-parameter"),
     (Surface::C, "rate", "an out-parameter"),
@@ -73,12 +102,14 @@ pub fn spellings(d: &Descriptor, s: Surface) -> &'static [&'static str] {
         Surface::Python => d.python,
         Surface::C => d.c,
         Surface::Kotlin => d.kotlin,
+        Surface::Dart => d.c,
     }
 }
 
 /// Whether `name` on `surface` is spelled by a row of `table` or listed as not an option.
 pub fn known(table: &[Descriptor], surface: Surface, name: &str) -> bool {
-    NOT_OPTIONS.iter().any(|(s, n, _)| *s == surface && *n == name)
+    (surface == Surface::Dart && ["lib", "handle", "options"].contains(&name))
+        || NOT_OPTIONS.iter().any(|(s, n, _)| *s == surface && *n == name)
         || table.iter().any(|d| spellings(d, surface).contains(&name))
 }
 
@@ -219,7 +250,15 @@ pub fn c_names() -> Vec<String> {
     out.extend(names(between(&h, "int32_t ggtts_load_with(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_render(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_load_opts(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_load_opts_with_progress(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_load_opts_cancellable(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_render_opts(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_cancel_new(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_cancel_signal(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_cancel_free(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_render_opts_cancellable(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_render_stream_evidence(", ");")));
+    out.extend(names(between(&h, "int32_t ggtts_render_document_evidence(", ");")));
     out.extend(names(between(&h, "int32_t ggtts_capabilities(", ");")));
     out.extend(names(between(&h, "void ggtts_string_free(", ");")));
     out.sort();
@@ -235,6 +274,23 @@ pub fn kotlin_names() -> Vec<String> {
         out.extend(names(list));
     }
     out.extend(names(between(class, "fun render(", "): Pcm")));
+    // The evidence bridge is public to binding conformance even though its arguments are JNI plumbing, not options.
+    out.extend(
+        kotlin_entries(&kt)
+            .into_iter()
+            .filter(|entry| entry.item == "renderStreamEvidence")
+            .flat_map(|entry| entry.names),
+    );
+    out.sort();
+    out.dedup();
+    out
+}
+
+pub fn dart_names() -> Vec<String> {
+    let mut out: Vec<String> = dart_entries(&read("apps/flutter/lib/ggtts.dart"))
+        .into_iter()
+        .flat_map(|entry| entry.names)
+        .collect();
     out.sort();
     out.dedup();
     out
@@ -246,6 +302,7 @@ pub fn surfaces() -> Vec<(Surface, Vec<String>)> {
         (Surface::Python, python_names()),
         (Surface::C, c_names()),
         (Surface::Kotlin, kotlin_names()),
+        (Surface::Dart, dart_names()),
     ]
 }
 
@@ -264,6 +321,7 @@ impl Entry {
             Surface::Python => "python",
             Surface::C => "c",
             Surface::Kotlin => "kotlin",
+            Surface::Dart => "dart",
         };
         if self.names.is_empty() {
             format!("{s} {}:", self.item)
@@ -366,10 +424,86 @@ pub fn kotlin_entries(kt: &str) -> Vec<Entry> {
         .collect()
 }
 
-/// The three binding surfaces as they are in the tree.
+/// The closing parenthesis for an opening parenthesis, accounting for nested callback types.
+fn matching_paren_close(src: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (offset, c) in src[open..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The public constructor and methods of the Dart Ggtts binding, in source order.
+pub fn dart_entries(src: &str) -> Vec<Entry> {
+    let class = between(src, "class Ggtts {", "\n}\n");
+    let mut out = Vec::new();
+    let mut lines = class.lines().peekable();
+    while let Some(line) = lines.next() {
+        if !line.starts_with("  ") || line.starts_with("   ") {
+            continue;
+        }
+        let mut decl = line.trim().to_string();
+        if decl.starts_with("//") || decl.starts_with("final ") {
+            continue;
+        }
+        let Some(open) = decl.find('(') else { continue };
+        while matching_paren_close(&decl, open).is_none() {
+            let Some(next) = lines.next() else {
+                panic!("unclosed Dart declaration: {decl}")
+            };
+            decl.push_str(next.trim());
+        }
+        let close = matching_paren_close(&decl, open).unwrap();
+        let item = param_name(&decl[..open]);
+        if item.starts_with('_') {
+            continue;
+        }
+        out.push(Entry {
+            surface: Surface::Dart,
+            item,
+            names: names(&decl[open + 1..close]),
+        });
+    }
+    out
+}
+
+#[test]
+fn dart_reader_keeps_nested_callback_types_inside_parameter() {
+    let src = "class Ggtts {\n  void renderStream(\n    int handle,\n    String text,\n    Map<String, Object?>? options,\n    bool Function(Pcm) onPiece,\n  ) {}\n}\n";
+    let entries = dart_entries(src);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].line(), "dart renderStream: handle, text, options, onPiece");
+}
+
+#[test]
+fn dart_reader_finds_new_public_calls_and_parameters() {
+    let src = read("apps/flutter/lib/ggtts.dart");
+    let before = dart_entries(&src);
+    let planted = src.replacen(
+        "class Ggtts {",
+        "class Ggtts {\n  int added(int handle, String text) => 0;",
+        1,
+    );
+    assert_ne!(src, planted);
+    let after = dart_entries(&planted);
+    assert_eq!(after.len(), before.len() + 1);
+    assert!(after.iter().any(|e| e.line() == "dart added: handle, text"));
+}
+
+/// The binding surfaces as they are in the tree.
 pub fn binding_entries() -> Vec<Entry> {
     let mut out = pyo3_entries(&read("crates/ggtts-py/src/python.rs"));
     out.extend(header_entries(&read("crates/ggtts-ffi/include/ggtts.h")));
     out.extend(kotlin_entries(&read("android/ggtts/src/main/kotlin/ggtts/Ggtts.kt")));
+    out.extend(dart_entries(&read("apps/flutter/lib/ggtts.dart")));
     out
 }

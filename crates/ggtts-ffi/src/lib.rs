@@ -66,7 +66,10 @@ pub const GGTTS_ERR_BUSY: i32 = binding::ERR_BUSY;
 /// The C-ABI's version: 1 was the surface before [`ggtts_load_with`]; 2 added it and [`GgttsSettings`]; 3 added the
 /// struct's `device`, `cache_dir` and `allow_download` fields; 4 added [`ggtts_load_opts`] and [`ggtts_render_opts`];
 /// 5 added [`ggtts_options_schema`], [`ggtts_capabilities`], [`ggtts_string_free`] and [`ggtts_last_error_key`].
-pub const GGTTS_ABI_VERSION: u32 = 5;
+/// Version 6 adds one-shot cancellation tokens and cancellable stream rendering.
+/// Version 7 adds synchronous load progress notices.
+/// Version 8 adds cooperative load cancellation.
+pub const GGTTS_ABI_VERSION: u32 = 8;
 
 /// The settings [`ggtts_load_with`] takes, by pointer. **Frozen at version 3**: no field is ever added; a new option
 /// goes in an options document ([`ggtts_load_opts`], [`ggtts_render_opts`]). `size` is `sizeof(ggtts_settings)` as the caller's header
@@ -356,6 +359,54 @@ fn cache_for(cache_dir: Option<&str>) -> Result<ggtts_models::Cache, String> {
 /// The engine for a name ([`binding::open`]). The fake engine needs no files. With version-3 settings and engine
 /// `qwen3-tts`, a model or codec not given is the pinned default `ggtts-render` uses, from the same cache and verified
 /// against the same sha256, downloaded only when `allow_download` is set.
+struct LoadFetch<'a> {
+    inner: &'a dyn ggtts_models::Fetch,
+    signal: Option<&'a ggtts_core::cancel::CancelSignal>,
+}
+struct LoadReader {
+    inner: Box<dyn std::io::Read>,
+    signal: ggtts_core::cancel::CancelSignal,
+}
+impl std::io::Read for LoadReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.signal.is_cancelled() {
+            return Err(std::io::Error::other("download cancelled"));
+        }
+        let result = self.inner.read(buf);
+        if self.signal.is_cancelled() {
+            return Err(std::io::Error::other("download cancelled"));
+        }
+        result
+    }
+}
+impl ggtts_models::Fetch for LoadFetch<'_> {
+    fn open(&self, url: &str) -> Result<Box<dyn std::io::Read>, String> {
+        if self.cancelled() {
+            return Err("download cancelled".into());
+        }
+        let reader = self.inner.open(url)?;
+        if self.cancelled() {
+            return Err("download cancelled".into());
+        }
+        Ok(match self.signal {
+            Some(signal) => Box::new(LoadReader {
+                inner: reader,
+                signal: signal.clone(),
+            }),
+            None => reader,
+        })
+    }
+    fn cancelled(&self) -> bool {
+        self.signal.is_some_and(|signal| signal.is_cancelled())
+    }
+}
+
+struct LoadReporting<'a> {
+    wording: &'a binding::Wording,
+    notice: &'a mut dyn FnMut(&str),
+    signal: Option<&'a ggtts_core::cancel::CancelSignal>,
+}
+
 fn open_engine(
     engine: &str,
     model: Option<&str>,
@@ -363,8 +414,13 @@ fn open_engine(
     voice: Option<&str>,
     threads: i32,
     settings: Settings<'_>,
-    wording: &binding::Wording,
+    reporting: LoadReporting<'_>,
 ) -> Result<Held, Fail> {
+    let LoadReporting {
+        wording,
+        notice,
+        signal,
+    } = reporting;
     // The C-ABI refuses a setting the engine does not take before it reads the device; `binding::open` checks again.
     if engine != "qwen3-tts" {
         binding::refuse_settings(engine, settings.speaker, settings.instruction)?;
@@ -373,10 +429,11 @@ fn open_engine(
     let cache_dir = settings.models.and_then(|m| m.cache_dir);
     let cache = || cache_for(cache_dir);
     let http = ggtts_models::Http::default();
+    let fetch = LoadFetch { inner: &http, signal };
     let models = settings.models.map(|m| binding::Models {
         cache: &cache,
         offline: !m.allow_download,
-        fetch: &http,
+        fetch: &fetch,
     });
     let opened = binding::open(
         binding::Request {
@@ -392,7 +449,7 @@ fn open_engine(
             tuning: settings.tuning,
         },
         wording,
-        &mut |_| {},
+        notice,
     )?;
     Ok(opened.held)
 }
@@ -494,45 +551,77 @@ unsafe fn load(
 /// value is a load document, checked whole against the engine before anything is read ([`ggtts_core::options::check`]);
 /// otherwise only a speaker or instruction the engine does not take is refused first, as the struct loads always have.
 fn load_options(o: &Options, default_files: bool, document: bool) -> Result<u64, Fail> {
+    let e = open_options(o, default_files, document, &mut |_| {}, None)?;
+    Ok(register(o, e))
+}
+
+/// The engine a load document names, with the document checked whole against that engine's capabilities: the one
+/// check a document load makes before anything is read or opened. [`open_options`] and the Kotlin binding's test
+/// seam (`kotlin::load_over`) both call it, so the two cannot drift apart.
+pub(crate) fn checked_document_engine(o: &Options) -> Result<String, Fail> {
+    let engine = binding::document_engine(o)?;
+    if let Some(caps) = ggtts_core::capabilities::Capabilities::of(&engine) {
+        ggtts_core::options::check(o, &caps).map_err(refused)?;
+    }
+    Ok(engine)
+}
+
+/// Map a document's cache and offline policy to the shared resolver.
+fn document_models<'a>(options: &Options, cache_dir: Option<&'a str>) -> Models<'a> {
+    Models {
+        cache_dir,
+        allow_download: !options.load.offline,
+    }
+}
+
+/// [`load_options`]' first half: the engine an options value names, opened, not yet registered.
+fn open_options(
+    o: &Options,
+    default_files: bool,
+    document: bool,
+    notice: &mut dyn FnMut(&str),
+    signal: Option<&ggtts_core::cancel::CancelSignal>,
+) -> Result<Held, Fail> {
     let path = |p: &Option<PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned());
     let (model, codec, voice) = (path(&o.load.model), path(&o.load.codec), path(&o.load.voice));
     // "auto" is a document's engine only: a struct load names its engine, and "auto" is no engine there.
     let engine = if document {
-        binding::document_engine(o)?
+        checked_document_engine(o)?
     } else {
         o.load.engine.clone()
     };
-    if document {
-        if let Some(caps) = ggtts_core::capabilities::Capabilities::of(&engine) {
-            ggtts_core::options::check(o, &caps).map_err(refused)?;
-        }
-    }
     let cache_dir = path(&o.load.cache_dir);
     let settings = Settings {
         speaker: o.load.speaker.as_deref().filter(|s| !s.is_empty()),
         instruction: o.render.instruction.as_deref().filter(|s| !s.is_empty()),
         device: o.load.device.as_deref(),
-        models: default_files.then_some(Models {
-            cache_dir: cache_dir.as_deref(),
-            allow_download: !o.load.offline,
-        }),
+        models: default_files.then(|| document_models(o, cache_dir.as_deref())),
         tuning: ggtts_load::Tuning::of(&o.load),
     };
-    let e = open_engine(
+    open_engine(
         &engine,
         model.as_deref(),
         codec.as_deref(),
         voice.as_deref(),
         o.load.threads.unwrap_or(0),
         settings,
-        if document { &DOCUMENT_WORDING } else { &WORDING },
-    )?;
+        LoadReporting {
+            wording: if document { &DOCUMENT_WORDING } else { &WORDING },
+            notice,
+            signal,
+        },
+    )
+}
+
+/// [`load_options`]' second half: an opened engine registered under a new handle, with the load's cache settings
+/// kept for the renders on it.
+fn register(o: &Options, e: Held) -> u64 {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     registry().get_or_insert_with(HashMap::new).insert(id, binding::slot(e));
     load_cache()
         .get_or_insert_with(HashMap::new)
         .insert(id, binding::LoadCache::of(o));
-    Ok(id)
+    id
 }
 
 /// Load an engine from an options document (C-ABI version 4): the `load` section, and `render` defaults every render
@@ -557,15 +646,97 @@ pub unsafe extern "C" fn ggtts_load_opts(options_json: *const c_char, handle: *m
     })
 }
 
+/// Load with synchronous progress notices, valid only for the duration of each callback.
+/// # Safety
+/// Pointers follow ggtts_load_opts; callback and context must remain valid until return.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_load_opts_with_progress(
+    options_json: *const c_char,
+    handle: *mut u64,
+    callback: Option<unsafe extern "C" fn(*const c_char, *mut std::ffi::c_void)>,
+    context: *mut std::ffi::c_void,
+) -> i32 {
+    guard(|| {
+        if handle.is_null() {
+            return Err((GGTTS_ERR_ARG, "handle is NULL".into()));
+        }
+        let json = unsafe { arg(options_json, "options_json") }?;
+        let o = Options::from_json(json).map_err(refused)?;
+        binding::check_document(&o, true)?;
+        let mut notice = |message: &str| forward_load_notice(callback, context, message);
+        let e = open_options(&o, true, true, &mut notice, None)?;
+        unsafe { *handle = register_document(&o, e) };
+        Ok(())
+    })
+}
+
+/// Load with cooperative cancellation and synchronous progress notices.
+/// Blocking network calls and model loading cannot be interrupted.
+/// # Safety
+/// Pointers and callback follow ggtts_load_opts_with_progress.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_load_opts_cancellable(
+    options_json: *const c_char,
+    handle: *mut u64,
+    token: u64,
+    callback: Option<unsafe extern "C" fn(*const c_char, *mut c_void)>,
+    context: *mut c_void,
+) -> i32 {
+    guard(|| {
+        if handle.is_null() {
+            return Err((GGTTS_ERR_ARG, "handle is NULL".into()));
+        }
+        let signal = cancel_registry()
+            .get(token)
+            .ok_or((GGTTS_ERR_HANDLE, "unknown cancellation token".into()))?;
+        if signal.is_cancelled() {
+            return Err((GGTTS_ERR_STOPPED, "model preparation stopped".into()));
+        }
+        let json = unsafe { arg(options_json, "options_json") }?;
+        let o = Options::from_json(json).map_err(refused)?;
+        binding::check_document(&o, true)?;
+        let mut notice = |message: &str| {
+            if !signal.is_cancelled() {
+                forward_load_notice(callback, context, message);
+            }
+        };
+        let opened = open_options(&o, true, true, &mut notice, Some(&signal));
+        if signal.is_cancelled() {
+            return Err((GGTTS_ERR_STOPPED, "model preparation stopped".into()));
+        }
+        let e = opened?;
+        unsafe { *handle = register_document(&o, e) };
+        Ok(())
+    })
+}
+
+fn forward_load_notice(
+    callback: Option<unsafe extern "C" fn(*const c_char, *mut c_void)>,
+    context: *mut c_void,
+    message: &str,
+) {
+    if let Some(cb) = callback {
+        if let Ok(text) = CString::new(message) {
+            unsafe { cb(text.as_ptr(), context) };
+        }
+    }
+}
+
 /// Load the engine a checked load document names and keep its render defaults with the handle: the body of
 /// [`ggtts_load_opts`], which the Kotlin binding's document load calls too.
 fn load_document(o: &Options) -> Result<u64, Fail> {
-    let id = load_options(o, true, true)?;
-    // The render defaults, kept with the handle: the render section, marked as given where the document gave it.
+    let e = open_options(o, true, true, &mut |_| {}, None)?;
+    Ok(register_document(o, e))
+}
+
+/// An opened engine registered as a document load: [`register`], and the document's render defaults kept with the
+/// handle (the render section, marked as given where the document gave it).
+fn register_document(o: &Options, e: Held) -> u64 {
+    let id = register(o, e);
     defaults()
         .get_or_insert_with(HashMap::new)
         .insert(id, binding::render_defaults(o));
-    Ok(id)
+    id
 }
 
 /// Render `text` to mono f32 PCM. Free the buffer with [`ggtts_pcm_free`].
@@ -622,6 +793,111 @@ pub unsafe extern "C" fn ggtts_render_stream(
         doc.marks.sources.insert("output.stream".into(), Source::Document);
         let mut piece = |samples: &[f32], rate: u32| on_piece(user, samples.as_ptr(), samples.len(), rate) == 0;
         render(handle, text, &doc, Some(&mut piece)).map(drop)
+    })
+}
+
+/// Borrowed callback data. Text is UTF-8, not NUL terminated; all pointers expire on return.
+#[repr(C)]
+pub struct StreamEvidence {
+    pub chunk: usize,
+    pub text: *const u8,
+    pub text_len: usize,
+    pub seed: u64,
+    pub draw: u32,
+    pub stop: u32,
+    pub start: usize,
+    pub speech_end: usize,
+    pub samples: *const f32,
+    pub len: usize,
+    pub rate: u32,
+}
+pub type EvidenceFn = extern "C" fn(user: *mut c_void, evidence: *const StreamEvidence) -> i32;
+
+/// Stream raw pieces with kept identity. Evidence is provisional until successful return.
+/// # Safety
+/// text and callback must be valid; user is passed through unchanged.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_render_stream_evidence(
+    handle: u64,
+    text: *const c_char,
+    seed: u64,
+    callback: Option<EvidenceFn>,
+    user: *mut c_void,
+) -> i32 {
+    guard(|| {
+        let text = unsafe { arg(text, "text") }?;
+        let callback = callback.ok_or((GGTTS_ERR_ARG, "callback is NULL".to_string()))?;
+        let mut doc = seed_document(seed);
+        doc.output.stream = Some("raw".into());
+        doc.marks.sources.insert("output.stream".into(), Source::Document);
+        render_evidence(handle, text, &doc, callback, user).map(drop)
+    })
+}
+
+/// Stream using an options document; NULL denotes an empty document.
+/// # Safety
+/// text and callback must be valid; options_json is NULL or valid; user passes through.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_render_document_evidence(
+    handle: u64,
+    text: *const c_char,
+    options_json: *const c_char,
+    callback: Option<EvidenceFn>,
+    user: *mut c_void,
+) -> i32 {
+    guard(|| {
+        let text = unsafe { arg(text, "text") }?;
+        let callback = callback.ok_or((GGTTS_ERR_ARG, "callback is NULL".to_string()))?;
+        let doc = match unsafe { opt_arg(options_json, "options_json") }? {
+            None => Options::default(),
+            Some(json) => Options::from_render_json(json).map_err(refused)?,
+        };
+        binding::check_document(&doc, false)?;
+        render_evidence(handle, text, &doc, callback, user).map(drop)
+    })
+}
+
+fn render_evidence(
+    handle: u64,
+    text: &str,
+    doc: &Options,
+    callback: EvidenceFn,
+    user: *mut c_void,
+) -> Result<(Vec<f32>, u32), Fail> {
+    let base = defaults().get_or_insert_with(HashMap::new).get(&handle).cloned();
+    let mut o = match base {
+        Some(b) => binding::layer_render(&b, doc.clone())?,
+        None => doc.clone(),
+    };
+    if let Some(cache) = load_cache().get_or_insert_with(HashMap::new).get(&handle) {
+        cache.apply(&mut o);
+    }
+    with_engine(handle, |engine, instruction| {
+        if o.render.instruction.is_none() {
+            o.render.instruction = instruction.map(String::from);
+        }
+        let mut sink = |p: ggtts_core::pipeline::StreamEvidencePiece<'_>| {
+            let stop = match p.stop {
+                ggtts_core::engine::Stop::Eos => 0,
+                ggtts_core::engine::Stop::Cap => 1,
+                ggtts_core::engine::Stop::Abort => 2,
+            };
+            let evidence = StreamEvidence {
+                chunk: p.chunk,
+                text: p.text.as_ptr(),
+                text_len: p.text.len(),
+                seed: p.seed,
+                draw: p.draw,
+                stop,
+                start: p.start,
+                speech_end: p.speech_end,
+                samples: p.samples.as_ptr(),
+                len: p.samples.len(),
+                rate: p.sample_rate,
+            };
+            callback(user, &evidence) == 0
+        };
+        binding::render_document_evidence(engine, text, &o, &mut sink)
     })
 }
 
@@ -727,6 +1003,98 @@ pub unsafe extern "C" fn ggtts_render_opts(
             }
         }
         Ok(())
+    })
+}
+
+/// Allocate a one-shot cancellation token. The returned ID is never reused.
+///
+/// # Safety
+/// out must point to writable u64 storage.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_cancel_new(out: *mut u64) -> i32 {
+    guard(|| {
+        if out.is_null() {
+            return Err((GGTTS_ERR_ARG, "cancel output is NULL".into()));
+        }
+        let id = cancel_registry()
+            .create()
+            .ok_or((GGTTS_ERR_ARG, "cancel IDs exhausted".into()))?;
+        unsafe {
+            *out = id;
+        }
+        Ok(())
+    })
+}
+
+static CANCEL_REGISTRY: OnceLock<ggtts_core::cancel::CancelRegistry> = OnceLock::new();
+fn cancel_registry() -> &'static ggtts_core::cancel::CancelRegistry {
+    CANCEL_REGISTRY.get_or_init(Default::default)
+}
+
+/// Signal cancellation without acquiring an engine's render lock.
+#[no_mangle]
+pub extern "C" fn ggtts_cancel_signal(id: u64) -> i32 {
+    guard(|| {
+        if cancel_registry().cancel(id) {
+            Ok(())
+        } else {
+            Err((GGTTS_ERR_HANDLE, "unknown cancellation token".into()))
+        }
+    })
+}
+
+/// Remove a token. An in-flight render retains its own signal clone.
+#[no_mangle]
+pub extern "C" fn ggtts_cancel_free(id: u64) -> i32 {
+    guard(|| {
+        if cancel_registry().remove(id) {
+            Ok(())
+        } else {
+            Err((GGTTS_ERR_HANDLE, "unknown cancellation token".into()))
+        }
+    })
+}
+
+/// Stream a render document with an explicit cancellation token.
+/// Unsupported engines refuse before generation; cancellation is ERR_STOPPED.
+///
+/// # Safety
+/// Strings must be valid NUL-terminated pointers; callback must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn ggtts_render_opts_cancellable(
+    handle: u64,
+    text: *const c_char,
+    options_json: *const c_char,
+    cancel_id: u64,
+    on_piece: Option<PieceFn>,
+    user: *mut c_void,
+) -> i32 {
+    guard(|| {
+        let signal = cancel_registry()
+            .get(cancel_id)
+            .ok_or((GGTTS_ERR_HANDLE, "unknown cancellation token".into()))?;
+        let text = unsafe { arg(text, "text") }?;
+        let doc = match unsafe { opt_arg(options_json, "options_json") }? {
+            None => Options::default(),
+            Some(json) => Options::from_render_json(json).map_err(refused)?,
+        };
+        binding::check_document(&doc, false)?;
+        let callback = on_piece.ok_or((GGTTS_ERR_ARG, "stream callback is NULL".into()))?;
+        let base = defaults().get_or_insert_with(HashMap::new).get(&handle).cloned();
+        let mut o = match base {
+            Some(base) => binding::layer_render(&base, doc)?,
+            None => doc,
+        };
+        if let Some(cache) = load_cache().get_or_insert_with(HashMap::new).get(&handle) {
+            cache.apply(&mut o);
+        }
+        with_engine(handle, |engine, instruction| {
+            if o.render.instruction.is_none() {
+                o.render.instruction = instruction.map(String::from);
+            }
+            let mut sink = |samples: &[f32], rate: u32| callback(user, samples.as_ptr(), samples.len(), rate) == 0;
+            binding::render_document_cancellable(engine, text, &o, &mut sink, &signal).map(|_| ())
+        })
     })
 }
 
@@ -1134,6 +1502,23 @@ mod default_model_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// The options document used by Flutter reaches the shared resolver with
+    /// the same offline bit. A recording fetcher plants a detectable network attempt.
+    #[test]
+    fn document_offline_refuses_missing_default_before_fetch() {
+        let root = empty_cache("document-offline");
+        let fetch = Recording::default();
+        for (offline, expected_calls) in [(true, 0), (false, 1)] {
+            let json = format!(r#"{{"load":{{"offline":{offline}}}}}"#);
+            let options = Options::from_json(&json).unwrap();
+            let models = document_models(&options, Some(root.to_str().unwrap()));
+            let result = default_files(None, None, models, true, &fetch);
+            assert!(result.is_err());
+            assert_eq!(fetch.0.borrow().len(), expected_calls);
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// Downloading off (the default): a file missing from the cache is an error naming the file and its URL, and
     /// nothing is fetched. Downloading on: the pinned URL is fetched, and its failure is the error.
     #[test]
@@ -1224,5 +1609,331 @@ mod default_model_tests {
         let (code, msg) = unsafe { Settings::from_c(&bad) }.unwrap_err();
         assert_eq!(code, GGTTS_ERR_ARG);
         assert_eq!(msg, "settings.allow_download must be 0 or 1, not 2");
+    }
+}
+
+#[cfg(test)]
+mod cancellation_ffi_tests {
+    use super::*;
+    use ggtts_core::cancel::{CancelOutcome, CancelSignal};
+    use ggtts_core::engine::{ChunkRequest, Codes, Engine, EngineError, EngineInfo, Generated, Pcm};
+    use ggtts_core::profile::Profile;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    struct Blocking {
+        inner: ggtts_fake::FakeEngine,
+        started: mpsc::Sender<()>,
+        first: bool,
+    }
+
+    impl Engine for Blocking {
+        fn info(&self) -> &EngineInfo {
+            self.inner.info()
+        }
+        fn profile(&self) -> &Profile {
+            self.inner.profile()
+        }
+        fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError> {
+            self.inner.generate(req)
+        }
+        fn decode(&mut self, codes: &Codes) -> Result<Pcm, EngineError> {
+            self.inner.decode(codes)
+        }
+        fn supports_cancellation(&self) -> bool {
+            true
+        }
+        fn generate_cancellable(
+            &mut self,
+            req: &ChunkRequest<'_>,
+            signal: &CancelSignal,
+        ) -> Result<CancelOutcome<Generated>, EngineError> {
+            if self.first {
+                self.first = false;
+                self.started.send(()).unwrap();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while !signal.is_cancelled() && std::time::Instant::now() < deadline {
+                    std::thread::yield_now();
+                }
+                if !signal.is_cancelled() {
+                    return Err(EngineError("test cancellation timed out".into()));
+                }
+                Ok(CancelOutcome::Stopped)
+            } else {
+                self.inner.generate(req).map(CancelOutcome::Completed)
+            }
+        }
+    }
+
+    extern "C" fn accept(_: *mut c_void, _: *const f32, _: usize, _: u32) -> i32 {
+        0
+    }
+
+    #[test]
+    fn ffi_signal_interrupts_busy_generation_and_next_render_is_independent() {
+        let (started, waiting) = mpsc::channel();
+        let handle = register(
+            &Options::default(),
+            Held::checked(
+                Box::new(Blocking {
+                    inner: ggtts_fake::FakeEngine::default(),
+                    started,
+                    first: true,
+                }),
+                None,
+            ),
+        );
+        let mut statement = std::ptr::null_mut();
+        assert_eq!(unsafe { ggtts_capabilities(handle, &mut statement) }, GGTTS_OK);
+        let json: serde_json::Value =
+            serde_json::from_str(unsafe { CStr::from_ptr(statement) }.to_str().unwrap()).unwrap();
+        assert_eq!(json["cancellable"], true);
+        unsafe { ggtts_string_free(statement) };
+        let mut token = 0;
+        assert_eq!(unsafe { ggtts_cancel_new(&mut token) }, GGTTS_OK);
+        let worker = std::thread::spawn(move || {
+            let text = CString::new("test.").unwrap();
+            unsafe {
+                ggtts_render_opts_cancellable(
+                    handle,
+                    text.as_ptr(),
+                    std::ptr::null(),
+                    token,
+                    Some(accept),
+                    std::ptr::null_mut(),
+                )
+            }
+        });
+        waiting
+            .recv_timeout(Duration::from_secs(5))
+            .expect("render did not start");
+        assert_eq!(ggtts_cancel_signal(token), GGTTS_OK);
+        assert_eq!(ggtts_cancel_free(token), GGTTS_OK);
+        assert_eq!(worker.join().unwrap(), GGTTS_ERR_STOPPED);
+
+        let mut next = 0;
+        assert_eq!(unsafe { ggtts_cancel_new(&mut next) }, GGTTS_OK);
+        assert_ne!(token, next);
+        let text = CString::new("test.").unwrap();
+        assert_eq!(
+            unsafe {
+                ggtts_render_opts_cancellable(
+                    handle,
+                    text.as_ptr(),
+                    std::ptr::null(),
+                    next,
+                    Some(accept),
+                    std::ptr::null_mut(),
+                )
+            },
+            GGTTS_OK
+        );
+        assert_eq!(ggtts_cancel_free(next), GGTTS_OK);
+        assert_eq!(ggtts_free(handle), GGTTS_OK);
+    }
+}
+
+#[cfg(test)]
+mod load_progress_tests {
+    use super::*;
+    use std::ffi::CString;
+
+    unsafe extern "C" fn notice(_message: *const c_char, context: *mut c_void) {
+        unsafe { *(context as *mut usize) += 1 };
+    }
+
+    unsafe extern "C" fn collect(message: *const c_char, context: *mut c_void) {
+        let messages = unsafe { &mut *(context as *mut Vec<String>) };
+        messages.push(unsafe { CStr::from_ptr(message) }.to_str().unwrap().to_owned());
+    }
+
+    #[test]
+    fn actual_downloader_progress_reaches_c_callback() {
+        struct Slow;
+        struct SlowReader(bool);
+        impl std::io::Read for SlowReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.0 {
+                    return Ok(0);
+                }
+                std::thread::sleep(ggtts_models::PROGRESS_EVERY + std::time::Duration::from_millis(100));
+                self.0 = true;
+                buf[0] = b'a';
+                Ok(1)
+            }
+        }
+        impl ggtts_models::Fetch for Slow {
+            fn open(&self, _url: &str) -> Result<Box<dyn std::io::Read>, String> {
+                Ok(Box::new(SlowReader(false)))
+            }
+        }
+        let root = std::env::temp_dir().join(format!("ggtts-progress-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cache = ggtts_models::Cache::new(root.clone());
+        let pin = ggtts_models::Pinned {
+            role: "model",
+            file_name: "model.gguf",
+            url: "https://example.invalid/model",
+            size: 1,
+            sha256: "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
+            licence: "test",
+        };
+        let mut messages = Vec::<String>::new();
+        let context = (&mut messages as *mut Vec<String>).cast();
+        let mut report = |message: &str| forward_load_notice(Some(collect), context, message);
+        cache.download(&pin, &Slow, &mut report).unwrap();
+        assert!(
+            messages.iter().any(|message| message.contains("(100%)")),
+            "{messages:?}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancellation_during_blocked_read_cleans_partial_and_retry_works() {
+        use ggtts_models::Fetch;
+        use std::sync::mpsc;
+        use std::thread;
+        use std::time::Duration;
+
+        struct GateFetch {
+            entered: mpsc::Sender<()>,
+            release: std::sync::Mutex<mpsc::Receiver<()>>,
+        }
+        struct GateReader {
+            entered: mpsc::Sender<()>,
+            release: mpsc::Receiver<()>,
+            done: bool,
+        }
+        impl std::io::Read for GateReader {
+            fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+                if self.done {
+                    return Ok(0);
+                }
+                self.entered.send(()).unwrap();
+                self.release.recv_timeout(Duration::from_secs(3)).unwrap();
+                self.done = true;
+                b[0] = b'a';
+                Ok(1)
+            }
+        }
+        impl Fetch for GateFetch {
+            fn open(&self, _: &str) -> Result<Box<dyn std::io::Read>, String> {
+                let (_, dummy) = mpsc::channel();
+                let receiver = std::mem::replace(&mut *self.release.lock().unwrap(), dummy);
+                Ok(Box::new(GateReader {
+                    entered: self.entered.clone(),
+                    release: receiver,
+                    done: false,
+                }))
+            }
+        }
+        struct Fast;
+        impl Fetch for Fast {
+            fn open(&self, _: &str) -> Result<Box<dyn std::io::Read>, String> {
+                Ok(Box::new(std::io::Cursor::new(vec![b'a'])))
+            }
+        }
+        let root = std::env::temp_dir().join(format!("ggtts-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let pin = ggtts_models::Pinned {
+            role: "model",
+            file_name: "model.gguf",
+            url: "https://example.invalid/model",
+            size: 1,
+            sha256: "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
+            licence: "test",
+        };
+        let signal = ggtts_core::cancel::CancelSignal::new();
+        let worker_signal = signal.clone();
+        let (entered, seen) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let worker_root = root.clone();
+        let worker = thread::spawn(move || {
+            let cache = ggtts_models::Cache::new(worker_root);
+            let source = GateFetch {
+                entered,
+                release: std::sync::Mutex::new(resume),
+            };
+            let fetch = LoadFetch {
+                inner: &source,
+                signal: Some(&worker_signal),
+            };
+            cache.download(&pin, &fetch, &mut |_| {})
+        });
+        seen.recv_timeout(Duration::from_secs(3)).unwrap();
+        signal.cancel();
+        release.send(()).unwrap();
+        assert!(worker.join().unwrap().is_err());
+        let cache = ggtts_models::Cache::new(root.clone());
+        assert!(!cache.path_for(&pin).exists());
+        assert_eq!(
+            std::fs::read_dir(cache.path_for(&pin).parent().unwrap())
+                .unwrap()
+                .count(),
+            0
+        );
+        let fresh = ggtts_core::cancel::CancelSignal::new();
+        let fetch = LoadFetch {
+            inner: &Fast,
+            signal: Some(&fresh),
+        };
+        assert!(cache.download(&pin, &fetch, &mut |_| {}).unwrap().is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancelled_load_never_publishes_handle_and_new_token_works() {
+        let mut token = 0;
+        assert_eq!(unsafe { ggtts_cancel_new(&mut token) }, GGTTS_OK);
+        assert_eq!(ggtts_cancel_signal(token), GGTTS_OK);
+        let input = CString::new(r#"{"load":{"engine":"fake"}}"#).unwrap();
+        let mut handle = 42;
+        assert_eq!(
+            unsafe { ggtts_load_opts_cancellable(input.as_ptr(), &mut handle, token, None, std::ptr::null_mut()) },
+            GGTTS_ERR_STOPPED
+        );
+        assert_eq!(handle, 42);
+        assert_eq!(ggtts_cancel_free(token), GGTTS_OK);
+        let mut fresh = 0;
+        assert_eq!(unsafe { ggtts_cancel_new(&mut fresh) }, GGTTS_OK);
+        assert_eq!(
+            unsafe { ggtts_load_opts_cancellable(input.as_ptr(), &mut handle, fresh, None, std::ptr::null_mut()) },
+            GGTTS_OK
+        );
+        assert_eq!(ggtts_free(handle), GGTTS_OK);
+        assert_eq!(ggtts_cancel_free(fresh), GGTTS_OK);
+    }
+
+    #[test]
+    fn fake_load_with_progress_preserves_success_and_error() {
+        let input = CString::new(r#"{"load":{"engine":"fake"}}"#).unwrap();
+        let mut handle = 0;
+        let mut calls = 0usize;
+        let rc = unsafe {
+            ggtts_load_opts_with_progress(
+                input.as_ptr(),
+                &mut handle,
+                Some(notice),
+                (&mut calls as *mut usize).cast(),
+            )
+        };
+        assert_eq!(rc, GGTTS_OK);
+        assert_ne!(handle, 0);
+        assert_eq!(calls, 0);
+        assert_eq!(ggtts_free(handle), GGTTS_OK);
+        let invalid = CString::new(r#"{"load":{"unknown":1}}"#).unwrap();
+        let mut untouched = 42;
+        let rc = unsafe {
+            ggtts_load_opts_with_progress(
+                invalid.as_ptr(),
+                &mut untouched,
+                Some(notice),
+                (&mut calls as *mut usize).cast(),
+            )
+        };
+        assert_eq!(rc, GGTTS_ERR_ARG);
+        assert_eq!(untouched, 42);
+        assert_eq!(calls, 0);
     }
 }

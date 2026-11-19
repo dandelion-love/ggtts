@@ -13,6 +13,7 @@ package ggtts.demo
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
@@ -21,6 +22,7 @@ import java.io.File
 import java.io.FileNotFoundException
 import java.io.InputStream
 import java.io.OutputStream
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -52,6 +54,9 @@ object Storage {
         val f = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).apply { timeZone = java.util.TimeZone.getDefault() }
         return "ggtts-$engine-${f.format(Date(timeMillis))}.wav"
     }
+
+    /** A read rendered for later: as [readName], FLAC. */
+    fun queuedName(engine: String, timeMillis: Long): String = readName(engine, timeMillis).removeSuffix(".wav") + ".flac"
 
     /** The voice samples among [samples] not yet in Music/ggtts/ ([saved]: the names already there), in order. */
     fun samplesToExport(samples: Collection<String>, saved: Set<String>): List<String> =
@@ -141,7 +146,7 @@ class ContentPaths(context: Context) : PathResolver {
                 part.delete()
             }
         }
-        android.util.Log.i(MainActivity.TAG, "picked file does not seek; loading a copy: $copy")
+        android.util.Log.i(MainActivity.TAG, "model_input outcome=copied")
         return Opened(copy.path)
     }
 
@@ -219,6 +224,7 @@ class ModelsFolder(private val context: Context) {
  * permission, which this app never asks for, so [available] is false there.
  */
 class MusicFolder(context: Context) {
+    private val appPackage = context.applicationContext.packageName
     private val resolver = context.applicationContext.contentResolver
     private val collection: Uri =
         if (Build.VERSION.SDK_INT >= 29) MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
@@ -226,24 +232,158 @@ class MusicFolder(context: Context) {
 
     val available: Boolean get() = Build.VERSION.SDK_INT >= 29
 
-    /** Adds [name] to Music/ggtts/ with the bytes [write] gives; returns its content URI (shareable as it is). */
-    fun save(name: String, write: (OutputStream) -> Unit): Uri {
+    /**
+     * Adds [name] to Music/ggtts/ with the bytes [write] gives, as [mime], with [title] as its MediaStore title when
+     * given; returns its content URI (shareable as it is). It is pending (hidden) until written, and removed if the
+     * write fails, so nothing half-written is ever listed.
+     */
+    fun save(name: String, mime: String = Storage.WAV_MIME, title: String? = null,
+             publish: ((() -> Unit) -> Boolean) = { it(); true }, publication: Publication? = null,
+             write: (OutputStream) -> Unit): Uri {
         check(available) { "saving to Music needs Android 10 or later" }
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-            put(MediaStore.MediaColumns.MIME_TYPE, Storage.WAV_MIME)
+            put(MediaStore.MediaColumns.MIME_TYPE, mime)
             put(MediaStore.MediaColumns.RELATIVE_PATH, Storage.MUSIC_PATH)
             put(MediaStore.MediaColumns.IS_PENDING, 1)
+            title?.let { put(MediaStore.MediaColumns.TITLE, it) }
         }
         val uri = resolver.insert(collection, values) ?: throw FileNotFoundException("MediaStore refused $name")
         try {
             (resolver.openOutputStream(uri) ?: throw FileNotFoundException("cannot write $name")).use(write)
-            resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+            if (!publish {
+                check(resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null) == 1) {
+                    "could not publish $name"
+                }
+            }) throw SaveCancelled()
             return uri
         } catch (e: Exception) {
-            resolver.delete(uri, null, null)
+            if (publication == null) {
+                resolver.delete(uri, null, null)
+            } else {
+                // The provider may have completed the publish update before throwing. Only remove this operation's
+                // exact pending row; on ambiguity retain it for journal reconciliation.
+                val ownedPending = runCatching { exactRows(publication).singleOrNull()?.let { it.first == uri && it.second } == true }
+                    .getOrDefault(false)
+                val removed = ownedPending && runCatching { resolver.delete(uri, null, null) == 1 }.getOrDefault(false)
+                if (e is SaveCancelled && !removed) {
+                    throw IllegalStateException("publication cancellation could not be confirmed; recovery must inspect the journal", e)
+                }
+            }
             throw e
         }
+    }
+
+    /**
+     * Find only this app's MediaStore row with the operation's unique name and owner. Provider failures are Unknown,
+     * never Missing: retrying after an ambiguous query could create a duplicate.
+     */
+    fun locate(publication: Publication): PublicationRecovery {
+        return try {
+        if (!available) return PublicationRecovery.Unknown("Music/ggtts is unavailable")
+        val rows = exactRows(publication)
+        if (rows.size > 1) PublicationRecovery.Unknown("multiple rows match the publication identity")
+        else if (rows.isEmpty()) {
+            if (Build.VERSION.SDK_INT >= 30) PublicationRecovery.Missing
+            else PublicationRecovery.Unknown("Android 10 cannot query pending media rows with certainty")
+        } else {
+            val (uri, pending) = rows.single()
+            if (pending) PublicationRecovery.Pending(uri.toString())
+            else if (!matches(uri, publication)) PublicationRecovery.Unknown("the published media row does not have the journaled bytes")
+            else PublicationRecovery.Published(uri.toString())
+        }
+        } catch (t: Throwable) {
+            PublicationRecovery.Unknown(t.message ?: t.javaClass.simpleName)
+        }
+    }
+
+    /** Finish a complete owned pending row; remove only an exact owned partial row. */
+    fun recoverPending(publication: Publication, uriText: String): PublicationRecovery {
+        val uri = Uri.parse(uriText)
+        return try {
+            val rows = exactRows(publication)
+            val row = rows.singleOrNull() ?: return PublicationRecovery.Unknown("pending row identity is no longer unique")
+            if (row.first != uri || !row.second) return PublicationRecovery.Unknown("row is no longer the owned pending item")
+            if (matches(uri, publication)) {
+                val updated = resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+                if (updated == 1) PublicationRecovery.Published(uri.toString())
+                else PublicationRecovery.Unknown("could not finish publishing the pending row")
+            } else {
+                // The unique row was inserted by this operation (name + token marker) but its write was cut short.
+                // Delete that one pending URI only; never sweep the folder.
+                if (resolver.delete(uri, null, null) == 1) PublicationRecovery.Missing
+                else PublicationRecovery.Unknown("could not remove the exact incomplete pending row")
+            }
+        } catch (t: Throwable) {
+            PublicationRecovery.Unknown(t.message ?: t.javaClass.simpleName)
+        }
+    }
+
+    private fun exactRows(publication: Publication): List<Pair<Uri, Boolean>> {
+        val selection = "${MediaStore.MediaColumns.RELATIVE_PATH} = ? AND ${MediaStore.MediaColumns.DISPLAY_NAME} = ? AND ${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ?"
+        val args = arrayOf(Storage.MUSIC_PATH, publication.name, appPackage)
+        val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.IS_PENDING)
+        val rows = mutableListOf<Pair<Uri, Boolean>>()
+        val cursor: Cursor? = if (Build.VERSION.SDK_INT >= 30) {
+            val query = android.os.Bundle().apply {
+                putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
+                putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args)
+                putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+            }
+            resolver.query(collection, projection, query, null)
+        } else {
+            resolver.query(collection, projection, selection, args, null)
+        }
+        cursor ?: throw FileNotFoundException("MediaStore query returned no cursor")
+        cursor.use {
+            val idColumn = it.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+            val pendingColumn = it.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_PENDING)
+            while (it.moveToNext()) {
+                val uri = android.content.ContentUris.withAppendedId(collection, it.getLong(idColumn))
+                rows += uri to (it.getInt(pendingColumn) != 0)
+            }
+        }
+        return rows
+    }
+
+    private fun matches(uri: Uri, publication: Publication): Boolean {
+        val digest = MessageDigest.getInstance("SHA-256")
+        var count = 0L
+        val input = resolver.openInputStream(uri) ?: throw FileNotFoundException("cannot read $uri")
+        input.use { stream ->
+            val buffer = ByteArray(8192)
+            while (true) {
+                val n = stream.read(buffer)
+                if (n < 0) break
+                digest.update(buffer, 0, n)
+                count += n
+            }
+        }
+        val hash = digest.digest().joinToString("") { "%02x".format(it) }
+        return count == publication.byteCount && hash == publication.sha256
+    }
+
+    /**
+     * Remove this app's items in Music/ggtts/ still pending: a save cut off by the process being killed (a pending
+     * item is otherwise kept, hidden, for about a week). Returns how many. Android 11 and later can list pending items.
+     */
+    fun deletePending(): Int {
+        if (Build.VERSION.SDK_INT < 30) return 0
+        var n = 0
+        runCatching {
+            val args = android.os.Bundle().apply {
+                putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION,
+                    "${MediaStore.MediaColumns.RELATIVE_PATH} = ? AND ${MediaStore.MediaColumns.IS_PENDING} = 1")
+                putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, arrayOf(Storage.MUSIC_PATH))
+                putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+            }
+            resolver.query(collection, arrayOf(MediaStore.MediaColumns._ID), args, null)?.use { c ->
+                while (c.moveToNext()) {
+                    if (resolver.delete(android.content.ContentUris.withAppendedId(collection, c.getLong(0)), null, null) > 0) n++
+                }
+            }
+        }
+        return n
     }
 
     /** The names this app has already put in Music/ggtts/. */
@@ -260,11 +400,15 @@ class MusicFolder(context: Context) {
     }
 
     companion object {
-        /** A chooser that shares [uri] (audio) with the app the user picks, which may read it and nothing else. */
-        fun shareIntent(uri: Uri): Intent = Intent.createChooser(
-            Intent(Intent.ACTION_SEND).setType(Storage.WAV_MIME).putExtra(Intent.EXTRA_STREAM, uri)
+        /**
+         * A chooser that shares [uri] (audio of [mime], a content URI, never a path) with the app the user picks, which
+         * is granted read access to that one item and nothing else. [title] is the chooser's title, in the phone's
+         * language.
+         */
+        fun shareIntent(uri: Uri, title: String, mime: String = Storage.WAV_MIME): Intent = Intent.createChooser(
+            Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_STREAM, uri)
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
-            "Share the read",
+            title,
         )
     }
 }

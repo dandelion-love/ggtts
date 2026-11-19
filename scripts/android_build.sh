@@ -170,6 +170,51 @@ print("\n".join(zipfile.ZipFile(io.BytesIO(z.read("classes.jar"))).namelist()))'
         "and its licence notices and build record under META-INF/ggtts/"
 }
 
+# Inspect the actual packaged ELF, not a build-tree or staging copy. Duplicate ZIP names are ambiguous.
+check_apk_evidence_jni() ( # APK
+    local tmp lib symbols header
+    tmp=$(mktemp -d) || return 1
+    trap 'rm -rf -- "$tmp"' EXIT
+    lib="$tmp/libggtts_ffi.so"
+    if ! python3 - "$1" "$lib" <<'PYJNI'
+import sys, zipfile
+name = "lib/arm64-v8a/libggtts_ffi.so"
+try:
+    with zipfile.ZipFile(sys.argv[1]) as apk:
+        matches = [i for i in apk.infolist() if i.filename == name]
+        if len(matches) != 1 or matches[0].is_dir():
+            raise ValueError("expected exactly one packaged JNI library")
+        with apk.open(matches[0]) as source, open(sys.argv[2], "wb") as target:
+            while True:
+                block = source.read(1024 * 1024)
+                if not block:
+                    break
+                target.write(block)
+except (OSError, ValueError, zipfile.BadZipFile, RuntimeError) as exc:
+    print("android_build: cannot extract packaged JNI library: " + str(exc), file=sys.stderr)
+    sys.exit(1)
+PYJNI
+    then return 1; fi
+    if ! header=$("$(llvm_bin llvm-readelf)" -h "$lib"); then
+        say "cannot inspect packaged JNI ELF in $1"
+        return 1
+    fi
+    if ! grep -Eq 'Class: +ELF64' <<<"$header" || ! grep -Eq 'Machine: +AArch64' <<<"$header" ||
+       ! grep -Eq 'Type: +DYN' <<<"$header"; then
+        say "packaged JNI library is not an ELF64 AArch64 shared ELF: $1"
+        return 1
+    fi
+    if ! symbols=$("$(llvm_bin llvm-nm)" -D --defined-only "$lib"); then
+        say "cannot read packaged JNI exports in $1"
+        return 1
+    fi
+    if ! awk '$2 == "T" && $3 == "Java_ggtts_Native_renderStreamEvidence" { found=1 } END { exit !found }' <<<"$symbols"; then
+        say "$1 lacks defined JNI export Java_ggtts_Native_renderStreamEvidence"
+        return 1
+    fi
+    say "$1 packages the AArch64 JNI evidence export"
+)
+
 # Refuse unless APK holds the Android library for arm64-v8a and the library's licence notices, and refuse any model
 # file in it, by name or by content: an entry named like weights, or any entry that starts with GGUF's magic bytes.
 check_apk() { # APK
@@ -190,7 +235,26 @@ print(" ".join(i.filename for i in z.infolist() if not i.is_dir() and z.open(i).
         say "$1 lacks:$missing"
         return 1
     fi
+    check_apk_evidence_jni "$1" || return 1
     say "$1 holds lib/arm64-v8a/libggtts_ffi.so and the licence notices, and no model file"
+}
+
+# Refuse a manifest that asks for the internet permission. The demo's privacy statement says it collects no data
+# because it cannot send any; this holds it to the merged manifest (the APK's, dependencies included), parsed as XML,
+# so a comment naming the permission does not trip it and a dependency that adds it does.
+check_permissions() { # MANIFEST
+    python3 - "$1" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+NAME = "{http://schemas.android.com/apk/res/android}name"
+root = ET.parse(sys.argv[1]).getroot()
+asked = [e.get(NAME) for tag in ("uses-permission", "uses-permission-sdk-23") for e in root.iter(tag)]
+if "android.permission.INTERNET" in asked:
+    print(f"android_build: {sys.argv[1]} asks for android.permission.INTERNET; the privacy statement says it does not",
+          file=sys.stderr)
+    sys.exit(1)
+print(f"android_build: {sys.argv[1]} asks for no internet permission ({len(asked)} permissions)")
+PY
 }
 
 # A copy of zip IN at OUT with ENTRY removed (MODE drop) or added with GGUF's magic bytes (MODE add); with MODE
@@ -198,7 +262,8 @@ print(" ".join(i.filename for i in z.infolist() if not i.is_dir() and z.open(i).
 plant_zip() { # MODE IN OUT ENTRY
     python3 - "$@" <<'EOF'
 import io, sys, zipfile
-mode, src, dst, entry = sys.argv[1:]
+mode, src, dst, entry = sys.argv[1:5]
+replacement = sys.argv[5] if len(sys.argv) > 5 else None
 
 def without(data, name):
     out = io.BytesIO()
@@ -213,6 +278,9 @@ with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w") as zout:
         data = zin.read(item.filename)
         if mode == "drop" and item.filename == entry:
             continue
+        if mode == "replace" and item.filename == entry:
+            with open(replacement, "rb") as f:
+                data = f.read()
         if mode == "drop-jar" and item.filename == "classes.jar":
             data = without(data, entry)
         zout.writestr(item, data)
@@ -339,6 +407,11 @@ app() { # OUT_DIR
     cp "$root/android/demo/build/outputs/apk/debug/demo-debug.apk" "$out/ggtts-demo-debug.apk"
     check_aar "$out/ggtts.aar"
     check_apk "$out/ggtts-demo-debug.apk"
+    python3 "$root/scripts/test_android_apk_evidence.py" -v
+    local merged
+    merged=$(find "$root/android/demo/build/intermediates" -path '*merged_manifest*debug*' -name AndroidManifest.xml | head -1)
+    [ -n "$merged" ] || { say "no merged manifest under android/demo/build/intermediates"; return 1; }
+    check_permissions "$merged"
 
     # Planted: each check must refuse what it exists to refuse.
     local p="$tdir/android-planted"
@@ -354,11 +427,30 @@ app() { # OUT_DIR
         say "planted: an APK carrying a GGUF under another name passed"
         return 1
     fi
+    # A valid arm64 JNI library with an older entry point but no evidence entry point.
+    echo 'void Java_ggtts_Native_loadWithModels(void) {}' > "$p/no-evidence.c"
+    "$(llvm_bin clang)" --target="$target$api" -shared -nostdlib -o "$p/no-evidence.so" "$p/no-evidence.c"
+    plant_zip replace "$out/ggtts-demo-debug.apk" "$p/no-evidence.apk" \
+        lib/arm64-v8a/libggtts_ffi.so "$p/no-evidence.so"
+    if check_apk "$p/no-evidence.apk" 2>"$p/no-evidence.err"; then
+        say "planted: an APK without the JNI evidence export passed"
+        return 1
+    fi
+    grep -Fq 'lacks defined JNI export Java_ggtts_Native_renderStreamEvidence' "$p/no-evidence.err" || {
+        cat "$p/no-evidence.err" >&2
+        say "planted APK was refused for the wrong reason"
+        return 1
+    }
+    sed 's#<application#<uses-permission android:name="android.permission.INTERNET" />\n    <application#' "$merged" > "$p/internet.xml"
+    if check_permissions "$p/internet.xml" 2>/dev/null; then say "planted: a manifest asking for INTERNET passed"; return 1; fi
+    sed 's#<application#<!-- not android.permission.INTERNET -->\n    <application#' "$merged" > "$p/comment.xml"
+    check_permissions "$p/comment.xml" >/dev/null || { say "planted: a comment naming INTERNET was refused"; return 1; }
     echo 'int ggtts_planted(void) { return 0; }' > "$p/planted.c"
     "$(llvm_bin clang)" --target="$target$api" -shared -Wl,-z,max-page-size=4096 -o "$p/lib4k.so" "$p/planted.c"
     if check_align "$p/lib4k.so" 2>/dev/null; then say "planted: a 4 KB-aligned library passed"; return 1; fi
     say "planted: an AAR without the library, an AAR without its notices, an APK with a .gguf, an APK with GGUF bytes" \
-        "under another name and a 4 KB-aligned library are all refused"
+        "under another name, a manifest asking for INTERNET and a 4 KB-aligned library are all refused (a comment" \
+        "naming INTERNET is not)"
     say "built $out/ggtts.aar and $out/ggtts-demo-debug.apk"
 }
 

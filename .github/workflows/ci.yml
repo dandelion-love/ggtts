@@ -1046,3 +1046,51 @@ jobs:
           cd "$RUNNER_TEMP"
           python -c "import ggtts; print(ggtts.VERSION, ggtts.COMMIT, ggtts.ENGINES)"
           python -m pytest -v -rs "$GITHUB_WORKSPACE/crates/ggtts-py/tests"
+
+  flutter-packaging:
+    name: Flutter packaging (${{ matrix.platform }})
+    # Opt in when hosted minutes are available. Local builds remain the current evidence.
+    if: ${{ vars.GGTTS_FLUTTER_CI == 'enabled' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-android
+            os: ubuntu-latest
+          - platform: windows
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Install pinned Flutter SDK
+        shell: bash
+        run: |
+          git clone --filter=blob:none https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          git -C "$RUNNER_TEMP/flutter" checkout ab2912035e160d9cad6306df307576da6128ebdb
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - name: Linux and Android toolchains
+        if: matrix.platform == 'linux-android'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev ninja-build pkg-config libgtk-3-dev liblzma-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+          rustup target add aarch64-linux-android x86_64-linux-android
+          cargo install cargo-ndk --version 3.5.4 --locked
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'ndk;27.2.12479018'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - name: Build Linux and Android
+        if: matrix.platform == 'linux-android'
+        shell: bash
+        run: |
+          apps/flutter/tool/build_app.sh linux
+          apps/flutter/tool/build_app.sh android
+      - name: Build Windows
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          flutter config --enable-windows-desktop
+          ./apps/flutter/tool/build_windows.ps1

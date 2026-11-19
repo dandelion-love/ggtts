@@ -13,7 +13,10 @@
  *   2  ggtts_load_with and ggtts_settings (a Qwen3-TTS speaker and style instruction), ggtts_abi_version
  *   3  ggtts_settings.device, .cache_dir and .allow_download (the device; the default model files)
  *   4  ggtts_load_opts and ggtts_render_opts (options documents); ggtts_settings is frozen at version 3
- *   5  ggtts_options_schema, ggtts_capabilities and ggtts_string_free, ggtts_last_error_key */
+ *   5  ggtts_options_schema, ggtts_capabilities and ggtts_string_free, ggtts_last_error_key
+ *   6  one-shot cancellation tokens and ggtts_render_opts_cancellable
+ *   7  ggtts_load_opts_with_progress
+ *   8  ggtts_load_opts_cancellable */
 #ifndef GGTTS_H
 #define GGTTS_H
 
@@ -24,7 +27,7 @@
 extern "C" {
 #endif
 
-#define GGTTS_ABI_VERSION 5
+#define GGTTS_ABI_VERSION 8
 
 #define GGTTS_OK 0
 #define GGTTS_ERR_ARG (-1)
@@ -94,6 +97,43 @@ int32_t ggtts_load_with(const char *engine, const char *model, const char *codec
 uint32_t ggtts_abi_version(void);
 int32_t ggtts_render(uint64_t handle, const char *text, uint64_t seed, float **pcm, size_t *len, uint32_t *rate);
 int32_t ggtts_render_stream(uint64_t handle, const char *text, uint64_t seed, ggtts_piece_fn on_piece, void *user);
+/* Callback pointers are borrowed only during the callback. Text is UTF-8 and is
+ * not NUL-terminated. Speech is [start, speech_end); the delivered piece,
+ * including its trailing gap, is [start, start + len). Stop: 0 EOS, 1 cap.
+ * Evidence is provisional until the render returns GGTTS_OK; nonzero callback
+ * return stops the render with GGTTS_ERR_STOPPED. */
+typedef struct ggtts_stream_evidence {
+    size_t chunk;
+    const uint8_t *text;
+    size_t text_len;
+    uint64_t seed;
+    uint32_t draw;
+    uint32_t stop;
+    size_t start;
+    size_t speech_end;
+    const float *samples;
+    size_t len;
+    uint32_t rate;
+} ggtts_stream_evidence;
+typedef int32_t (*ggtts_evidence_fn)(void *user, const ggtts_stream_evidence *evidence);
+int32_t ggtts_render_stream_evidence(uint64_t handle, const char *text, uint64_t seed,
+                                    ggtts_evidence_fn callback, void *user);
+int32_t ggtts_render_document_evidence(uint64_t handle, const char *text, const char *options_json,
+                                      ggtts_evidence_fn callback, void *user);
+/* One-shot cancellation tokens are independent of the engine lock. Freeing
+ * the token prevents new lookups; an in-flight render retains its own clone.
+ * A stopped render returns GGTTS_ERR_STOPPED. Backends that cannot poll return
+ * GGTTS_ERR_ARG before generation. A current graph or external operation may
+ * finish before it observes cancellation; no fixed stop latency is promised.
+ * Qwen polls between frame and subtalker graphs; other engines currently refuse.
+ * Input preparation, prefill, active graphs and callbacks are not preempted.
+ * Pieces delivered before cancellation cannot be retracted. A callback already
+ * in progress may complete; no later piece is delivered after stop is observed. */
+int32_t ggtts_cancel_new(uint64_t *out);
+int32_t ggtts_cancel_signal(uint64_t token);
+int32_t ggtts_cancel_free(uint64_t token);
+int32_t ggtts_render_opts_cancellable(uint64_t handle, const char *text,
+    const char *options_json, uint64_t token, ggtts_piece_fn on_piece, void *user);
 void ggtts_pcm_free(float *pcm, size_t len);
 int32_t ggtts_free(uint64_t handle);
 const char *ggtts_last_error(void);
@@ -111,6 +151,19 @@ const char *ggtts_last_error(void);
  * allow_download, negated). */
 int32_t ggtts_load_opts(const char *options_json, uint64_t *handle);
 
+/* Synchronous load notice. The message is valid only during the callback.
+ * The callback and context must remain valid until the load returns. */
+typedef void (*ggtts_load_progress_fn)(const char *message, void *context);
+int32_t ggtts_load_opts_with_progress(const char *options_json, uint64_t *handle,
+                                      ggtts_load_progress_fn callback, void *context);
+
+/* Stopped returns GGTTS_ERR_STOPPED if cancellation is observed before the
+ * load is registered. A cancellation racing the final check may lose to
+ * successful registration. A blocked network call or model load can delay
+ * stopping; a verified file may remain cached if publication wins a race. */
+int32_t ggtts_load_opts_cancellable(const char *options_json, uint64_t *handle,
+                                    uint64_t token, ggtts_load_progress_fn callback, void *context);
+
 /* ggtts_render_opts: render text with a render document, laid over the load's render defaults; NULL is the empty
  * document. Without "output": {"stream": "raw"} it is a whole read: on_piece must be NULL, and pcm, len and rate get
  * the samples (free them with ggtts_pcm_free). With it, each kept chunk goes to on_piece before the level step, as
@@ -127,7 +180,7 @@ int32_t ggtts_render_opts(uint64_t handle, const char *text, const char *options
 const char *ggtts_options_schema(void);
 
 /* ggtts_capabilities: the capability statement of a loaded engine, as JSON in *json (free it with ggtts_string_free):
- *   {"format": "ggtts-capabilities/1", "family": "qwen3-tts", "instruction": true, "no_instruction_why": null,
+ *   {"format": "ggtts-capabilities/1", "cancellable": true, "family": "qwen3-tts", "instruction": true, "no_instruction_why": null,
  *    "steering": true, "speakers": true, "speaker_names": ["...", ...], "devices": ["cpu", "cuda"],
  *    "hooks": {"p_stop": true, "logits": true}, "step_events": true}
  * speaker_names are the loaded model's (empty for an engine without speakers); no_instruction_why says why a

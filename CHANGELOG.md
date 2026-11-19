@@ -11,6 +11,43 @@ that a merge places under a released heading is caught.
 
 ## Unreleased
 
+### Fixed
+
+- Concurrent model downloads no longer remove one anothers active temporary files during creation or publication.
+
+- **Prepared voice JSON passed as a file descriptor is recognized by content**, so Android picked files no longer
+  need a `.json` filename. Non-seekable descriptors and non-object JSON are refused.
+
+
+### Added
+
+- **Declared voice metadata:** a shared reader recognizes language tags and display names in model GGUFs and prepared voice JSON. Kitten conversion and preparation accept optional `--language` and `--name`; `ggtts-gguf-voices` writes per-speaker metadata to a new talker GGUF while preserving tensor data. Missing declarations remain absent. See `docs/voice-keys.md`.
+
+- **`ggtts-render --codes FILE` (`observe.codes`) writes every kept chunk's codec tokens**, all codebooks (16 on
+  Qwen3-TTS), one `ggtts-codes/1` JSON line per chunk, on `--text` and `--story` alike and on every device. Writing
+  them changes no sample. A line holds the `frames`, `codebooks` and `codes` keys the Qwen3-TTS decode example reads,
+  so a chunk can be decoded again on its own (`docs/codes.md`). `ggtts-book` and the bindings refuse it: they write
+  no codes file.
+- **`ggtts-render --story` and `ggtts-book render` take `--edge-s X`** (`render.edge_s`): the seconds of silence kept
+  at each edge of a chunk, which the bindings already took in an options document. **`ggtts-render --story` takes
+  `--seed-salt S`** (`render.seed_salt`), the salt each binding's seed already was, so a story's seeds can be moved
+  together from the command line. `--text` refuses both: it renders at `--seed` and keeps its draw whole. A book
+  keeps its seeds from `--seed-root`, and records its edge in each chapter manifest: a chapter resumed under
+  another `--edge-s` is rendered again, its manifest refused naming the edge.
+- **A binding renders one chunk at an exact seed: `render.seed` in a render document** (the C ABI's
+  `ggtts_render_opts`, Python's `options=`, Kotlin's `options`). The text is one chunk, drawn once at that seed and
+  kept whole, as `ggtts-render --text TEXT --seed S` renders it, so the samples are the same, and a caller that loaded
+  the engine once pays no process, model load or hash per chunk. `render.seed` was refused in a render document
+  before; it is refused with `seed_salt` (the render call's own seed), `redraw` or `edge_s`, and in a load document,
+  each under `render.seed`, and an empty text under `render.text`.
+- **A steering scale per layer: `--steer-scales` (`render.steer_scales`).** One scale per layer of `--steer-layers`,
+  in its order, so a file of unit-length directions can carry the per-layer push lengths that unit-vector steering
+  methods use; at `s × |v_L|` it renders what `--steer-scale s` renders over the unnormalised vectors. Every front
+  end that takes steering takes it. It is refused when its length differs from `--steer-layers`, when a value is not
+  finite, without `--steer-layers`, and together with `--steer-scale`. A render with it records `scales` in place of
+  `scale` in its `steer` record (the trace header, the timing and duration reports, a book's manifest); the three
+  schemas allow it, within their format versions.
+
 ## v0.1.0-rc.13 (2026-11-15)
 
 This pre-release is cut from `rc`. Its CUDA promotion gate (`scripts/rc_gate.sh`) has not run yet; the CPU checks in CI passed.

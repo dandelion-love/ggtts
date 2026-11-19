@@ -7,6 +7,7 @@
 //!
 //! An engine also declares its [`Profile`]: the protocol numbers the story path renders its output with.
 
+use crate::cancel::{CancelOutcome, CancelSignal};
 use crate::capabilities::Capabilities;
 use crate::hooks::Hooks;
 use crate::profile::Profile;
@@ -142,6 +143,10 @@ pub trait Engine {
     fn capabilities(&self) -> Capabilities {
         Capabilities::none(&self.info().family)
     }
+    /// Whether this engine supports selected talker-layer hooks.
+    fn supports_layer_hooks(&self) -> bool {
+        false
+    }
     /// The named speakers the loaded model has, as a speaker setting names them; empty for an engine or model with
     /// none (the default). [`crate::capabilities::statement`] reports them.
     fn speakers(&self) -> Vec<String> {
@@ -149,6 +154,19 @@ pub trait Engine {
     }
     /// Text to codec tokens for one chunk.
     fn generate(&mut self, req: &ChunkRequest<'_>) -> Result<Generated, EngineError>;
+    /// Whether this loaded engine can poll a cancellation signal during generation.
+    fn supports_cancellation(&self) -> bool {
+        false
+    }
+    /// Opt-in generation with a one-shot signal. Engines that cannot poll
+    /// during generation return Unsupported without starting work.
+    fn generate_cancellable(
+        &mut self,
+        _req: &ChunkRequest<'_>,
+        _signal: &CancelSignal,
+    ) -> Result<CancelOutcome<Generated>, EngineError> {
+        Ok(CancelOutcome::Unsupported)
+    }
     /// [`generate`](Engine::generate), emitting a `step` event per frame into `events` when its level is above 0.
     /// The tokens must be identical to `generate`'s at every level: an instrument reads values the engine already
     /// has and never draws from the sampler's stream ([`check_trace_identity`](crate::trace::check_trace_identity)).
@@ -168,7 +186,7 @@ pub trait Engine {
         events: &mut dyn Events,
         hooks: &mut Hooks,
     ) -> Result<Generated, EngineError> {
-        if hooks.wants().any() {
+        if hooks.wants().any() || !hooks.layers().is_empty() {
             return Err(EngineError(format!(
                 "the {} engine exports nothing to tensor hooks",
                 self.info().family

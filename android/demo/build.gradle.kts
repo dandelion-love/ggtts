@@ -6,17 +6,21 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val recoveryTestBuild = providers.gradleProperty("ggtts.recoveryTest").orNull == "true"
+
 android {
     namespace = "ggtts.demo"
     compileSdk = 35
     ndkVersion = "27.2.12479018"
 
     defaultConfig {
-        applicationId = "ggtts.demo"
+        applicationId = if (recoveryTestBuild) "ggtts.demo.recovery" else "ggtts.demo"
         minSdk = 24
         targetSdk = 35
         versionCode = 1
         versionName = "0.1"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testApplicationId = if (recoveryTestBuild) "ggtts.demo.recovery.test" else "ggtts.demo.recoverytest"
         ndk { abiFilters += "arm64-v8a" }
     }
 
@@ -30,10 +34,17 @@ android {
     }
 }
 
-// AboutTest reads the manifest to hold the screen's "no internet permission" sentence to it. Declared as an input so
-// a manifest change re-runs the tests instead of reusing an up-to-date result.
+// AboutTest reads the manifest to hold the screen's "no internet permission" sentence to it, and the screen's tests
+// read MainActivity.kt's source. Declared as inputs so a change to either re-runs the tests instead of reusing an
+// up-to-date result.
 tasks.withType<Test>().configureEach {
     inputs.file("src/main/AndroidManifest.xml").withPathSensitivity(PathSensitivity.RELATIVE)
+    // WordsTest and AboutTest read the string resources and the screen's source, which a code change alone would miss.
+    inputs.dir("src/main/res/values").withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.dir("src/main/res/values-zh-rHK").withPathSensitivity(PathSensitivity.RELATIVE)
+    // IncomingTest reads MainActivity's onCreate to hold its re-creation guard to it (Launch.takesIntent), and
+    // MediaControlsTest reads its showStatus and setBusy to hold the Pause button's refresh to them.
+    inputs.file("src/main/kotlin/ggtts/demo/MainActivity.kt").withPathSensitivity(PathSensitivity.RELATIVE)
 }
 
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
@@ -44,4 +55,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("junit:junit:4.13.2")
 }

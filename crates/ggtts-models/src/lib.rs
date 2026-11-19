@@ -18,11 +18,13 @@
 //!   until the sidecar is deleted. The cache is ggtts's own directory, so that edit would have to be deliberate.
 //! * **Two processes at once** each download to their own temporary name, and the rename is atomic, so a lost race
 //!   costs a second download, never a corrupt file.
-//! * **A temporary file is locked by its writer** for the whole download, with no timestamp involved: on Unix an
-//!   exclusive `flock` (through `libc`, already linked), on Windows a share mode without `FILE_SHARE_DELETE`, so no
-//!   other process can delete it while it is open. A later run removes a temporary file only when it can take that
-//!   lock (Unix) or delete it (Windows), which is when its writer has exited: a process killed mid-download (Ctrl-C
-//!   included) leaves its partial file until the next resolve of that file, which removes it at once.
+//! * **Each download holds a separate guard** before staging appears until publication finishes: Unix uses
+//!   `flock`; Windows opens the guard without sharing. Cleanup checks that guard before touching the partial or its
+//!   staging name, including the Windows close-before-rename window. A dead writer's partial is removed on the next
+//!   resolve. A crash before a partial appears or after publication can leave a small orphan guard, which is not
+//!   removed automatically. Concurrent processes using older library versions do not honor these guards.
+//! * **On local filesystems with working process locks**, active guarded downloads are not removed by another current
+//!   process. Filesystems that do not implement those locking semantics are not covered by this guarantee.
 //! * **A download that stops sending** fails after [`READ_IDLE`] without a byte, naming the file and how much arrived.
 //!   Progress is reported every [`PROGRESS_EVERY`].
 
@@ -175,6 +177,10 @@ impl ModelFile {
 /// Opens a URL for reading. The real one is [`Http`]; tests can serve their own.
 pub trait Fetch {
     fn open(&self, url: &str) -> Result<Box<dyn Read>, String>;
+    /// Cooperative cancellation, checked before verified file publication.
+    fn cancelled(&self) -> bool {
+        false
+    }
 }
 
 /// HTTPS over ureq with rustls. Redirects are followed (the hub redirects to its CDN), but never out of HTTPS: every
@@ -263,6 +269,94 @@ fn unique_suffix() -> String {
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     )
+}
+
+/// A separate lock survives staging and the Windows close-before-rename window.
+/// Its name is unique to the partial and never reused.
+struct DownloadGuard {
+    file: Option<File>,
+    path: PathBuf,
+}
+
+fn guard_path(partial: &Path) -> PathBuf {
+    let mut name = partial.file_name().unwrap_or_default().to_os_string();
+    name.push(".guard");
+    partial.with_file_name(name)
+}
+
+impl DownloadGuard {
+    fn create(partial: &Path) -> std::io::Result<Self> {
+        let path = guard_path(partial);
+        let mut options = fs::OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.share_mode(0);
+        }
+        let file = options.open(&path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                let error = std::io::Error::last_os_error();
+                let _ = fs::remove_file(&path);
+                return Err(error);
+            }
+        }
+        Ok(Self { file: Some(file), path })
+    }
+}
+
+impl Drop for DownloadGuard {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Hold the guard while deleting a partial. Old partials without a guard retain
+/// the existing data-file lock check. The writer creates its guard before the
+/// partial appears, so a missing guard cannot describe a new live writer.
+fn remove_guarded_partial(path: &Path) -> bool {
+    let mut base = path.to_path_buf();
+    if path
+        .file_name()
+        .is_some_and(|n| n.to_string_lossy().ends_with(".locking"))
+    {
+        let name = path.file_name().unwrap().to_string_lossy();
+        base = path.with_file_name(name.strip_suffix(".locking").unwrap());
+    }
+    let guard = guard_path(&base);
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0);
+    }
+    let lock = match options.open(&guard) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return remove_if_abandoned(path),
+        Err(_) => return false,
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return false;
+        }
+    }
+    let removed = fs::remove_file(path).is_ok();
+    drop(lock);
+    // The data and its staging name share a guard. Do not remove the guard
+    // while either still exists: another cleanup may be examining it.
+    let mut staging = base.as_os_str().to_os_string();
+    staging.push(".locking");
+    if !base.exists() && !Path::new(&staging).exists() {
+        let _ = fs::remove_file(guard);
+    }
+    removed
 }
 
 /// Creates a temporary download, locked against removal by any other process for as long as it is open.
@@ -462,8 +556,12 @@ impl Cache {
         };
         entries
             .flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
-            .filter(|e| remove_if_abandoned(&e.path()))
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with(&prefix) && !name.ends_with(".guard")
+            })
+            .filter(|e| remove_guarded_partial(&e.path()))
             .count()
     }
 
@@ -474,6 +572,7 @@ impl Cache {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         self.remove_abandoned_partials(pinned);
         let tmp = dir.join(format!("{}.partial-{}", pinned.file_name, unique_suffix()));
+        let _guard = DownloadGuard::create(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
         let partial = Partial(tmp.clone());
         let mut out = Some(create_locked(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?);
         let name = pinned.file_name;
@@ -525,6 +624,9 @@ impl Cache {
                 pinned.size, pinned.url
             ));
         }
+        if fetch.cancelled() {
+            return Err(format!("{name}: download cancelled; the partial file was removed"));
+        }
         out.as_ref()
             .expect("open until the rename")
             .sync_all()
@@ -540,6 +642,9 @@ impl Cache {
         // first; on Unix it stays open, and locked, through the rename.
         if cfg!(windows) {
             out = None;
+        }
+        if fetch.cancelled() {
+            return Err(format!("{name}: download cancelled; the partial file was removed"));
         }
         let renamed = fs::rename(&tmp, &path);
         drop(out);
@@ -764,6 +869,7 @@ impl Cache {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let name = spec.file_name();
         let tmp = dir.join(format!("{name}.partial-{}", unique_suffix()));
+        let _guard = DownloadGuard::create(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
         let partial = Partial(tmp.clone());
         let mut out = Some(create_locked(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?);
         say(&format!("downloading {} into {}", spec.url, path.display()));
@@ -949,6 +1055,65 @@ mod tests {
         }
         assert_eq!(defaults_for("qwen3-tts").map(|d| d.files.len()), Some(2));
         assert!(defaults_for("kitten-tts-2").is_none());
+    }
+
+    /// Subprocess participant: hold the guard while both the pre-lock staging
+    /// name and a closed data file exist, simulating both vulnerable windows.
+    #[test]
+    fn guarded_partial_child() {
+        let Ok(root) = std::env::var("GGTTS_TEST_GUARD_ROOT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let partial = root.join("model.gguf.partial-child");
+        let _guard = DownloadGuard::create(&partial).unwrap();
+        fs::write(root.join("model.gguf.partial-child.locking"), b"staging").unwrap();
+        fs::write(&partial, b"closed but publishing").unwrap();
+        fs::write(root.join("ready"), b"1").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !root.join("release").exists() {
+            assert!(std::time::Instant::now() < deadline, "parent did not release child");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn cleanup_cannot_remove_live_staging_or_closed_partial_in_another_process() {
+        let root = std::env::temp_dir().join(format!("ggtts-guard-{}", unique_suffix()));
+        let cache = Cache::new(root.clone());
+        let pinned = Pinned {
+            role: "test",
+            file_name: "model.gguf",
+            url: "unused",
+            size: 1,
+            sha256: "test-hash",
+            licence: "test",
+        };
+        let dir = cache.path_for(&pinned).parent().unwrap().to_path_buf();
+        fs::create_dir_all(&dir).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::guarded_partial_child", "--nocapture"])
+            .env("GGTTS_TEST_GUARD_ROOT", &dir)
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while !dir.join("ready").exists() {
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("child did not acquire its guard");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let partial = dir.join("model.gguf.partial-child");
+        let stage = dir.join("model.gguf.partial-child.locking");
+        let removed = cache.remove_abandoned_partials(&pinned);
+        fs::write(dir.join("release"), b"1").unwrap();
+        assert!(child.wait().unwrap().success());
+        assert!(removed == 0, "cleanup removed a live writer's file");
+        assert!(stage.exists() && partial.exists());
+        assert_eq!(cache.remove_abandoned_partials(&pinned), 2);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -32,7 +32,7 @@ if ($Cuda) {
 try {
     Push-Location $root
     try {
-        & cargo build --release --locked --target $target --target-dir $TargetDir -p ggtts-ffi -p ggtts-ggml-sys --features $features
+        & cargo build --release --locked --target $target --target-dir $TargetDir -p ggtts-ffi -p ggtts-ggml-sys -p ggtts-book --features $features
         if ($LASTEXITCODE -ne 0) { throw "Native build failed ($LASTEXITCODE)." }
         New-Item -ItemType Directory -Force -Path $native | Out-Null
         Copy-Item -LiteralPath (Join-Path $TargetDir "$target/release/ggtts_ffi.dll") -Destination $native -Force
@@ -45,6 +45,7 @@ try {
         } finally { Pop-Location }
     } finally { Pop-Location }
     $bundle = Join-Path $app 'build/windows/x64/runner/Release'
+    Copy-Item -LiteralPath (Join-Path $TargetDir "$target/release/ggtts-book.exe") -Destination $bundle -Force
     if ($Cuda) {
         Copy-Item -LiteralPath $runtime -Destination $bundle -Force
     } else {

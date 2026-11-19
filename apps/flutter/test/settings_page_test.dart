@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -28,10 +29,23 @@ class DelayedStore extends FakeStore {
   }
 }
 
-class RejectingStore extends FakeStore {
+class ObservedStore extends FakeStore {
+  Map<String, Object?>? submitted;
+  final checkedPaths = <String>[];
   @override
   Future<void> save(Map<String, Object?> value) async {
-    throw const FormatException('model must be an app-readable file.');
+    submitted = value;
+    validateSettings(value);
+    await validateReadableFiles(
+      value,
+      checkFile: (path) async {
+        checkedPaths.add(path);
+        if (path == '/missing.gguf') {
+          throw const FileSystemException('missing');
+        }
+      },
+    );
+    document = value;
   }
 }
 
@@ -39,11 +53,12 @@ void main() {
   testWidgets('a rejected selection reports the error and keeps settings', (
     tester,
   ) async {
-    final store = RejectingStore();
+    final store = ObservedStore();
     final valid = <String, Object?>{
-      'load': {'model': '/valid/model.gguf'},
+      'load': {'threads': 2, 'model': '/valid.gguf'},
     };
     store.document = valid;
+    final original = utf8.encode(jsonEncode(store.document));
     await tester.pumpWidget(MaterialApp(home: SettingsPage(store: store)));
     await tester.pumpAndSettle();
     await tester.enterText(
@@ -57,7 +72,9 @@ void main() {
       find.textContaining('model must be an app-readable file'),
       findsOneWidget,
     );
-    expect(store.document, valid);
+    expect(store.submitted!['load'], {'threads': 2, 'model': '/missing.gguf'});
+    expect(store.checkedPaths, ['/missing.gguf']);
+    expect(utf8.encode(jsonEncode(store.document)), original);
   });
   testWidgets('CUDA is disabled unless the loaded engine reports it', (
     tester,

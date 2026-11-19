@@ -964,9 +964,10 @@ class _ReadPageState extends State<ReadPage> {
 
   Future<void> _openReads() async {
     try {
-      final library = SavedReads(
-        Directory('${(await getApplicationSupportDirectory()).path}/reads'),
-      );
+      final root = widget.readDirectory == null
+          ? Directory('${(await getApplicationSupportDirectory()).path}/reads')
+          : await widget.readDirectory!();
+      final library = SavedReads(root);
       if (mounted) {
         await Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => SavedReadsPage(library: library)),

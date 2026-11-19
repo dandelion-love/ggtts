@@ -13,7 +13,8 @@ that a merge places under a released heading is caught.
 
 ### Fixed
 
-- Concurrent model downloads no longer remove one anothers active temporary files during creation or publication.
+- Android demo reports an audio-device write failure at the next chunk instead of waiting for the read to finish.
+- Concurrent model downloads no longer remove one another's active temporary files during creation or publication.
 
 - **Prepared voice JSON passed as a file descriptor is recognized by content**, so Android picked files no longer
   need a `.json` filename. Non-seekable descriptors and non-object JSON are refused.

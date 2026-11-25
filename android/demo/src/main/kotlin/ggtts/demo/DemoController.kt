@@ -118,6 +118,7 @@ class DemoController(
                 log("render outcome=failure")
                 Result.failure(IllegalStateException("${e.javaClass.simpleName}: ${e.message}"))
             } catch (e: Throwable) {
+                if (e is InterruptedException) Thread.currentThread().interrupt()
                 // An Error (out of memory, say) too: shown, and the screen is left usable rather than busy for good.
                 runCatching { audio.stop() }
                 log("render outcome=failure")

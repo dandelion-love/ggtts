@@ -44,8 +44,24 @@ class SettingsStore {
   }
 }
 
+/// Whether a `load.model` value reads as a released model's name (such as
+/// `hk-cantonese-1.7b`) rather than a file: no path separator, no drive or
+/// scheme colon, and no `.gguf` or `.json` ending. The engine applies the same
+/// rule (`ggtts_models::select`): it downloads a known name when preparing with
+/// download allowed, and refuses an unknown one, listing the known names.
+bool readsAsModelName(String value) {
+  final lower = value.toLowerCase();
+  return value.isNotEmpty &&
+      !value.contains('/') &&
+      !value.contains('\\') &&
+      !value.contains(':') &&
+      !lower.endsWith('.gguf') &&
+      !lower.endsWith('.json');
+}
+
 /// Check paths while the old settings file is still intact. This checks access,
 /// not model format or future availability; the engine validates those on load.
+/// A model given by name is no file here: the engine resolves it.
 Future<void> validateReadableFiles(
   Map<String, Object?> document, {
   Future<void> Function(String path)? checkFile,
@@ -55,6 +71,7 @@ Future<void> validateReadableFiles(
   for (final key in ['model', 'codec', 'voice']) {
     final path = load[key];
     if (path is! String) continue;
+    if (key == 'model' && readsAsModelName(path)) continue;
     try {
       await (checkFile ?? _checkReadableFile)(path);
     } on FileSystemException {

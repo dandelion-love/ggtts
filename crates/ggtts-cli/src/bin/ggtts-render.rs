@@ -207,7 +207,7 @@ const USAGE: &str = "usage: ggtts-render [--model M.gguf] [--codec C.gguf] [--of
 [--stream FILE|- [--stream-raw | --stream-level-seconds S] [--stream-format wav|s16le]] (--text TEXT [--seed S] | --story FILE [--seed-salt S] [--edge-s X] [--redraw N [--judge asr-qwen,model=DIR]]) \
 [--instrument NAME[,KEY=VALUE]...]... [--instruments FILE] [--require NAME]... \
 [--instrument-device cpu|cuda|auto] [--on-instrument-error continue|abort] [--instrument-timeout S] [--report DIR] [--run ID] \
-[--log-level error|warn|info|debug|trace] [--log-format text|json] [--timing-report FILE] [--duration-report FILE]\n       ggtts-render --version";
+[--log-level error|warn|info|debug|trace] [--log-format text|json] [--timing-report FILE] [--duration-report FILE]\n       ggtts-render --models\n       ggtts-render --version";
 
 /// Which stream to ask for, printed by `--help`.
 const STREAMS: &str = concat!(
@@ -225,7 +225,9 @@ const STREAMS: &str = concat!(
 const MODELS_HELP: &str =
     "\nmodel files: a path given with --model or --codec is used as it is. A file not given is the engine's \
 default, pinned by sha256 and downloaded once into the per-user cache (GGTTS_CACHE_DIR overrides where). With no \
---model the engine is qwen3-tts and the speaker hk_voice_343. --offline never downloads.";
+--model the engine is qwen3-tts and the speaker hk_voice_343. --model NAME names a released model instead of a path, \
+downloaded and verified the same way; --models lists the names, with size, licence and whether each is cached. A \
+file whose name is a model's name is given as ./NAME. --offline never downloads.";
 
 /// The engine a render with no `--model` uses: the one whose default files `ggtts_models` pins.
 const DEFAULT_ENGINE: &str = "qwen3-tts";
@@ -509,8 +511,13 @@ fn resolve_models_with(
     notice: &mut dyn std::io::Write,
 ) -> Result<Vec<ggtts_models::ModelFile>, String> {
     let a = &mut a.load;
+    // A model named by release is that release's files, resolved like a default ([`ggtts_models::select`]).
+    let named = ggtts_models::select(name, a.model.as_deref()).map_err(|m| format!("--model: {m}"))?;
+    if named.is_some() {
+        a.model = None;
+    }
     let given = [a.model.clone(), a.codec.clone(), a.voice.clone()];
-    let Some(defaults) = ggtts_models::defaults_for(name) else {
+    let Some(defaults) = named.or_else(|| ggtts_models::defaults_for(name)) else {
         if a.model.is_none() && name != "fake" {
             return Err(format!(
                 "--model is required: the {name} engine has no default model files"
@@ -853,7 +860,10 @@ fn render_with_models(
             return Err(format!("--duration-report: {} is not a directory", parent.display()));
         }
     }
+    let named = ggtts_models::select(&a.load.engine, a.load.model.as_deref()).map_err(|m| format!("--model: {m}"))?;
     let name = match (a.load.engine.as_str(), &a.load.model) {
+        // A release name: that release's engine.
+        ("auto", Some(_)) if named.is_some() => named.map(|r| r.engine.to_string()).unwrap_or_default(),
         ("auto", Some(model)) => gguf_arch::architecture(model).map_err(|e| format!("{}: {e}", model.display()))?,
         // No model: the default engine, on its default files.
         ("auto", None) => DEFAULT_ENGINE.to_string(),
@@ -1489,6 +1499,18 @@ fn engine_lines() -> Vec<String> {
         .collect()
 }
 
+/// `--models`: a header and one line per release this build can download ([`ggtts_models::listing`]), checked against
+/// the per-user cache (`GGTTS_CACHE_DIR` overrides where), tab-separated.
+fn list_models(env: &dyn Fn(&str) -> Option<String>) -> Result<Vec<String>, String> {
+    let root = match env(ggtts_models::CACHE_ENV).filter(|v| !v.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => ggtts_models::Cache::default_root()?,
+    };
+    let mut lines = vec!["name\tengine\tsize\tlicence\tcache\tdefault".to_string()];
+    lines.extend(ggtts_models::listing(&ggtts_models::Cache::new(root))?);
+    Ok(lines)
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let env = |name: &str| std::env::var(name).ok();
@@ -1522,6 +1544,18 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Some("--models") => match list_models(&env) {
+            Ok(lines) => {
+                for line in lines {
+                    println!("{line}");
+                }
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::from(ggtts_instruments::runner::EXIT_RENDER_FAILED)
+            }
+        },
         Some("-h") | Some("--help") => {
             println!("{USAGE}\n\n{STREAMS}");
             println!("{MODELS_HELP}");
@@ -1630,7 +1664,7 @@ mod tests {
         use std::collections::BTreeSet;
         let usage: BTreeSet<&str> = USAGE
             .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-            .filter(|w| w.starts_with("--") && *w != "--version")
+            .filter(|w| w.starts_with("--") && *w != "--version" && *w != "--models")
             .collect();
         let table: BTreeSet<&str> = options::TABLE
             .iter()
@@ -1931,7 +1965,7 @@ mod tests {
             "--engine",
             "qwen3-tts",
             "--model",
-            "unused",
+            "unused.gguf",
             "--codec",
             "unused-codec",
             "--text",
@@ -2450,7 +2484,7 @@ mod tests {
         // The fake engine needs no model; a given one is still recorded.
         let mut a = Options::default();
         assert!(resolve_models(&mut a, "fake", log).unwrap().is_empty());
-        let mut a = opts(&["--model", "m.bin"]);
+        let mut a = opts(&["--model", "m.gguf"]);
         let files = resolve_models(&mut a, "fake", log).unwrap();
         assert_eq!(
             (files[0].role.as_str(), files[0].source),

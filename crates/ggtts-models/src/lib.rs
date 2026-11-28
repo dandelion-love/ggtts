@@ -59,23 +59,48 @@ pub struct Pinned {
     pub licence: &'static str,
 }
 
-/// The default files of one engine, in the order the engine's command-line paths take them.
+/// One named release: the files of one engine, in the order the engine's command-line paths take them.
 #[derive(Debug)]
-pub struct Defaults {
+pub struct Release {
+    /// What `load.model` (`--model`) names it by. Never a file name: it has no path separator and no `.gguf`.
+    pub name: &'static str,
     pub engine: &'static str,
     /// Where the files come from, for messages and the README.
     pub release: &'static str,
     pub files: &'static [Pinned],
     /// The speakers the default model has.
     pub speakers: &'static [&'static str],
-    /// The speaker a render uses when it is given none and the model is the default one.
+    /// The speaker a render uses when it is given none and the model is this release's.
     pub default_speaker: Option<&'static str>,
 }
 
-/// Qwen3-TTS: the talker and the 12 Hz codec of `jmtl/hk-cantonese-cc0-qwen3-tts-GGUF` v0.0.5 (commit
-/// `e6a823291c0189031086865033d0f5e4ad02a8ac`). Both files are Apache-2.0 by the repository's card. The default
-/// speaker is `hk_voice_343`, the voice the card's own example renders.
-pub const QWEN3_TTS: Defaults = Defaults {
+impl Release {
+    /// The size of every file, in bytes.
+    pub fn size(&self) -> u64 {
+        self.files.iter().map(|p| p.size).sum()
+    }
+
+    /// The files' licences, each once, in file order, joined with `, `.
+    pub fn licences(&self) -> String {
+        let mut seen: Vec<&str> = Vec::new();
+        for p in self.files {
+            if !seen.contains(&p.licence) {
+                seen.push(p.licence);
+            }
+        }
+        seen.join(", ")
+    }
+}
+
+/// An engine's default files are a release: the one [`defaults_for`] gives.
+pub type Defaults = Release;
+
+/// Qwen3-TTS, `hk-cantonese-1.7b`: the talker and the 12 Hz codec of `jmtl/hk-cantonese-cc0-qwen3-tts-GGUF` v0.0.5
+/// (commit `e6a823291c0189031086865033d0f5e4ad02a8ac`), on `Qwen3-TTS-12Hz-1.7B-Base`. Both files are Apache-2.0 by
+/// the repository's card. The default speaker is `hk_voice_343`, the voice the card's own example renders. It is the
+/// qwen3-tts engine's default.
+pub const QWEN3_TTS: Release = Release {
+    name: "hk-cantonese-1.7b",
     engine: "qwen3-tts",
     release: "jmtl/hk-cantonese-cc0-qwen3-tts-GGUF v0.0.5",
     files: &[
@@ -100,12 +125,99 @@ pub const QWEN3_TTS: Defaults = Defaults {
     default_speaker: Some("hk_voice_343"),
 };
 
-/// Every engine that has default files. An engine left out renders only from given paths.
+/// Every named release this build can download, by [`Release::name`]. A new release is one more entry here, pinned
+/// like the others; it changes no engine's default unless [`ALL`] names it too.
+pub const RELEASES: &[&Release] = &[&QWEN3_TTS];
+
+/// Every engine that has default files: the release a render of that engine uses when it names no model. An engine
+/// left out renders only from given paths or a named release.
 pub const ALL: &[&Defaults] = &[&QWEN3_TTS];
 
 /// The default files of `engine`, if it has any.
 pub fn defaults_for(engine: &str) -> Option<&'static Defaults> {
     ALL.iter().copied().find(|d| d.engine == engine)
+}
+
+/// The release named `name`, if this build knows it.
+pub fn named(name: &str) -> Option<&'static Release> {
+    RELEASES.iter().copied().find(|r| r.name == name)
+}
+
+/// Whether `release` is its engine's default.
+pub fn is_default(release: &Release) -> bool {
+    defaults_for(release.engine).is_some_and(|d| d.name == release.name)
+}
+
+/// Every release name, in table order, joined with `, `: what a refusal of an unknown name lists.
+pub fn known_names() -> String {
+    RELEASES.iter().map(|r| r.name).collect::<Vec<_>>().join(", ")
+}
+
+/// Whether `text` reads as a release name rather than a file: no path separator, no drive or scheme colon, and no
+/// `.gguf` or `.json` ending.
+fn looks_like_a_name(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    !text.is_empty() && !text.contains(['/', '\\', ':']) && !lower.ends_with(".gguf") && !lower.ends_with(".json")
+}
+
+/// What a model setting (`load.model`, `--model`) selects, for an engine (`auto` for any): `Ok(Some(release))` when
+/// it names a release, `Ok(None)` when it is a file path or not given. This is the one rule every front end applies:
+///
+/// * a value equal to a release's name is that release (a local file of that name is given as `./<name>`);
+/// * a name of another engine's release is refused, naming both engines;
+/// * a value that reads as a name (no path separator, no `.gguf` or `.json` ending), is no release, and is no
+///   existing file is refused, listing the known names;
+/// * anything else is a path, used as it is.
+///
+/// The refusal is the message alone; each front end prefixes it with its own spelling of the setting.
+pub fn select(engine: &str, model: Option<&Path>) -> Result<Option<&'static Release>, String> {
+    let Some(model) = model else {
+        return Ok(None);
+    };
+    let Some(text) = model.to_str() else {
+        return Ok(None);
+    };
+    if let Some(release) = named(text) {
+        if engine != "auto" && engine != release.engine {
+            return Err(format!(
+                "{text} is a {} release, and the engine is {engine}",
+                release.engine
+            ));
+        }
+        return Ok(Some(release));
+    }
+    if looks_like_a_name(text) && !model.exists() {
+        return Err(format!(
+            "{text} is neither a known model nor a file; the known models are {}",
+            known_names()
+        ));
+    }
+    Ok(None)
+}
+
+/// One line per release for a listing (`ggtts-render --models`), tab-separated: name, engine, size, licence, whether
+/// every file is in `cache` (checked as a render checks it: its verification record, else its hash), and `default`
+/// for an engine's default.
+pub fn listing(cache: &Cache) -> Result<Vec<String>, String> {
+    let mut lines = Vec::new();
+    for r in RELEASES {
+        let mut cached = true;
+        for p in r.files {
+            if !cache.check(p, &mut |_| {})? {
+                cached = false;
+            }
+        }
+        lines.push(format!(
+            "{}\t{}\t{}\t{}\t{}{}",
+            r.name,
+            r.engine,
+            human(r.size()),
+            r.licences(),
+            if cached { "cached" } else { "not cached" },
+            if is_default(r) { "\tdefault" } else { "" }
+        ));
+    }
+    Ok(lines)
 }
 
 /// Where a model file came from.
@@ -1029,8 +1141,89 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_release_has_a_unique_name_that_is_no_file_name_and_every_default_is_a_release() {
+        let mut names: Vec<&str> = RELEASES.iter().map(|r| r.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), RELEASES.len(), "two releases share a name");
+        for r in RELEASES {
+            assert!(looks_like_a_name(r.name), "{} reads as a file", r.name);
+            assert_eq!(named(r.name).map(|n| n.name), Some(r.name));
+            assert!(
+                !r.files.is_empty() && r.size() > 0 && !r.licences().is_empty(),
+                "{}",
+                r.name
+            );
+        }
+        for d in ALL {
+            assert!(
+                named(d.name).is_some(),
+                "{}: a default that is not a named release",
+                d.engine
+            );
+            assert!(is_default(d));
+        }
+        assert_eq!(defaults_for("qwen3-tts").map(|d| d.name), Some("hk-cantonese-1.7b"));
+    }
+
+    #[test]
+    fn select_takes_a_name_a_path_or_nothing_and_refuses_the_rest_by_name() {
+        let p = |s: &str| PathBuf::from(s);
+        let name = |engine: &str, model: &str| select(engine, Some(&p(model))).map(|r| r.map(|r| r.name));
+        assert!(matches!(select("auto", None), Ok(None)));
+        for engine in ["auto", "qwen3-tts"] {
+            let r = select(engine, Some(&p("hk-cantonese-1.7b"))).unwrap().unwrap();
+            assert_eq!(r.name, "hk-cantonese-1.7b");
+        }
+        let other = select("kitten-tts-2", Some(&p("hk-cantonese-1.7b"))).unwrap_err();
+        assert!(
+            other.contains("is a qwen3-tts release") && other.contains("kitten-tts-2"),
+            "{other}"
+        );
+        // Paths, existing or not, are paths: a separator, a .gguf or .json ending, or a drive.
+        for path in [
+            "./hk-cantonese-1.7b",
+            "talker.gguf",
+            "TALKER.GGUF",
+            "voice.json",
+            "C:x",
+            "/no/such/m",
+        ] {
+            assert_eq!(name("auto", path), Ok(None), "{path}");
+        }
+        let unknown = select("auto", Some(&p("hk-cantonese-9b"))).unwrap_err();
+        assert!(
+            unknown.contains("hk-cantonese-9b") && unknown.contains(&known_names()),
+            "{unknown}"
+        );
+        // An existing file with a name-like name is that file: the test runs in the crate's directory.
+        assert!(Path::new("Cargo.toml").is_file());
+        assert_eq!(name("auto", "Cargo.toml"), Ok(None));
+    }
+
+    #[test]
+    fn the_listing_names_each_release_its_size_licence_cache_state_and_the_default() {
+        let root = std::env::temp_dir().join(format!("ggtts-listing-{}", unique_suffix()));
+        let lines = listing(&Cache::new(root.clone())).unwrap();
+        assert_eq!(lines.len(), RELEASES.len());
+        let first: Vec<&str> = lines[0].split('\t').collect();
+        assert_eq!(
+            first,
+            [
+                "hk-cantonese-1.7b",
+                "qwen3-tts",
+                "2.33 GB (2333984768 bytes)",
+                "Apache-2.0",
+                "not cached",
+                "default"
+            ]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn every_pinned_file_is_at_a_fixed_commit_with_a_full_hash() {
-        for defaults in ALL {
+        for defaults in RELEASES {
             assert!(!defaults.files.is_empty(), "{}", defaults.engine);
             for p in defaults.files {
                 let revision = p.url.split("/resolve/").nth(1).and_then(|r| r.split('/').next());

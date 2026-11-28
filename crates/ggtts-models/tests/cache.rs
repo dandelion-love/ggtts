@@ -109,6 +109,7 @@ fn pinned(role: &'static str, file_name: &'static str, url: &'static str, conten
 
 fn defaults(files: Vec<Pinned>) -> &'static Defaults {
     Box::leak(Box::new(Defaults {
+        name: "test-release",
         engine: "test",
         release: "a test release",
         files: Box::leak(files.into_boxed_slice()),

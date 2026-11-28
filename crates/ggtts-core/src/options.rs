@@ -229,7 +229,7 @@ pub const TABLE: &[Descriptor] = &[
         python: &["model"],
         c: &["model"],
         kotlin: &["model"],
-        help: "The model GGUF (Qwen3-TTS: the talker; Kitten-TTS 2: the LM); unset is the engine's pinned default.",
+        help: "The model GGUF (Qwen3-TTS: the talker; Kitten-TTS 2: the LM), or a released model's name (ggtts-render --models lists them); unset is the engine's pinned default.",
         ..row("model", SL, L, path(), "null")
     },
     Descriptor {

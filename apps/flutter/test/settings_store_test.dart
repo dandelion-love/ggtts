@@ -105,6 +105,42 @@ void main() {
     },
   );
 
+  test('a released model name is saved for the engine to resolve', () async {
+    // The engine downloads a known name and refuses an unknown one, listing
+    // the known names; the settings check holds only file paths to a file.
+    for (final name in ['hk-cantonese-1.7b', 'hk-cantonese-0.6b']) {
+      final document = <String, Object?>{
+        'load': {'model': name},
+      };
+      await store.save(document);
+      expect(await store.load(), document);
+    }
+    // Paths are still paths: a missing one is refused as before.
+    for (final path in [
+      '${directory.path}/hk-cantonese-1.7b',
+      'missing.gguf',
+      'voice.json',
+    ]) {
+      await expectLater(
+        store.save({
+          'load': {'model': path},
+        }),
+        throwsFormatException,
+      );
+    }
+    // A codec or voice is never a model name.
+    await expectLater(
+      store.save({
+        'load': {'codec': 'hk-cantonese-1.7b'},
+      }),
+      throwsFormatException,
+    );
+    expect(readsAsModelName('hk-cantonese-1.7b'), isTrue);
+    for (final path in ['./m', 'a\\b', 'C:m', 'm.GGUF', 'v.json', '']) {
+      expect(readsAsModelName(path), isFalse, reason: path);
+    }
+  });
+
   test(
     'invalid or corrupt files are reported without being overwritten',
     () async {

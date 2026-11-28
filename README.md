@@ -111,6 +111,28 @@ contributor's, dedicated under CC-0, and sets out responsible-use terms (the voi
 impersonation, and label synthetic audio); read the card before using the voice. These licences are the models',
 not this repository's.
 
+### Named models: choosing a released model by name
+
+`--model` (`load.model` in an options document and every binding) also takes the name of a released model. ggtts
+then downloads its files into the same cache, checks them against their pinned sha256, and renders, exactly as for
+the default. `--offline` refuses to download, and the report records each file as it does for the default.
+
+```bash
+ggtts-render --models
+ggtts-render --model hk-cantonese-1.7b --text "我哋聽日一齊去海邊睇日落。" --out x.flac
+```
+
+| Name | Engine | Files | Size | Licence | Default |
+|---|---|---|---|---|---|
+| `hk-cantonese-1.7b` | qwen3-tts | the talker and codec in the table above (v0.0.5, on Qwen3-TTS 12Hz 1.7B) | 2.33 GB | Apache-2.0 | yes |
+
+`ggtts-render --models` prints this table from the build itself, with whether each model is already cached. A name
+picks its engine, so `--engine` is not needed. A name meant for a different `--engine` is refused, naming both
+engines. A value that reads as a name (no path separator, no `.gguf` or `.json` ending) but is not one, and is not a
+file either, is refused, listing the names this build knows. A local file whose name is a model's name is given as
+`./hk-cantonese-1.7b`. A `--codec` path still wins over the named model's codec. The table is
+`ggtts_models::RELEASES`, and a newer release arrives with a new ggtts, as for the default.
+
 **A path you give always wins.** `--model` and `--codec` name files to use as they are: they are never downloaded
 over and are not required to match a pinned hash, so ggtts renders unreleased models for experiments. A mix is
 allowed: `--model my-talker.gguf` with no `--codec` uses your talker and the default codec. A given talker keeps

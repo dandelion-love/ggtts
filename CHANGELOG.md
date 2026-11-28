@@ -21,6 +21,14 @@ that a merge places under a released heading is caught.
 
 ### Added
 
+- **Named models: `--model hk-cantonese-1.7b` (`load.model`) names a released model instead of a file**, and ggtts
+  downloads, verifies and renders it as it does the default: the same per-user cache, sha256 check, `--offline` rule
+  and report fields. `ggtts-render --models` lists every name with its engine, size, licence, whether it is cached,
+  and which is the default. A name works wherever `load.model` does (the command line, `ggtts-book`, an options
+  document, the C ABI, Python and Kotlin), and a name ggtts does not know is refused, listing the names it does. A
+  value with a path separator or a `.gguf` ending is a path as before, and a local file named like a model is given
+  as `./NAME`. The table is `ggtts_models::RELEASES`; a new release is one entry.
+
 - **Declared voice metadata:** a shared reader recognizes language tags and display names in model GGUFs and prepared voice JSON. Kitten conversion and preparation accept optional `--language` and `--name`; `ggtts-gguf-voices` writes per-speaker metadata to a new talker GGUF while preserving tensor data. Missing declarations remain absent. See `docs/voice-keys.md`.
 
 - **`ggtts-render --codes FILE` (`observe.codes`) writes every kept chunk's codec tokens**, all codebooks (16 on

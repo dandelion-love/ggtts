@@ -23,6 +23,10 @@ one on every change that could break it, so the examples match the code.
 * **The default model.** Qwen3-TTS has one: given no model, every binding uses the same files `ggtts-render` uses (a
   Hong Kong Cantonese model, 2.33 GB), from the same per-user cache, checked against the same sha256. Kitten-TTS 2
   has none: you pass its files.
+* **A named model.** The model argument (`load.model` in an options document) also takes a released model's name,
+  such as `hk-cantonese-1.7b`: the binding downloads, verifies and loads its files as it does the default's, unless
+  downloads are off. `ggtts-render --models` lists the names this build knows; an unknown name is refused
+  (`GGTTS_ERR_ARG`, key `load.model`), listing them. A file named like a model is given as `./NAME`.
 * **Text** is UTF-8, one paragraph per line. A render splits it into chunks, renders, checks and trims each, joins
   them and levels the whole read, as `ggtts-render --story` does.
 * **The seed** fixes the random draws: the same engine, model, text and seed give the same samples on the same

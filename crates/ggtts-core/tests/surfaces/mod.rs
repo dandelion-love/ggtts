@@ -34,6 +34,11 @@ pub enum Surface {
 pub const NOT_OPTIONS: &[(Surface, &str, &str)] = &[
     (Surface::Flag, "--version", "a command: prints the version"),
     (Surface::Flag, "--help", "a command: prints the usage"),
+    (
+        Surface::Flag,
+        "--models",
+        "a command: lists the released models a --model name can select",
+    ),
     (Surface::Flag, "-h", "a command: prints the usage"),
     (
         Surface::Python,
@@ -216,7 +221,7 @@ pub fn render_flags() -> Vec<String> {
     let main = between(&src, "fn main() -> ExitCode {", "\n}\n");
     for f in flags(main)
         .into_iter()
-        .filter(|f| ["--version", "--help", "-h"].contains(&f.as_str()))
+        .filter(|f| ["--version", "--help", "-h", "--models"].contains(&f.as_str()))
     {
         if !out.contains(&f) {
             out.push(f);

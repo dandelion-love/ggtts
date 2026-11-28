@@ -456,6 +456,9 @@ fn refuse_with_exact_seed(o: &Options) -> Result<(), Fail> {
 /// The engine a load document names: `auto` is the model file's GGUF architecture, or `qwen3-tts` when it gives no
 /// model, as `ggtts-render` resolves it.
 pub fn document_engine(o: &Options) -> Result<String, Fail> {
+    if let Some(release) = select_release(&o.load.engine, o.load.model.as_deref())? {
+        return Ok(release.engine.to_string());
+    }
     match (o.load.engine.as_str(), &o.load.model) {
         ("auto", Some(m)) => {
             gguf_arch::architecture(m).map_err(|e| engine_err(format!("load.model {}: {e}", m.display())))
@@ -804,6 +807,15 @@ pub struct Opened {
 /// The engines a build can load by name, besides the test engines.
 pub use crate::ENGINES;
 
+/// The release `load.model` names, for `engine` (`auto` for any), refused under `load.model` as every binding shows it
+/// ([`ggtts_models::select`]).
+pub fn select_release(
+    engine: &str,
+    model: Option<&std::path::Path>,
+) -> Result<Option<&'static ggtts_models::Release>, Fail> {
+    ggtts_models::select(engine, model).map_err(|m| key_err("load.model", format!("load.model: {m}")))
+}
+
 /// Load an engine. `notice` receives the download notice and progress of a default model file. Every refusal comes
 /// before any text is rendered; a setting the engine does not take, and `cuda` on a build without it, before any file
 /// is read or downloaded.
@@ -836,15 +848,18 @@ pub fn open(req: Request<'_>, wording: &Wording, notice: &mut dyn FnMut(&str)) -
         )));
     }
     let mut speaker = speaker.map(String::from);
+    // A model named by release is that release's files, resolved like a default: the name is no path.
+    let named = select_release(name, req.model.as_deref())?;
+    let given_model = if named.is_some() { None } else { req.model.clone() };
     let need = |p: &Option<PathBuf>, what: &str| {
         p.clone()
             .ok_or_else(|| arg_err(format!("the {name} engine needs a {what}")))
     };
-    let (model, codec, mut files) = match (&req.models, ggtts_models::defaults_for(name)) {
-        (Some(models), Some(defaults)) if req.model.is_none() || req.codec.is_none() => {
+    let (model, codec, mut files) = match (&req.models, named.or_else(|| ggtts_models::defaults_for(name))) {
+        (Some(models), Some(defaults)) if given_model.is_none() || req.codec.is_none() => {
             let files = resolve_defaults(
                 defaults,
-                req.model.clone(),
+                given_model,
                 req.codec.clone(),
                 models,
                 cfg!(feature = "ggml"),
@@ -859,6 +874,15 @@ pub fn open(req: Request<'_>, wording: &Wording, notice: &mut dyn FnMut(&str)) -
             (files.model, files.codec, files.files)
         }
         _ => {
+            if let Some(release) = named {
+                return Err(key_err(
+                    "load.model",
+                    format!(
+                        "load.model: {} names a release, and this load takes only file paths (no model cache)",
+                        release.name
+                    ),
+                ));
+            }
             let (model, codec) = match wording.file_checks {
                 FileChecks::InTurn => {
                     let model = need(&req.model, "model")?;

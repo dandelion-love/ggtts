@@ -203,6 +203,27 @@ def test_offline_with_an_empty_cache_downloads_nothing(tmp_path, monkeypatch):
     assert not any((tmp_path / "cache").rglob("*.gguf"))
 
 
+def test_a_released_model_is_named_by_model_and_an_unknown_name_lists_the_known(tmp_path, monkeypatch):
+    monkeypatch.setenv("GGTTS_CACHE_DIR", str(tmp_path / "cache"))
+    with pytest.raises(ggtts.GgttsError) as e:
+        ggtts.load(model="hk-cantonese-1.7b", offline=True)
+    assert code_of(e) == ggtts.ERR_ENGINE
+    if "qwen3-tts" in ggtts.ENGINES:
+        assert "qwen-talker-hk-cantonese-cc0-v0.0.5-q8_0.gguf" in e.value.message
+        assert "offline mode does not download" in e.value.message
+    else:
+        assert "built without the ggml feature" in e.value.message
+    with pytest.raises(ggtts.GgttsError) as e:
+        ggtts.load(model="hk-cantonese-9b", offline=True)
+    assert code_of(e) == ggtts.ERR_ARG
+    assert e.value.message.startswith("load.model: hk-cantonese-9b is neither a known model nor a file")
+    assert "hk-cantonese-1.7b" in e.value.message
+    with pytest.raises(ggtts.GgttsError) as e:
+        ggtts.load("kitten-tts-2", model="hk-cantonese-1.7b", offline=True)
+    assert "is a qwen3-tts release, and the engine is kitten-tts-2" in e.value.message
+    assert not any((tmp_path / "cache").rglob("*.gguf"))
+
+
 def test_a_closed_engine_is_a_handle_error():
     tts = fake()
     tts.close()

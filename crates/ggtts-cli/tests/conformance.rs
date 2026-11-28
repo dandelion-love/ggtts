@@ -583,6 +583,197 @@ fn every_front_end_carries_or_refuses_the_introspection() {
     ));
 }
 
+// ── a named model ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// `load.model` naming a release (`ggtts_models::RELEASES`) instead of a file: a value of an option every front end
+/// already carries, so it is checked here, beside the option cells, as a capability of its own. Each front end carries
+/// it (the name reaches `ggtts_models::select`, the one rule) or refuses it with a reason, never a gap.
+const NAMED_MODEL_CELLS: &[(&str, Cell)] = &[
+    ("render-story", Carried),
+    ("render-text", Carried),
+    ("book", Carried),
+    ("c-abi", Carried),
+    ("python", Carried),
+    ("kotlin", Carried),
+    (
+        "android",
+        Refused("the app never downloads: its models are installed with it, so it names files, not releases"),
+    ),
+    ("kitten", Refused(PARITY_TOOL)),
+];
+
+/// The Flutter app is not a row of [`FRONT_ENDS`] (it has no options table cells yet), but it hands `load.model` to
+/// the C ABI's options document, so it carries a name when its settings check lets one through: a value that reads as
+/// a name is not held to be a readable file. This is the source line that does so (`apps/flutter/lib/settings_store.dart`).
+const FLUTTER_NAMED_MODEL: &str = "if (key == 'model' && readsAsModelName(path)) continue;";
+
+/// What a front end did with `load.model` set to a release name: a load refused because it is an unknown name must
+/// list the known names, and a load of the release itself (offline, on an empty cache) must have resolved it to that
+/// release, not to a file of that name: refused naming the release's first file (a build with engines, which looked it
+/// up in the cache), or for want of the engines (a build without them, which refuses before any lookup and never reads
+/// a path). A name read as a path fails as a missing file instead, naming neither.
+fn named_model_seen(unknown: &str, known: &str) -> bool {
+    let release = ggtts_models::named("hk-cantonese-1.7b").expect("the table names hk-cantonese-1.7b");
+    unknown.contains("hk-cantonese-9b")
+        && unknown.contains(&ggtts_models::known_names())
+        && (known.contains(release.files[0].file_name) || known.contains("ggml"))
+}
+
+/// The probes: each front end driven with an unknown name and with `hk-cantonese-1.7b`, offline, on an empty cache.
+fn named_model_probes() -> Vec<(&'static str, bool)> {
+    let cache = unique_dir("named-model-cache");
+    let cache_s = cache.to_string_lossy().into_owned();
+    let mut out = Vec::new();
+    // ggtts-render, in both modes.
+    for (id, mode) in [("render-story", "--story"), ("render-text", "--text")] {
+        let run = |model: &str| {
+            let dir = scratch(&format!("named-{id}"));
+            let input = if mode == "--story" { "s.txt" } else { "你好。" };
+            let out = Command::new(env!("CARGO_BIN_EXE_ggtts-render"))
+                .args([
+                    "--offline",
+                    "--model",
+                    model,
+                    mode,
+                    input,
+                    "--out",
+                    "o.flac",
+                    "--log-level",
+                    "error",
+                ])
+                .current_dir(&dir)
+                .env("GGTTS_CACHE_DIR", &cache)
+                .env_remove("GGTTS_LOG_LEVEL")
+                .env_remove("GGTTS_LOG_FORMAT")
+                .output()
+                .unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            assert!(
+                !out.status.success(),
+                "{id}: an offline render of {model} on an empty cache succeeded"
+            );
+            String::from_utf8_lossy(&out.stderr).into_owned()
+        };
+        out.push((id, named_model_seen(&run("hk-cantonese-9b"), &run("hk-cantonese-1.7b"))));
+    }
+    // ggtts-book: its parsed options through the loader it renders with (`ggtts_load::resolve`).
+    {
+        let run = |model: &str| {
+            let args: Vec<String> = ["b.epub", "--offline", "--model", model].map(String::from).to_vec();
+            let (_, mut o) = ggtts_book::options::parse("render", &args, &|_| None).unwrap();
+            let root = cache.clone();
+            ggtts_load::resolve(
+                &mut o.load,
+                &|| Ok(ggtts_models::Cache::new(root.clone())),
+                &ggtts_models::Http::default(),
+                &mut |_| {},
+            )
+            .unwrap_err()
+        };
+        out.push((
+            "book",
+            named_model_seen(&run("hk-cantonese-9b"), &run("hk-cantonese-1.7b")),
+        ));
+    }
+    // The C ABI's load document; a refused name leaves its key, load.model.
+    {
+        use ggtts_ffi::{ggtts_last_error_key, ggtts_load_opts};
+        let run = |model: &str| {
+            let doc = serde_json::json!({"load": {"model": model, "offline": true, "cache_dir": cache_s}});
+            let doc = CString::new(doc.to_string()).unwrap();
+            let mut h = 0u64;
+            let code = unsafe { ggtts_load_opts(doc.as_ptr(), &mut h) };
+            assert_ne!(code, 0, "c-abi: an offline load of {model} on an empty cache succeeded");
+            let key = ggtts_last_error_key();
+            let key = (!key.is_null()).then(|| unsafe { CStr::from_ptr(key) }.to_string_lossy().into_owned());
+            (last_error(), key)
+        };
+        let (unknown, key) = run("hk-cantonese-9b");
+        let (known, _) = run("hk-cantonese-1.7b");
+        out.push((
+            "c-abi",
+            named_model_seen(&unknown, &known) && key.as_deref() == Some("load.model"),
+        ));
+    }
+    // Python, through its core: the model argument.
+    {
+        use ggtts_py::core::{load, LoadRequest};
+        let run = |model: &str| {
+            let req = LoadRequest {
+                model: Some(PathBuf::from(model)),
+                offline: Some(true),
+                options: Some(serde_json::json!({"load": {"cache_dir": cache_s}}).to_string()),
+                ..Default::default()
+            };
+            match load(&req, &mut |_| {}) {
+                Ok(_) => panic!("python: an offline load of {model} on an empty cache succeeded"),
+                Err((_, message)) => message,
+            }
+        };
+        out.push((
+            "python",
+            named_model_seen(&run("hk-cantonese-9b"), &run("hk-cantonese-1.7b")),
+        ));
+    }
+    // Kotlin, through the core under its JNI layer: the model argument.
+    {
+        use ggtts_ffi::kotlin;
+        let run = |model: &str| {
+            let args = kotlin::LoadArgs {
+                model: Some(model.into()),
+                cache_dir: Some(cache_s.clone()),
+                allow_download: Some(false),
+                ..Default::default()
+            };
+            match kotlin::load("{}", &args) {
+                Ok(h) => {
+                    ggtts_ffi::ggtts_free(h);
+                    panic!("kotlin: an offline load of {model} on an empty cache succeeded")
+                }
+                Err((_, message)) => message,
+            }
+        };
+        out.push((
+            "kotlin",
+            named_model_seen(&run("hk-cantonese-9b"), &run("hk-cantonese-1.7b")),
+        ));
+    }
+    let _ = std::fs::remove_dir_all(&cache);
+    out
+}
+
+/// #578 AC2: every front end carries a release name in `load.model` or refuses it with a reason, and every carried
+/// cell is probed and seen. A front end added to [`FRONT_ENDS`] without a row here fails.
+#[test]
+fn every_front_end_carries_or_refuses_a_named_model() {
+    let ids: BTreeSet<&str> = FRONT_ENDS.iter().map(|f| f.id).collect();
+    let rows: BTreeSet<&str> = NAMED_MODEL_CELLS.iter().map(|(id, _)| *id).collect();
+    assert_eq!(ids, rows, "every front end has one named-model row, and only they do");
+    let probes = named_model_probes();
+    for (id, cell) in NAMED_MODEL_CELLS {
+        match cell {
+            Carried => {
+                let seen = probes.iter().find(|(f, _)| f == id);
+                assert!(
+                    matches!(seen, Some((_, true))),
+                    "{id}: a named model is Carried and the probe saw {seen:?}"
+                );
+            }
+            Refused(why) => assert!(!why.is_empty(), "{id}: a named model is refused with no reason"),
+            Gap(i) => panic!("{id}: a named model is a gap (#{i}): it is carried or refused"),
+        }
+    }
+    assert!(
+        read("apps/flutter/lib/settings_store.dart").contains(FLUTTER_NAMED_MODEL),
+        "the Flutter app's settings check no longer lets a model name through to the C ABI"
+    );
+    report(&format!(
+        "named model: {} front ends, {} probed, and the Flutter settings check",
+        NAMED_MODEL_CELLS.len(),
+        probes.len()
+    ));
+}
+
 /// Each front end's cell per option key, or every defect of the table against `table`: an option with no cell, a key
 /// given twice, a key the options table does not have, a refusal with no reason.
 fn cells(table: &[Descriptor], front_ends: &[FrontEnd]) -> Result<BTreeMap<(String, String), Cell>, Vec<String>> {

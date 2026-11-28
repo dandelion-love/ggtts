@@ -65,8 +65,13 @@ pub fn resolve(
     if req.engine != "fake" && !ENGINES.contains(&req.engine.as_str()) {
         return Err(unknown(&req.engine));
     }
+    // A model named by release is that release's files, resolved like a default ([`ggtts_models::select`]).
+    let named = ggtts_models::select(&req.engine, req.model.as_deref()).map_err(|m| format!("--model: {m}"))?;
+    if named.is_some() {
+        req.model = None;
+    }
     let given = [req.model.clone(), req.codec.clone(), req.voice.clone()];
-    let Some(defaults) = ggtts_models::defaults_for(&req.engine) else {
+    let Some(defaults) = named.or_else(|| ggtts_models::defaults_for(&req.engine)) else {
         if req.model.is_none() && req.engine != "fake" {
             return Err(format!(
                 "--model is required: the {} engine has no default model files",

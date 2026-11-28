@@ -44,6 +44,77 @@ fn a_default_render_offline_with_an_empty_cache_names_each_missing_file_and_its_
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[test]
+fn models_lists_every_release_with_its_size_licence_and_cache_state() {
+    let dir = scratch("models-list");
+    let r = Command::new(BIN)
+        .env("GGTTS_CACHE_DIR", dir.join("cache"))
+        .arg("--models")
+        .output()
+        .unwrap();
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let out = String::from_utf8_lossy(&r.stdout);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], "name\tengine\tsize\tlicence\tcache\tdefault");
+    assert_eq!(lines.len(), 1 + ggtts_models::RELEASES.len(), "{out}");
+    for (line, release) in lines[1..].iter().zip(ggtts_models::RELEASES) {
+        let cells: Vec<&str> = line.split('\t').collect();
+        assert_eq!(
+            cells[..5],
+            [
+                release.name,
+                release.engine,
+                &ggtts_models::human(release.size()),
+                &release.licences(),
+                "not cached"
+            ],
+            "{line}"
+        );
+    }
+    assert!(lines[1].ends_with("\tdefault"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_named_model_offline_with_an_empty_cache_names_its_files_and_an_unknown_name_lists_the_known() {
+    let dir = scratch("named");
+    let cache = dir.join("cache");
+    let run = |args: &[&str]| {
+        let r = Command::new(BIN)
+            .env("GGTTS_CACHE_DIR", &cache)
+            .args(args)
+            .args(["--text", "你好。", "--offline", "--out"])
+            .arg(dir.join("x.flac"))
+            .output()
+            .unwrap();
+        assert!(!r.status.success());
+        String::from_utf8_lossy(&r.stderr).into_owned()
+    };
+    let err = run(&["--model", "hk-cantonese-1.7b"]);
+    if cfg!(feature = "ggml") {
+        for p in ggtts_models::QWEN3_TTS.files {
+            assert!(err.contains(p.file_name) && err.contains(p.url), "{err}");
+        }
+    } else {
+        assert!(err.contains("no engines"), "{err}");
+    }
+    let unknown = run(&["--model", "hk-cantonese-9b"]);
+    assert!(
+        unknown.contains("--model: hk-cantonese-9b") && unknown.contains(&ggtts_models::known_names()),
+        "{unknown}"
+    );
+    let other = run(&["--engine", "kitten-tts-2", "--model", "hk-cantonese-1.7b"]);
+    assert!(
+        other.contains("is a qwen3-tts release, and the engine is kitten-tts-2"),
+        "{other}"
+    );
+    // A path is still a path: a missing ./NAME fails as a file, not as a name.
+    let path = run(&["--model", "./hk-cantonese-1.7b"]);
+    assert!(!path.contains("known models"), "{path}");
+    assert!(walk(&cache).is_empty(), "an offline refusal left files");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 fn walk(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
